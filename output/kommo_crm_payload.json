@@ -2,13 +2,13 @@
   "research_record_id": "Sarah & Mark Johnson - QLD/Springfield - $780,000 - 2026-07-22",
   "kommo_lead_status": "Awaiting Consultant Review",
   "custom_fields_update": {
-    "research_completed_date": "2026-07-22 11:18:40",
+    "research_completed_date": "2026-07-22 12:36:04",
     "top_property_match": "Lot 104 Willow Rise Estate",
     "top_property_price": 725000.0,
     "top_property_score": 94.0,
     "candidates_reviewed": 3
   },
-  "kommo_internal_note": "\ud83e\udd16 SPB AI Property Research Completed\nRecord ID: Sarah & Mark Johnson - QLD/Springfield - $780,000 - 2026-07-22\nClient: Sarah & Mark Johnson | Budget Ceiling: $780,000\n\nTop Shortlisted Properties:\n1. Lot 104 Willow Rise Estate, Coomera - $725,000 (Score: 94.0/100 - Recommend)\n2. Lot 42 Riverstone Estate, Springfield - $769,000 (Score: 79.8/100 - Recommend with Conditions)\n\nRejected Options: 1 candidate(s) filtered out.\nStatus: Awaiting Consultant Review",
+  "kommo_internal_note": "SPB Property Research Completed\nRecord ID: Sarah & Mark Johnson - QLD/Springfield - $780,000 - 2026-07-22\nClient: Sarah & Mark Johnson | Budget Ceiling: $780,000\n\nTop Shortlisted Properties:\n1. Lot 104 Willow Rise Estate, Coomera - $725,000 (Score: 94.0/100 - Recommend)\n2. Lot 42 Riverstone Estate, Springfield - $769,000 (Score: 79.8/100 - Recommend with Conditions)\n\nRejected Options: 1 candidate(s) filtered out.\nStatus: Awaiting Consultant Review",
   "consultant_review_task": {
     "task_type": "Consultant Review & Approval",
     "title": "Review Property Research for Sarah & Mark Johnson",

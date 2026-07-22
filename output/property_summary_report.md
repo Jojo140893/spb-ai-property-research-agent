@@ -35,7 +35,7 @@
 ---
 
 ### Executive Summary & Recommendation
-**AI Suitability Score:** `94.0 / 100`  
+**Benchmark Score:** `94.0 / 100`  
 **Recommendation:** **Recommend**  
 **Reasoning:** Strong match (94.0/100). Fully satisfies budget, location, and structural requirements.  
 
@@ -89,7 +89,7 @@
 ---
 
 ### Executive Summary & Recommendation
-**AI Suitability Score:** `79.8 / 100`  
+**Benchmark Score:** `79.8 / 100`  
 **Recommendation:** **Recommend with Conditions**  
 **Reasoning:** Satisfactory match (79.8/100). Requires consultant confirmation on turnkey allowances or risk mitigation.  
 
