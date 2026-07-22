@@ -3,23 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Smart Property Buying – AI Property Research Dashboard</title>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <title>Smart Property Buying – Property Research & Benchmarking System</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
         :root {
             --bg-page: #f8fafc;
             --surface-white: #ffffff;
-            --surface-card: #ffffff;
             --border-light: #e2e8f0;
-            --border-hover: #cbd5e1;
-            --blue-primary: #2563eb;
-            --blue-hover: #1d4ed8;
-            --indigo-accent: #4f46e5;
-            --emerald-green: #059669;
+            --border-strong: #cbd5e1;
+            --primary: #0f172a;
+            --accent-blue: #1e40af;
+            --blue-light: #eff6ff;
+            --emerald-green: #047857;
             --emerald-bg: #ecfdf5;
-            --amber-yellow: #d97706;
+            --amber-yellow: #b45309;
             --amber-bg: #fffbeb;
-            --rose-red: #dc2626;
+            --rose-red: #b91c1c;
             --rose-bg: #fef2f2;
             --text-heading: #0f172a;
             --text-body: #334155;
@@ -30,7 +29,7 @@
             box-sizing: border-box;
             margin: 0;
             padding: 0;
-            font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         }
 
         body {
@@ -38,12 +37,9 @@
             color: var(--text-body);
             min-height: 100vh;
             padding: 1.5rem 3rem;
-            background-image: 
-                radial-gradient(at 0% 0%, rgba(37, 99, 235, 0.03) 0px, transparent 50%),
-                radial-gradient(at 100% 0%, rgba(79, 70, 229, 0.03) 0px, transparent 50%);
         }
 
-        /* Top Navigation Header */
+        /* Corporate Header */
         header {
             display: flex;
             justify-content: space-between;
@@ -51,62 +47,44 @@
             padding: 1.25rem 2rem;
             background: var(--surface-white);
             border: 1px solid var(--border-light);
-            border-radius: 16px;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03);
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
             margin-bottom: 2rem;
         }
 
-        .brand-box {
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-        }
-
-        .brand-logo {
-            width: 46px;
-            height: 46px;
-            background: linear-gradient(135deg, var(--blue-primary), var(--indigo-accent));
-            border-radius: 12px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 1.5rem;
-            color: #ffffff;
-            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
-        }
-
         .brand-info h1 {
-            font-size: 1.4rem;
+            font-size: 1.35rem;
             font-weight: 800;
             color: var(--text-heading);
-            letter-spacing: -0.4px;
+            letter-spacing: -0.3px;
         }
 
         .brand-info p {
-            font-size: 0.84rem;
+            font-size: 0.82rem;
             color: var(--text-muted);
             font-weight: 500;
+            margin-top: 0.15rem;
         }
 
         .nav-tabs {
             display: flex;
-            gap: 0.4rem;
+            gap: 0.25rem;
             background: #f1f5f9;
-            padding: 0.35rem;
-            border-radius: 12px;
+            padding: 0.25rem;
+            border-radius: 8px;
             border: 1px solid var(--border-light);
         }
 
         .tab-btn {
-            padding: 0.55rem 1.25rem;
+            padding: 0.5rem 1.1rem;
             border: none;
             background: transparent;
             color: var(--text-muted);
             font-weight: 600;
-            font-size: 0.85rem;
-            border-radius: 9px;
+            font-size: 0.84rem;
+            border-radius: 6px;
             cursor: pointer;
-            transition: all 0.2s ease;
+            transition: all 0.15s ease;
         }
 
         .tab-btn:hover {
@@ -115,169 +93,133 @@
 
         .tab-btn.active {
             background: var(--surface-white);
-            color: var(--blue-primary);
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+            color: var(--accent-blue);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
         }
 
-        /* Layout Grid */
+        /* Grid Layout */
         .grid-layout {
             display: grid;
-            grid-template-columns: 430px 1fr;
+            grid-template-columns: 420px 1fr;
             gap: 2rem;
         }
 
         .panel-card {
             background: var(--surface-white);
             border: 1px solid var(--border-light);
-            border-radius: 18px;
-            padding: 1.75rem;
-            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.03);
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
         }
 
         .panel-header {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            font-size: 1.15rem;
+            font-size: 1.05rem;
             font-weight: 700;
             color: var(--text-heading);
-            margin-bottom: 1.5rem;
-            padding-bottom: 0.8rem;
+            margin-bottom: 1.25rem;
+            padding-bottom: 0.75rem;
             border-bottom: 1px solid var(--border-light);
         }
 
         .panel-header-tag {
-            font-size: 0.78rem;
-            font-weight: 600;
-            color: var(--blue-primary);
-            background: #eff6ff;
-            padding: 0.25rem 0.65rem;
-            border-radius: 6px;
-        }
-
-        /* Form Controls */
-        .form-section-title {
-            font-size: 0.76rem;
+            font-size: 0.75rem;
+            font-weight: 700;
+            color: var(--accent-blue);
+            background: var(--blue-light);
+            padding: 0.2rem 0.55rem;
+            border-radius: 4px;
             text-transform: uppercase;
-            letter-spacing: 0.8px;
-            font-weight: 800;
-            color: var(--text-muted);
-            margin-bottom: 0.7rem;
         }
 
+        /* Forms */
         .form-group {
-            margin-bottom: 0.9rem;
+            margin-bottom: 0.85rem;
         }
 
         label {
             display: block;
-            font-size: 0.82rem;
+            font-size: 0.8rem;
             font-weight: 600;
-            color: var(--text-body);
-            margin-bottom: 0.35rem;
+            color: var(--text-heading);
+            margin-bottom: 0.3rem;
         }
 
         input, select {
             width: 100%;
-            padding: 0.65rem 0.9rem;
+            padding: 0.6rem 0.85rem;
             background: #ffffff;
-            border: 1px solid var(--border-light);
-            border-radius: 10px;
+            border: 1px solid var(--border-strong);
+            border-radius: 6px;
             color: var(--text-heading);
             font-size: 0.88rem;
             outline: none;
-            transition: all 0.2s;
+            transition: border-color 0.15s ease;
         }
 
         input:focus, select:focus {
-            border-color: var(--blue-primary);
-            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+            border-color: var(--accent-blue);
+            box-shadow: 0 0 0 3px rgba(30, 64, 175, 0.1);
         }
 
         .form-row {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 0.8rem;
+            gap: 0.75rem;
         }
 
         .btn-submit {
             width: 100%;
-            padding: 0.9rem;
-            border: none;
-            border-radius: 12px;
-            background: linear-gradient(135deg, var(--blue-primary), var(--indigo-accent));
+            padding: 0.8rem;
+            border: 1px solid var(--accent-blue);
+            border-radius: 6px;
+            background: var(--accent-blue);
             color: #ffffff;
-            font-weight: 700;
-            font-size: 0.95rem;
+            font-weight: 600;
+            font-size: 0.9rem;
             cursor: pointer;
-            transition: all 0.2s ease;
-            box-shadow: 0 4px 14px rgba(37, 99, 235, 0.25);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 0.5rem;
-            margin-top: 1rem;
+            transition: background 0.15s ease;
+            margin-top: 0.75rem;
         }
 
         .btn-submit:hover {
-            background: linear-gradient(135deg, var(--blue-hover), var(--indigo-accent));
-            transform: translateY(-1px);
-            box-shadow: 0 6px 20px rgba(37, 99, 235, 0.35);
+            background: #1e3a8a;
         }
 
         /* Property Cards */
         .results-container {
             display: flex;
             flex-direction: column;
-            gap: 1.5rem;
+            gap: 1.25rem;
         }
 
         .prop-card {
             background: var(--surface-white);
             border: 1px solid var(--border-light);
-            border-radius: 16px;
-            padding: 1.6rem;
-            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.02);
-            transition: all 0.25s ease;
-            position: relative;
+            border-radius: 10px;
+            padding: 1.5rem;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
         }
-
-        .prop-card:hover {
-            border-color: var(--border-hover);
-            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.06);
-        }
-
-        .prop-card::before {
-            content: '';
-            position: absolute;
-            top: 0; left: 0; bottom: 0; width: 5px;
-            border-top-left-radius: 16px;
-            border-bottom-left-radius: 16px;
-            background: var(--blue-primary);
-        }
-
-        .prop-card.rank-1::before { background: var(--emerald-green); }
-        .prop-card.rejected::before { background: var(--rose-red); }
 
         .card-top-row {
             display: flex;
             justify-content: space-between;
             align-items: flex-start;
-            margin-bottom: 1.2rem;
+            margin-bottom: 1rem;
         }
 
         .prop-title-text {
-            font-size: 1.25rem;
-            font-weight: 800;
+            font-size: 1.15rem;
+            font-weight: 700;
             color: var(--text-heading);
-            letter-spacing: -0.3px;
         }
 
         .prop-subtitle-text {
-            font-size: 0.86rem;
+            font-size: 0.84rem;
             color: var(--text-muted);
             margin-top: 0.2rem;
-            font-weight: 500;
         }
 
         .score-badge {
@@ -285,7 +227,7 @@
         }
 
         .score-number {
-            font-size: 1.6rem;
+            font-size: 1.4rem;
             font-weight: 800;
             color: var(--emerald-green);
             font-family: 'JetBrains Mono', monospace;
@@ -293,26 +235,26 @@
 
         .pill {
             display: inline-block;
-            padding: 0.35rem 0.75rem;
-            border-radius: 20px;
-            font-size: 0.78rem;
+            padding: 0.25rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
             font-weight: 700;
             text-transform: uppercase;
         }
 
-        .pill-recommend { background: var(--emerald-bg); color: var(--emerald-green); border: 1px solid rgba(5, 150, 105, 0.25); }
-        .pill-conditions { background: var(--amber-bg); color: var(--amber-yellow); border: 1px solid rgba(217, 119, 6, 0.25); }
-        .pill-reject { background: var(--rose-bg); color: var(--rose-red); border: 1px solid rgba(220, 38, 38, 0.25); }
+        .pill-recommend { background: var(--emerald-bg); color: var(--emerald-green); border: 1px solid rgba(4, 120, 87, 0.2); }
+        .pill-conditions { background: var(--amber-bg); color: var(--amber-yellow); border: 1px solid rgba(180, 83, 9, 0.2); }
+        .pill-reject { background: var(--rose-bg); color: var(--rose-red); border: 1px solid rgba(185, 28, 28, 0.2); }
 
         .metrics-grid {
             display: grid;
             grid-template-columns: repeat(4, 1fr);
-            gap: 1rem;
+            gap: 0.75rem;
             background: #f8fafc;
             border: 1px solid var(--border-light);
-            padding: 1rem;
-            border-radius: 12px;
-            margin-bottom: 1.2rem;
+            padding: 0.85rem;
+            border-radius: 6px;
+            margin-bottom: 1rem;
         }
 
         .metric-item span {
@@ -321,60 +263,58 @@
             color: var(--text-muted);
             font-weight: 600;
             text-transform: uppercase;
-            margin-bottom: 0.2rem;
+            margin-bottom: 0.15rem;
         }
 
         .metric-item strong {
-            font-size: 0.95rem;
+            font-size: 0.9rem;
             color: var(--text-heading);
             font-weight: 700;
         }
 
-        /* SOP Step 11 Scoring Progress Bars */
         .score-section {
             background: #ffffff;
             border: 1px solid var(--border-light);
-            border-radius: 12px;
-            padding: 1rem 1.2rem;
-            margin-top: 1rem;
+            border-radius: 6px;
+            padding: 0.85rem 1rem;
+            margin-top: 0.85rem;
         }
 
         .bar-item {
-            margin-bottom: 0.6rem;
+            margin-bottom: 0.5rem;
         }
 
         .bar-info {
             display: flex;
             justify-content: space-between;
-            font-size: 0.78rem;
+            font-size: 0.76rem;
             color: var(--text-body);
             font-weight: 600;
-            margin-bottom: 0.25rem;
+            margin-bottom: 0.2rem;
         }
 
         .bar-bg {
-            height: 7px;
+            height: 6px;
             background: #e2e8f0;
-            border-radius: 4px;
+            border-radius: 3px;
             overflow: hidden;
         }
 
         .bar-fill {
             height: 100%;
-            background: linear-gradient(90deg, var(--blue-primary), var(--indigo-accent));
-            border-radius: 4px;
-            transition: width 0.6s ease;
+            background: var(--accent-blue);
+            border-radius: 3px;
         }
 
         /* Builder Table */
         .builder-table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 0.85rem;
+            font-size: 0.84rem;
         }
 
         .builder-table th, .builder-table td {
-            padding: 0.75rem 1rem;
+            padding: 0.7rem 0.9rem;
             text-align: left;
             border-bottom: 1px solid var(--border-light);
         }
@@ -387,11 +327,11 @@
 
         .json-code {
             font-family: 'JetBrains Mono', monospace;
-            font-size: 0.82rem;
-            color: var(--blue-primary);
+            font-size: 0.8rem;
+            color: var(--accent-blue);
             background: #f8fafc;
             padding: 1.25rem;
-            border-radius: 12px;
+            border-radius: 8px;
             max-height: 340px;
             overflow-y: auto;
             white-space: pre-wrap;
@@ -406,33 +346,29 @@
 <body>
 
 <header>
-    <div class="brand-box">
-        <div class="brand-logo">🏛️</div>
-        <div class="brand-info">
-            <h1>Smart Property Buying</h1>
-            <p>AI Property Research & Kommo CRM Benchmarking Platform v1.0</p>
-        </div>
+    <div class="brand-info">
+        <h1>Smart Property Buying</h1>
+        <p>Property Research & Benchmarking Management System</p>
     </div>
 
     <nav class="nav-tabs">
-        <button class="tab-btn active" onclick="showTab('researchTab', this)">🔬 Research Agent</button>
-        <button class="tab-btn" onclick="showTab('buildersTab', this)">🏗️ Builder Directory (124)</button>
-        <button class="tab-btn" onclick="showTab('kommoTab', this)">⚡ Kommo CRM Payload</button>
+        <button class="tab-btn active" onclick="showTab('researchTab', this)">Research & Scoring</button>
+        <button class="tab-btn" onclick="showTab('buildersTab', this)">Approved Builder Directory</button>
+        <button class="tab-btn" onclick="showTab('kommoTab', this)">CRM Integration Payload</button>
     </nav>
 </header>
 
-<!-- TAB 1: AI RESEARCH AGENT -->
+<!-- TAB 1: RESEARCH & SCORING -->
 <div id="researchTab" class="view-pane active">
     <div class="grid-layout">
         <!-- Form Panel -->
         <div class="panel-card">
             <div class="panel-header">
-                <span>📋 Client Requirements Brief</span>
-                <span class="panel-header-tag">SOP STEP 2</span>
+                <span>Client Requirements Brief</span>
+                <span class="panel-header-tag">SOP Step 2</span>
             </div>
 
             <form id="propertyForm">
-                <div class="form-section-title">Client Profile & Budget</div>
                 <div class="form-group">
                     <label>Client Name</label>
                     <input type="text" id="clientName" value="Sarah & Mark Johnson" required>
@@ -471,8 +407,7 @@
                     </div>
                 </div>
 
-                <div class="form-section-title" style="margin-top:1.2rem;">Property Specifications</div>
-                <div class="form-group">
+                <div class="form-group" style="margin-top: 0.5rem;">
                     <label>Target Suburbs (Comma separated)</label>
                     <input type="text" id="suburbs" value="Coomera, Springfield, Hope Island">
                 </div>
@@ -511,7 +446,7 @@
                 </div>
 
                 <button type="submit" class="btn-submit">
-                    <span>⚡ Execute AI Property Research Agent</span>
+                    Execute Property Research & Benchmarking
                 </button>
             </form>
         </div>
@@ -520,12 +455,12 @@
         <div class="results-container">
             <div class="panel-card">
                 <div class="panel-header">
-                    <span>🏆 Qualified Shortlist (100-Point SOP Scoring)</span>
+                    <span>Qualified Property Shortlist</span>
                     <span id="shortlistBadge" class="pill pill-recommend">0 Qualified</span>
                 </div>
 
                 <div id="resultsContent">
-                    <!-- Populated dynamically via Python REST API -->
+                    <!-- Populated dynamically -->
                 </div>
             </div>
         </div>
@@ -536,8 +471,8 @@
 <div id="buildersTab" class="view-pane">
     <div class="panel-card">
         <div class="panel-header">
-            <span>🏗️ SPB Builder Directory & Portal Registry</span>
-            <span style="font-size:0.85rem; color:var(--blue-primary); font-weight:700;" id="builderTotalCount">124 Builders Loaded</span>
+            <span>Approved Builder Directory & Portal Registry</span>
+            <span style="font-size:0.82rem; color:var(--text-muted); font-weight:600;" id="builderTotalCount">124 Builders Loaded</span>
         </div>
         <div style="overflow-x:auto;">
             <table class="builder-table">
@@ -548,8 +483,8 @@
                         <th>Contact Name</th>
                         <th>Phone</th>
                         <th>Email</th>
-                        <th>E-Agent Portal</th>
-                        <th>Web Portal / Notes</th>
+                        <th>E-Agent Status</th>
+                        <th>Web Portal Link / Notes</th>
                     </tr>
                 </thead>
                 <tbody id="builderTableBody">
@@ -564,11 +499,11 @@
 <div id="kommoTab" class="view-pane">
     <div class="panel-card">
         <div class="panel-header">
-            <span>⚡ Kommo CRM Lead Custom Field & Review Task Payload</span>
-            <button class="btn-submit" style="width:auto; padding:0.45rem 1rem; font-size:0.82rem; margin:0;" onclick="copyPayloadJSON()">📋 Copy JSON Payload</button>
+            <span>CRM Integration Payload Data</span>
+            <button class="btn-submit" style="width:auto; padding:0.4rem 0.9rem; font-size:0.8rem; margin:0;" onclick="copyPayloadJSON()">Copy JSON Payload</button>
         </div>
         <div class="json-code" id="jsonPayloadView">
-            Run research agent to generate JSON payload...
+            Execute search to generate CRM payload...
         </div>
     </div>
 </div>
@@ -590,7 +525,7 @@
             if (data.status === 'success') {
                 const tbody = document.getElementById('builderTableBody');
                 tbody.innerHTML = '';
-                document.getElementById('builderTotalCount').textContent = `${data.count} Builders Indexed from CSV`;
+                document.getElementById('builderTotalCount').textContent = `${data.count} Approved Builders Indexed`;
 
                 data.builders.forEach(b => {
                     const tr = document.createElement('tr');
@@ -601,7 +536,7 @@
                         <td>${b.contact_phone || '-'}</td>
                         <td>${b.contact_email || '-'}</td>
                         <td><span class="pill ${b.e_agent_available.toUpperCase().includes('YES') ? 'pill-recommend' : 'pill-conditions'}">${b.e_agent_available || 'No'}</span></td>
-                        <td>${b.portal_link ? `<a href="${b.portal_link}" target="_blank" style="color:var(--blue-primary); font-weight:600;">Open Portal</a>` : (b.portal_notes || '-')}</td>
+                        <td>${b.portal_link ? `<a href="${b.portal_link}" target="_blank" style="color:var(--accent-blue); font-weight:600;">Open Portal</a>` : (b.portal_notes || '-')}</td>
                     `;
                     tbody.appendChild(tr);
                 });
@@ -628,7 +563,7 @@
         };
 
         const resultsDiv = document.getElementById('resultsContent');
-        resultsDiv.innerHTML = '<div style="text-align:center; padding:3rem; color:var(--blue-primary); font-weight:600;">⚡ Running SOP 15-Step Property Evaluation & Benchmarking...</div>';
+        resultsDiv.innerHTML = '<div style="text-align:center; padding:3rem; color:var(--accent-blue); font-weight:600;">Processing Property Evaluation & Benchmarking...</div>';
 
         try {
             const res = await fetch('/api/research', {
@@ -664,17 +599,17 @@
                         <div class="metrics-grid">
                             <div class="metric-item"><span>Bed / Bath / Car</span><strong>${prop.bedrooms} Bed | ${prop.bathrooms} Bath | ${prop.car_spaces} Car</strong></div>
                             <div class="metric-item"><span>Land / House SQM</span><strong>${prop.land_size_sqm}m² / ${prop.house_size_sqm}m²</strong></div>
-                            <div class="metric-item"><span>Headline Price</span><strong>$${prop.advertised_package_price.toLocaleString()}</strong></div>
-                            <div class="metric-item"><span>Realistic Cost</span><strong style="color:var(--blue-primary);">$${prop.realistic_total_price.toLocaleString()}</strong></div>
+                            <div class="metric-item"><span>Advertised Price</span><strong>$${prop.advertised_package_price.toLocaleString()}</strong></div>
+                            <div class="metric-item"><span>Realistic Cost</span><strong style="color:var(--accent-blue);">$${prop.realistic_total_price.toLocaleString()}</strong></div>
                         </div>
 
                         <div style="font-size:0.86rem; margin-bottom:1rem;">
                             <strong>Turnkey Classification:</strong> ${prop.turnkey_status}
-                            ${prop.missing_inclusions.length > 0 ? `<span style="color:var(--amber-yellow); font-weight:600;">(Audit Allowance Added: +$${prop.estimated_additional_costs.toLocaleString()})</span>` : '<span style="color:var(--emerald-green); font-weight:600;">(100% Full Turnkey)</span>'}
+                            ${prop.missing_inclusions.length > 0 ? `<span style="color:var(--amber-yellow); font-weight:600;">(Allowance Added: +$${prop.estimated_additional_costs.toLocaleString()})</span>` : '<span style="color:var(--emerald-green); font-weight:600;">(Full Turnkey Verified)</span>'}
                         </div>
 
                         <div class="score-section">
-                            <div style="font-size:0.75rem; font-weight:800; color:var(--blue-primary); text-transform:uppercase; margin-bottom:0.6rem;">SOP STEP 11 SCORE BREAKDOWN</div>
+                            <div style="font-size:0.75rem; font-weight:700; color:var(--text-heading); text-transform:uppercase; margin-bottom:0.5rem;">SOP Step 11 Scoring Matrix Breakdown</div>
                             <div class="bar-item">
                                 <div class="bar-info"><span>Budget Fit (Max 20)</span><span>${prop.scoring_details.budget_fit} / 20</span></div>
                                 <div class="bar-bg"><div class="bar-fill" style="width:${(prop.scoring_details.budget_fit/20)*100}%"></div></div>
@@ -697,20 +632,21 @@
                     resultsDiv.appendChild(card);
                 });
 
-                // Rejected Section
+                // Filtered Rejection Log
                 if (data.rejected_log && data.rejected_log.length > 0) {
                     data.rejected_log.forEach(rej => {
                         const card = document.createElement('div');
                         card.className = 'prop-card rejected';
+                        card.style.borderLeft = '5px solid var(--rose-red)';
                         card.innerHTML = `
                             <div class="card-top-row">
                                 <div>
-                                    <div class="prop-title-text" style="color:var(--rose-red);">[REJECTED] ${rej.address}</div>
-                                    <div class="prop-subtitle-text">Filtered by SOP Mandatory Rejection Rules</div>
+                                    <div class="prop-title-text" style="color:var(--rose-red);">Rejected: ${rej.address}</div>
+                                    <div class="prop-subtitle-text">Filtered by Mandatory Rejection Criteria</div>
                                 </div>
                                 <span class="pill pill-reject">Hard Rejection</span>
                             </div>
-                            <div style="font-size:0.86rem; color:var(--rose-red); font-weight:600;">❌ Reason: ${rej.reason}</div>
+                            <div style="font-size:0.86rem; color:var(--rose-red); font-weight:600;">Reason: ${rej.reason}</div>
                         `;
                         resultsDiv.appendChild(card);
                     });
@@ -720,14 +656,14 @@
                 document.getElementById('jsonPayloadView').textContent = JSON.stringify(data.kommo_payload, null, 2);
             }
         } catch (e) {
-            resultsDiv.innerHTML = `<div style="color:var(--rose-red); padding:2rem;">Error executing agent: ${e.message}</div>`;
+            resultsDiv.innerHTML = `<div style="color:var(--rose-red); padding:2rem;">Error executing system: ${e.message}</div>`;
         }
     }
 
     function copyPayloadJSON() {
         if (!currentPayload) return;
         navigator.clipboard.writeText(JSON.stringify(currentPayload, null, 2));
-        alert("Kommo CRM JSON Payload copied to clipboard!");
+        alert("CRM Payload copied to clipboard.");
     }
 
     document.getElementById('propertyForm').addEventListener('submit', function(e) {
@@ -735,7 +671,6 @@
         runResearchAgent();
     });
 
-    // Auto-load on startup
     loadBuilderDirectory();
     runResearchAgent();
 </script>

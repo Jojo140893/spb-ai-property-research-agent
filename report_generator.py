@@ -53,7 +53,7 @@ class ReportGenerator:
 ---
 
 ### Executive Summary & Recommendation
-**AI Suitability Score:** `{sc.total_score if sc else 'N/A'} / 100`  
+**Benchmark Score:** `{sc.total_score if sc else 'N/A'} / 100`  
 **Recommendation:** **{prop.recommendation.value}**  
 **Reasoning:** {prop.recommendation_reason}  
 

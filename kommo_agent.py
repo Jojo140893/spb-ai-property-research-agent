@@ -153,7 +153,7 @@ class KommoPropertyResearchAgent:
         top_price = shortlist[0].price_breakdown.realistic_total_price if shortlist else 0
         top_score = shortlist[0].scoring.total_score if (shortlist and shortlist[0].scoring) else 0
 
-        note_text = f"🤖 SPB AI Property Research Completed\n" \
+        note_text = f"SPB Property Research Completed\n" \
                     f"Record ID: {record_id}\n" \
                     f"Client: {brief.client_name} | Budget Ceiling: ${brief.budget_max:,.0f}\n\n" \
                     f"Top Shortlisted Properties:\n" + ("\n".join(shortlist_summary) if shortlist_summary else "None") + "\n\n" \
