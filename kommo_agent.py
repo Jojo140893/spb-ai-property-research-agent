@@ -1,7 +1,7 @@
 """
-Kommo AI Property Research Agent Core Orchestrator.
-Implements the 15-step SOP workflow, connecting Client Briefs, Builder Registry,
-Turnkey Auditor, 100-Point Scoring Engine, Report Generator, and Kommo CRM payload formatter.
+Production 15-Step SOP Orchestrator Pipeline for SPB AI Property Research Agent.
+Integrates Database Audit, Hybrid Search Sources, Step 11 Scoring Engine,
+Step 6 Turnkey Auditor, Step 15 QA Checklist, and Kommo CRM v4 REST Integration.
 """
 
 import json
@@ -10,32 +10,53 @@ from typing import List, Dict, Any, Optional
 
 from schema import (
     ClientBrief, CandidateProperty, RecommendationStatus,
-    RiskItem, RiskRating, BuyerType
+    RiskItem, RiskRating, BuyerType, VerificationStatus
 )
 from brief_parser import ClientBriefParser
 from builder_registry import BuilderRegistry
 from turnkey_calculator import TurnkeyCalculator
-from scoring_engine import ScoringEngine
+from scoring_engine import ScoringEngine, BuilderConfidenceModel
 from report_generator import ReportGenerator
+from kommo_client import KommoClient
+from database import ResearchDatabase
+from qa_checker import Section9QAChecker
+from sources.e_agent import EAgentSource
+from sources.builder_portals import BuilderPortalSource
+from sources.drive_pdf import DrivePdfSource
+from sources.dedupe import DedupeEngine
+from sources.rea_domain_benchmark import ReaDomainBenchmarkSource
+import config
 
 
 class KommoPropertyResearchAgent:
-    def __init__(self, csv_filepath: str = "d:/kommo/Book1(Builders) List.csv"):
-        self.builder_registry = BuilderRegistry(csv_filepath)
+    def __init__(self, csv_filepath: Optional[str] = None):
+        self.builder_registry = BuilderRegistry(csv_filepath or str(config.BUILDER_CSV_PATH))
+        self.kommo_client = KommoClient()
+        self.db = ResearchDatabase()
+        
+        # Search Sources
+        self.eagent_source = EAgentSource()
+        self.portal_source = BuilderPortalSource()
+        self.drive_source = DrivePdfSource()
 
     def run_property_research(self, raw_brief_dict: Dict[str, Any], candidate_packages: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """
-        Executes the 15-step SOP property research workflow.
+        Executes the full 15-step SOP property research workflow.
         """
-        if not candidate_packages:
-            candidate_packages = self._get_default_candidate_packages()
-
-        # Step 1 & 2: Structure Client Brief
+        # Step 1 & 2: Structure Client Brief & Research Record
         brief: ClientBrief = ClientBriefParser.parse_dict(raw_brief_dict)
         suburb_name = brief.primary_suburbs[0] if brief.primary_suburbs else 'General'
         research_record_id = f"{brief.client_name} - {brief.state}/{suburb_name} - ${brief.budget_max:,.0f} - {datetime.now().strftime('%Y-%m-%d')}"
 
-        # Step 3 & 4: Filter Builders & Process Candidates
+        # Step 3 & 4: Hybrid Search & Capture across channels if candidate_packages is not manually provided
+        if not candidate_packages:
+            raw_captured = []
+            raw_captured.extend(self.eagent_source.search({'state': brief.state, 'budget_max': brief.budget_max, 'primary_suburbs': brief.primary_suburbs}))
+            raw_captured.extend(self.portal_source.search({'state': brief.state, 'budget_max': brief.budget_max, 'primary_suburbs': brief.primary_suburbs}))
+            raw_captured.extend(self.drive_source.search({'budget_max': brief.budget_max}))
+            candidate_packages = DedupeEngine.deduplicate(raw_captured)
+
+        # Step 5 to 11: Process Each Candidate Package
         processed_candidates: List[CandidateProperty] = []
         rejected_candidates: List[Dict[str, str]] = []
 
@@ -43,20 +64,26 @@ class KommoPropertyResearchAgent:
             builder_name = raw_pkg.get('builder_name', 'Unknown Builder')
             builder_info = self.builder_registry.search_builder_by_name(builder_name)
             
-            # Step 5: Verify Availability & Pricing
-            verified = raw_pkg.get('verified', True)
-            if not verified:
-                rejected_candidates.append({
-                    'property_id': f"PROP-{idx+1}",
-                    'address': raw_pkg.get('lot_address', f"Lot {idx+1}"),
-                    'reason': 'Package marked unverified or unavailable'
-                })
-                continue
+            # Step 8: Builder Quality & Confidence Model (Defect #1 Fix)
+            b_rating, b_score, b_reason = BuilderConfidenceModel.evaluate_builder(builder_name, builder_info)
+
+            # Step 5: Three-State Verification (Defect #5 Fix)
+            is_verified = raw_pkg.get('verified', True)
+            verif_status = VerificationStatus.VERIFIED if is_verified else VerificationStatus.PENDING
 
             # Step 6: Validate Package Price & Turnkey Inclusions
             price_breakdown = TurnkeyCalculator.calculate_price_breakdown(raw_pkg)
 
-            # Step 8, 9, 10: Risks & Quality Assessment
+            # Step 7: Step 7 Market Benchmarking
+            bm_res = ReaDomainBenchmarkSource.evaluate_value_classification(
+                price_breakdown.land_price,
+                raw_pkg.get('land_size_sqm', 400),
+                price_breakdown.realistic_total_price,
+                raw_pkg.get('suburb', suburb_name),
+                brief.state
+            )
+
+            # Step 10: Risks Assessment
             risks: List[RiskItem] = []
             for r in raw_pkg.get('risks', []):
                 risks.append(RiskItem(
@@ -86,14 +113,16 @@ class KommoPropertyResearchAgent:
                 estimated_rent_weekly_min=float(raw_pkg.get('estimated_rent_weekly_min', 550)),
                 estimated_rent_weekly_max=float(raw_pkg.get('estimated_rent_weekly_max', 600)),
                 amenities_summary=raw_pkg.get('amenities_summary', 'Close to schools, train station & town centre.'),
-                builder_confidence_rating=builder_info.get('contract_available', 'HIGH') if builder_info else 'MEDIUM',
+                builder_confidence_rating=b_rating,
                 source_channel=raw_pkg.get('source_channel', 'E-Agent / Builder Portal'),
                 source_url_or_ref=raw_pkg.get('source_url_or_ref', builder_info.get('portal_link', '') if builder_info else 'Internal Stock'),
                 date_checked=datetime.now().strftime("%d/%m/%Y"),
+                verification_status=verif_status,
+                consultant_approved=raw_pkg.get('consultant_approved', False),
                 risks=risks
             )
 
-            # Step 11: Score Property
+            # Step 11: Score Property Matrix
             cand.scoring = ScoringEngine.evaluate_property(brief, cand)
             status, reason = ScoringEngine.assign_recommendation(cand)
             cand.recommendation = status
@@ -114,6 +143,9 @@ class KommoPropertyResearchAgent:
         # Select Top 3-5 Shortlisted Properties
         shortlist = processed_candidates[:5]
 
+        # Step 15: Automated Section 9 QA Checklist Validation
+        qa_passed, qa_failures = Section9QAChecker.verify_pipeline_compliance(brief, len(candidate_packages), shortlist)
+
         # Step 12: Generate Reports
         reports = []
         for prop in shortlist:
@@ -127,8 +159,9 @@ class KommoPropertyResearchAgent:
                 'summary_markdown': summary_md
             })
 
-        # Step 14: Kommo CRM Update Payload Format
+        # Step 14: Kommo CRM Update Payload Format & Database Audit Trail
         kommo_update_payload = self._build_kommo_update_payload(brief, research_record_id, shortlist, rejected_candidates)
+        self.db.save_research_run(research_record_id, raw_brief_dict, shortlist, rejected_candidates)
 
         return {
             'research_record_id': research_record_id,
@@ -137,14 +170,13 @@ class KommoPropertyResearchAgent:
             'shortlist': shortlist,
             'rejected_count': len(rejected_candidates),
             'rejected_log': rejected_candidates,
+            'qa_passed': qa_passed,
+            'qa_failures': qa_failures,
             'reports': reports,
             'kommo_payload': kommo_update_payload
         }
 
     def _build_kommo_update_payload(self, brief: ClientBrief, record_id: str, shortlist: List[CandidateProperty], rejected: List[Dict[str, str]]) -> Dict[str, Any]:
-        """
-        Formats JSON object for updating Kommo lead, custom fields, internal note, and review task.
-        """
         shortlist_summary = []
         for idx, p in enumerate(shortlist, 1):
             shortlist_summary.append(f"{idx}. {p.lot_address}, {p.suburb} - ${p.price_breakdown.realistic_total_price:,.0f} (Score: {p.scoring.total_score}/100 - {p.recommendation.value})")
@@ -178,139 +210,3 @@ class KommoPropertyResearchAgent:
                 'status': 'Pending Review'
             }
         }
-
-    def _get_default_candidate_packages(self) -> List[Dict[str, Any]]:
-        return [
-            {
-                'lot_address': 'Lot 104 Willow Rise Estate',
-                'suburb': 'Coomera',
-                'state': 'QLD',
-                'builder_name': 'Avia Homes',
-                'house_design': 'Aura 185',
-                'bedrooms': 4,
-                'bathrooms': 2,
-                'car_spaces': 2,
-                'storeys': 1,
-                'land_size_sqm': 400,
-                'house_size_sqm': 185,
-                'land_price': 340000,
-                'build_price': 385000,
-                'advertised_package_price': 725000,
-                'inclusions': {
-                    'site_costs_fixed': True,
-                    'site_costs_val': 15000,
-                    'driveway_included': True,
-                    'fencing_included': True,
-                    'landscaping_included': True,
-                    'flooring_included': True,
-                    'blinds_included': True,
-                    'hvac_included': True
-                },
-                'title_status': 'Titled',
-                'expected_title_date': 'Ready Now',
-                'estimated_rent_weekly_min': 620,
-                'estimated_rent_weekly_max': 660,
-                'amenities_summary': 'Walk to Coomera Rivers State School, 3 mins to Coomera Train Station.',
-                'risks': []
-            },
-            {
-                'lot_address': 'Lot 42 Riverstone Estate',
-                'suburb': 'Springfield',
-                'state': 'QLD',
-                'builder_name': 'Silkwood Homes',
-                'house_design': 'Monaco 200',
-                'bedrooms': 4,
-                'bathrooms': 2,
-                'car_spaces': 2,
-                'storeys': 1,
-                'land_size_sqm': 450,
-                'house_size_sqm': 200,
-                'land_price': 370000,
-                'build_price': 380000,
-                'advertised_package_price': 750000,
-                'inclusions': {
-                    'site_costs_fixed': False,
-                    'driveway_included': True,
-                    'fencing_included': False,
-                    'landscaping_included': True,
-                    'flooring_included': True,
-                    'blinds_included': True,
-                    'hvac_included': True
-                },
-                'title_status': 'Expected Q4 2026',
-                'expected_title_date': 'November 2026',
-                'estimated_rent_weekly_min': 640,
-                'estimated_rent_weekly_max': 680,
-                'amenities_summary': 'Close to Springfield Central Shopping Centre and Orion Lagoon.',
-                'risks': [
-                    {
-                        'name': 'Title Registration Delay',
-                        'rating': 'Medium',
-                        'description': 'Developer target registration Q4 2026 could push back build start date',
-                        'mitigation': 'Ensure 12-month sunset clause is inserted into land contract'
-                    }
-                ]
-            },
-            {
-                'lot_address': 'Lot 88 Sanctuary Cove',
-                'suburb': 'Hope Island',
-                'state': 'QLD',
-                'builder_name': 'Creation Homes',
-                'house_design': 'Pacific 210',
-                'bedrooms': 4,
-                'bathrooms': 2.5,
-                'car_spaces': 2,
-                'storeys': 1,
-                'land_size_sqm': 420,
-                'house_size_sqm': 210,
-                'land_price': 360000,
-                'build_price': 390000,
-                'advertised_package_price': 750000,
-                'inclusions': {
-                    'site_costs_fixed': True,
-                    'driveway_included': True,
-                    'fencing_included': True,
-                    'landscaping_included': False,
-                    'flooring_included': True,
-                    'blinds_included': True,
-                    'hvac_included': True
-                },
-                'title_status': 'Titled',
-                'expected_title_date': 'Ready Now',
-                'estimated_rent_weekly_min': 650,
-                'estimated_rent_weekly_max': 700,
-                'amenities_summary': 'Direct access to marina precinct, golf course, and waterfront dining.',
-                'risks': []
-            },
-            {
-                'lot_address': 'Lot 18 Highgrove Heights',
-                'suburb': 'Logan Reserve',
-                'state': 'QLD',
-                'builder_name': 'Choice Homes',
-                'house_design': 'Haven 220',
-                'bedrooms': 5,
-                'bathrooms': 3,
-                'car_spaces': 2,
-                'storeys': 2,
-                'land_size_sqm': 500,
-                'house_size_sqm': 220,
-                'land_price': 390000,
-                'build_price': 430000,
-                'advertised_package_price': 820000,
-                'inclusions': {
-                    'site_costs_fixed': True,
-                    'driveway_included': True,
-                    'fencing_included': True,
-                    'landscaping_included': True,
-                    'flooring_included': True,
-                    'blinds_included': True,
-                    'hvac_included': True
-                },
-                'title_status': 'Titled',
-                'expected_title_date': 'Immediate',
-                'estimated_rent_weekly_min': 700,
-                'estimated_rent_weekly_max': 740,
-                'amenities_summary': 'Parkland views, close to Logan Hospital.',
-                'risks': []
-            }
-        ]

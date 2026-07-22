@@ -28,6 +28,12 @@ class TurnkeyStatus(Enum):
     UNCLEAR = "Unclear"
 
 
+class VerificationStatus(Enum):
+    VERIFIED = "Verified"
+    PENDING = "Pending Confirmation"
+    UNAVAILABLE = "Unavailable"
+
+
 class RiskRating(Enum):
     LOW = "Low"
     MEDIUM = "Medium"
@@ -131,10 +137,12 @@ class CandidateProperty:
     estimated_rent_weekly_min: float
     estimated_rent_weekly_max: float
     amenities_summary: str
-    builder_confidence_rating: str
+    builder_confidence_rating: str  # HIGH, MEDIUM, LOW
     source_channel: str
     source_url_or_ref: str
     date_checked: str
+    verification_status: VerificationStatus = VerificationStatus.PENDING  # Defect #5 Fix: Defaults to PENDING
+    consultant_approved: bool = False
     risks: List[RiskItem] = field(default_factory=list)
     scoring: Optional[ScoringBreakdown] = None
     recommendation: RecommendationStatus = RecommendationStatus.HOLD
