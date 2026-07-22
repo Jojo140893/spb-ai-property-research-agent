@@ -1,0 +1,537 @@
+
+SMART PROPERTY BUYING
+AI PROPERTY RESEARCH, CHECKING & BENCHMARKING SOP
+Detailed Operating Procedure for an AI Property Research Agent
+
+Document owner
+Smart Property Buying
+Applies to
+AI Property Research Agent, Property Research Coordinator, Sales Support
+Review cycle
+Quarterly, or when systems, grant rules or builder processes change
+Primary systems
+Kommo, Proxima, E-Agent, builder/developer portals, realestate.com.au, Domain
+Version
+1.0
+
+1. Purpose
+This SOP explains exactly how the AI Property Research Agent must collect client requirements, search the market, validate property information, benchmark each opportunity, identify risks, rank suitable properties, prepare a client-ready property summary and update Kommo. The procedure is written so a trained staff member can follow it manually and so the same logic can be configured into an AI workflow.
+2. Scope
+House and land packages
+Newly completed homes
+Turnkey packages
+First home buyer opportunities
+Owner-occupier properties
+Investment properties
+SMSF-suitable properties, subject to professional financial and legal advice
+3. Core Operating Rules
+Never recommend a property only because it is available. It must also fit the client, represent reasonable value and have its key risks disclosed.
+Never state that a package is fixed price or turnkey unless all required inclusions and exclusions have been checked.
+Never present an expired, unverified or unavailable package.
+Never exceed the client’s confirmed maximum budget without clearly labelling the shortfall and obtaining consultant approval.
+All government grants, finance outcomes, rental estimates and growth observations must be presented as subject to eligibility, professional advice and independent verification.
+Every factual item must record its source and date checked.
+4. Required Inputs
+Input
+Mandatory details
+Action if missing
+Client profile
+Name, budget, deposit, finance status, buyer type, timeline
+Create a missing-information task and do not finalise recommendations.
+Property brief
+State, areas, bedrooms, bathrooms, car spaces, storeys, land/house size
+Use only confirmed requirements and clearly mark preferences versus non-negotiables.
+Lifestyle/investment brief
+Schools, transport, employment, rental target, yield, growth, cash flow
+Ask the assigned consultant to confirm priorities.
+Approved sources
+Current builder list, portal access, internal stock list
+Escalate access issues immediately.
+Reporting template
+SPB property summary and brochure format
+Use the template in this SOP if no other approved template exists.
+
+Step 1: Open the Assignment and Create the Research Record
+Objective: Create a complete audit trail before any searching begins.
+Instructions
+Open the client’s Kommo record and the assigned task. Confirm the client name, assigned consultant, due date and priority.
+Create a new research entry using the naming format: Client Name – State/Area – Budget – Date.
+Record the date and time the research starts, the AI Agent name/version and the sources that will be searched.
+Check whether a previous search exists. Reuse relevant information only after rechecking availability and pricing.
+Mark the task as “Research in Progress”.
+Required output
+A dated research record linked to the correct client
+A clear task owner and deadline
+A list of required sources
+Quality check
+Correct client record opened
+No duplicate live task exists
+Step 2: Confirm and Structure the Client Brief
+Objective: Convert the client’s notes into clear mandatory requirements and flexible preferences.
+Instructions
+Extract the maximum purchase budget. Separate the approved borrowing limit from the client’s preferred spending limit.
+Record deposit amount, finance pre-approval status, expected finance date and any known lender restrictions.
+Classify the buyer as first home buyer, owner-occupier, investor or SMSF buyer.
+Record preferred state, suburbs and acceptable nearby alternatives. Add maximum commuting distance or travel time where relevant.
+Record required bedrooms, bathrooms, car spaces, storeys, minimum land size and minimum house size.
+Record title preference, build timeframe and required settlement or move-in date.
+Record lifestyle needs such as schools, public transport, shopping, employment access, medical services and community facilities.
+For investors, record target rent, target yield, cash-flow preference, vacancy tolerance and growth objectives.
+Classify every requirement as Mandatory, Preferred or Optional.
+If a mandatory field is missing, create a clarification task for the assigned consultant. Continue preliminary research only if the missing information will not materially change the search.
+Required output
+Completed client brief
+Mandatory/preferred/optional requirement list
+Search radius and budget limits
+Quality check
+Budget and buyer type confirmed
+No contradiction between CRM notes and finance information
+Escalate when
+Budget is unclear
+Client requirements conflict
+Finance status is older than 30 days or marked uncertain
+Step 3: Build the Search Strategy
+Objective: Decide where and how the AI will search before opening listings.
+Instructions
+Create search filters from the client brief: state, suburb, price ceiling, property type, bedrooms, land size and title status.
+List primary suburbs first, then nearby suburbs that meet the client’s travel and lifestyle needs.
+Set the source order: internal stock and approved builders, Proxima, E-Agent, developer portals, builder websites, realestate.com.au and Domain.
+Define a comparison radius. Use the same suburb first, then comparable nearby suburbs where stock is limited.
+Define the minimum number of properties to review. Review at least 10 to 20 options per client where market supply permits.
+Define rejection rules before searching, including price above budget, wrong property type, unacceptable title timeframe, missing mandatory rooms or unacceptable risk.
+Required output
+Search filters
+Source sequence
+Comparison area
+Predefined rejection rules
+Step 4: Search and Capture Candidate Properties
+Objective: Collect a broad but relevant pool of available properties.
+Instructions
+Search each approved source using the agreed filters.
+Open the full listing or package document, not only the search-result headline.
+Capture the property address or lot number, estate, suburb, state and postcode.
+Capture builder, developer, land size, house size, house design, bedrooms, bathrooms, car spaces and storey type.
+Capture land price, build price, package price, deposit requirements, promotions and expiry dates.
+Capture title status, expected title date, construction timeframe and estimated completion date.
+Capture all advertised inclusions and exclusions.
+Copy the source link or document name and record the date checked.
+Remove exact duplicates. Keep alternative designs on the same lot only when they offer a meaningful price or layout difference.
+Apply the initial rejection rules and record the reason for every rejected candidate.
+Required output
+Candidate property register
+Source and date for every candidate
+Rejection log
+Quality check
+At least 10 candidates reviewed where available
+No duplicate package counted as a separate market option
+Step 5: Verify Availability and Current Pricing
+Objective: Ensure the package still exists and the information is current.
+Instructions
+Check the builder or developer portal for live availability.
+Where live status is unclear, flag the package for human confirmation by email or phone before it is client-ready.
+Confirm land price, build price, total package price and any promotion expiry.
+Confirm the house design can be built on the nominated lot.
+Confirm title status and expected title date.
+Confirm deposit requirements and contract structure, including whether land and build contracts are separate.
+Record “Verified”, “Pending Confirmation” or “Unavailable”.
+Do not place a property in the final recommendation list while its status is Pending Confirmation unless the report clearly states this and a consultant approves.
+Required output
+Verification status
+Verification date
+Current confirmed price
+Quality check
+No unavailable property remains shortlisted
+Any pending verification is visibly labelled
+Escalate when
+Builder information conflicts with portal information
+Price has changed materially
+Title date is uncertain
+Step 6: Validate the Full Package Price and Turnkey Status
+Objective: Calculate the realistic total cost and identify missing inclusions.
+Instructions
+Break the advertised package price into land price, build price and stated allowances.
+Check whether site costs are fixed, allowed for, capped or subject to soil test and engineering.
+Check developer design requirements and mandatory facade, material or landscaping obligations.
+Check driveway, fencing, front and rear landscaping, flooring, blinds, heating, cooling, stone benchtops, appliances, lighting, clothesline, letterbox, NBN/communications and council requirements.
+Check whether demolition, retaining walls, rock removal, service connections, bushfire requirements or acoustic treatments may add cost.
+Create an “Estimated Additional Costs” line for every missing or uncertain item.
+Classify the package as Full Turnkey, Partial Turnkey, Base Package or Unclear.
+Use the realistic total cost, not only the headline price, when checking the client budget.
+Required output
+Price breakdown
+Turnkey classification
+List of exclusions and estimated additional costs
+Quality check
+No package described as turnkey without evidence
+Budget test uses realistic total cost
+Step 7: Benchmark Land and Package Pricing
+Objective: Determine whether the property is competitively priced.
+Instructions
+Search vacant land in the same suburb and estate on realestate.com.au, Domain and developer listings.
+Compare land size, price, title status, orientation, frontage, corner position and estate stage.
+Calculate approximate land price per square metre when useful. Treat this as a comparison indicator, not a valuation.
+Search comparable new house and land packages with similar bedrooms, house size, land size and turnkey inclusions.
+Compare the total realistic price, not just the advertised headline.
+Identify the three strongest comparable options where possible.
+Classify the candidate as Below Market, Competitive, Slightly Above Market or Poor Value and provide the reason.
+Where the candidate is more expensive, explain whether the difference is justified by larger land, larger house, better inclusions, title status or location.
+Required output
+Land comparison table
+Package comparison table
+Value classification with explanation
+Quality check
+At least three comparables where market supply permits
+Comparables are genuinely similar
+Step 8: Assess Builder and Product Quality
+Objective: Identify construction, reputation and delivery risks.
+Instructions
+Check the approved builder database for licence status, service areas, product range, warranty information and known issues.
+Review recent publicly available customer feedback and internal SPB experience. Do not rely on a single review.
+Check whether the builder regularly delivers the advertised product type and build area.
+Compare standard inclusions, site-cost policy, variation process, estimated build time and communication quality.
+Identify whether the builder has unresolved internal concerns or requires management approval.
+Rate Builder Confidence as High, Medium or Low and give the reason.
+Escalate legal, insolvency, licence or major defect concerns to management. The AI must not make unsupported allegations.
+Required output
+Builder assessment
+Builder confidence rating
+Known limitations or approval requirement
+Step 9: Assess Location, Demand and Amenity
+Objective: Explain whether the location supports the client’s lifestyle or investment goals.
+Instructions
+Confirm travel distance or time to the client’s nominated employment, family or preferred area.
+Identify nearby schools, shopping centres, public transport, hospitals, parks and major roads.
+For investors, review current rental listings for comparable properties and record an estimated rent range.
+Review vacancy, population, infrastructure and supply indicators from reliable sources where available.
+Identify planned infrastructure carefully and state whether it is proposed, funded, under construction or completed.
+Assess whether the estate and suburb are predominantly owner-occupier, investor-focused or mixed where evidence supports this.
+Summarise the location in plain English, including both strengths and limitations.
+Required output
+Amenity summary
+Estimated rent range
+Location strengths and limitations
+Quality check
+No unverified infrastructure claim stated as certain
+Rental estimate based on comparable current or recent listings
+Step 10: Complete Property Risk Checks
+Objective: Identify risks that could affect cost, financeability, liveability, rental demand or resale.
+Instructions
+Check flood mapping, bushfire-prone land, planning overlays and known environmental constraints using official or reliable sources.
+Check the lot plan and available documents for easements, unusual shape, narrow frontage, slope, retaining requirements and orientation.
+Check title timing, sunset dates or extended delays where relevant.
+Check body corporate or owners corporation fees for townhouses and units.
+Check proximity to major roads, rail, industrial land, powerlines or other possible amenity concerns.
+Check for oversupply risk, high investor concentration or weak rental evidence where data is available.
+Rate each identified risk as Low, Medium or High. Explain the basis and proposed mitigation.
+Escalate any High risk before recommending the property.
+Required output
+Risk register
+Overall risk rating
+Mitigation or further checks required
+Quality check
+Every property has a documented risk assessment
+High risks are escalated
+Step 11: Score and Rank the Properties
+Objective: Apply consistent rules to determine the strongest options.
+Instructions
+Score Budget Fit out of 20 based on the realistic total price and finance position.
+Score Client Requirement Match out of 20 based on mandatory and preferred features.
+Score Value and Competitiveness out of 15 using the benchmark results.
+Score Location and Amenity out of 15.
+Score Builder Confidence and Product Quality out of 10.
+Score Rental/Investment Suitability out of 10 for investors, or Lifestyle Suitability for owner-occupiers.
+Score Risk out of 10, with lower-risk properties receiving higher points.
+Calculate the total score out of 100 and add a written explanation.
+Rank candidates from highest to lowest. Do not allow the numerical score to override a failed mandatory requirement.
+Select three to five final options. If fewer than three qualify, state the market limitation and show the best realistic alternatives.
+Required output
+100-point score for each shortlisted property
+Ranked shortlist
+Reason for selection or rejection
+Quality check
+No failed mandatory requirement hidden by a high score
+Scores are supported by evidence
+Step 12: Prepare the Property Summary
+Objective: Create a clear one-page or concise client-ready summary for every recommended property.
+Instructions
+Use the Property Summary Template in Section 7 of this SOP.
+Write a two-to-four sentence executive summary explaining why the property suits the client.
+Present confirmed property facts in a simple table.
+Show the full price breakdown, inclusions, exclusions and possible additional costs.
+Include location highlights, rental estimate where relevant, value comparison and risk rating.
+Include the AI suitability score and recommendation: Recommend, Recommend with Conditions, Hold or Do Not Recommend.
+Use plain English. Avoid guarantees about growth, rent, finance approval, grants or completion timing.
+Add “Information checked on [date] and subject to availability and independent verification.”
+Required output
+Completed property summary for each recommended option
+Clear recommendation and conditions
+Client disclaimer
+Step 13: Prepare and Clean Supporting Brochures
+Objective: Provide accurate client-facing material without confidential supplier information.
+Instructions
+Create a working copy of the original brochure.
+Remove builder and supplier contact details only where SPB is authorised to do so and the material can legally be modified.
+Remove internal commissions, referral fees, wholesale pricing and confidential notes.
+Do not remove required legal disclaimers or change material property facts.
+Add approved SPB branding and contact details.
+Check the suburb, state, lot number, price, room count, land size and house size against the verified research record.
+Label artist impressions, indicative images and non-standard upgrades accurately.
+Save the file using: Suburb – Property Type – Price – Date – Client Copy.
+Required output
+Clean client brochure
+Consistent file name
+No confidential information
+Quality check
+Brochure facts match research record
+Required disclaimers remain visible
+Step 14: Update Kommo and Send for Consultant Review
+Objective: Create a complete record and obtain human approval before client presentation.
+Instructions
+Upload the research register, property summaries, comparison tables and cleaned brochures to the correct Kommo record.
+For every shortlisted property, record price, verification date, availability status, score, risks and recommendation.
+Record rejected properties and rejection reasons to avoid repeated work.
+Create a consultant review task with a due date and recommended next action.
+Send a concise internal note listing the best option, alternatives, compromises and any items awaiting confirmation.
+Change the task status to “Awaiting Consultant Review”.
+Do not send the package directly to the client unless the AI workflow has explicit approval and all required checks are complete.
+Required output
+Updated Kommo record
+Consultant review task
+Complete audit trail
+Quality check
+Correct client record and files
+All dates, statuses and risks recorded
+Step 15: Final Quality Assurance and Close the Task
+Objective: Ensure the output is accurate, complete and usable.
+Instructions
+Run the final checklist in Section 8.
+Confirm every shortlisted property meets all mandatory client requirements or clearly states the compromise.
+Confirm all prices, availability dates, title information and inclusions are sourced and current.
+Confirm all risks and uncertainties are visible in the summary.
+Check spelling, grammar, formatting and SPB branding.
+Confirm Kommo is updated and the consultant has received the review task.
+Close the research task only after the consultant accepts the report or requests no further changes.
+If a property becomes unavailable before presentation, reopen the research task and replace it.
+Required output
+QA-complete report
+Closed or returned task with reason
+Current shortlist
+
+7. Property Summary Template
+Use one template for each shortlisted property. Keep the first page client-friendly; place detailed evidence or comparables in an appendix if needed.
+SMART PROPERTY BUYING – PROPERTY SUMMARY
+Field
+Details
+Field
+Details
+Client
+[Client Name]
+Date checked
+[DD/MM/YYYY]
+Property
+[Lot/Address]
+Suburb/State
+[Suburb, State]
+Property type
+[House & land / Completed]
+Title status
+[Titled/Expected date]
+Bedrooms
+[ ]
+Bathrooms
+[ ]
+Car spaces
+[ ]
+Storeys
+[ ]
+Land size
+[ ] sqm
+House size
+[ ] sqm / squares
+Land price
+$[ ]
+Build price
+$[ ]
+Package price
+$[ ]
+Realistic total
+$[ ]
+Estimated rent
+$[ ]–$[ ] per week
+Estimated gross yield
+[ ]%
+AI suitability score
+[ ] / 100
+Overall risk
+Low / Medium / High
+Executive Summary
+[Write 2–4 sentences explaining why this property suits the client, the main value point and the most important limitation.]
+Price and Inclusions
+Item
+Included / Cost
+Notes
+Land
+[ ]
+[ ]
+House/build
+[ ]
+[ ]
+Site costs
+[ ]
+[ ]
+Driveway
+[ ]
+[ ]
+Fencing
+[ ]
+[ ]
+Landscaping
+[ ]
+[ ]
+Flooring
+[ ]
+[ ]
+Blinds
+[ ]
+[ ]
+Heating/cooling
+[ ]
+[ ]
+Developer requirements
+[ ]
+[ ]
+Other estimated costs
+[ ]
+[ ]
+Location and Investment Summary
+Key amenities: [schools, shops, transport, employment and services]
+Comparable packages: [brief price/value comparison]
+Rental evidence: [comparable listings and estimate]
+Growth/infrastructure: [verified observations only]
+Client fit: [mandatory and preferred requirements met]
+Risks and Conditions
+Risk / condition
+Rating
+Impact
+Required action
+[ ]
+[ ]
+[ ]
+[ ]
+[ ]
+[ ]
+[ ]
+[ ]
+[ ]
+[ ]
+[ ]
+[ ]
+[ ]
+[ ]
+[ ]
+[ ]
+Recommendation
+Recommendation: [Recommend / Recommend with Conditions / Hold / Do Not Recommend]
+Reason: [Clear explanation]
+Next action: [Confirm availability / finance review / client presentation / reserve lot / further due diligence]
+Disclaimer: Information is based on sources checked on [date], is subject to availability and change, and does not replace legal, financial, building, tax or valuation advice.
+
+8. AI Property Research Agent KPIs
+KPIs must measure both activity and quality. High volume without accuracy is merely industrial-scale confusion.
+KPI
+Target
+Measurement
+Failure / escalation trigger
+Assigned client searches completed
+100% by agreed due date
+Completed research tasks ÷ assigned tasks
+Any overdue high-priority client
+Candidate properties reviewed
+10–20 per client where available
+Unique relevant candidates logged
+Fewer than 10 without supply explanation
+Final options provided
+3–5 per client where available
+Qualified shortlisted properties
+Unsuitable options added only to reach quota
+Availability verification
+100% of final options
+Verified status and date present
+Any unavailable property presented
+Price accuracy
+≥99%
+Audit against source at time of report
+Any material price error
+Mandatory requirement match
+100% or compromise disclosed
+Checklist against client brief
+Undisclosed failed mandatory requirement
+Turnkey/inclusion check
+100%
+Completed inclusions table
+Package called turnkey without evidence
+Competitor benchmarking
+100% of final options
+Comparable table present
+No comparable evidence without explanation
+Risk assessment
+100%
+Risk register complete
+High risk not escalated
+Property summary completion
+100%
+Required fields completed
+Missing price, risk, recommendation or source date
+Kommo update completion
+100% same business day
+Research files and notes uploaded
+Missing audit trail
+Duplicate recommendation rate
+<5%
+Duplicate candidates ÷ reviewed candidates
+Repeated duplicates distort daily output
+Human correction rate
+<10% of reports after stabilisation
+Reports requiring material correction
+>10% over two consecutive weeks
+Unsupported claim rate
+0
+QA audit
+Any guaranteed growth, rent, grant or finance claim
+Research turnaround
+Standard: same business day; urgent: per assigned SLA
+Start-to-review-ready time
+SLA missed without escalation
+High-value opportunities identified
+At least 5 per day across active markets, where supply permits
+Properties rated Competitive/Below Market and suitable
+Target missed for 5 days without market explanation
+9. Final Quality Assurance Checklist
+☐ Client budget, finance status and buyer type are current.
+☐ All mandatory requirements are met or the compromise is clearly disclosed.
+☐ Property availability and price have a source and verification date.
+☐ Land, build and realistic total costs are separated.
+☐ Turnkey status is accurate and all known exclusions are listed.
+☐ At least three genuine comparables are included where available.
+☐ Builder assessment and confidence rating are complete.
+☐ Location, rental evidence and amenities are summarised.
+☐ Flood, bushfire, overlays, easements, title and other key risks are checked.
+☐ AI score and recommendation are supported by evidence.
+☐ Brochure information matches the research record.
+☐ Kommo is fully updated and the consultant review task is created.
+☐ No unsupported guarantee, confidential commission or supplier contact information is included.
+10. Exception Handling
+Situation
+Required response
+No suitable property within budget
+Search nearby suburbs, smaller land, smaller house, townhouses or later title dates. Record each compromise and ask the consultant whether finance capacity can be reassessed.
+Only one or two suitable options
+Provide the genuine options. Do not add weak properties to reach a numerical target. Explain the limited supply.
+Price or availability cannot be verified
+Mark Pending Confirmation and do not recommend as final until verified or consultant-approved.
+High-risk overlay or site issue
+Escalate for specialist or human review. Do not minimise the risk.
+Conflicting information between sources
+Use the builder/developer or contract information as primary where current, document the conflict and obtain confirmation.
+Grant, finance or SMSF question
+Refer to the finance, legal or tax professional. The AI may summarise general criteria but must not confirm eligibility or provide personal advice.

@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Property Buying – AI Property Research Agent Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-dark: #0a0f1d;
+            --surface: rgba(18, 26, 47, 0.75);
+            --surface-card: rgba(26, 38, 66, 0.65);
+            --border: rgba(255, 255, 255, 0.08);
+            --border-hover: rgba(56, 189, 248, 0.4);
+            --cyan: #38bdf8;
+            --indigo: #6366f1;
+            --violet: #8b5cf6;
+            --emerald: #10b981;
+            --amber: #f59e0b;
+            --rose: #f43f5e;
+            --text: #f8fafc;
+            --text-muted: #94a3b8;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text);
+            min-height: 100vh;
+            background-image: 
+                radial-gradient(at 10% 10%, rgba(99, 102, 241, 0.18) 0px, transparent 40%),
+                radial-gradient(at 90% 90%, rgba(56, 189, 248, 0.15) 0px, transparent 40%),
+                radial-gradient(at 50% 50%, rgba(139, 92, 246, 0.08) 0px, transparent 60%);
+            padding: 1.5rem 2.5rem;
+        }
+
+        /* Header Navigation */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding-bottom: 1.5rem;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 2rem;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .brand-icon {
+            width: 44px;
+            height: 44px;
+            background: linear-gradient(135deg, var(--cyan), var(--indigo));
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.4rem;
+            box-shadow: 0 0 20px rgba(56, 189, 248, 0.4);
+        }
+
+        .brand-text h1 {
+            font-size: 1.5rem;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            background: linear-gradient(135deg, #ffffff, var(--text-muted));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .brand-text p {
+            font-size: 0.82rem;
+            color: var(--text-muted);
+        }
+
+        .nav-tabs {
+            display: flex;
+            gap: 0.5rem;
+            background: rgba(15, 23, 42, 0.6);
+            padding: 0.3rem;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+        }
+
+        .nav-btn {
+            padding: 0.5rem 1.2rem;
+            border: none;
+            background: transparent;
+            color: var(--text-muted);
+            font-weight: 600;
+            font-size: 0.85rem;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .nav-btn.active {
+            background: linear-gradient(135deg, var(--cyan), var(--indigo));
+            color: #ffffff;
+            box-shadow: 0 4px 12px rgba(56, 189, 248, 0.3);
+        }
+
+        /* Layout Grid */
+        .grid-container {
+            display: grid;
+            grid-template-columns: 420px 1fr;
+            gap: 2rem;
+        }
+
+        .panel {
+            background: var(--surface);
+            backdrop-filter: blur(16px);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 1.75rem;
+            box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+        }
+
+        .panel-title {
+            font-size: 1.15rem;
+            font-weight: 700;
+            margin-bottom: 1.25rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            color: var(--cyan);
+        }
+
+        /* Form Controls */
+        .form-section {
+            margin-bottom: 1.25rem;
+        }
+
+        .form-section-title {
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            margin-bottom: 0.6rem;
+            font-weight: 700;
+        }
+
+        .form-group {
+            margin-bottom: 0.85rem;
+        }
+
+        label {
+            display: block;
+            font-size: 0.82rem;
+            color: var(--text-muted);
+            margin-bottom: 0.3rem;
+            font-weight: 500;
+        }
+
+        input, select, textarea {
+            width: 100%;
+            padding: 0.65rem 0.9rem;
+            background: rgba(10, 15, 29, 0.8);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            color: var(--text);
+            font-size: 0.88rem;
+            outline: none;
+            transition: all 0.2s;
+        }
+
+        input:focus, select:focus {
+            border-color: var(--cyan);
+            box-shadow: 0 0 12px rgba(56, 189, 248, 0.25);
+        }
+
+        .form-row-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.8rem;
+        }
+
+        .btn-primary {
+            width: 100%;
+            padding: 0.9rem;
+            border: none;
+            border-radius: 12px;
+            background: linear-gradient(135deg, var(--cyan), var(--indigo));
+            color: white;
+            font-weight: 700;
+            font-size: 0.95rem;
+            cursor: pointer;
+            transition: all 0.25s;
+            box-shadow: 0 4px 20px rgba(56, 189, 248, 0.35);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(56, 189, 248, 0.5);
+        }
+
+        /* Results Display */
+        .results-wrapper {
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+
+        .prop-card {
+            background: var(--surface-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            transition: all 0.25s;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .prop-card:hover {
+            border-color: var(--border-hover);
+            transform: translateY(-2px);
+        }
+
+        .prop-card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; width: 4px; height: 100%;
+            background: var(--cyan);
+        }
+
+        .prop-card.rank-1::before { background: var(--emerald); }
+        .prop-card.rank-2::before { background: var(--cyan); }
+        .prop-card.rejected::before { background: var(--rose); }
+
+        .card-header-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 1rem;
+        }
+
+        .prop-name {
+            font-size: 1.2rem;
+            font-weight: 700;
+            color: #ffffff;
+        }
+
+        .prop-subtext {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin-top: 0.2rem;
+        }
+
+        .score-box {
+            text-align: right;
+        }
+
+        .score-val {
+            font-size: 1.5rem;
+            font-weight: 800;
+            color: var(--emerald);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .score-lbl {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+        }
+
+        .pill {
+            display: inline-block;
+            padding: 0.3rem 0.7rem;
+            border-radius: 20px;
+            font-size: 0.78rem;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        .pill-recommend { background: rgba(16, 185, 129, 0.18); color: var(--emerald); border: 1px solid rgba(16, 185, 129, 0.4); }
+        .pill-conditions { background: rgba(245, 158, 11, 0.18); color: var(--amber); border: 1px solid rgba(245, 158, 11, 0.4); }
+        .pill-reject { background: rgba(244, 63, 94, 0.18); color: var(--rose); border: 1px solid rgba(244, 63, 94, 0.4); }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 0.8rem;
+            background: rgba(10, 15, 29, 0.5);
+            padding: 0.9rem;
+            border-radius: 12px;
+            margin: 1rem 0;
+        }
+
+        .metric-cell span {
+            display: block;
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            margin-bottom: 0.15rem;
+        }
+
+        .metric-cell strong {
+            font-size: 0.92rem;
+            color: #ffffff;
+        }
+
+        /* 100-Point Scoring Meter Bars */
+        .score-breakdown-box {
+            background: rgba(10, 15, 29, 0.4);
+            border-radius: 10px;
+            padding: 0.9rem;
+            margin-top: 1rem;
+        }
+
+        .bar-group {
+            margin-bottom: 0.5rem;
+        }
+
+        .bar-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-bottom: 0.2rem;
+        }
+
+        .bar-track {
+            height: 6px;
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--cyan), var(--indigo));
+            border-radius: 4px;
+            transition: width 0.6s ease;
+        }
+
+        /* Builder Directory Table */
+        .builder-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.82rem;
+        }
+
+        .builder-table th, .builder-table td {
+            padding: 0.7rem 0.9rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .builder-table th {
+            color: var(--text-muted);
+            font-weight: 600;
+            background: rgba(10, 15, 29, 0.4);
+        }
+
+        .json-code {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
+            color: var(--cyan);
+            background: #060913;
+            padding: 1.25rem;
+            border-radius: 12px;
+            max-height: 320px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            border: 1px solid var(--border);
+        }
+
+        /* Hidden Views */
+        .tab-view { display: none; }
+        .tab-view.active { display: block; }
+    </style>
+</head>
+<body>
+
+<header>
+    <div class="brand">
+        <div class="brand-icon">🏠</div>
+        <div class="brand-text">
+            <h1>Smart Property Buying</h1>
+            <p>AI Property Research & Kommo CRM Benchmarking Engine v1.0</p>
+        </div>
+    </div>
+
+    <nav class="nav-tabs">
+        <button class="nav-btn active" onclick="switchTab('researchTab', this)">🔬 Research Agent</button>
+        <button class="nav-btn" onclick="switchTab('buildersTab', this)">🏗️ Builder Directory (124)</button>
+        <button class="nav-btn" onclick="switchTab('kommoTab', this)">⚡ Kommo CRM Payload</button>
+    </nav>
+</header>
+
+<!-- TAB 1: AI RESEARCH AGENT -->
+<div id="researchTab" class="tab-view active">
+    <div class="grid-container">
+        <!-- Form Panel -->
+        <div class="panel">
+            <div class="panel-title">
+                <span>📋 Client Brief & Requirements</span>
+                <span style="font-size: 0.8rem; color: var(--text-muted);">SOP Step 2</span>
+            </div>
+
+            <form id="agentForm">
+                <div class="form-section">
+                    <div class="form-section-title">Client Profile & Budget</div>
+                    <div class="form-group">
+                        <label>Client Name</label>
+                        <input type="text" id="clientName" value="Sarah & Mark Johnson" required>
+                    </div>
+
+                    <div class="form-row-2">
+                        <div class="form-group">
+                            <label>Maximum Budget ($)</label>
+                            <input type="number" id="budgetMax" value="780000" step="10000">
+                        </div>
+                        <div class="form-group">
+                            <label>Preferred Cap ($)</label>
+                            <input type="number" id="budgetPref" value="740000" step="10000">
+                        </div>
+                    </div>
+
+                    <div class="form-row-2">
+                        <div class="form-group">
+                            <label>Buyer Type</label>
+                            <select id="buyerType">
+                                <option value="Owner Occupier" selected>Owner Occupier</option>
+                                <option value="First Home Buyer">First Home Buyer</option>
+                                <option value="Investor">Investor</option>
+                                <option value="SMSF Buyer">SMSF Buyer</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>State</label>
+                            <select id="stateSelect">
+                                <option value="QLD" selected>QLD (Queensland)</option>
+                                <option value="NSW">NSW (New South Wales)</option>
+                                <option value="VIC">VIC (Victoria)</option>
+                                <option value="SA">SA (South Australia)</option>
+                                <option value="WA">WA (Western Australia)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-section">
+                    <div class="form-section-title">Property Specifications</div>
+                    <div class="form-group">
+                        <label>Target Suburbs (Comma separated)</label>
+                        <input type="text" id="suburbs" value="Coomera, Springfield, Hope Island">
+                    </div>
+
+                    <div class="form-row-2">
+                        <div class="form-group">
+                            <label>Bedrooms (Min)</label>
+                            <input type="number" id="bedrooms" value="4">
+                        </div>
+                        <div class="form-group">
+                            <label>Bathrooms (Min)</label>
+                            <input type="number" id="bathrooms" value="2">
+                        </div>
+                    </div>
+
+                    <div class="form-row-2">
+                        <div class="form-group">
+                            <label>Car Spaces (Min)</label>
+                            <input type="number" id="carSpaces" value="2">
+                        </div>
+                        <div class="form-group">
+                            <label>Storeys (Max)</label>
+                            <input type="number" id="storeys" value="1">
+                        </div>
+                    </div>
+
+                    <div class="form-row-2">
+                        <div class="form-group">
+                            <label>Land Size Min (m²)</label>
+                            <input type="number" id="landSize" value="350">
+                        </div>
+                        <div class="form-group">
+                            <label>House Size Min (m²)</label>
+                            <input type="number" id="houseSize" value="175">
+                        </div>
+                    </div>
+                </div>
+
+                <button type="submit" class="btn-primary">
+                    <span>🤖 Execute Python AI Property Research Agent</span>
+                </button>
+            </form>
+        </div>
+
+        <!-- Output Panel -->
+        <div class="results-wrapper">
+            <div class="panel">
+                <div class="panel-title">
+                    <span>🏆 Ranked Shortlist (100-Point Scoring System)</span>
+                    <span id="shortlistBadge" class="pill pill-recommend">0 Shortlisted</span>
+                </div>
+
+                <div id="resultsContainer">
+                    <!-- Populated dynamically via Python API -->
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- TAB 2: BUILDER DIRECTORY -->
+<div id="buildersTab" class="tab-view">
+    <div class="panel">
+        <div class="panel-title">
+            <span>🏗️ SPB Approved Builder Directory & Portal Registry</span>
+            <span style="font-size:0.85rem; color:var(--cyan);" id="builderCountText">124 Builders Loaded</span>
+        </div>
+        <div style="overflow-x:auto;">
+            <table class="builder-table">
+                <thead>
+                    <tr>
+                        <th>Builder Name</th>
+                        <th>State(s)</th>
+                        <th>Contact Name</th>
+                        <th>Phone</th>
+                        <th>Email</th>
+                        <th>E-Agent Portal</th>
+                        <th>Custom Web Portal / Notes</th>
+                    </tr>
+                </thead>
+                <tbody id="builderTableBody">
+                    <!-- Loaded dynamically from Python API -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- TAB 3: KOMMO CRM PAYLOAD -->
+<div id="kommoTab" class="tab-view">
+    <div class="panel">
+        <div class="panel-title">
+            <span>⚡ Kommo CRM Lead Custom Field & Review Task Payload</span>
+            <button class="btn-primary" style="width:auto; padding:0.4rem 1rem; font-size:0.8rem;" onclick="copyPayload()">📋 Copy JSON Payload</button>
+        </div>
+        <div class="json-code" id="kommoJsonView">
+            Run research agent to generate JSON payload...
+        </div>
+    </div>
+</div>
+
+<script>
+    let globalKommoPayload = null;
+
+    function switchTab(tabId, btn) {
+        document.querySelectorAll('.tab-view').forEach(el => el.classList.remove('active'));
+        document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
+        document.getElementById(tabId).classList.add('active');
+        btn.classList.add('active');
+    }
+
+    async function loadBuilders() {
+        try {
+            const res = await fetch('/api/builders');
+            const data = await res.json();
+            if (data.status === 'success') {
+                const tbody = document.getElementById('builderTableBody');
+                tbody.innerHTML = '';
+                document.getElementById('builderCountText').textContent = `${data.count} Builders Indexed from CSV`;
+                
+                data.builders.forEach(b => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td><strong>${b.builder_name}</strong></td>
+                        <td>${b.states.join(', ') || 'NATIONAL'}</td>
+                        <td>${b.contact_name || '-'}</td>
+                        <td>${b.contact_phone || '-'}</td>
+                        <td>${b.contact_email || '-'}</td>
+                        <td><span class="pill ${b.e_agent_available.toUpperCase().includes('YES') ? 'pill-recommend' : 'pill-conditions'}">${b.e_agent_available || 'No'}</span></td>
+                        <td>${b.portal_link ? `<a href="${b.portal_link}" target="_blank" style="color:var(--cyan)">Portal Link</a>` : (b.portal_notes || '-')}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            }
+        } catch (e) {
+            console.error("Failed to load builders:", e);
+        }
+    }
+
+    async function executeResearchAgent() {
+        const brief = {
+            client_name: document.getElementById('clientName').value,
+            budget_max: parseFloat(document.getElementById('budgetMax').value),
+            preferred_spending_cap: parseFloat(document.getElementById('budgetPref').value),
+            buyer_type: document.getElementById('buyerType').value,
+            state: document.getElementById('stateSelect').value,
+            primary_suburbs: document.getElementById('suburbs').value.split(',').map(s => s.trim()),
+            bedrooms_min: parseInt(document.getElementById('bedrooms').value),
+            bathrooms_min: parseInt(document.getElementById('bathrooms').value),
+            car_spaces_min: parseInt(document.getElementById('carSpaces').value),
+            storeys_max: parseInt(document.getElementById('storeys').value),
+            land_size_min_sqm: parseFloat(document.getElementById('landSize').value),
+            house_size_min_sqm: parseFloat(document.getElementById('houseSize').value)
+        };
+
+        const container = document.getElementById('resultsContainer');
+        container.innerHTML = '<div style="text-align:center; padding:3rem; color:var(--cyan);">🤖 Executing Python Agent 100-Point Scoring Workflow...</div>';
+
+        try {
+            const res = await fetch('/api/research', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ client_brief: brief })
+            });
+
+            const data = await res.json();
+            if (data.status === 'success') {
+                container.innerHTML = '';
+                document.getElementById('shortlistBadge').textContent = `${data.shortlist_count} Shortlisted (${data.rejected_count} Filtered)`;
+
+                data.shortlist.forEach((prop, idx) => {
+                    const isRank1 = idx === 0;
+                    const pillClass = prop.recommendation.includes('Conditions') ? 'pill-conditions' : 'pill-recommend';
+                    
+                    const card = document.createElement('div');
+                    card.className = `prop-card ${isRank1 ? 'rank-1' : 'rank-2'}`;
+                    
+                    card.innerHTML = `
+                        <div class="card-header-row">
+                            <div>
+                                <div class="prop-name">Rank #${idx+1}: ${prop.lot_address}</div>
+                                <div class="prop-subtext">${prop.suburb}, ${prop.state} | Builder: <strong>${prop.builder_name}</strong> (${prop.house_design})</div>
+                            </div>
+                            <div class="score-box">
+                                <div class="score-val">${prop.score} <span style="font-size:0.9rem; color:var(--text-muted)">/ 100</span></div>
+                                <span class="pill ${pillClass}">${prop.recommendation}</span>
+                            </div>
+                        </div>
+
+                        <div class="metrics-grid">
+                            <div class="metric-cell"><span>Bed / Bath / Car</span><strong>${prop.bedrooms} Bed | ${prop.bathrooms} Bath | ${prop.car_spaces} Car</strong></div>
+                            <div class="metric-cell"><span>Land / House Size</span><strong>${prop.land_size_sqm}m² / ${prop.house_size_sqm}m²</strong></div>
+                            <div class="metric-cell"><span>Headline Price</span><strong>$${prop.advertised_package_price.toLocaleString()}</strong></div>
+                            <div class="metric-cell"><span>Realistic Cost</span><strong style="color:var(--cyan)">$${prop.realistic_total_price.toLocaleString()}</strong></div>
+                        </div>
+
+                        <div style="font-size:0.85rem; margin-bottom:0.8rem;">
+                            <strong>Turnkey Classification:</strong> ${prop.turnkey_status} 
+                            ${prop.missing_inclusions.length > 0 ? `<span style="color:var(--amber)">(Inclusions Audit Allowance: +$${prop.estimated_additional_costs.toLocaleString()})</span>` : '<span style="color:var(--emerald)">(100% Turnkey Verified)</span>'}
+                        </div>
+
+                        <div class="score-breakdown-box">
+                            <div style="font-size:0.78rem; font-weight:700; color:var(--cyan); margin-bottom:0.5rem;">SOP STEP 11 SCORE BREAKDOWN</div>
+                            <div class="bar-group">
+                                <div class="bar-label"><span>Budget Fit (Max 20)</span><span>${prop.scoring_details.budget_fit} / 20</span></div>
+                                <div class="bar-track"><div class="bar-fill" style="width:${(prop.scoring_details.budget_fit/20)*100}%"></div></div>
+                            </div>
+                            <div class="bar-group">
+                                <div class="bar-label"><span>Requirement Match (Max 20)</span><span>${prop.scoring_details.requirement_match} / 20</span></div>
+                                <div class="bar-track"><div class="bar-fill" style="width:${(prop.scoring_details.requirement_match/20)*100}%"></div></div>
+                            </div>
+                            <div class="bar-group">
+                                <div class="bar-label"><span>Location & Amenities (Max 15)</span><span>${prop.scoring_details.location_amenity} / 15</span></div>
+                                <div class="bar-track"><div class="bar-fill" style="width:${(prop.scoring_details.location_amenity/15)*100}%"></div></div>
+                            </div>
+                        </div>
+
+                        <div style="font-size:0.83rem; margin-top:1rem; color:var(--text-muted);">
+                            <strong>Executive Reasoning:</strong> ${prop.recommendation_reason}
+                        </div>
+                    `;
+
+                    container.appendChild(card);
+                });
+
+                // Display Rejected log if any
+                if (data.rejected_log && data.rejected_log.length > 0) {
+                    data.rejected_log.forEach(rej => {
+                        const card = document.createElement('div');
+                        card.className = 'prop-card rejected';
+                        card.innerHTML = `
+                            <div class="card-header-row">
+                                <div>
+                                    <div class="prop-name" style="color:var(--rose)">[REJECTED] ${rej.address}</div>
+                                    <div class="prop-subtext">Filtered by Rejection Rules</div>
+                                </div>
+                                <span class="pill pill-reject">Hard Rejection</span>
+                            </div>
+                            <div style="font-size:0.85rem; color:var(--rose);">❌ Reason: ${rej.reason}</div>
+                        `;
+                        container.appendChild(card);
+                    });
+                }
+
+                // Save Kommo Payload
+                globalKommoPayload = data.kommo_payload;
+                document.getElementById('kommoJsonView').textContent = JSON.stringify(data.kommo_payload, null, 2);
+            }
+        } catch (e) {
+            container.innerHTML = `<div style="color:var(--rose); padding:2rem;">Error executing agent: ${e.message}</div>`;
+        }
+    }
+
+    function copyPayload() {
+        if (!globalKommoPayload) return;
+        navigator.clipboard.writeText(JSON.stringify(globalKommoPayload, null, 2));
+        alert("Kommo CRM JSON Payload copied to clipboard!");
+    }
+
+    document.getElementById('agentForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        executeResearchAgent();
+    });
+
+    // On Load
+    loadBuilders();
+    executeResearchAgent();
+</script>
+
+</body>
+</html>
