@@ -1,10 +1,45 @@
 """
-100-Point Scoring Engine & Risk Evaluator for SPB AI Property Research Agent.
-Implements SOP Step 11 (100-Point Scoring Matrix) & Step 10 (Risk Checks).
+100-Point Scoring Engine, Builder Confidence Model, & Risk Evaluator.
+Implements SOP Step 11 (100-Point Scoring Matrix), Step 8 (Builder Quality), & Step 10 (Risk Checks).
+Fixes Defect #1 (Builder Confidence Rating Model) & Defect #4 (House Size Minimum Check).
 """
 
-from typing import Tuple, List
-from schema import ClientBrief, CandidateProperty, ScoringBreakdown, RecommendationStatus, BuyerType, RiskRating
+from typing import Tuple, List, Dict, Any
+from schema import (
+    ClientBrief, CandidateProperty, ScoringBreakdown,
+    RecommendationStatus, BuyerType, RiskRating, VerificationStatus
+)
+
+
+class BuilderConfidenceModel:
+    """
+    Defect #1 Fix: Evaluates builder confidence rating (HIGH, MEDIUM, LOW)
+    based on portal verification, contract availability, E-Agent status, and delivery history.
+    """
+    @classmethod
+    def evaluate_builder(cls, builder_name: str, registry_info: Dict[str, Any]) -> Tuple[str, float, str]:
+        if not registry_info:
+            # Unknown builder default: Medium confidence with verification note
+            return "MEDIUM", 7.0, f"Builder '{builder_name}' not listed in primary SPB registry; verification required."
+
+        is_eagent = registry_info.get('is_on_e_agent', False)
+        contract_avail = 'YES' in str(registry_info.get('contract_available', '')).upper()
+        has_portal = bool(registry_info.get('portal_url'))
+
+        if is_eagent or (contract_avail and has_portal):
+            rating = "HIGH"
+            score = 10.0
+            reason = f"Approved builder '{builder_name}' with verified portal access & contract availability."
+        elif contract_avail or has_portal or registry_info.get('stock_channel') == 'email_pdf':
+            rating = "MEDIUM"
+            score = 7.0
+            reason = f"Approved builder '{builder_name}' with direct email/stocklist workflow."
+        else:
+            rating = "LOW"
+            score = 4.0
+            reason = f"Builder '{builder_name}' requires manual license & contract review."
+
+        return rating, score, reason
 
 
 class ScoringEngine:
@@ -23,7 +58,6 @@ class ScoringEngine:
         elif realistic_price <= brief.preferred_spending_cap:
             budget_pts = 20.0
         else:
-            # Between preferred cap and max budget
             ratio = (brief.budget_max - realistic_price) / (brief.budget_max - brief.preferred_spending_cap)
             budget_pts = 10.0 + (10.0 * max(0.0, min(1.0, ratio)))
 
@@ -48,6 +82,12 @@ class ScoringEngine:
             hard_rejection = True
             rejection_reasons.append(f"Storeys ({prop.storeys}) exceeds maximum allowed ({brief.storeys_max})")
 
+        # Defect #4 Fix: Mandatory House Size Minimum Check
+        if prop.house_size_sqm < brief.house_size_min_sqm:
+            hard_rejection = True
+            rejection_reasons.append(f"House size ({prop.house_size_sqm:,.0f} m²) below minimum mandatory requirement ({brief.house_size_min_sqm:,.0f} m²)")
+            req_pts -= 5.0
+
         if prop.land_size_sqm < brief.land_size_min_sqm:
             deficit = brief.land_size_min_sqm - prop.land_size_sqm
             req_pts -= min(5.0, (deficit / brief.land_size_min_sqm) * 10.0)
@@ -55,7 +95,6 @@ class ScoringEngine:
         req_pts = max(0.0, req_pts)
 
         # --- 3. Value & Competitiveness (Max 15 pts) ---
-        # Based on turnkey inclusions and land sq/m benchmark
         value_pts = 15.0
         if prop.price_breakdown.estimated_additional_costs > 15000:
             value_pts -= 5.0
@@ -66,10 +105,10 @@ class ScoringEngine:
         # --- 4. Location & Amenity (Max 15 pts) ---
         location_pts = 15.0
         if brief.primary_suburbs and prop.suburb.lower() not in [s.lower() for s in brief.primary_suburbs]:
-            location_pts -= 4.0  # Alternative nearby suburb
+            location_pts -= 4.0
         location_pts = max(0.0, location_pts)
 
-        # --- 5. Builder Confidence & Quality (Max 10 pts) ---
+        # --- 5. Builder Confidence & Quality (Max 10 pts) --- Defect #1 Fix Applied
         builder_rating = prop.builder_confidence_rating.upper()
         if 'HIGH' in builder_rating:
             builder_pts = 10.0
@@ -115,6 +154,13 @@ class ScoringEngine:
 
     @classmethod
     def assign_recommendation(cls, prop: CandidateProperty) -> Tuple[RecommendationStatus, str]:
+        # Defect #5 Fix: Items with VerificationStatus.PENDING are flagged as HOLD unless consultant-approved
+        if prop.verification_status == VerificationStatus.PENDING and not prop.consultant_approved:
+            return RecommendationStatus.HOLD, "Verification Status: Pending Confirmation. Requires consultant approval before client presentation."
+
+        if prop.verification_status == VerificationStatus.UNAVAILABLE:
+            return RecommendationStatus.DO_NOT_RECOMMEND, "REJECTED: Property is unavailable or sold."
+
         if not prop.scoring:
             return RecommendationStatus.HOLD, "Awaiting scoring evaluation."
 
