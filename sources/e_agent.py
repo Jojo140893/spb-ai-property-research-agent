@@ -10,9 +10,13 @@ import config
 
 
 class EAgentSource(PropertySource):
+    # NOTE: This source returns SIMULATED sample inventory until the real
+    # Playwright login/scrape of e-agent.com.au is implemented. The channel
+    # name and source refs are labelled so simulated data can never be
+    # mistaken for live portal results in reports or the dashboard.
     @property
     def channel_name(self) -> str:
-        return "E-Agent Portal"
+        return "E-Agent Portal (SIMULATED)"
 
     def search(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
         state = filters.get('state', 'QLD').upper()
@@ -43,7 +47,7 @@ class EAgentSource(PropertySource):
                 'estimated_rent_weekly_max': 660,
                 'amenities_summary': 'Walk to state primary school and train station.',
                 'source_channel': self.channel_name,
-                'source_url_or_ref': 'https://e-agent.com.au/packages/104-willow-rise',
+                'source_url_or_ref': 'SIMULATED SAMPLE - not a live e-agent listing',
                 'date_checked': datetime.now().strftime("%d/%m/%Y"),
                 'verified': True
             },
@@ -69,7 +73,7 @@ class EAgentSource(PropertySource):
                 'estimated_rent_weekly_max': 700,
                 'amenities_summary': 'Direct access to marina precinct and golf course.',
                 'source_channel': self.channel_name,
-                'source_url_or_ref': 'https://e-agent.com.au/packages/88-sanctuary-cove',
+                'source_url_or_ref': 'SIMULATED SAMPLE - not a live e-agent listing',
                 'date_checked': datetime.now().strftime("%d/%m/%Y"),
                 'verified': True
             }

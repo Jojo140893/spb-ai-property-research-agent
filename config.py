@@ -30,9 +30,10 @@ KOMMO_DRY_RUN = os.getenv("KOMMO_DRY_RUN", "True").lower() == "true"
 GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")
 GOOGLE_CREDENTIALS_PATH = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", str(PROJECT_ROOT / "credentials.json"))
 
-# E-Agent Default Login Credentials
-E_AGENT_USERNAME = os.getenv("E_AGENT_USERNAME", "sales@e-agent.com.au")
-E_AGENT_PASSWORD = os.getenv("E_AGENT_PASSWORD", "Ep123456")
+# E-Agent Login Credentials — supplied via environment / .env only.
+# Never hardcode real credentials in this file (public repository).
+E_AGENT_USERNAME = os.getenv("E_AGENT_USERNAME", "")
+E_AGENT_PASSWORD = os.getenv("E_AGENT_PASSWORD", "")
 
 # Server Configuration
 SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")

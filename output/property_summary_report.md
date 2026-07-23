@@ -1,7 +1,7 @@
 # SMART PROPERTY BUYING – PROPERTY SUMMARY
 
 **Client Name:** Sarah & Mark Johnson  
-**Date Checked:** 22/07/2026  
+**Date Checked:** 23/07/2026  
 **Property Lot/Address:** Lot 104 Willow Rise Estate  
 **Suburb/State:** Coomera, QLD  
 **Property Type:** House & Land Package  
@@ -17,7 +17,7 @@
 | **Land Size** | 400 m² |
 | **House Size** | 185 m² |
 | **Builder / Design** | Avia Homes (Aura 185) |
-| **Builder Confidence** | Yes |
+| **Builder Confidence** | HIGH |
 
 ---
 
@@ -35,9 +35,9 @@
 ---
 
 ### Executive Summary & Recommendation
-**Benchmark Score:** `94.0 / 100`  
+**Benchmark Score:** `100.0 / 100`  
 **Recommendation:** **Recommend**  
-**Reasoning:** Strong match (94.0/100). Fully satisfies budget, location, and structural requirements.  
+**Reasoning:** Strong match (100.0/100). Fully satisfies budget, location, and structural requirements.  
 
 **Location & Amenities:** Walk to Coomera Rivers State School, 3 mins to Coomera Train Station.  
 
@@ -47,7 +47,7 @@
 *No high or medium risks identified for this property.*
 
 ---
-*Disclaimer: Information checked on 22/07/2026 and subject to availability and independent verification. This summary does not constitute legal, financial, building, tax or valuation advice.*
+*Disclaimer: Information checked on 23/07/2026 and subject to availability and independent verification. This summary does not constitute legal, financial, building, tax or valuation advice.*
 
 
 ================================================================================
@@ -55,7 +55,7 @@
 # SMART PROPERTY BUYING – PROPERTY SUMMARY
 
 **Client Name:** Sarah & Mark Johnson  
-**Date Checked:** 22/07/2026  
+**Date Checked:** 23/07/2026  
 **Property Lot/Address:** Lot 42 Riverstone Estate  
 **Suburb/State:** Springfield, QLD  
 **Property Type:** House & Land Package  
@@ -71,7 +71,7 @@
 | **Land Size** | 450 m² |
 | **House Size** | 200 m² |
 | **Builder / Design** | Silkwood Homes (Monaco 200) |
-| **Builder Confidence** | Yes |
+| **Builder Confidence** | HIGH |
 
 ---
 
@@ -89,9 +89,9 @@
 ---
 
 ### Executive Summary & Recommendation
-**Benchmark Score:** `79.8 / 100`  
-**Recommendation:** **Recommend with Conditions**  
-**Reasoning:** Satisfactory match (79.8/100). Requires consultant confirmation on turnkey allowances or risk mitigation.  
+**Benchmark Score:** `85.8 / 100`  
+**Recommendation:** **Recommend**  
+**Reasoning:** Strong match (85.8/100). Note: Partial Turnkey - allow $19,000 in additional costs; 1 open risk item(s) - see risk register.  
 
 **Location & Amenities:** Close to Springfield Central Shopping Centre and Orion Lagoon.  
 
@@ -103,7 +103,7 @@
 | Title Delay | **Medium** | Developer target registration Q4 2026 could push back build start. *Mitigation:* Ensure 12-month sunset clause in land contract |
 
 ---
-*Disclaimer: Information checked on 22/07/2026 and subject to availability and independent verification. This summary does not constitute legal, financial, building, tax or valuation advice.*
+*Disclaimer: Information checked on 23/07/2026 and subject to availability and independent verification. This summary does not constitute legal, financial, building, tax or valuation advice.*
 
 
 ================================================================================
