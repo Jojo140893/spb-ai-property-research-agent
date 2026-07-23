@@ -4,15 +4,14 @@ Market Benchmarking Engine (SOP Step 7 + 2026-07-22 client requirement).
 can find within the market" — every recommended package is compared against
 market comparables before it can reach a client.
 
-Comparables are ingested from CSV files the client drops into drive_input/
-(CoreLogic / realestate.com.au exports — Coleen supplies the sources).
+Comparables are ingested ONLY from real CSV files the client drops into
+drive_input/ (CoreLogic / realestate.com.au exports — Coleen supplies the
+sources). File name pattern: comparables*.csv
 Expected columns: suburb, state, bedrooms, price, rent_weekly, land_sqm, source, date_checked
-A labelled SAMPLE dataset (data/comparables_sample.csv) is used only when no
-real comparables exist, and everything it produces is marked as sample data.
 
 No comparables at all -> the package is classified "Unbenchmarked - Pending
 Market Data" and flagged for manual benchmarking. The engine never invents
-market prices.
+market prices and ships with no sample/placeholder market data.
 """
 
 import csv
@@ -20,25 +19,19 @@ from pathlib import Path
 from statistics import mean
 from typing import Dict, List, Optional, Any
 
-from config import PROJECT_ROOT, DRIVE_INPUT_DIR
+from config import DRIVE_INPUT_DIR
 from geo import SuburbGeoIndex
-
-SAMPLE_COMPARABLES = PROJECT_ROOT / "data" / "comparables_sample.csv"
 
 
 class BenchmarkEngine:
     def __init__(self, geo_index: Optional[SuburbGeoIndex] = None):
         self.geo = geo_index or SuburbGeoIndex()
         self.comparables: List[Dict[str, Any]] = []
-        self.using_sample_data = False
+        self.using_sample_data = False  # no sample data ships with the app
         self._load_comparables()
 
     def _load_comparables(self):
-        real_files = sorted(DRIVE_INPUT_DIR.glob("comparables*.csv")) if DRIVE_INPUT_DIR.exists() else []
-        files = real_files
-        if not files and SAMPLE_COMPARABLES.exists():
-            files = [SAMPLE_COMPARABLES]
-            self.using_sample_data = True
+        files = sorted(DRIVE_INPUT_DIR.glob("comparables*.csv")) if DRIVE_INPUT_DIR.exists() else []
         for path in files:
             with open(path, encoding='utf-8', errors='ignore') as f:
                 for row in csv.DictReader(f):
@@ -103,9 +96,8 @@ class BenchmarkEngine:
         else:
             classification, score = 'Poor Value', 5.0
 
-        note = f"Benchmarked against {len(comps)} comparable(s)."
-        if self.using_sample_data:
-            note += " WARNING: SAMPLE comparables data - replace with CoreLogic/REA exports in drive_input/ before client use."
+        sources = sorted({c['source'] for c in comps if c.get('source')})
+        note = f"Benchmarked against {len(comps)} comparable(s)" + (f" from {', '.join(sources)}." if sources else ".")
 
         return {
             'benchmarked': True,
@@ -114,6 +106,6 @@ class BenchmarkEngine:
             'comparables': comps[:3],
             'avg_market_price': round(avg_price, 0),
             'variance_pct': round(variance_pct, 1),
-            'needs_manual_benchmark': self.using_sample_data,
+            'needs_manual_benchmark': False,
             'data_note': note,
         }

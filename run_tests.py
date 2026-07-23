@@ -15,8 +15,10 @@ from tests.test_intended_features import (
     test_distance_search_expands_suburbs,
     test_brief_parser_reads_radius,
     test_benchmark_classifies_against_comparables,
+    test_no_sample_data_ships,
     test_benchmark_never_invents_data,
-    test_pipeline_end_to_end_with_radius_and_report
+    test_pipeline_end_to_end_with_radius_and_report,
+    test_live_sources_return_nothing_without_credentials
 )
 
 
@@ -35,8 +37,10 @@ def run_all_tests():
         ("Feature: Distance search expands suburbs", test_distance_search_expands_suburbs),
         ("Feature: Brief parser reads radius", test_brief_parser_reads_radius),
         ("Feature: Benchmark classifies vs comparables", test_benchmark_classifies_against_comparables),
+        ("Feature: No sample market data ships", test_no_sample_data_ships),
         ("Feature: Benchmark never invents data", test_benchmark_never_invents_data),
         ("Feature: Pipeline E2E radius + report + coverage", test_pipeline_end_to_end_with_radius_and_report),
+        ("Feature: Live sources return [] without creds", test_live_sources_return_nothing_without_credentials),
     ]
 
     passed = 0

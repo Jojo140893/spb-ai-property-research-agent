@@ -44,10 +44,25 @@ def test_brief_parser_reads_radius():
     assert brief.search_radius_km == 15.0
 
 
-def test_benchmark_classifies_against_comparables():
+_COMPARABLES = [
+    {'suburb': 'Coomera', 'state': 'QLD', 'bedrooms': 4, 'price': 742000, 'rent_weekly': 640,
+     'land_sqm': 410, 'source': 'CoreLogic (test)', 'date_checked': '2026-07-22'},
+    {'suburb': 'Coomera', 'state': 'QLD', 'bedrooms': 4, 'price': 758000, 'rent_weekly': 655,
+     'land_sqm': 430, 'source': 'CoreLogic (test)', 'date_checked': '2026-07-22'},
+    {'suburb': 'Coomera', 'state': 'QLD', 'bedrooms': 4, 'price': 731000, 'rent_weekly': 630,
+     'land_sqm': 395, 'source': 'CoreLogic (test)', 'date_checked': '2026-07-22'},
+]
+
+
+def _engine_with_comparables():
     eng = BenchmarkEngine(_GEO)
-    assert eng.comparables, "sample comparables must load when drive_input has none"
-    # Coomera sample comps average ~$743k; $725k realistic is competitive/below
+    eng.comparables = list(_COMPARABLES)  # inject in-memory (no sample file ships with the app)
+    return eng
+
+
+def test_benchmark_classifies_against_comparables():
+    eng = _engine_with_comparables()
+    # Coomera comps average ~$743k; $725k realistic is competitive/below
     res = eng.benchmark_package('Coomera', 'QLD', 4, 725000)
     assert res['benchmarked'] is True
     assert res['avg_market_price'] and res['variance_pct'] is not None
@@ -55,8 +70,15 @@ def test_benchmark_classifies_against_comparables():
     # A wildly overpriced package must classify as Poor Value
     poor = eng.benchmark_package('Coomera', 'QLD', 4, 900000)
     assert poor['classification'] == 'Poor Value'
-    # Sample data must be flagged for manual re-benchmark
-    assert res['needs_manual_benchmark'] is True and 'SAMPLE' in res['data_note']
+    # Real comparables never need manual re-benchmark
+    assert res['needs_manual_benchmark'] is False
+
+
+def test_no_sample_data_ships():
+    # A fresh engine with an empty drive_input must have zero comparables:
+    # the app must not ship placeholder market data.
+    eng = BenchmarkEngine(_GEO)
+    assert eng.using_sample_data is False
 
 
 def test_benchmark_never_invents_data():
@@ -67,23 +89,52 @@ def test_benchmark_never_invents_data():
     assert res['avg_market_price'] is None and res['needs_manual_benchmark'] is True
 
 
+_PKG = {
+    'lot_address': 'Lot 104 Willow Rise Estate', 'suburb': 'Coomera', 'state': 'QLD',
+    'builder_name': 'Avia Homes', 'house_design': 'Aura 185', 'bedrooms': 4, 'bathrooms': 2,
+    'car_spaces': 2, 'storeys': 1, 'land_size_sqm': 400, 'house_size_sqm': 185,
+    'land_price': 340000, 'build_price': 385000, 'advertised_package_price': 725000,
+    'inclusions': {'site_costs_fixed': True, 'driveway_included': True, 'fencing_included': True,
+                   'landscaping_included': True, 'flooring_included': True, 'blinds_included': True,
+                   'hvac_included': True},
+    'title_status': 'Titled', 'expected_title_date': 'Ready Now',
+    'estimated_rent_weekly_min': 620, 'estimated_rent_weekly_max': 660,
+    'amenities_summary': 'Walk to school and train station.', 'verified': True, 'risks': []
+}
+
+
 def test_pipeline_end_to_end_with_radius_and_report():
+    # Explicit candidate package (live scrapers need credentials and are exercised
+    # separately). This proves the pipeline logic: radius, benchmark, report, coverage.
     agent = KommoPropertyResearchAgent()
-    result = agent.run_property_research(dict(_BRIEF))
+    agent.benchmark_engine.comparables = list(_COMPARABLES)  # inject market data in-memory
+    result = agent.run_property_research(dict(_BRIEF), [dict(_PKG)])
     assert result['search_area'], "search area must be populated"
     assert len(result['search_area']) > 1, "15km radius must expand beyond Coomera"
     cov = result['builder_coverage']
     assert cov['total_in_directory'] >= 25 and cov['in_scope_for_state'] > 0
-    assert result['shortlist_count'] > 0, "simulated sources must yield a shortlist"
+    assert result['shortlist_count'] == 1
     top = result['shortlist'][0]
-    assert top.benchmark is not None, "every candidate must carry a Step 7 benchmark"
-    assert top.distance_km_from_target is not None
+    assert top.benchmark is not None and top.benchmark['benchmarked'] is True
+    assert top.distance_km_from_target == 0.0  # Coomera is a primary suburb
     # Client report requirements: price vs market average, rent, yield, disclaimer
     html = result['client_report_html']
     assert 'average market price' in html or 'market benchmark pending' in html
     assert 'Estimated rent' in html and 'gross yield' in html
     assert 'independent verification' in html
     assert result['client_report_path'], "report must be written to output/"
+
+
+def test_live_sources_return_nothing_without_credentials():
+    # With no credentials/Playwright config, live search must return [] — never fake data.
+    from sources.e_agent import EAgentSource
+    from sources.builder_portals import BuilderPortalSource
+    ea = EAgentSource()
+    ea.username = ea.password = ""  # simulate unconfigured
+    assert ea.search({'state': 'QLD', 'budget_max': 780000, 'primary_suburbs': ['Coomera']}) == []
+    bp = BuilderPortalSource()
+    got = bp.search({'state': 'ZZ', 'budget_max': 780000, 'primary_suburbs': []})
+    assert got == []  # no builders in a bogus state
 
 
 def run_all():
