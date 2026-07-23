@@ -40,6 +40,13 @@ SCRAPER_HEADLESS = os.getenv("SCRAPER_HEADLESS", "True").lower() == "true"
 SCRAPER_RATE_LIMIT_S = float(os.getenv("SCRAPER_RATE_LIMIT_S", "1.5"))  # polite delay between actions
 SCRAPER_NAV_TIMEOUT_MS = int(os.getenv("SCRAPER_NAV_TIMEOUT_MS", "30000"))
 
+# Website asset harvesting (brochures / fliers / booklets)
+ASSETS_DIR = PROJECT_ROOT / "assets"
+SCRAPER_MAX_PAGES = int(os.getenv("SCRAPER_MAX_PAGES", "12"))          # pages crawled per builder site
+SCRAPER_MAX_ASSETS = int(os.getenv("SCRAPER_MAX_ASSETS", "40"))         # files downloaded per builder site
+SCRAPER_MAX_FILE_MB = float(os.getenv("SCRAPER_MAX_FILE_MB", "50"))     # skip files larger than this
+ASSETS_DIR.mkdir(exist_ok=True)
+
 # Server Configuration
 SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
 SERVER_PORT = int(os.getenv("SERVER_PORT", "8000"))

@@ -20,6 +20,10 @@ from tests.test_intended_features import (
     test_pipeline_end_to_end_with_radius_and_report,
     test_live_sources_return_nothing_without_credentials
 )
+from tests.test_vendor_pipeline import (
+    test_importer_parses_messy_multisection_csv,
+    test_website_scraper_downloads_and_dedupes
+)
 
 
 def run_all_tests():
@@ -41,6 +45,8 @@ def run_all_tests():
         ("Feature: Benchmark never invents data", test_benchmark_never_invents_data),
         ("Feature: Pipeline E2E radius + report + coverage", test_pipeline_end_to_end_with_radius_and_report),
         ("Feature: Live sources return [] without creds", test_live_sources_return_nothing_without_credentials),
+        ("Vendor: importer parses messy multi-section CSV", test_importer_parses_messy_multisection_csv),
+        ("Vendor: website scraper downloads + dedupes", test_website_scraper_downloads_and_dedupes),
     ]
 
     passed = 0
