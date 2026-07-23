@@ -341,6 +341,52 @@
         /* Views */
         .view-pane { display: none; }
         .view-pane.active { display: block; }
+
+        /* Prevent any wide child (tables, JSON, score bars) from forcing
+           horizontal page scroll on small screens. */
+        img, table, pre { max-width: 100%; }
+
+        /* ---- Responsive breakpoints ---- */
+
+        /* Tablet / small laptop: stack the two-column layout, tighten padding */
+        @media (max-width: 1024px) {
+            body { padding: 1.25rem 1.5rem; }
+            .grid-layout { grid-template-columns: 1fr; gap: 1.5rem; }
+        }
+
+        /* Landscape phone / small tablet */
+        @media (max-width: 768px) {
+            body { padding: 1rem; }
+            header {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 1rem;
+                padding: 1rem 1.25rem;
+            }
+            .nav-tabs { flex-wrap: wrap; justify-content: center; }
+            .nav-tab-label-full { display: none; }
+            .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+            .card-top-row { flex-direction: column; gap: 0.75rem; }
+            .score-badge { text-align: left; }
+            /* the client-report / coverage bar is inline-styled as flex row: allow wrap */
+            #resultsContent > div[style*="justify-content:space-between"] {
+                flex-direction: column;
+                align-items: stretch !important;
+                gap: 0.75rem !important;
+            }
+        }
+
+        /* Portrait phone */
+        @media (max-width: 480px) {
+            body { padding: 0.75rem; }
+            .brand-info h1 { font-size: 1.1rem; }
+            .panel-card { padding: 1rem; border-radius: 10px; }
+            .form-row { grid-template-columns: 1fr; }
+            .metrics-grid { grid-template-columns: 1fr; }
+            .tab-btn { padding: 0.5rem 0.75rem; font-size: 0.78rem; }
+            .json-code { font-size: 0.72rem; padding: 0.85rem; }
+            h1 { word-break: break-word; }
+        }
     </style>
 </head>
 <body>

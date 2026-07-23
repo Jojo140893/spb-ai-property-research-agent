@@ -11,3 +11,5 @@ spb_research_audit.db
 *.db
 .env
 drive_input/
+.sessions/
+output/client_report_*.html
