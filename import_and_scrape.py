@@ -34,6 +34,8 @@ def main():
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--import-only", action="store_true")
     ap.add_argument("--builder", default="")
+    ap.add_argument("--retry-empty", action="store_true",
+                    help="crawl only website builders that currently have zero assets in the DB")
     args = ap.parse_args()
 
     csv_path = Path(args.csv)
@@ -57,6 +59,10 @@ def main():
         return
 
     targets = db.get_builders(only_with_website=True)
+    if args.retry_empty:
+        have_assets = {row["builder_name"] for row in db.asset_counts_by_builder()}
+        targets = [b for b in targets if b["builder_name"] not in have_assets]
+        print(f"[i] --retry-empty: {len(targets)} website builder(s) still have no assets")
     if args.builder:
         targets = [b for b in targets if args.builder.lower() in b["builder_name"].lower()]
     if args.limit:
