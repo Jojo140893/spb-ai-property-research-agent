@@ -56,6 +56,12 @@ class PropertyAgentRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             counts = agent.db.asset_counts_by_builder()
             assets = agent.db.get_assets()
+            # add a browser-servable web path (relative to PROJECT_ROOT, forward slashes)
+            root = str(PROJECT_ROOT)
+            for a in assets:
+                lp = a.get('local_path', '') or ''
+                rel = lp.replace(root, '').replace('\\', '/').lstrip('/')
+                a['web_path'] = '/' + rel if rel else ''
             self.wfile.write(json.dumps({
                 'status': 'success',
                 'total_assets': len(assets),
