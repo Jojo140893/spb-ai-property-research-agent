@@ -24,7 +24,9 @@ from sources.e_agent import EAgentSource
 from sources.builder_portals import BuilderPortalSource
 from sources.drive_pdf import DrivePdfSource
 from sources.dedupe import DedupeEngine
-from sources.rea_domain_benchmark import ReaDomainBenchmarkSource
+from geo import SuburbGeoIndex
+from benchmark import BenchmarkEngine
+from client_report import ClientReportGenerator
 import config
 
 
@@ -33,7 +35,9 @@ class KommoPropertyResearchAgent:
         self.builder_registry = BuilderRegistry(csv_filepath or str(config.BUILDER_CSV_PATH))
         self.kommo_client = KommoClient()
         self.db = ResearchDatabase()
-        
+        self.geo = SuburbGeoIndex()
+        self.benchmark_engine = BenchmarkEngine(self.geo)
+
         # Search Sources
         self.eagent_source = EAgentSource()
         self.portal_source = BuilderPortalSource()
@@ -48,11 +52,29 @@ class KommoPropertyResearchAgent:
         suburb_name = brief.primary_suburbs[0] if brief.primary_suburbs else 'General'
         research_record_id = f"{brief.client_name} - {brief.state}/{suburb_name} - ${brief.budget_max:,.0f} - {datetime.now().strftime('%Y-%m-%d')}"
 
-        # Step 3 & 4: Hybrid Search & Capture across channels if candidate_packages is not manually provided
+        # Step 3: Distance search — expand the primary suburbs into a full search
+        # area ("within N km of Springfield") when a radius is supplied.
+        search_area = self.geo.expand_search_suburbs(brief.primary_suburbs, brief.state, brief.search_radius_km)
+        search_suburbs = [s['suburb'] for s in search_area] or brief.primary_suburbs
+        distance_lookup = {s['suburb'].lower(): s['distance_km'] for s in search_area}
+
+        # Full builder coverage: every builder in the approved directory for this
+        # state is in scope, split by channel, and reported back for audit.
+        state_builders = self.builder_registry.get_builders_by_state(brief.state)
+        builder_coverage = {
+            'total_in_directory': len(self.builder_registry.get_all_builders()),
+            'in_scope_for_state': len(state_builders),
+            'e_agent_channel': [b['builder_name'] for b in state_builders if 'YES' in (b.get('e_agent_available') or '').upper()],
+            'direct_portal_channel': [b['builder_name'] for b in state_builders if b.get('portal_url') and 'YES' not in (b.get('e_agent_available') or '').upper()],
+            'email_or_drive_channel': [b['builder_name'] for b in state_builders if not b.get('portal_url') and 'YES' not in (b.get('e_agent_available') or '').upper()],
+        }
+
+        # Step 4: Hybrid Search & Capture across channels if candidate_packages is not manually provided
         if not candidate_packages:
+            search_filters = {'state': brief.state, 'budget_max': brief.budget_max, 'primary_suburbs': search_suburbs}
             raw_captured = []
-            raw_captured.extend(self.eagent_source.search({'state': brief.state, 'budget_max': brief.budget_max, 'primary_suburbs': brief.primary_suburbs}))
-            raw_captured.extend(self.portal_source.search({'state': brief.state, 'budget_max': brief.budget_max, 'primary_suburbs': brief.primary_suburbs}))
+            raw_captured.extend(self.eagent_source.search(search_filters))
+            raw_captured.extend(self.portal_source.search(search_filters))
             raw_captured.extend(self.drive_source.search({'budget_max': brief.budget_max}))
             candidate_packages = DedupeEngine.deduplicate(raw_captured)
 
@@ -75,14 +97,22 @@ class KommoPropertyResearchAgent:
             # Step 6: Validate Package Price & Turnkey Inclusions
             price_breakdown = TurnkeyCalculator.calculate_price_breakdown(raw_pkg)
 
-            # Step 7: Step 7 Market Benchmarking
-            bm_res = ReaDomainBenchmarkSource.evaluate_value_classification(
-                price_breakdown.land_price,
-                raw_pkg.get('land_size_sqm', 400),
-                price_breakdown.realistic_total_price,
-                raw_pkg.get('suburb', suburb_name),
-                brief.state
+            # Step 7: Market Benchmarking against ingested comparables
+            # (CoreLogic/REA exports from drive_input/; sample data is labelled).
+            pkg_suburb = raw_pkg.get('suburb', suburb_name)
+            bm_res = self.benchmark_engine.benchmark_package(
+                pkg_suburb, brief.state,
+                int(raw_pkg.get('bedrooms', 4)),
+                price_breakdown.realistic_total_price
             )
+
+            # Distance from the nearest primary suburb (0.0 = in a primary suburb)
+            if pkg_suburb.lower() in distance_lookup:
+                dist_km = distance_lookup[pkg_suburb.lower()]
+            else:
+                dists = [self.geo.distance_between(pkg_suburb, p, brief.state) for p in brief.primary_suburbs]
+                dists = [d for d in dists if d is not None]
+                dist_km = min(dists) if dists else None
 
             # Step 10: Risks Assessment
             risks: List[RiskItem] = []
@@ -120,7 +150,9 @@ class KommoPropertyResearchAgent:
                 date_checked=datetime.now().strftime("%d/%m/%Y"),
                 verification_status=verif_status,
                 consultant_approved=raw_pkg.get('consultant_approved', False),
-                risks=risks
+                risks=risks,
+                benchmark=bm_res,
+                distance_km_from_target=dist_km
             )
 
             # Step 11: Score Property Matrix
@@ -173,6 +205,18 @@ class KommoPropertyResearchAgent:
                 'summary_markdown': summary_md
             })
 
+        # Step 12b: Client-facing report (2026-07-22 requirement) — top 3 options
+        # with purchase price vs market average, rent, yield, and reasons.
+        client_report_html = ClientReportGenerator.generate_html(brief, shortlist) if shortlist else ""
+        client_report_path = ""
+        if client_report_html:
+            safe_name = "".join(ch for ch in brief.client_name if ch.isalnum() or ch in " -_").strip().replace(" ", "_")
+            report_file = config.OUTPUT_DIR / f"client_report_{safe_name}_{datetime.now().strftime('%Y%m%d')}.html"
+            with open(report_file, 'w', encoding='utf-8') as f:
+                f.write("<!DOCTYPE html><html><head><meta charset='utf-8'><title>SPB Property Recommendations</title></head><body>"
+                        + client_report_html + "</body></html>")
+            client_report_path = str(report_file)
+
         # Step 14: Kommo CRM Update Payload Format & Database Audit Trail
         kommo_update_payload = self._build_kommo_update_payload(brief, research_record_id, shortlist, rejected_candidates)
         self.db.save_research_run(research_record_id, raw_brief_dict, shortlist, rejected_candidates)
@@ -180,6 +224,8 @@ class KommoPropertyResearchAgent:
         return {
             'research_record_id': research_record_id,
             'client_brief': brief,
+            'search_area': search_area,
+            'builder_coverage': builder_coverage,
             'shortlist_count': len(shortlist),
             'shortlist': shortlist,
             'rejected_count': len(rejected_candidates),
@@ -187,6 +233,8 @@ class KommoPropertyResearchAgent:
             'qa_passed': qa_passed,
             'qa_failures': qa_failures,
             'reports': reports,
+            'client_report_html': client_report_html,
+            'client_report_path': client_report_path,
             'kommo_payload': kommo_update_payload
         }
 

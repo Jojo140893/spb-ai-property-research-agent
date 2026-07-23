@@ -95,17 +95,28 @@ class ScoringEngine:
         req_pts = max(0.0, req_pts)
 
         # --- 3. Value & Competitiveness (Max 15 pts) ---
-        value_pts = 15.0
+        # SOP Step 7: driven by the market benchmark classification when available
+        # (Below Market 15 / Competitive 12.5 / Slightly Above 10 / Poor 5, neutral
+        # 7.5 when unbenchmarked), with a penalty for heavy missing inclusions.
+        if prop.benchmark:
+            value_pts = float(prop.benchmark.get('value_score_contribution', 7.5))
+        else:
+            value_pts = 7.5
         if prop.price_breakdown.estimated_additional_costs > 15000:
-            value_pts -= 5.0
-        elif prop.price_breakdown.estimated_additional_costs > 5000:
             value_pts -= 2.5
-        value_pts = max(0.0, value_pts)
+        value_pts = max(0.0, min(15.0, value_pts))
 
         # --- 4. Location & Amenity (Max 15 pts) ---
+        # Distance search: properties in a primary suburb keep full points;
+        # radius matches lose points with distance (-0.3/km, capped at -6).
         location_pts = 15.0
-        if brief.primary_suburbs and prop.suburb.lower() not in [s.lower() for s in brief.primary_suburbs]:
-            location_pts -= 4.0
+        in_primary = brief.primary_suburbs and prop.suburb.lower() in [s.lower() for s in brief.primary_suburbs]
+        if not in_primary:
+            dist = prop.distance_km_from_target
+            if dist is not None:
+                location_pts -= min(6.0, round(dist * 0.3, 1))
+            else:
+                location_pts -= 4.0
         location_pts = max(0.0, location_pts)
 
         # --- 5. Builder Confidence & Quality (Max 10 pts) --- Defect #1 Fix Applied

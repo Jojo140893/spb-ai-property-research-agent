@@ -412,6 +412,11 @@
                     <input type="text" id="suburbs" value="Coomera, Springfield, Hope Island">
                 </div>
 
+                <div class="form-group" style="margin-top: 0.5rem;">
+                    <label>Search Radius (km from target suburbs &mdash; 0 = exact suburbs only)</label>
+                    <input type="number" id="searchRadius" value="0" min="0" max="100">
+                </div>
+
                 <div class="form-row">
                     <div class="form-group">
                         <label>Min Bedrooms</label>
@@ -559,7 +564,8 @@
             car_spaces_min: parseInt(document.getElementById('carSpaces').value),
             storeys_max: parseInt(document.getElementById('storeys').value),
             land_size_min_sqm: parseFloat(document.getElementById('landSize').value),
-            house_size_min_sqm: parseFloat(document.getElementById('houseSize').value)
+            house_size_min_sqm: parseFloat(document.getElementById('houseSize').value),
+            search_radius_km: parseFloat(document.getElementById('searchRadius').value) || 0
         };
 
         const resultsDiv = document.getElementById('resultsContent');
@@ -608,6 +614,16 @@
                             ${prop.missing_inclusions.length > 0 ? `<span style="color:var(--amber-yellow); font-weight:600;">(Allowance Added: +$${prop.estimated_additional_costs.toLocaleString()})</span>` : '<span style="color:var(--emerald-green); font-weight:600;">(Full Turnkey Verified)</span>'}
                         </div>
 
+                        <div style="font-size:0.86rem; margin-bottom:1rem;">
+                            <strong>Market Benchmark (SOP Step 7):</strong>
+                            ${prop.benchmark && prop.benchmark.benchmarked
+                                ? `<span style="font-weight:600; color:${prop.benchmark.variance_pct <= 5 ? 'var(--emerald-green)' : 'var(--amber-yellow)'};">${prop.benchmark.classification}</span>
+                                   &mdash; avg market $${Number(prop.benchmark.avg_market_price).toLocaleString()} (${prop.benchmark.variance_pct > 0 ? '+' : ''}${prop.benchmark.variance_pct}% vs market)`
+                                : `<span style="color:var(--amber-yellow); font-weight:600;">${prop.benchmark ? prop.benchmark.classification : 'Unbenchmarked'}</span>`}
+                            ${prop.benchmark && prop.benchmark.needs_manual_benchmark ? `<div style="color:var(--amber-yellow); font-size:0.78rem; margin-top:0.2rem;">${prop.benchmark.data_note}</div>` : ''}
+                            ${prop.distance_km_from_target ? `<div style="font-size:0.8rem; margin-top:0.2rem;"><strong>Distance:</strong> ${prop.distance_km_from_target} km from target suburb</div>` : ''}
+                        </div>
+
                         <div class="score-section">
                             <div style="font-size:0.75rem; font-weight:700; color:var(--text-heading); text-transform:uppercase; margin-bottom:0.5rem;">SOP Step 11 Scoring Matrix Breakdown</div>
                             <div class="bar-item">
@@ -631,6 +647,28 @@
 
                     resultsDiv.appendChild(card);
                 });
+
+                // Client report + search coverage summary bar
+                if (data.shortlist.length > 0) {
+                    const bar = document.createElement('div');
+                    bar.style.cssText = 'display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:0.9rem 1.1rem; border:1px solid var(--border-color, #ccc); border-radius:8px; margin:0.5rem 0 1rem; font-size:0.85rem;';
+                    const cov = data.builder_coverage || {};
+                    const areaCount = (data.search_area || []).length;
+                    bar.innerHTML = `
+                        <div>
+                            <strong>Search coverage:</strong> ${areaCount} suburb(s) in search area &middot;
+                            ${cov.in_scope_for_state ?? '?'} of ${cov.total_in_directory ?? '?'} approved builders in scope for this state
+                            (${(cov.e_agent_channel || []).length} via E-Agent, ${(cov.direct_portal_channel || []).length} direct portals, ${(cov.email_or_drive_channel || []).length} email/drive)
+                        </div>
+                        <button id="openClientReport" class="btn-submit" style="width:auto; padding:0.5rem 1rem; margin:0;">Open Client Report</button>
+                    `;
+                    resultsDiv.appendChild(bar);
+                    document.getElementById('openClientReport').onclick = () => {
+                        const w = window.open('', '_blank');
+                        w.document.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>SPB Client Report</title></head><body>' + (data.client_report_html || '<p>No report generated.</p>') + '</body></html>');
+                        w.document.close();
+                    };
+                }
 
                 // Filtered Rejection Log
                 if (data.rejected_log && data.rejected_log.length > 0) {

@@ -91,6 +91,8 @@ class PropertyAgentRequestHandler(http.server.SimpleHTTPRequestHandler):
                             'estimated_rent_max': p.estimated_rent_weekly_max,
                             'amenities_summary': p.amenities_summary,
                             'builder_confidence_rating': p.builder_confidence_rating,
+                            'benchmark': p.benchmark,
+                            'distance_km_from_target': p.distance_km_from_target,
                             'score': p.scoring.total_score if p.scoring else 0,
                             'scoring_details': {
                                 'budget_fit': p.scoring.budget_fit,
@@ -107,6 +109,12 @@ class PropertyAgentRequestHandler(http.server.SimpleHTTPRequestHandler):
                         } for p in result['shortlist']
                     ],
                     'reports': result['reports'],
+                    'search_area': result.get('search_area', []),
+                    'builder_coverage': result.get('builder_coverage', {}),
+                    'client_report_html': result.get('client_report_html', ''),
+                    'client_report_path': result.get('client_report_path', ''),
+                    'qa_passed': result.get('qa_passed'),
+                    'qa_failures': result.get('qa_failures', []),
                     'kommo_payload': result['kommo_payload']
                 }
 
