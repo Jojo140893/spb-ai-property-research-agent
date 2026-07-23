@@ -17,10 +17,12 @@ from datetime import datetime
 from kommo_agent import KommoPropertyResearchAgent
 
 
-PORT = 8000
-DIRECTORY = "d:/kommo"
+from config import PROJECT_ROOT, SERVER_PORT
 
-agent = KommoPropertyResearchAgent(csv_filepath="d:/kommo/Book1(Builders) List.csv")
+PORT = SERVER_PORT
+DIRECTORY = str(PROJECT_ROOT)
+
+agent = KommoPropertyResearchAgent()
 
 
 class PropertyAgentRequestHandler(http.server.SimpleHTTPRequestHandler):

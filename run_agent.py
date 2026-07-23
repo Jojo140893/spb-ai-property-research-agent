@@ -15,7 +15,7 @@ def run_sample_demo():
     print("=" * 70)
 
     # Initialize Agent
-    agent = KommoPropertyResearchAgent(csv_filepath="d:/kommo/Book1(Builders) List.csv")
+    agent = KommoPropertyResearchAgent()
     print(f"[+] Builder Registry Loaded: {len(agent.builder_registry.get_all_builders())} builders indexed from CSV.")
 
     # 1. Define Sample Client Brief (Queensland First Home Buyer / Owner Occupier)
@@ -169,7 +169,8 @@ def run_sample_demo():
             print(f"  - [{r['property_id']}] {r['address']}: {r['reason']}")
 
     # Save output reports and Kommo Payload
-    output_dir = "d:/kommo/output"
+    from config import OUTPUT_DIR
+    output_dir = str(OUTPUT_DIR)
     os.makedirs(output_dir, exist_ok=True)
 
     summary_file = os.path.join(output_dir, "property_summary_report.md")
