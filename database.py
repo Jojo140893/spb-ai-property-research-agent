@@ -98,10 +98,15 @@ class ResearchDatabase:
                     file_size INTEGER,
                     sha256 TEXT UNIQUE,
                     scraped_from TEXT,
+                    extracted_text TEXT,
                     downloaded_at TEXT,
                     FOREIGN KEY(builder_name) REFERENCES builders(builder_name)
                 )
             """)
+            # Add extracted_text to pre-existing DBs that lack it.
+            cols = [r[1] for r in cursor.execute("PRAGMA table_info(builder_assets)").fetchall()]
+            if "extracted_text" not in cols:
+                cursor.execute("ALTER TABLE builder_assets ADD COLUMN extracted_text TEXT")
 
             conn.commit()
 
@@ -149,12 +154,12 @@ class ResearchDatabase:
             try:
                 conn.execute("""
                     INSERT INTO builder_assets
-                    (builder_name, asset_type, title, source_url, local_path, file_size, sha256, scraped_from, downloaded_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (builder_name, asset_type, title, source_url, local_path, file_size, sha256, scraped_from, extracted_text, downloaded_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     a['builder_name'], a.get('asset_type', 'brochure'), a.get('title', ''),
                     a.get('source_url', ''), a.get('local_path', ''), int(a.get('file_size', 0)),
-                    a.get('sha256', ''), a.get('scraped_from', ''),
+                    a.get('sha256', ''), a.get('scraped_from', ''), a.get('extracted_text', ''),
                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 ))
                 conn.commit()

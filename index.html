@@ -400,6 +400,7 @@
     <nav class="nav-tabs">
         <button class="tab-btn active" onclick="showTab('researchTab', this)">Research & Scoring</button>
         <button class="tab-btn" onclick="showTab('buildersTab', this)">Approved Builder Directory</button>
+        <button class="tab-btn" onclick="showTab('vendorAssetsTab', this); loadVendorAssets();">Vendor Brochures & Details</button>
         <button class="tab-btn" onclick="showTab('kommoTab', this)">CRM Integration Payload</button>
     </nav>
 </header>
@@ -547,6 +548,20 @@
 </div>
 
 <!-- TAB 3: KOMMO CRM PAYLOAD -->
+<div id="vendorAssetsTab" class="view-pane">
+    <div class="panel-card">
+        <div class="panel-header">
+            <span>Vendor Brochures &amp; Building Details</span>
+            <span id="vendorAssetsBadge" class="pill pill-recommend">0 assets</span>
+        </div>
+        <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">
+            Marketing brochures, fliers and floor plans harvested from each builder's website, with the
+            building details extracted from each document. Click a title to open the file.
+        </p>
+        <div id="vendorAssetsContent" style="font-size:0.9rem;">Loading harvested assets…</div>
+    </div>
+</div>
+
 <div id="kommoTab" class="view-pane">
     <div class="panel-card">
         <div class="panel-header">
@@ -594,6 +609,43 @@
             }
         } catch (e) {
             console.error("Error loading builders:", e);
+        }
+    }
+
+    async function loadVendorAssets() {
+        const el = document.getElementById('vendorAssetsContent');
+        el.innerHTML = 'Loading harvested assets…';
+        try {
+            const res = await fetch('/api/vendor-assets');
+            const data = await res.json();
+            document.getElementById('vendorAssetsBadge').textContent = `${data.total_assets} assets`;
+            if (!data.assets || data.assets.length === 0) {
+                el.innerHTML = '<p style="color:var(--text-muted);">No brochures harvested yet. Run <code>python import_and_scrape.py drive_input/vendors.csv</code> to collect them.</p>';
+                return;
+            }
+            // group assets by builder
+            const byBuilder = {};
+            data.assets.forEach(a => { (byBuilder[a.builder_name] ||= []).push(a); });
+            el.innerHTML = Object.keys(byBuilder).sort().map(builder => {
+                const items = byBuilder[builder].map(a => {
+                    const details = (a.extracted_text || '').trim();
+                    const snippet = details ? `<div style="font-size:0.8rem; color:var(--text-muted); margin:0.2rem 0 0.5rem; white-space:pre-wrap; max-height:6em; overflow:auto; border-left:2px solid var(--border-light); padding-left:0.6rem;">${details.slice(0,600).replace(/</g,'&lt;')}${details.length>600?'…':''}</div>` : '';
+                    const sizeKb = Math.round((a.file_size||0)/1024);
+                    return `<li style="margin-bottom:0.6rem;">
+                        <a href="${a.web_path || '#'}" target="_blank" style="color:var(--accent-blue); font-weight:600;">${a.title || 'brochure'}</a>
+                        <span class="pill pill-conditions" style="margin-left:0.4rem;">${a.asset_type}</span>
+                        <span style="font-size:0.78rem; color:var(--text-muted);"> ${sizeKb} KB · <a href="${a.source_url}" target="_blank" style="color:var(--text-muted);">source</a></span>
+                        ${snippet}
+                    </li>`;
+                }).join('');
+                return `<div style="margin-bottom:1.5rem;">
+                    <div style="font-weight:700; color:var(--text-heading); border-bottom:1px solid var(--border-light); padding-bottom:0.3rem; margin-bottom:0.5rem;">${builder} <span style="font-weight:400; color:var(--text-muted); font-size:0.85rem;">(${byBuilder[builder].length})</span></div>
+                    <ul style="list-style:none; padding:0; margin:0;">${items}</ul>
+                </div>`;
+            }).join('');
+        } catch (e) {
+            el.innerHTML = '<p style="color:#b91c1c;">Failed to load vendor assets.</p>';
+            console.error("Error loading vendor assets:", e);
         }
     }
 

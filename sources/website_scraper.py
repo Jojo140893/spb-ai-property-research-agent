@@ -31,6 +31,12 @@ import config
 from sources.scraper_base import PlaywrightScraper, PLAYWRIGHT_AVAILABLE
 from database import ResearchDatabase
 
+try:
+    import pdfplumber
+    PDF_TEXT_AVAILABLE = True
+except ImportError:
+    PDF_TEXT_AVAILABLE = False
+
 logger = logging.getLogger("spb.scraper.website")
 
 # Pages worth visiting (link text / href keywords)
@@ -78,6 +84,37 @@ class WebsiteAssetScraper:
     def _same_origin(self, url: str, origin: str) -> bool:
         return urlparse(url).netloc.replace("www.", "") == urlparse(origin).netloc.replace("www.", "")
 
+    @staticmethod
+    def _registrable(host: str) -> str:
+        """Registrable domain, e.g. cdn.foo.com.au -> foo.com.au ; www.foo.com -> foo.com.
+        IPs / localhost are returned unchanged so fixture tests stay exact-match."""
+        host = host.lower().split(":")[0]
+        if host.replace(".", "").isdigit() or host in ("localhost", "127.0.0.1"):
+            return host
+        labels = host.split(".")
+        if len(labels) >= 3 and labels[-2] in ("com", "net", "org", "gov", "edu") and len(labels[-1]) == 2:
+            return ".".join(labels[-3:])  # e.g. foo.com.au
+        return ".".join(labels[-2:])
+
+    def _same_site(self, url: str, origin: str) -> bool:
+        """True if url is on the same registrable domain as origin (allows CDN subdomains)."""
+        return self._registrable(urlparse(url).netloc) == self._registrable(urlparse(origin).netloc)
+
+    def _extract_pdf_text(self, path: Path) -> str:
+        if not PDF_TEXT_AVAILABLE:
+            return ""
+        try:
+            with pdfplumber.open(path) as pdf:
+                chunks = []
+                for pg in pdf.pages[:8]:  # first few pages hold the key building details
+                    chunks.append(pg.extract_text() or "")
+                    if sum(len(c) for c in chunks) > 6000:
+                        break
+                return re.sub(r"\s+\n", "\n", "\n".join(chunks)).strip()[:6000]
+        except Exception as e:
+            logger.warning("PDF text extraction failed for %s: %s", path.name, e)
+            return ""
+
     def scrape_builder(self, builder_name: str, website: str) -> Dict[str, Any]:
         result = {"builder": builder_name, "website": website, "pages_visited": 0,
                   "assets_found": 0, "assets_new": 0, "error": None}
@@ -123,7 +160,7 @@ class WebsiteAssetScraper:
                         full = urljoin(url, href)
                         text = (a.inner_text() or "").strip()[:120]
                         if PDF_RE.search(full):
-                            if self._same_origin(full, origin):  # only harvest the builder's own assets
+                            if self._same_site(full, origin):  # builder's own domain incl. CDN subdomains
                                 asset_links.setdefault(full, text)
                         elif (len(visited) + len(to_visit) < self.max_pages
                               and self._same_origin(full, origin)
@@ -163,6 +200,7 @@ class WebsiteAssetScraper:
             fname = re.sub(r"[^A-Za-z0-9._-]", "_", fname)[:120]
             dest = out_dir / fname
             dest.write_bytes(body)
+            extracted = self._extract_pdf_text(dest) if PDF_RE.search(url) else ""
             recorded = self.db.record_asset({
                 "builder_name": builder_name,
                 "asset_type": _classify(text, url),
@@ -172,6 +210,7 @@ class WebsiteAssetScraper:
                 "file_size": len(body),
                 "sha256": sha,
                 "scraped_from": origin,
+                "extracted_text": extracted,
             })
             if not recorded:
                 # duplicate content already stored elsewhere; drop the redundant file copy
