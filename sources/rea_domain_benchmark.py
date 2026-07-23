@@ -47,6 +47,6 @@ class ReaDomainBenchmarkSource:
             'actual_land_psqm': round(actual_psqm, 2),
             'benchmark_land_psqm': bm_psqm,
             'variance_pct': round(diff_pct, 1),
-            'value_classification': classification,
+            'value_classification': classification + ' (simulated benchmark - live REA/Domain comparables not yet integrated)',
             'value_score_contribution': score_contrib
         }

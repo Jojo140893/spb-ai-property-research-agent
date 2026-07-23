@@ -69,6 +69,7 @@ def run_sample_demo():
             'estimated_rent_weekly_min': 620,
             'estimated_rent_weekly_max': 660,
             'amenities_summary': 'Walk to Coomera Rivers State School, 3 mins to Coomera Train Station.',
+            'verified': True,  # simulated portal-verified sample
             'risks': []
         },
         {
@@ -100,6 +101,7 @@ def run_sample_demo():
             'estimated_rent_weekly_min': 640,
             'estimated_rent_weekly_max': 680,
             'amenities_summary': 'Close to Springfield Central Shopping Centre and Orion Lagoon.',
+            'verified': True,  # simulated portal-verified sample
             'risks': [
                 {
                     'name': 'Title Delay',
@@ -138,6 +140,7 @@ def run_sample_demo():
             'estimated_rent_weekly_min': 700,
             'estimated_rent_weekly_max': 740,
             'amenities_summary': 'Parkland views, close to Logan Hospital.',
+            'verified': True,  # simulated portal-verified sample
             'risks': []
         }
     ]

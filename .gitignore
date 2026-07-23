@@ -5,3 +5,9 @@ __pycache__/
 .venv/
 env/
 venv/
+
+# Runtime artifacts
+spb_research_audit.db
+*.db
+.env
+drive_input/

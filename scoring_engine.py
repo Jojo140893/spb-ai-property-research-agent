@@ -7,7 +7,7 @@ Fixes Defect #1 (Builder Confidence Rating Model) & Defect #4 (House Size Minimu
 from typing import Tuple, List, Dict, Any
 from schema import (
     ClientBrief, CandidateProperty, ScoringBreakdown,
-    RecommendationStatus, BuyerType, RiskRating, VerificationStatus
+    RecommendationStatus, BuyerType, RiskRating, VerificationStatus, TurnkeyStatus
 )
 
 
@@ -171,7 +171,13 @@ class ScoringEngine:
         has_high_risk = any(r.rating == RiskRating.HIGH for r in prop.risks)
 
         if score >= 80.0 and not has_high_risk:
-            return RecommendationStatus.RECOMMEND, f"Strong match ({score}/100). Fully satisfies budget, location, and structural requirements."
+            caveats = []
+            if prop.price_breakdown.turnkey_status != TurnkeyStatus.FULL_TURNKEY:
+                caveats.append(f"{prop.price_breakdown.turnkey_status.value} - allow ${prop.price_breakdown.estimated_additional_costs:,.0f} in additional costs")
+            if prop.risks:
+                caveats.append(f"{len(prop.risks)} open risk item(s) - see risk register")
+            caveat_str = f" Note: {'; '.join(caveats)}." if caveats else " Fully satisfies budget, location, and structural requirements."
+            return RecommendationStatus.RECOMMEND, f"Strong match ({score}/100).{caveat_str}"
         elif score >= 65.0:
             return RecommendationStatus.RECOMMEND_WITH_CONDITIONS, f"Satisfactory match ({score}/100). Requires consultant confirmation on turnkey allowances or risk mitigation."
         else:

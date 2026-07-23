@@ -16,8 +16,12 @@ class BuilderPortalSource(PropertySource):
 
     @property
     def channel_name(self) -> str:
-        return "Direct Builder Portal"
+        return "Direct Builder Portal (SIMULATED)"
 
+    # NOTE: This source returns SIMULATED sample inventory until real
+    # credentialed portal scrapers (Hermitage, Bathla, FRD, Torsion, Paramount)
+    # are implemented. Only ONE sample listing is emitted (first eligible
+    # portal builder) so the same fake lot is never duplicated across builders.
     def search(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
         state = filters.get('state', 'QLD').upper()
         max_budget = float(filters.get('budget_max', 800000))
@@ -26,7 +30,7 @@ class BuilderPortalSource(PropertySource):
         portal_builders = [b for b in self.registry.get_all_builders() if b.get('portal_url')]
         results: List[Dict[str, Any]] = []
 
-        for b in portal_builders:
+        for b in portal_builders[:1]:
             if state in b['states'] or not b['states']:
                 results.append({
                     'lot_address': f"Lot 42 Riverstone Estate",
@@ -50,7 +54,7 @@ class BuilderPortalSource(PropertySource):
                     'estimated_rent_weekly_max': 680,
                     'amenities_summary': 'Close to Springfield Central Shopping Centre and Orion Lagoon.',
                     'source_channel': self.channel_name,
-                    'source_url_or_ref': b['portal_url'],
+                    'source_url_or_ref': f"SIMULATED SAMPLE - real portal: {b['portal_url']}",
                     'date_checked': datetime.now().strftime("%d/%m/%Y"),
                     'verified': True,
                     'risks': [

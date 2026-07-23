@@ -79,6 +79,8 @@ class PropertyAgentRequestHandler(http.server.SimpleHTTPRequestHandler):
                             'land_size_sqm': p.land_size_sqm,
                             'house_size_sqm': p.house_size_sqm,
                             'title_status': p.title_status,
+                            'verification_status': p.verification_status.value,
+                            'consultant_approved': p.consultant_approved,
                             'expected_title_date': p.expected_title_date,
                             'realistic_total_price': p.price_breakdown.realistic_total_price,
                             'advertised_package_price': p.price_breakdown.advertised_package_price,

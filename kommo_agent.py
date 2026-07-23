@@ -68,7 +68,8 @@ class KommoPropertyResearchAgent:
             b_rating, b_score, b_reason = BuilderConfidenceModel.evaluate_builder(builder_name, builder_info)
 
             # Step 5: Three-State Verification (Defect #5 Fix)
-            is_verified = raw_pkg.get('verified', True)
+            # SOP rule: a package is Pending Confirmation until a source explicitly verifies it.
+            is_verified = raw_pkg.get('verified', False)
             verif_status = VerificationStatus.VERIFIED if is_verified else VerificationStatus.PENDING
 
             # Step 6: Validate Package Price & Turnkey Inclusions
@@ -140,8 +141,21 @@ class KommoPropertyResearchAgent:
         # Rank candidates by Total Score descending
         processed_candidates.sort(key=lambda x: x.scoring.total_score if x.scoring else 0, reverse=True)
 
-        # Select Top 3-5 Shortlisted Properties
-        shortlist = processed_candidates[:5]
+        # Select Top 3-5 Shortlisted Properties.
+        # SOP Step 5: Pending Confirmation packages stay out of the final list
+        # unless a consultant explicitly approves their inclusion.
+        final_pool = [
+            c for c in processed_candidates
+            if c.verification_status == VerificationStatus.VERIFIED or c.consultant_approved
+        ]
+        shortlist = final_pool[:5]
+        pending_awaiting = [c for c in processed_candidates if c not in final_pool]
+        for c in pending_awaiting:
+            rejected_candidates.append({
+                'property_id': c.property_id,
+                'address': c.lot_address,
+                'reason': 'Pending Confirmation - excluded from final list until verified or consultant-approved'
+            })
 
         # Step 15: Automated Section 9 QA Checklist Validation
         qa_passed, qa_failures = Section9QAChecker.verify_pipeline_compliance(brief, len(candidate_packages), shortlist)
