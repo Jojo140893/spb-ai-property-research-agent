@@ -73,6 +73,7 @@ class ClientBrief:
     target_rent_weekly: Optional[float] = None
     target_gross_yield_pct: Optional[float] = None
     build_timeframe_months: Optional[int] = None
+    search_radius_km: Optional[float] = None  # distance search: include suburbs within N km of primary suburbs
     additional_notes: str = ""
 
 
@@ -147,3 +148,5 @@ class CandidateProperty:
     scoring: Optional[ScoringBreakdown] = None
     recommendation: RecommendationStatus = RecommendationStatus.HOLD
     recommendation_reason: str = ""
+    benchmark: Optional[Dict[str, Any]] = None  # SOP Step 7 market benchmark result
+    distance_km_from_target: Optional[float] = None  # km from nearest primary suburb

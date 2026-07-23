@@ -23,6 +23,9 @@ class DriveStocklistIngestor:
             return packages
 
         for file_path in self.watch_dir.iterdir():
+            # comparables*.csv files are market benchmark data (BenchmarkEngine), not stock lists
+            if file_path.name.lower().startswith('comparables'):
+                continue
             if file_path.suffix.lower() == '.csv':
                 packages.extend(self.ingest_csv(file_path))
             elif file_path.suffix.lower() == '.pdf':

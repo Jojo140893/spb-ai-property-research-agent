@@ -53,5 +53,6 @@ class ClientBriefParser:
             target_rent_weekly=float(raw_data['target_rent_weekly']) if raw_data.get('target_rent_weekly') else None,
             target_gross_yield_pct=float(raw_data['target_gross_yield_pct']) if raw_data.get('target_gross_yield_pct') else None,
             build_timeframe_months=int(raw_data['build_timeframe_months']) if raw_data.get('build_timeframe_months') else None,
+            search_radius_km=float(raw_data['search_radius_km']) if raw_data.get('search_radius_km') else None,
             additional_notes=raw_data.get('additional_notes', '')
         )

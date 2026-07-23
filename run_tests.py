@@ -10,6 +10,14 @@ from tests.test_defects import (
     test_defect_4_house_size_minimum,
     test_defect_5_verification_defaults
 )
+from tests.test_intended_features import (
+    test_geo_index_loads_and_locates,
+    test_distance_search_expands_suburbs,
+    test_brief_parser_reads_radius,
+    test_benchmark_classifies_against_comparables,
+    test_benchmark_never_invents_data,
+    test_pipeline_end_to_end_with_radius_and_report
+)
 
 
 def run_all_tests():
@@ -23,6 +31,12 @@ def run_all_tests():
         ("Defect #3: Relative Config Paths", test_defect_3_config_paths),
         ("Defect #4: Mandatory House Size Check", test_defect_4_house_size_minimum),
         ("Defect #5: Pending Verification Defaults", test_defect_5_verification_defaults),
+        ("Feature: Geo index loads & locates", test_geo_index_loads_and_locates),
+        ("Feature: Distance search expands suburbs", test_distance_search_expands_suburbs),
+        ("Feature: Brief parser reads radius", test_brief_parser_reads_radius),
+        ("Feature: Benchmark classifies vs comparables", test_benchmark_classifies_against_comparables),
+        ("Feature: Benchmark never invents data", test_benchmark_never_invents_data),
+        ("Feature: Pipeline E2E radius + report + coverage", test_pipeline_end_to_end_with_radius_and_report),
     ]
 
     passed = 0
