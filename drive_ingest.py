@@ -8,7 +8,7 @@ import os
 import csv
 import re
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from datetime import datetime
 import config
 
