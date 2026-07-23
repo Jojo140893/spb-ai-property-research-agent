@@ -40,6 +40,30 @@ class PropertyAgentRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps({'status': 'success', 'count': len(builders), 'builders': builders}).encode('utf-8'))
             return
 
+        if parsed_url.path == "/api/vendors":
+            # Imported vendor directory (from the uploaded vendor CSV)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            vendors = agent.db.get_builders()
+            self.wfile.write(json.dumps({'status': 'success', 'count': len(vendors), 'vendors': vendors}).encode('utf-8'))
+            return
+
+        if parsed_url.path == "/api/vendor-assets":
+            # Harvested brochures / fliers / booklets, sorted by builder
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            counts = agent.db.asset_counts_by_builder()
+            assets = agent.db.get_assets()
+            self.wfile.write(json.dumps({
+                'status': 'success',
+                'total_assets': len(assets),
+                'by_builder': counts,
+                'assets': assets,
+            }).encode('utf-8'))
+            return
+
         # Serve static files (index.html, etc.)
         return super().do_GET()
 
