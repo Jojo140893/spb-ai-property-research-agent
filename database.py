@@ -108,7 +108,71 @@ class ResearchDatabase:
             if "extracted_text" not in cols:
                 cursor.execute("ALTER TABLE builder_assets ADD COLUMN extracted_text TEXT")
 
+            # Building stock harvested from E-Agent + direct builder portals.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS buildings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    builder_name TEXT,
+                    source_channel TEXT,
+                    lot_address TEXT,
+                    suburb TEXT,
+                    state TEXT,
+                    price REAL,
+                    bedrooms INTEGER,
+                    bathrooms INTEGER,
+                    car_spaces INTEGER,
+                    land_sqm REAL,
+                    house_sqm REAL,
+                    title_status TEXT,
+                    source_url TEXT,
+                    dedup_key TEXT UNIQUE,
+                    date_checked TEXT
+                )
+            """)
+
             conn.commit()
+
+    # ---------- Building stock ----------
+    def record_building(self, b: Dict[str, Any]) -> bool:
+        """Insert a harvested building; returns False if an identical listing already exists."""
+        key = "||".join(str(b.get(k, "")).strip().lower() for k in
+                        ("builder_name", "lot_address", "suburb", "price"))
+        with self._get_connection() as conn:
+            try:
+                conn.execute("""
+                    INSERT INTO buildings
+                    (builder_name, source_channel, lot_address, suburb, state, price, bedrooms,
+                     bathrooms, car_spaces, land_sqm, house_sqm, title_status, source_url, dedup_key, date_checked)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    b.get("builder_name", ""), b.get("source_channel", ""), b.get("lot_address", ""),
+                    b.get("suburb", ""), b.get("state", ""), float(b.get("advertised_package_price") or b.get("price") or 0),
+                    b.get("bedrooms"), b.get("bathrooms"), b.get("car_spaces"),
+                    b.get("land_size_sqm"), b.get("house_size_sqm"), b.get("title_status", ""),
+                    b.get("source_url_or_ref") or b.get("source_url", ""), key,
+                    b.get("date_checked") or datetime.now().strftime("%d/%m/%Y"),
+                ))
+                conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
+    def get_buildings(self, builder_name: Optional[str] = None) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            if builder_name:
+                rows = conn.execute("SELECT * FROM buildings WHERE builder_name=? ORDER BY price", (builder_name,)).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM buildings ORDER BY builder_name, price").fetchall()
+            return [dict(r) for r in rows]
+
+    def building_counts_by_channel(self) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("""
+                SELECT source_channel, COUNT(*) AS n FROM buildings GROUP BY source_channel ORDER BY n DESC
+            """).fetchall()
+            return [dict(r) for r in rows]
 
     # ---------- Vendor directory ----------
     def upsert_builder(self, b: Dict[str, Any]):

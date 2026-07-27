@@ -49,6 +49,18 @@ class PropertyAgentRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps({'status': 'success', 'count': len(vendors), 'vendors': vendors}).encode('utf-8'))
             return
 
+        if parsed_url.path == "/api/buildings":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            buildings = agent.db.get_buildings()
+            counts = agent.db.building_counts_by_channel()
+            self.wfile.write(json.dumps({
+                'status': 'success', 'total': len(buildings),
+                'by_channel': counts, 'buildings': buildings,
+            }).encode('utf-8'))
+            return
+
         if parsed_url.path == "/api/vendor-assets":
             # Harvested brochures / fliers / booklets, sorted by builder
             self.send_response(200)

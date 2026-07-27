@@ -400,6 +400,7 @@
     <nav class="nav-tabs">
         <button class="tab-btn active" onclick="showTab('researchTab', this)">Research & Scoring</button>
         <button class="tab-btn" onclick="showTab('buildersTab', this)">Approved Builder Directory</button>
+        <button class="tab-btn" onclick="showTab('buildingsTab', this); loadBuildings();">Building Stock</button>
         <button class="tab-btn" onclick="showTab('vendorAssetsTab', this); loadVendorAssets();">Vendor Brochures & Details</button>
         <button class="tab-btn" onclick="showTab('kommoTab', this)">CRM Integration Payload</button>
     </nav>
@@ -548,6 +549,20 @@
 </div>
 
 <!-- TAB 3: KOMMO CRM PAYLOAD -->
+<div id="buildingsTab" class="view-pane">
+    <div class="panel-card">
+        <div class="panel-header">
+            <span>Building Stock (E-Agent &amp; Direct Portals)</span>
+            <span id="buildingsBadge" class="pill pill-recommend">0 buildings</span>
+        </div>
+        <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">
+            All current stock harvested from the credentialed sources, deduped. Run
+            <code>python harvest_buildings.py</code> in your environment to populate this.
+        </p>
+        <div id="buildingsContent" style="font-size:0.9rem; overflow-x:auto;">Loading building stock…</div>
+    </div>
+</div>
+
 <div id="vendorAssetsTab" class="view-pane">
     <div class="panel-card">
         <div class="panel-header">
@@ -609,6 +624,41 @@
             }
         } catch (e) {
             console.error("Error loading builders:", e);
+        }
+    }
+
+    async function loadBuildings() {
+        const el = document.getElementById('buildingsContent');
+        el.innerHTML = 'Loading building stock…';
+        try {
+            const res = await fetch('/api/buildings');
+            const data = await res.json();
+            document.getElementById('buildingsBadge').textContent = `${data.total} buildings`;
+            if (!data.buildings || data.buildings.length === 0) {
+                el.innerHTML = '<p style="color:var(--text-muted);">No building stock harvested yet. Run <code>python harvest_buildings.py</code> (logs into E-Agent + the direct portals in your environment).</p>';
+                return;
+            }
+            const money = v => v ? '$' + Number(v).toLocaleString() : '—';
+            const chanSummary = (data.by_channel || []).map(c => `${c.source_channel}: ${c.n}`).join(' · ');
+            const rows = data.buildings.map(b => `<tr>
+                <td><strong>${b.builder_name || '—'}</strong></td>
+                <td>${b.lot_address || '—'}</td>
+                <td>${b.suburb || ''} ${b.state || ''}</td>
+                <td>${money(b.price)}</td>
+                <td>${[b.bedrooms,b.bathrooms,b.car_spaces].map(x=>x||'-').join(' / ')}</td>
+                <td>${b.source_channel || ''}</td>
+                <td>${b.source_url ? `<a href="${b.source_url}" target="_blank" style="color:var(--accent-blue);">link</a>` : ''}</td>
+            </tr>`).join('');
+            el.innerHTML = `<p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:0.6rem;">${chanSummary}</p>
+                <table class="builder-table" style="width:100%; border-collapse:collapse; font-size:0.85rem;">
+                <thead><tr>
+                    <th style="text-align:left;">Builder</th><th style="text-align:left;">Lot / Address</th>
+                    <th style="text-align:left;">Suburb</th><th style="text-align:left;">Price</th>
+                    <th style="text-align:left;">Bed/Bath/Car</th><th style="text-align:left;">Source</th><th></th>
+                </tr></thead><tbody>${rows}</tbody></table>`;
+        } catch (e) {
+            el.innerHTML = '<p style="color:#b91c1c;">Failed to load building stock.</p>';
+            console.error("Error loading buildings:", e);
         }
     }
 
