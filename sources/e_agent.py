@@ -22,10 +22,19 @@ logger = logging.getLogger("spb.scraper.eagent")
 
 
 class EAgentSource(PropertySource):
-    def __init__(self):
+    def __init__(self, registry=None):
         self.cfg = EAGENT_CONFIG
+        # Prefer explicit env credentials; otherwise fall back to the E-Agent login
+        # stored against any E-Agent builder in the vendor CSV (via the registry).
         self.username = config.E_AGENT_USERNAME
         self.password = config.E_AGENT_PASSWORD
+        if (not self.username or not self.password) and registry is not None:
+            for b in registry.get_all_builders():
+                if b.get("is_on_e_agent") and b.get("portal_login_email") and b.get("portal_login_password") \
+                        and "e-agent" in (b.get("portal_url") or "").lower():
+                    self.username = self.username or b["portal_login_email"]
+                    self.password = self.password or b["portal_login_password"]
+                    break
 
     @property
     def channel_name(self) -> str:

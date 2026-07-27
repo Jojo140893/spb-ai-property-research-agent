@@ -13,7 +13,10 @@ PROJECT_ROOT = Path(__file__).parent.resolve()
 DATA_DIR = PROJECT_ROOT
 OUTPUT_DIR = PROJECT_ROOT / "output"
 DRIVE_INPUT_DIR = PROJECT_ROOT / "drive_input"
-BUILDER_CSV_PATH = PROJECT_ROOT / "Book1(Builders) List.csv"
+# Prefer the live, credentialed vendor CSV dropped into drive_input/ (gitignored);
+# fall back to the committed sample so the app still runs without it.
+_LIVE_VENDOR_CSV = DRIVE_INPUT_DIR / "vendors.csv"
+BUILDER_CSV_PATH = _LIVE_VENDOR_CSV if _LIVE_VENDOR_CSV.exists() else (PROJECT_ROOT / "Book1(Builders) List.csv")
 SOP_DOCX_PATH = PROJECT_ROOT / "SPB_AI_Property_Research_Agent_SOP_Detailed for Digi.docx"
 DATABASE_PATH = PROJECT_ROOT / "spb_research_audit.db"
 

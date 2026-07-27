@@ -39,7 +39,7 @@ class KommoPropertyResearchAgent:
         self.benchmark_engine = BenchmarkEngine(self.geo)
 
         # Search Sources
-        self.eagent_source = EAgentSource()
+        self.eagent_source = EAgentSource(registry=self.builder_registry)
         self.portal_source = BuilderPortalSource()
         self.drive_source = DrivePdfSource()
 

@@ -22,20 +22,40 @@ MINIMAL_PDF = b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>
 VENDORS_CSV = config.DRIVE_INPUT_DIR / "vendors.csv"
 
 
+_FIXTURE_CSV = """NAME,EMAIL,PHONE,BUILDER,STATES,Contract Availble??,Is it available on E Agent?,WEB PORTAL LINK,EMAIL,PASSWORD,NOTES
+Alex Q,alex@avia.com.au,0400,Avia Homes,QLD,Yes,YES,https://www.e-agent.com.au,user@spb.com,pw,
+,,,Villie Building Group,QLD,Yes,,https://villiebuildinggroup.com.au,,,
+,,,Hermitage Homes,VIC,,YES,https://portal.hermitagehomes.com.au/,sales@x.com,pw,
+,,,,,,,,,,
+NAME,EMAIL,PHONE,BUILDER,STATES,Title,LinkedIn Link,STATUS,,,
+Adam Barclay,adam@x.com,,Gallery Group,QLD,CEO,https://linkedin.com/in/adam,Email Sent,,,
+Jon Rivera,,,Urbane Homes,VIC,Director,https://linkedin.com/in/jon,Not connected,,,
+,,,,,,,,,,
+BUILDERS IN PERTH,Email,Phone,Website,,,,,,,
+Nulook Homes,info@nulook.com.au,9349,https://www.nulookhomes.com.au/,Perth,,,,,,
+"""
+
+
 def test_importer_parses_messy_multisection_csv():
-    if not VENDORS_CSV.exists():
-        return  # vendor file not present in this environment; skip silently
-    db = ResearchDatabase(db_path=Path(tempfile.gettempdir()) / "spb_vendor_test.db")
-    summary = VendorImporter(db).import_to_db(VENDORS_CSV)
-    assert summary["total_builders"] >= 40, f"expected many vendors, got {summary['total_builders']}"
-    assert summary["with_website"] >= 15, f"expected 15+ websites, got {summary['with_website']}"
+    # Self-contained fixture so the test doesn't depend on whichever CSV the user
+    # currently has in drive_input/.
+    tmp = Path(tempfile.mkdtemp())
+    fx = tmp / "vendors_fixture.csv"
+    fx.write_text(_FIXTURE_CSV, encoding="utf-8")
+    db = ResearchDatabase(db_path=tmp / "spb_vendor_test.db")
+    summary = VendorImporter(db).import_to_db(fx)
     names = {b["builder_name"].lower() for b in db.get_builders()}
-    # Real vendors present
-    assert any("novus homes" in n for n in names)
+    # Real vendors across sections present
+    assert any("avia homes" in n for n in names)
     assert any("villie building group" in n for n in names)
+    assert any("nulook homes" in n for n in names)  # Perth section
+    assert any("hermitage homes" in n for n in names)
     # LinkedIn prospect *people* must NOT be imported as builders
     assert not any(n == "adam barclay" for n in names)
     assert not any(n == "jon rivera" for n in names)
+    # website vs portal disambiguation
+    villie = next(b for b in db.get_builders() if "villie" in b["builder_name"].lower())
+    assert villie["website"] and villie["has_website"] == 1
 
 
 def _make_fixture_site(root: Path):

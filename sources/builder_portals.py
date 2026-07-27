@@ -117,10 +117,17 @@ class BuilderPortalSource(PropertySource):
         state = filters.get("state", "").upper()
         max_budget = float(filters.get("budget_max", 10_000_000))
 
-        # Full coverage: every state-eligible builder with a direct portal (not on E-Agent).
+        # Full coverage: every state-eligible builder with a real direct portal.
+        # Skip E-Agent (handled by EAgentSource), email-only pseudo-links
+        # ("Login to ... outlook"), Google Drive links, and blank/junk entries.
+        def _real_portal(u: str) -> bool:
+            u = (u or "").strip().lower()
+            return ("." in u) and not any(x in u for x in ("outlook", "e-agent", "drive.google", "----"))
+        # A real non-E-Agent portal URL is its own stock source, so scrape it even if
+        # the builder is also listed on E-Agent (E-Agent is handled separately).
         targets = [
             b for b in self.registry.get_builders_by_state(state)
-            if b.get("portal_url") and not b.get("is_on_e_agent")
+            if _real_portal(b.get("portal_url"))
         ]
         if not targets:
             logger.info("Builder portal search: no direct-portal builders in scope for %s.", state)

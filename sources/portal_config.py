@@ -93,6 +93,24 @@ BUILDER_PORTAL_CONFIGS: Dict[str, PortalConfig] = {
         field_selectors={"title": ".title", "price": ".price"},
         verified=False,
     ),
+    "paramountliving.com.au": PortalConfig(
+        name="Paramount Living",
+        login_url="https://paramountliving.com.au/?auth=1&redirect=https%3A%2F%2Fparamountliving.com.au%2Fagent-portal%2F",
+        logged_in_selector="text=Log Out, text=Logout, text=Agent Portal",
+        listings_url="https://paramountliving.com.au/agent-portal/",
+        listing_card_selector=".property-card, .package, .listing, article",
+        field_selectors={"title": ".title, h2, h3", "price": ".price"},
+        verified=False,
+    ),
+    "proxima.com.au": PortalConfig(
+        name="Proxima",
+        login_url="https://www.proxima.com.au/",
+        logged_in_selector="text=Log Out, text=Logout, text=Dashboard",
+        listings_url="https://www.proxima.com.au/",
+        listing_card_selector=".property-card, .listing, .stock-item, article",
+        field_selectors={"title": ".title, h2, h3", "price": ".price"},
+        verified=False,
+    ),
 }
 
 
