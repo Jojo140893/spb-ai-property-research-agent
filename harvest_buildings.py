@@ -24,6 +24,7 @@ page (save that page's HTML and they can be mapped exactly).
 """
 
 import argparse
+import logging
 
 from builder_registry import BuilderRegistry
 from sources.e_agent import EAgentSource
@@ -35,6 +36,7 @@ ALL_STOCK_FILTERS = {"budget_max": 100_000_000, "primary_suburbs": []}
 
 
 def harvest(eagent=True, portals=True):
+    logging.basicConfig(level=logging.INFO, format='    %(levelname)s %(message)s')
     registry = BuilderRegistry()
     db = ResearchDatabase()
 

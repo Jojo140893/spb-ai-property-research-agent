@@ -16,6 +16,7 @@ Usage:
 
 import sys
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -95,6 +96,85 @@ def status(verify: bool = False):
             print(f"               → run: python portal_login.py {name}")
 
 
+# JS heuristic: are we in an authenticated state? Looks for logout/account markers.
+_LOGGED_IN_JS = r"""
+() => {
+  const t = (document.body ? document.body.innerText : '').toLowerCase();
+  const links = [...document.querySelectorAll('a,button')].map(e => (e.innerText||'').toLowerCase());
+  const markers = ['log out','logout','sign out','signout','my account','my profile','dashboard'];
+  const hasMarker = links.some(l => markers.some(m => l.includes(m))) || markers.some(m => t.includes(m));
+  const loginish = /sign in|log in|login|password/.test(t) && !hasMarker;
+  return hasMarker && !loginish;
+}
+"""
+
+
+def capture_auto(only: str = "", wait_minutes: int = 10):
+    """Open a visible browser per portal and save the session AS SOON AS you are
+    signed in — no terminal keypress needed (works when launched by an agent).
+
+    Your password is never read by this tool; only the resulting session cookies
+    are saved locally to .sessions/.
+    """
+    if not (PLAYWRIGHT_AVAILABLE and sync_playwright):
+        print("[ERROR] Playwright missing. Run: pip install playwright && python -m playwright install chromium")
+        sys.exit(1)
+
+    targets = _targets()
+    if only:
+        q = only.lower()
+        targets = [t for t in targets if q in t[0].lower() or q in t[1].lower()]
+        if not targets:
+            print(f"[ERROR] No portal matches '{only}'.")
+            sys.exit(1)
+
+    SESSION_DIR.mkdir(exist_ok=True)
+    print("=" * 72)
+    print("  PORTAL LOGIN (auto-detect) — a browser window is opening for you")
+    print("=" * 72)
+
+    with sync_playwright() as pw:
+        for name, label, url in targets:
+            sess = SESSION_DIR / f"{name}.json"
+            print(f"\n>>> {label}\n    {url}")
+            print(f"    Sign in in the browser window. Waiting up to {wait_minutes} min; "
+                  f"the session saves itself the moment you're in.")
+            browser = pw.chromium.launch(headless=False, args=["--start-maximized"])
+            ctx = browser.new_context(storage_state=str(sess) if sess.exists() else None,
+                                      no_viewport=True)
+            page = ctx.new_page()
+            saved = False
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            except Exception as e:
+                print(f"    (slow load: {e})")
+            deadline = time.time() + wait_minutes * 60
+            while time.time() < deadline:
+                try:
+                    if page.is_closed():
+                        print("    (window closed)")
+                        break
+                    if page.evaluate(_LOGGED_IN_JS):
+                        ctx.storage_state(path=str(sess))
+                        print(f"    [SAVED] signed-in session -> {sess.name}")
+                        saved = True
+                        break
+                except Exception:
+                    pass
+                time.sleep(3)
+            if not saved:
+                print(f"    [NOT SAVED] no signed-in state detected for {label}.")
+                print(f"                Re-run later:  python portal_login.py {name}")
+            try:
+                ctx.close(); browser.close()
+            except Exception:
+                pass
+
+    print("\n" + "=" * 72)
+    print("Next:  python harvest_buildings.py")
+    print("=" * 72)
+
+
 def capture(only: str = ""):
     if not (PLAYWRIGHT_AVAILABLE and sync_playwright):
         print("[ERROR] Playwright missing. Run: pip install playwright && python -m playwright install chromium")
@@ -154,5 +234,13 @@ if __name__ == "__main__":
     args = [a for a in sys.argv[1:]]
     if "--status" in args or "--verify" in args:
         status(verify="--verify" in args)
+        raise SystemExit(0)
+    pos = [a for a in args if not a.startswith("--")]
+    only = pos[0] if pos else ""
+    if "--auto" in args or not sys.stdin.isatty():
+        # No interactive terminal (or explicitly asked): auto-detect sign-in.
+        if not sys.stdin.isatty() and "--auto" not in args:
+            print("[i] No interactive terminal detected - using auto-detect mode.\n")
+        capture_auto(only)
     else:
-        capture(args[0] if args else "")
+        capture(only)

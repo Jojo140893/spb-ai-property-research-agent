@@ -82,6 +82,16 @@ class ScoringEngine:
             hard_rejection = True
             rejection_reasons.append(f"Storeys ({prop.storeys}) exceeds maximum allowed ({brief.storeys_max})")
 
+        # Distance search is a mandatory boundary, not just a scoring nudge: a client
+        # asking for "within N km" must not be shown stock beyond it (SOP Step 3
+        # predefined rejection rules).
+        if brief.search_radius_km and prop.distance_km_from_target is not None \
+                and prop.distance_km_from_target > brief.search_radius_km:
+            hard_rejection = True
+            rejection_reasons.append(
+                f"{prop.distance_km_from_target:.1f} km from {brief.primary_suburbs[0] if brief.primary_suburbs else 'target'} "
+                f"exceeds the {brief.search_radius_km:.0f} km search radius")
+
         # Defect #4 Fix: Mandatory House Size Minimum Check
         if prop.house_size_sqm < brief.house_size_min_sqm:
             hard_rejection = True

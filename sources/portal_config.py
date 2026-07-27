@@ -114,11 +114,21 @@ BUILDER_PORTAL_CONFIGS: Dict[str, PortalConfig] = {
 }
 
 
+def normalize_url(u: str) -> str:
+    """CSV links are often scheme-less ('referrer.torsionhomes.au/...', 'www.proxima.com.au').
+    Playwright rejects those, so always return an absolute https URL."""
+    u = (u or "").strip()
+    if not u:
+        return ""
+    return u if "://" in u else "https://" + u.lstrip("/")
+
+
 def config_for_url(portal_url: str) -> Optional[PortalConfig]:
     """Match a builder's portal_url to a known PortalConfig by host, else a generic default."""
     if not portal_url:
         return None
-    host = urlparse(portal_url if "://" in portal_url else "https://" + portal_url).netloc.lower()
+    portal_url = normalize_url(portal_url)
+    host = urlparse(portal_url).netloc.lower()
     for domain, cfg in BUILDER_PORTAL_CONFIGS.items():
         if domain in host:
             return cfg

@@ -73,31 +73,30 @@ class BuilderPortalSource(PropertySource):
         password = builder.get("portal_login_password") or ""
         session_name = "portal_" + re.sub(r"[^a-z0-9]+", "_", builder["builder_name"].lower()).strip("_")
         has_session = (SESSION_DIR / f"{session_name}.json").exists()
-        if not has_session and not password:
-            logger.warning("[%s] skipped: no saved session and no stored password. "
-                           "Run: python portal_login.py \"%s\"", builder["builder_name"], builder["builder_name"])
-            return []
         results: List[Dict[str, Any]] = []
         try:
             scraper = PlaywrightScraper(session_name=session_name)
             with scraper.session():
-                if not self._login(scraper, cfg, email, password):
-                    return []
+                # Try the stock list FIRST — it may be public, or the saved session
+                # may still be valid. Only authenticate if nothing is readable.
                 scraper.goto(cfg.listings_url)
+                st0 = builder["states"][0] if builder.get("states") else filters.get("state", "")
+                probe = extract_listings(scraper.page, builder_hint=builder["builder_name"], state_hint=st0)
+                if not probe and not scraper.page.query_selector_all(cfg.listing_card_selector):
+                    if not (email and password):
+                        logger.warning("[%s] stock list not readable and no credentials stored. "
+                                       "Sign in once: python portal_login.py \"%s\"",
+                                       cfg.name, builder["builder_name"])
+                        return []
+                    if not self._login(scraper, cfg, email, password):
+                        return []
+                    scraper.goto(cfg.listings_url)
+                # Re-probe adaptively (page may have changed after a login) and take
+                # whichever path actually yields listings. A loose generic selector
+                # like 'tr' can "match" rows that hold no readable fields, so match
+                # count alone must never decide.
+                adaptive = extract_listings(scraper.page, builder_hint=builder["builder_name"], state_hint=st0) or probe
                 cards = scraper.page.query_selector_all(cfg.listing_card_selector)
-                if not cards:
-                    # Infer the listing structure from the page instead of failing.
-                    st = builder["states"][0] if builder.get("states") else filters.get("state", "")
-                    adaptive = extract_listings(scraper.page, builder_hint=builder["builder_name"], state_hint=st)
-                    if adaptive:
-                        logger.info("[%s] adaptive extractor found %d listing(s).", cfg.name, len(adaptive))
-                        for a in adaptive:
-                            a["source_channel"] = self.channel_name
-                            a["date_checked"] = datetime.now().strftime("%d/%m/%Y")
-                            a["verified"] = True
-                        return adaptive
-                    logger.warning("[%s] no listings found on %s.", cfg.name, cfg.listings_url)
-                    return []
                 fs = cfg.field_selectors
                 for card in cards:
                     title = scraper.text_or_none(card, fs.get("title", "h3"))
@@ -120,7 +119,18 @@ class BuilderPortalSource(PropertySource):
                         "date_checked": datetime.now().strftime("%d/%m/%Y"),
                         "verified": True,
                     })
-            logger.info("[%s] captured %d live listing(s).", cfg.name, len(results))
+                # Whichever path read more real listings wins.
+                if len(adaptive) > len(results):
+                    for a in adaptive:
+                        a["source_channel"] = self.channel_name
+                        a["date_checked"] = datetime.now().strftime("%d/%m/%Y")
+                        a["verified"] = True
+                    logger.info("[%s] captured %d live listing(s) (adaptive).", cfg.name, len(adaptive))
+                    return adaptive
+            if results:
+                logger.info("[%s] captured %d live listing(s) (mapped selectors).", cfg.name, len(results))
+            else:
+                logger.warning("[%s] no readable listings on %s.", cfg.name, cfg.listings_url)
         except Exception as e:
             logger.exception("[%s] scraper crashed: %s", cfg.name, e)
             return []

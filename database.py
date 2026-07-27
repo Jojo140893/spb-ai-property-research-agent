@@ -129,6 +129,11 @@ class ResearchDatabase:
                     date_checked TEXT
                 )
             """)
+            # land/build price split (SOP Step 6) — added for pre-existing DBs too
+            bcols = [r[1] for r in cursor.execute("PRAGMA table_info(buildings)").fetchall()]
+            for col in ("land_price", "build_price", "extraction_confidence"):
+                if col not in bcols:
+                    cursor.execute(f"ALTER TABLE buildings ADD COLUMN {col} REAL")
 
             conn.commit()
 
@@ -142,8 +147,9 @@ class ResearchDatabase:
                 conn.execute("""
                     INSERT INTO buildings
                     (builder_name, source_channel, lot_address, suburb, state, price, bedrooms,
-                     bathrooms, car_spaces, land_sqm, house_sqm, title_status, source_url, dedup_key, date_checked)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     bathrooms, car_spaces, land_sqm, house_sqm, title_status, source_url, dedup_key, date_checked,
+                     land_price, build_price, extraction_confidence)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     b.get("builder_name", ""), b.get("source_channel", ""), b.get("lot_address", ""),
                     b.get("suburb", ""), b.get("state", ""), float(b.get("advertised_package_price") or b.get("price") or 0),
@@ -151,6 +157,7 @@ class ResearchDatabase:
                     b.get("land_size_sqm"), b.get("house_size_sqm"), b.get("title_status", ""),
                     b.get("source_url_or_ref") or b.get("source_url", ""), key,
                     b.get("date_checked") or datetime.now().strftime("%d/%m/%Y"),
+                    b.get("land_price"), b.get("build_price"), b.get("extraction_confidence"),
                 ))
                 conn.commit()
                 return True

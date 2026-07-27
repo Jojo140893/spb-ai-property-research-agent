@@ -29,9 +29,48 @@ BATHS_RE = re.compile(r"(\d+(?:\.5)?)\s*(?:x\s*)?(?:bath|ba)\b", re.I)
 CARS_RE = re.compile(r"(\d+)\s*(?:x\s*)?(?:car|garage|gge)\b", re.I)
 # 400m2 / 400 sqm / 400 m²
 AREA_RE = re.compile(r"(\d{2,4}(?:\.\d+)?)\s*(?:m2|m²|sqm|sq\.?m)\b", re.I)
-LOT_RE = re.compile(r"\b(lot\s*\d+[A-Za-z]?\b[^,|\n]{0,60})", re.I)
+LOT_RE = re.compile(r"\blot\s*\d+[A-Za-z]?\b", re.I)
 TITLE_RE = re.compile(r"\b(titled|registered|untitled|title\s+(?:due|expected)[^,|\n]{0,30}|q[1-4]\s*20\d{2})\b", re.I)
 AU_STATES = ("QLD", "NSW", "VIC", "SA", "WA", "NT", "ACT", "TAS")
+
+# Explicitly labelled fields (common on real portal stock lists), e.g.
+# "HOUSE SIZE : 209 m2", "LAND PRICE : $ 466,000", "PACKAGE $ 929,934",
+# "LAND REGISTRATION : Aug 2026".
+LBL_LAND_SIZE = re.compile(r"land\s*size\s*:?\s*([\d.]+)\s*(?:m2|m²|sqm)", re.I)
+LBL_HOUSE_SIZE = re.compile(r"(?:house|home|build)\s*size\s*:?\s*([\d.]+)\s*(?:m2|m²|sqm)", re.I)
+LBL_LAND_PRICE = re.compile(r"land\s*price\s*:?\s*\$?\s*([\d,]+)", re.I)
+LBL_BUILD_PRICE = re.compile(r"(?:house|home|build)\s*price\s*:?\s*\$?\s*([\d,]+)", re.I)
+LBL_PACKAGE_PRICE = re.compile(r"(?:package|total)\s*(?:price)?\s*:?\s*\$?\s*([\d,]+)", re.I)
+LBL_REGISTRATION = re.compile(r"(?:land\s*)?registration\s*:?\s*([A-Za-z]{3,9}\s*20\d{2}|q[1-4]\s*20\d{2})", re.I)
+# Unlabelled bed/bath/car triple: three small numbers on their own lines/cells.
+BARE_TRIPLE_RE = re.compile(r"^\s*(\d{1,2})\s*$")
+
+
+def _money(s: Optional[str]) -> Optional[float]:
+    if not s:
+        return None
+    try:
+        v = float(s.replace(",", ""))
+        return v if v > 0 else None
+    except ValueError:
+        return None
+
+
+_GEO_SUBURBS = None
+
+
+def _suburb_lookup():
+    """Lazy set of known AU suburb names (from data/au_suburbs.csv) for matching
+    suburb lines that carry no state code."""
+    global _GEO_SUBURBS
+    if _GEO_SUBURBS is None:
+        try:
+            from geo import SuburbGeoIndex
+            idx = SuburbGeoIndex()
+            _GEO_SUBURBS = {s.lower() for (s, _st) in idx._index.keys()} if idx.loaded else set()
+        except Exception:
+            _GEO_SUBURBS = set()
+    return _GEO_SUBURBS
 
 
 def _clean(s: Optional[str]) -> str:
@@ -63,48 +102,81 @@ def parse_fields(text: str) -> Dict[str, Any]:
     Line-aware: address and suburb are read from the individual line they appear
     on, so they never bleed across line breaks into neighbouring fields.
     """
-    lines = [_clean(l) for l in (text or "").splitlines() if _clean(l)]
+    raw_lines = [l for l in (text or "").replace("\t", "\n").splitlines()]
+    lines = [_clean(l) for l in raw_lines if _clean(l)]
     t = _clean(text)
-    areas = [float(a) for a in AREA_RE.findall(t)]
-    areas_sorted = sorted(areas)
-    land = house = None
-    if len(areas_sorted) >= 2:
-        # heuristic: the larger area is the land, the smaller the house
-        house, land = areas_sorted[0], areas_sorted[-1]
-    elif len(areas_sorted) == 1:
-        land = areas_sorted[0]
 
-    # Address: from the line that mentions the lot (not across line breaks).
-    lot = None
+    # --- sizes: prefer explicit labels, else infer from bare areas ---
+    m_land, m_house = LBL_LAND_SIZE.search(t), LBL_HOUSE_SIZE.search(t)
+    land = float(m_land.group(1)) if m_land else None
+    house = float(m_house.group(1)) if m_house else None
+    if land is None and house is None:
+        areas_sorted = sorted(float(a) for a in AREA_RE.findall(t))
+        if len(areas_sorted) >= 2:
+            house, land = areas_sorted[0], areas_sorted[-1]
+        elif len(areas_sorted) == 1:
+            land = areas_sorted[0]
+
+    # Address: the whole cell/line containing "Lot N" (e.g. "Beaumoor Estate, Lot 519").
+    lot_address = None
     for ln in lines:
-        m = LOT_RE.search(ln)
-        if m:
-            lot = m
+        if LOT_RE.search(ln):
+            lot_address = ln[:120]
             break
-    title = TITLE_RE.search(t)
 
-    # Suburb/state: from the line holding the state code; take the 1-2 words
-    # immediately before it (handles "Coomera, QLD" and "Hope Island QLD").
+    # Title / registration status
+    reg = LBL_REGISTRATION.search(t)
+    title = TITLE_RE.search(t)
+    title_status = _clean(reg.group(1)) if reg else (_clean(title.group(1)) if title else None)
+
+    # Suburb/state: prefer an explicit state code; else match a line against the
+    # known-AU-suburb dataset (portals often print just "BEAUDESERT").
     suburb = state = None
     state_pat = re.compile(r"([A-Z][A-Za-z'\-]+(?:\s+[A-Z][A-Za-z'\-]+)?)\s*,?\s+(" + "|".join(AU_STATES) + r")\b")
     for ln in lines:
         m = state_pat.search(ln)
         if m:
-            cand = _clean(m.group(1))
-            # drop a leading lot/street fragment if the line was "Lot 3 Foo St Coomera QLD"
-            cand = re.sub(r"^.*?\b(?:st|street|rd|road|ave|avenue|dr|drive|cres|court|ct)\b\s*", "", cand, flags=re.I)
+            cand = re.sub(r"^.*?\b(?:st|street|rd|road|ave|avenue|dr|drive|cres|court|ct)\b\s*", "",
+                          _clean(m.group(1)), flags=re.I)
             suburb, state = _clean(cand), m.group(2)
             break
+    if not suburb:
+        known = _suburb_lookup()
+        for ln in lines[:6]:  # suburb is normally near the top of a card
+            cand = _clean(re.sub(r"[^A-Za-z '\-]", "", ln))
+            if 3 <= len(cand) <= 30 and cand.lower() in known:
+                suburb = cand.title()
+                break
+
+    # Beds/baths/cars: labelled if possible, else the bare "4 / 2 / 2" triple.
+    beds, baths, cars = _int(BEDS_RE, t), _int(BATHS_RE, t), _int(CARS_RE, t)
+    if beds is None:
+        bare = [int(m.group(1)) for ln in lines if (m := BARE_TRIPLE_RE.match(ln)) and int(m.group(1)) <= 12]
+        if len(bare) >= 3:
+            beds, baths, cars = bare[0], bare[1], bare[2]
+        elif len(bare) == 2:
+            beds, baths = bare[0], bare[1]
+
+    # Prices: prefer a labelled package/total price; keep land + build separately
+    # (SOP Step 6 needs the breakdown, not just the headline).
+    pkg = _money(LBL_PACKAGE_PRICE.search(t).group(1)) if LBL_PACKAGE_PRICE.search(t) else None
+    land_price = _money(LBL_LAND_PRICE.search(t).group(1)) if LBL_LAND_PRICE.search(t) else None
+    build_price = _money(LBL_BUILD_PRICE.search(t).group(1)) if LBL_BUILD_PRICE.search(t) else None
+    price = pkg or parse_price(t)
+    if price is None and land_price and build_price:
+        price = land_price + build_price
 
     return {
-        "advertised_package_price": parse_price(t),
-        "bedrooms": _int(BEDS_RE, t),
-        "bathrooms": _int(BATHS_RE, t),
-        "car_spaces": _int(CARS_RE, t),
+        "advertised_package_price": price,
+        "land_price": land_price,
+        "build_price": build_price,
+        "bedrooms": beds,
+        "bathrooms": baths,
+        "car_spaces": cars,
         "land_size_sqm": land,
         "house_size_sqm": house,
-        "lot_address": _clean(lot.group(1)) if lot else None,
-        "title_status": _clean(title.group(1)) if title else None,
+        "lot_address": lot_address,
+        "title_status": title_status,
         "suburb": suburb,
         "state": state,
     }

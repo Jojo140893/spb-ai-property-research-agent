@@ -115,8 +115,14 @@ class PlaywrightScraper:
             self._pw = self._browser = self._context = self.page = None
 
     def save_session(self):
+        """Refresh an EXISTING session file only.
+
+        Scrape runs must never create a new session file: an anonymous visit would
+        leave a cookie jar that later looks like 'already logged in' and suppresses
+        the real login path. Only portal_login.py creates sessions.
+        """
         try:
-            if self._context:
+            if self._context and self.session_file.exists():
                 self._context.storage_state(path=str(self.session_file))
         except Exception as e:  # pragma: no cover
             logger.warning("Could not persist session %s: %s", self.session_name, e)

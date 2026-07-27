@@ -22,6 +22,7 @@ import sys
 import argparse
 from pathlib import Path
 
+import logging
 import config
 from database import ResearchDatabase
 from vendor_import import VendorImporter
@@ -29,6 +30,7 @@ from sources.website_scraper import WebsiteAssetScraper
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format='    %(levelname)s %(message)s')
     ap = argparse.ArgumentParser()
     ap.add_argument("csv", nargs="?", default=str(config.DRIVE_INPUT_DIR / "vendors.csv"))
     ap.add_argument("--limit", type=int, default=0)
