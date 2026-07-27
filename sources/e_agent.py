@@ -15,8 +15,9 @@ from typing import List, Dict, Any
 
 import config
 from sources.base import PropertySource
-from sources.scraper_base import PlaywrightScraper, ScraperError, parse_price, parse_int, PLAYWRIGHT_AVAILABLE
+from sources.scraper_base import PlaywrightScraper, ScraperError, parse_price, parse_int, PLAYWRIGHT_AVAILABLE, SESSION_DIR
 from sources.portal_config import EAGENT_CONFIG
+from sources.adaptive_extract import extract_listings
 
 logger = logging.getLogger("spb.scraper.eagent")
 
@@ -44,7 +45,11 @@ class EAgentSource(PropertySource):
         page = scraper.page
         scraper.goto(self.cfg.login_url)
         if scraper.is_logged_in(self.cfg.logged_in_selector):
-            return True  # reused a saved session
+            return True  # reused a saved session (created by portal_login.py)
+        if not (self.username and self.password):
+            logger.error("E-Agent: no saved session and no credentials. "
+                         "Run: python portal_login.py e_agent")
+            return False
         try:
             if self.cfg.open_login_selector:
                 try:
@@ -76,11 +81,18 @@ class EAgentSource(PropertySource):
         scraper.goto(self.cfg.listings_url)
         cards = page.query_selector_all(self.cfg.listing_card_selector)
         if not cards:
-            logger.warning(
-                "E-Agent: no listing cards matched '%s'. Selectors likely need re-mapping "
-                "against the live authenticated DOM (portal_config.EAGENT_CONFIG).",
-                self.cfg.listing_card_selector,
-            )
+            # No hand-mapped selector matched — infer the listing structure from the
+            # page itself instead of failing (no per-portal mapping required).
+            adaptive = extract_listings(page, builder_hint="", state_hint="")
+            if adaptive:
+                logger.info("E-Agent: adaptive extractor found %d listing(s).", len(adaptive))
+                for a in adaptive:
+                    a["source_channel"] = self.channel_name
+                    a["date_checked"] = datetime.now().strftime("%d/%m/%Y")
+                    a["verified"] = True
+                return adaptive
+            logger.warning("E-Agent: no listings found on %s (page may need a different stock-list URL).",
+                           self.cfg.listings_url)
             return []
         results = []
         fs = self.cfg.field_selectors
@@ -111,8 +123,11 @@ class EAgentSource(PropertySource):
         if not PLAYWRIGHT_AVAILABLE:
             logger.error("E-Agent search skipped: Playwright not installed.")
             return []
-        if not self.username or not self.password:
-            logger.warning("E-Agent search skipped: E_AGENT_USERNAME / E_AGENT_PASSWORD not set in environment.")
+        # A saved session (from portal_login.py) is enough — credentials optional.
+        has_session = (SESSION_DIR / "e_agent.json").exists()
+        if not has_session and not (self.username and self.password):
+            logger.warning("E-Agent skipped: no saved session and no credentials. "
+                           "Run: python portal_login.py e_agent")
             return []
         try:
             scraper = PlaywrightScraper(session_name="e_agent")

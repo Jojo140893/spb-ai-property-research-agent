@@ -1,151 +1,133 @@
-# SPB AI Property Research Agent — Operator Runbook (for Jojo)
+# SPB AI Property Research Agent — Runbook
 
-How to run the data harvest and finish the one-time selector confirmation so the
-credentialed sources (E-Agent + builder portals) actually return listings.
+Two commands get you all the building stock. No selector mapping, no developer
+required.
 
-> **Security note:** the vendor CSV and `.env` contain live passwords. They are
-> gitignored — never commit them. The committed `Book1(Builders) List.csv` still
-> holds old credentials from earlier; those should be rotated.
+> **Security:** `drive_input/vendors.csv` and `.env` hold live passwords and are
+> gitignored — never commit them. The old committed `Book1(Builders) List.csv`
+> still has real passwords in git history; rotate those.
 
 ---
 
-## 1. One-time setup
+## Setup (once)
 
 ```bash
-# from the repo root
-python -m venv .venv && .venv\Scripts\activate      # Windows (use source .venv/bin/activate on mac/linux)
+python -m venv .venv && .venv\Scripts\activate      # mac/linux: source .venv/bin/activate
 pip install -r requirements.txt
 python -m playwright install chromium
+python run_tests.py                                  # expect 17/17 PASS
 ```
 
-Put the current vendor list here (gitignored):
+Put the vendor list at **`drive_input/vendors.csv`** (the "Agent 2 - Book1(Builders) List" file).
 
-```
-drive_input/vendors.csv
-```
+---
 
-That's the "Agent 2 - Book1(Builders) List" CSV. The app reads builder
-credentials from it automatically (E-Agent login + the direct-portal logins).
-
-Optional `.env` (overrides the CSV if you prefer env creds):
-
-```
-E_AGENT_USERNAME=...
-E_AGENT_PASSWORD=...
-SCRAPER_HEADLESS=False        # watch the browser while confirming selectors
-SCRAPER_NAV_TIMEOUT_MS=55000
-```
-
-Sanity check everything is wired:
+## Step 1 — Sign in once per portal
 
 ```bash
-python run_tests.py          # expect 16/16 PASS
+python portal_login.py
 ```
 
----
-
-## 2. What harvests what
-
-| Command | Source | Into |
-|---|---|---|
-| `python harvest_buildings.py` | E-Agent (1 login → 14 builders) + 6 direct portals (Paramount, FRD, Torsion, Hermitage, Bathla, Proxima) | `buildings` table |
-| `python import_and_scrape.py drive_input/vendors.csv` | Public builder websites (brochures/fliers/booklets PDFs) | `builder_assets` table + `assets/<builder>/` |
-
-**Skipped by design:** the 9 email-only builders (stock arrives by email) and
-Shape Homes (weekly Drive PDF).
-
-View results in the dashboard:
+A real browser window opens at each portal. **You sign in** (type it, or let your
+password manager fill it), then press Enter in the terminal. The session is saved
+to `.sessions/` and reused from then on — no password is stored by the tool or
+needed again until the session expires.
 
 ```bash
-python server.py             # http://localhost:8000  → "Building Stock" and "Vendor Brochures & Details" tabs
+python portal_login.py e_agent      # just one portal
+python portal_login.py --status     # which sessions exist
+python portal_login.py --verify     # actually check each one is still logged in
 ```
 
----
+Portals: **E-Agent** (covers 14 builders), Paramount Living, FRD Homes, Torsion
+Homes, Hermitage Homes, Bathla, Proxima.
 
-## 3. Run the building-stock harvest
+## Step 2 — Harvest all the stock
 
 ```bash
-python harvest_buildings.py                 # E-Agent + all portals
-python harvest_buildings.py --eagent-only   # just E-Agent
-python harvest_buildings.py --portals-only  # just the 6 portals
+python harvest_buildings.py
 ```
 
-It logs in with the CSV credentials, pulls the full stock list, and stores each
-listing (deduped) in the `buildings` table. Re-running is safe — duplicates are
-ignored by a builder+lot+suburb+price key.
+Logs in using the saved sessions, pulls every listing, and stores it in the
+`buildings` table (deduped by builder + lot + suburb + price). Safe to re-run.
 
-**Expected on the very first run:** some sources will print
-
-```
-[E-Agent] no listing cards matched '<selector>' — selectors need re-mapping
+```bash
+python harvest_buildings.py --eagent-only
+python harvest_buildings.py --portals-only
 ```
 
-That means login worked but the code doesn't yet know which HTML elements hold
-each listing on the logged-in page. Fix that once per source (Section 4).
+## Step 3 — Look at it
+
+```bash
+python server.py        # http://localhost:8000
+```
+
+- **Building Stock** tab — everything harvested in Step 2
+- **Vendor Brochures & Details** tab — brochures + extracted building details
+- **Research & Scoring** tab — the client-facing SOP pipeline
 
 ---
 
-## 4. One-time selector confirmation (the only manual step)
+## Also available
 
-The login selectors are confirmed; the **listing-card** selectors are best-effort
-placeholders flagged `verified=False` in `sources/portal_config.py`. Map them
-against the real logged-in page:
+**Brochures from public builder websites** (no login needed):
 
-1. Run with a visible browser so you can watch:
-   ```bash
-   set SCRAPER_HEADLESS=False   &&   python harvest_buildings.py --eagent-only
-   ```
-2. When the stock list is on screen, open DevTools (F12) and inspect one listing
-   "card" (the repeated block for a single house/lot). Note:
-   - the selector that matches **one listing** (→ `listing_card_selector`)
-   - within a card, the elements holding **title/address, price, beds, baths,
-     cars, suburb** (→ `field_selectors`)
-   - the `listings_url` (the exact stock-list page URL after login)
-   - a `logged_in_selector` — any element only present when logged in (e.g. a
-     "Log Out" link) so the saved session is detected on later runs.
-3. Edit that source's entry in `sources/portal_config.py`, fill the selectors,
-   and set `verified=True`.
-4. Re-run `python harvest_buildings.py` — listings should now populate.
+```bash
+python import_and_scrape.py drive_input/vendors.csv
+python import_and_scrape.py drive_input/vendors.csv --retry-empty   # only builders with nothing yet
+```
 
-**If you'd rather hand it back to me to map:** just save the logged-in stock-list
-page and send it over —
-`right-click → Save As → "Webpage, Complete"` (or DevTools → Elements → copy
-`outerHTML`) — drop the `.html` into `drive_input/` and I'll write the exact
-selectors for that portal. One file per portal is enough.
+Already run once: 56 brochures from WB Home Builders, Celebration Homes, Dale
+Alcock, 101 Residential and Novus Homes, each with building details extracted
+from the PDF.
 
-Portals to confirm (each has a stub in `portal_config.py`):
-E-Agent, Paramount Living, FRD Homes, Torsion Homes, Hermitage Homes, Bathla, Proxima.
+**Market comparables** for benchmarking: drop CoreLogic/REA exports at
+`drive_input/comparables*.csv` with columns
+`suburb,state,bedrooms,price,rent_weekly,land_sqm,source,date_checked`.
+Without them, properties are honestly reported as "Unbenchmarked — Pending Market Data".
 
 ---
 
-## 5. Notes & gotchas
+## How listings are read (no selector mapping)
 
-- **Sessions are cached** in `.sessions/` (gitignored) so you won't re-login every
-  run. Delete a session file to force a fresh login.
-- **Bot protection:** if a portal blocks headless Chromium, run with
-  `SCRAPER_HEADLESS=False` once to pass the challenge; the saved session carries
-  the pass forward.
-- **Torsion** is a SharePoint stock-list share link (no login) — it may just need
-  the `listings_url` pointed at the shared folder and the row selector confirmed.
-- **Public-website brochure harvest** already ran once: 56 brochures from 5
-  builders (WB Home Builders, Celebration Homes, Dale Alcock, 101 Residential,
-  Novus Homes), each with building details extracted. Re-run
-  `import_and_scrape.py` any time to refresh; dedup by file hash prevents repeats.
-- **Nothing is fabricated:** a source that returns nothing stores nothing.
+The scrapers first try any hand-mapped selectors in `sources/portal_config.py`.
+If none match — which is normal for a portal nobody has mapped — an **adaptive
+extractor** (`sources/adaptive_extract.py`) infers the listings from the page
+itself: it finds the repeated blocks containing a price and reads address,
+suburb, beds/baths/cars, land/house m² and title status out of each one. It is
+tested against deliberately different unknown layouts (card grid and plain
+table), so new or redesigned portals generally work with no code change.
+
+Each listing carries an `extraction_confidence`. Nothing is ever invented: a
+field that can't be found stays empty, and a portal that yields nothing records
+nothing.
 
 ---
 
-## 6. Where things live
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `no saved session and no credentials` | `python portal_login.py <name>` |
+| Harvest returns 0 for one portal | `python portal_login.py --verify` — session likely expired; sign in again |
+| Portal blocks the automated browser | Sign in via `portal_login.py` (it uses a real visible browser); the saved session carries the pass |
+| Listings look wrong/partial | Check `extraction_confidence`; optionally hand-map that portal in `sources/portal_config.py` and set `verified=True` |
+| Torsion is a SharePoint share link | If the stock list is a folder view, point `listings_url` at it in `portal_config.py` |
+
+**Not harvested by design:** the 9 email-only builders (stock arrives by email)
+and Shape Homes (weekly Google Drive PDF).
+
+---
+
+## File map
 
 | Path | What |
 |---|---|
-| `harvest_buildings.py` | building-stock harvester (E-Agent + portals) |
-| `import_and_scrape.py` | website brochure harvester |
-| `sources/portal_config.py` | **per-portal selectors — the file you edit in Section 4** |
-| `sources/e_agent.py`, `sources/builder_portals.py`, `sources/website_scraper.py` | the scrapers |
+| `portal_login.py` | one-time interactive sign-in → saves sessions |
+| `harvest_buildings.py` | pulls all stock from E-Agent + portals |
+| `import_and_scrape.py` | vendor import + website brochure harvest |
+| `sources/adaptive_extract.py` | layout-agnostic listing extractor |
+| `sources/portal_config.py` | optional per-portal selector overrides |
 | `database.py` | `buildings`, `builder_assets`, `builders` tables |
 | `drive_input/vendors.csv` | vendor list + credentials (gitignored) |
-| `assets/<builder>/` | downloaded brochures (gitignored) |
-| `spb_research_audit.db` | SQLite DB (gitignored) |
-
-Questions on any portal's DOM → send me the saved HTML and I'll map it.
+| `.sessions/`, `assets/`, `*.db` | runtime data (gitignored) |

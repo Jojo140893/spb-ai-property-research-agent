@@ -25,6 +25,7 @@ from tests.test_vendor_pipeline import (
     test_website_scraper_downloads_and_dedupes
 )
 from tests.test_harvest_buildings import _run_without_pytest as test_harvest_buildings
+from tests.test_adaptive_extract import test_adaptive_extracts_from_unknown_layouts
 
 
 def run_all_tests():
@@ -49,6 +50,7 @@ def run_all_tests():
         ("Vendor: importer parses messy multi-section CSV", test_importer_parses_messy_multisection_csv),
         ("Vendor: website scraper downloads + dedupes", test_website_scraper_downloads_and_dedupes),
         ("Buildings: harvest runner stores + dedupes", test_harvest_buildings),
+        ("Adaptive: extracts listings from unknown layouts", test_adaptive_extracts_from_unknown_layouts),
     ]
 
     passed = 0

@@ -13,12 +13,14 @@ fabricated — a failed portal contributes zero listings, not fake ones.
 """
 
 import logging
+import re
 from datetime import datetime
 from typing import List, Dict, Any
 
 from sources.base import PropertySource
-from sources.scraper_base import PlaywrightScraper, parse_price, parse_int, PLAYWRIGHT_AVAILABLE
+from sources.scraper_base import PlaywrightScraper, parse_price, parse_int, PLAYWRIGHT_AVAILABLE, SESSION_DIR
 from sources.portal_config import config_for_url
+from sources.adaptive_extract import extract_listings
 from builder_registry import BuilderRegistry
 
 logger = logging.getLogger("spb.scraper.portals")
@@ -36,7 +38,11 @@ class BuilderPortalSource(PropertySource):
         page = scraper.page
         scraper.goto(cfg.login_url)
         if cfg.logged_in_selector and scraper.is_logged_in(cfg.logged_in_selector):
-            return True
+            return True  # reused a saved session (created by portal_login.py)
+        if not (email and password):
+            logger.error("[%s] no saved session and no credentials. Run: python portal_login.py \"%s\"",
+                         cfg.name, cfg.name)
+            return False
         try:
             if cfg.open_login_selector:
                 try:
@@ -65,11 +71,12 @@ class BuilderPortalSource(PropertySource):
             logger.warning("[%s] portal selectors are UNVERIFIED — confirm against live DOM in portal_config.py.", cfg.name)
         email = builder.get("portal_login_email") or ""
         password = builder.get("portal_login_password") or ""
-        if not password:
-            logger.warning("[%s] skipped: no portal password stored for this builder.", builder["builder_name"])
+        session_name = "portal_" + re.sub(r"[^a-z0-9]+", "_", builder["builder_name"].lower()).strip("_")
+        has_session = (SESSION_DIR / f"{session_name}.json").exists()
+        if not has_session and not password:
+            logger.warning("[%s] skipped: no saved session and no stored password. "
+                           "Run: python portal_login.py \"%s\"", builder["builder_name"], builder["builder_name"])
             return []
-
-        session_name = "portal_" + "".join(c for c in builder["builder_name"].lower() if c.isalnum())
         results: List[Dict[str, Any]] = []
         try:
             scraper = PlaywrightScraper(session_name=session_name)
@@ -79,8 +86,17 @@ class BuilderPortalSource(PropertySource):
                 scraper.goto(cfg.listings_url)
                 cards = scraper.page.query_selector_all(cfg.listing_card_selector)
                 if not cards:
-                    logger.warning("[%s] no listing cards matched '%s' — selectors need re-mapping.",
-                                   cfg.name, cfg.listing_card_selector)
+                    # Infer the listing structure from the page instead of failing.
+                    st = builder["states"][0] if builder.get("states") else filters.get("state", "")
+                    adaptive = extract_listings(scraper.page, builder_hint=builder["builder_name"], state_hint=st)
+                    if adaptive:
+                        logger.info("[%s] adaptive extractor found %d listing(s).", cfg.name, len(adaptive))
+                        for a in adaptive:
+                            a["source_channel"] = self.channel_name
+                            a["date_checked"] = datetime.now().strftime("%d/%m/%Y")
+                            a["verified"] = True
+                        return adaptive
+                    logger.warning("[%s] no listings found on %s.", cfg.name, cfg.listings_url)
                     return []
                 fs = cfg.field_selectors
                 for card in cards:
