@@ -26,6 +26,9 @@ class PortalConfig:
     email_selector: str = "input[type=email]"
     password_selector: str = "input[type=password]"
     submit_selector: str = "button:has-text('Log In')"
+    # Two-step logins (email -> Continue -> password). Left blank for single-step forms.
+    continue_selector: str = ""
+    login_verified: bool = False           # login field selectors confirmed against the live page
     logged_in_selector: str = ""           # element only present once authenticated
     # Listings
     listings_url: str = ""                  # page/route holding the stock list
@@ -68,8 +71,13 @@ EAGENT_CONFIG = PortalConfig(
 BUILDER_PORTAL_CONFIGS: Dict[str, PortalConfig] = {
     "portal.hermitagehomes.com.au": PortalConfig(
         name="Hermitage Homes",
-        login_url="https://portal.hermitagehomes.com.au/",
-        logged_in_selector="text=Log Out, text=Dashboard",
+        login_url="https://portal.hermitagehomes.com.au/login",
+        # confirmed live 2026-07-27: plain username/password form (NOT type=email)
+        email_selector="input[name='username']",
+        password_selector="input[name='password']",
+        submit_selector="button:has-text('LOG IN'), button:has-text('Log In')",
+        login_verified=True,
+        logged_in_selector="text=Log Out, text=Logout, text=Dashboard",
         listings_url="https://portal.hermitagehomes.com.au/",
         listing_card_selector=".property-card, .listing, tr.stock-row",
         field_selectors={"title": ".title, td.address", "price": ".price, td.price"},
@@ -77,8 +85,14 @@ BUILDER_PORTAL_CONFIGS: Dict[str, PortalConfig] = {
     ),
     "portal.bathla.com.au": PortalConfig(
         name="Bathla",
-        login_url="https://portal.bathla.com.au/",
-        logged_in_selector="text=Logout, text=Dashboard",
+        login_url="https://portal.bathla.com.au/login",
+        # confirmed live 2026-07-27: two-step - email, Continue, then password
+        email_selector="input[name='email'], input[type=email]",
+        continue_selector="button:has-text('Continue')",
+        password_selector="input[type=password]",
+        submit_selector="button:has-text('Continue'), button:has-text('Sign in'), button[type=submit]",
+        login_verified=True,
+        logged_in_selector="text=Logout, text=Log Out, text=Dashboard",
         listings_url="https://portal.bathla.com.au/",
         listing_card_selector=".property-card, .stock-item, tr.stock-row",
         field_selectors={"title": ".title, td.address", "price": ".price, td.price"},
@@ -87,7 +101,13 @@ BUILDER_PORTAL_CONFIGS: Dict[str, PortalConfig] = {
     "partners.frdhomes.com.au": PortalConfig(
         name="FRD Homes",
         login_url="https://partners.frdhomes.com.au/login",
-        logged_in_selector="text=Logout, text=Dashboard",
+        # confirmed live 2026-07-27: two-step - #email then 'Sign in with email'
+        email_selector="#email, input[name='user[email]']",
+        continue_selector="button:has-text('Sign in with email')",
+        password_selector="input[type=password]",
+        submit_selector="button[type=submit], button:has-text('Sign in')",
+        login_verified=True,
+        logged_in_selector="text=Logout, text=Log Out, text=Dashboard",
         listings_url="https://partners.frdhomes.com.au/",
         listing_card_selector=".property-card, .stock-item",
         field_selectors={"title": ".title", "price": ".price"},
@@ -96,6 +116,11 @@ BUILDER_PORTAL_CONFIGS: Dict[str, PortalConfig] = {
     "paramountliving.com.au": PortalConfig(
         name="Paramount Living",
         login_url="https://paramountliving.com.au/?auth=1&redirect=https%3A%2F%2Fparamountliving.com.au%2Fagent-portal%2F",
+        # confirmed live 2026-07-27: Gravity-Forms style #input_1 (username, NOT email) + #input_2
+        email_selector="#input_1",
+        password_selector="#input_2",
+        submit_selector="button:has-text('Login'), input[value='Login'], button[type=submit]",
+        login_verified=True,
         logged_in_selector="text=Log Out, text=Logout, text=Agent Portal",
         listings_url="https://paramountliving.com.au/agent-portal/",
         listing_card_selector=".property-card, .package, .listing, article",

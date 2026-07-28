@@ -51,6 +51,16 @@ class BuilderPortalSource(PropertySource):
                 except Exception:
                     pass
             page.fill(cfg.email_selector, email, timeout=10000)
+            # Two-step portals (Bathla, FRD): submit the identifier first, then the
+            # password appears on the next screen.
+            if cfg.continue_selector and not page.query_selector(cfg.password_selector):
+                try:
+                    page.click(cfg.continue_selector, timeout=8000)
+                    page.wait_for_selector(cfg.password_selector, timeout=15000)
+                    scraper.throttle()
+                except Exception as e:
+                    logger.error("[%s] two-step login stalled after the identifier step: %s", cfg.name, e)
+                    return False
             page.fill(cfg.password_selector, password, timeout=10000)
             page.click(cfg.submit_selector, timeout=10000)
             page.wait_for_load_state("networkidle", timeout=20000)

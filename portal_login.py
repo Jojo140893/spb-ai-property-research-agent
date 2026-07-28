@@ -109,7 +109,31 @@ _LOGGED_IN_JS = r"""
 """
 
 
-def capture_auto(only: str = "", wait_minutes: int = 10):
+def _open_login_form(page, name: str):
+    """Click through to the actual email/password form so the operator lands on the
+    fields directly instead of a signup modal. Navigation only — never fills them."""
+    steps = [
+        "button:has-text('Already a member')", "button:has-text('Log In')",
+        "a:has-text('Log In')", "button:has-text('Sign In')",
+        "button:has-text('Log in with Email')", "button:has-text('Sign in with email')",
+    ]
+    for sel in steps:
+        try:
+            if page.query_selector("input[type=password]"):
+                return True  # password field already visible — nothing to click
+            el = page.query_selector(sel)
+            if el and el.is_visible():
+                el.click()
+                page.wait_for_timeout(1200)
+        except Exception:
+            continue
+    try:
+        return page.query_selector("input[type=password]") is not None
+    except Exception:
+        return False
+
+
+def capture_auto(only: str = "", wait_minutes: int = 45):
     """Open a visible browser per portal and save the session AS SOON AS you are
     signed in — no terminal keypress needed (works when launched by an agent).
 
@@ -146,6 +170,11 @@ def capture_auto(only: str = "", wait_minutes: int = 10):
             saved = False
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(2500)
+                if _open_login_form(page, name):
+                    print("    Login form is open — type your password and sign in.")
+                else:
+                    print("    (couldn't auto-open the form; click Log In in the window)")
             except Exception as e:
                 print(f"    (slow load: {e})")
             deadline = time.time() + wait_minutes * 60
