@@ -143,8 +143,34 @@ class PlaywrightScraper:
         except Exception:
             return None
 
+    # Robust authenticated-state check: look for logout/account markers in the DOM.
+    _LOGGED_IN_JS = r"""
+    () => {
+      const t = (document.body ? document.body.innerText : '').toLowerCase();
+      const ctrls = [...document.querySelectorAll('a,button')].map(e => (e.innerText||'').toLowerCase());
+      const markers = ['log out','logout','sign out','signout','my account','my profile','dashboard'];
+      const hasMarker = ctrls.some(l => markers.some(m => l.includes(m))) || markers.some(m => t.includes(m));
+      const loginish = /sign in|log in|login|password/.test(t) && !hasMarker;
+      return hasMarker && !loginish;
+    }
+    """
+
     def is_logged_in(self, logged_in_selector: str) -> bool:
+        """True if the page looks authenticated.
+
+        NOTE: a config value like "text=Log Out, text=My Account" is NOT a valid
+        single Playwright selector — passing it whole makes the text engine search
+        for the literal string "Log Out, text=My Account", which never matches and
+        makes every login look like a failure. Split it and try each alternative,
+        then fall back to a DOM heuristic.
+        """
+        for sel in [s.strip() for s in (logged_in_selector or "").split(",") if s.strip()]:
+            try:
+                if self.page.query_selector(sel) is not None:
+                    return True
+            except Exception:
+                continue
         try:
-            return self.page.query_selector(logged_in_selector) is not None
+            return bool(self.page.evaluate(self._LOGGED_IN_JS))
         except Exception:
             return False
