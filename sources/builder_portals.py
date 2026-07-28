@@ -21,6 +21,7 @@ from sources.base import PropertySource
 from sources.scraper_base import PlaywrightScraper, parse_price, parse_int, PLAYWRIGHT_AVAILABLE, SESSION_DIR
 from sources.portal_config import config_for_url
 from sources.adaptive_extract import extract_listings
+from secrets_store import get_credentials
 from builder_registry import BuilderRegistry
 
 logger = logging.getLogger("spb.scraper.portals")
@@ -79,9 +80,14 @@ class BuilderPortalSource(PropertySource):
             return []
         if not cfg.verified:
             logger.warning("[%s] portal selectors are UNVERIFIED — confirm against live DOM in portal_config.py.", cfg.name)
-        email = builder.get("portal_login_email") or ""
-        password = builder.get("portal_login_password") or ""
         session_name = "portal_" + re.sub(r"[^a-z0-9]+", "_", builder["builder_name"].lower()).strip("_")
+        # Credentials at RUN TIME: OS vault -> env/.env -> vendor CSV.
+        email, password, cred_source = get_credentials(
+            session_name,
+            (builder.get("portal_login_email") or "", builder.get("portal_login_password") or ""),
+        )
+        if email:
+            logger.info("[%s] credentials resolved from %s", cfg.name, cred_source)
         has_session = (SESSION_DIR / f"{session_name}.json").exists()
         results: List[Dict[str, Any]] = []
         try:

@@ -18,6 +18,7 @@ from sources.base import PropertySource
 from sources.scraper_base import PlaywrightScraper, ScraperError, parse_price, parse_int, PLAYWRIGHT_AVAILABLE, SESSION_DIR
 from sources.portal_config import EAGENT_CONFIG
 from sources.adaptive_extract import extract_listings
+from secrets_store import get_credentials
 
 logger = logging.getLogger("spb.scraper.eagent")
 
@@ -25,17 +26,20 @@ logger = logging.getLogger("spb.scraper.eagent")
 class EAgentSource(PropertySource):
     def __init__(self, registry=None):
         self.cfg = EAGENT_CONFIG
-        # Prefer explicit env credentials; otherwise fall back to the E-Agent login
-        # stored against any E-Agent builder in the vendor CSV (via the registry).
-        self.username = config.E_AGENT_USERNAME
-        self.password = config.E_AGENT_PASSWORD
-        if (not self.username or not self.password) and registry is not None:
+        # Credentials resolve at RUN TIME: OS vault -> env/.env -> vendor CSV.
+        # Nothing is hardcoded and the plaintext never has to live in the repo.
+        csv_user = csv_pass = ""
+        if registry is not None:
             for b in registry.get_all_builders():
                 if b.get("is_on_e_agent") and b.get("portal_login_email") and b.get("portal_login_password") \
                         and "e-agent" in (b.get("portal_url") or "").lower():
-                    self.username = self.username or b["portal_login_email"]
-                    self.password = self.password or b["portal_login_password"]
+                    csv_user, csv_pass = b["portal_login_email"], b["portal_login_password"]
                     break
+        csv_user = csv_user or config.E_AGENT_USERNAME
+        csv_pass = csv_pass or config.E_AGENT_PASSWORD
+        self.username, self.password, self.cred_source = get_credentials("e_agent", (csv_user, csv_pass))
+        if self.username:
+            logger.info("E-Agent credentials resolved from %s", self.cred_source)
 
     @property
     def channel_name(self) -> str:

@@ -22,7 +22,39 @@ Put the vendor list at **`drive_input/vendors.csv`** (the "Agent 2 - Book1(Build
 
 ---
 
-## Step 1 — Sign in once per portal
+## Step 1 — Credentials (pick ONE)
+
+### Option A (recommended): store them in the OS vault, agent runs unattended
+
+```bash
+pip install keyring
+python setup_credentials.py            # hidden prompts -> Windows Credential Manager
+python setup_credentials.py --status   # shows where each credential lives (masked)
+```
+
+Then `harvest_buildings.py` authenticates by itself every run — no sign-in, no
+typing, works from Task Scheduler/cron. Resolution order at run time is
+**OS vault → environment/.env → vendor CSV**, so the vault always wins.
+
+Already have the passwords in the vendor CSV? Move them across in one step:
+
+```bash
+python setup_credentials.py --import-csv
+```
+
+**Then clear the EMAIL/PASSWORD columns in `drive_input/vendors.csv`** — the vault
+copy is authoritative and the CSV copy is plaintext sitting on disk.
+
+### Option B: sign in once in a browser, reuse the session
+
+```bash
+python portal_login.py             # a real browser opens; you sign in; session saved
+python portal_login.py --verify    # confirm each session is still logged in
+```
+
+Use this for portals with SSO/2FA, or if you'd rather no password is stored at all.
+
+## Step 1b — Sign in once per portal (Option B detail)
 
 ```bash
 python portal_login.py
