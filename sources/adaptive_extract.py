@@ -162,9 +162,23 @@ def parse_fields(text: str) -> Dict[str, Any]:
     pkg = _money(LBL_PACKAGE_PRICE.search(t).group(1)) if LBL_PACKAGE_PRICE.search(t) else None
     land_price = _money(LBL_LAND_PRICE.search(t).group(1)) if LBL_LAND_PRICE.search(t) else None
     build_price = _money(LBL_BUILD_PRICE.search(t).group(1)) if LBL_BUILD_PRICE.search(t) else None
-    price = pkg or parse_price(t)
+
+    # A stocklist row often carries Land Price, Build Price AND Total Price with no
+    # labels (fixed-width exports). Taking the FIRST match returns the land price
+    # and understates the package badly, so gather every plausible price and treat
+    # the largest as the package total, deriving land/build from the smaller two.
+    all_prices = sorted({v for v in (_money(m) for m in PRICE_RE.findall(t))
+                         if v and 50_000 <= v <= 5_000_000})
+    price = pkg
+    if price is None and all_prices:
+        price = all_prices[-1]
     if price is None and land_price and build_price:
         price = land_price + build_price
+    if len(all_prices) >= 3:
+        land_price = land_price or all_prices[0]
+        build_price = build_price or all_prices[1]
+    elif len(all_prices) == 2 and price == all_prices[-1]:
+        land_price = land_price or all_prices[0]
 
     return {
         "advertised_package_price": price,

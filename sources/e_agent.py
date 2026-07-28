@@ -10,6 +10,7 @@ returns [] (never fabricated data). Selectors live in portal_config.EAGENT_CONFI
 """
 
 import logging
+import re
 from datetime import datetime
 from typing import List, Dict, Any
 
@@ -18,6 +19,7 @@ from sources.base import PropertySource
 from sources.scraper_base import PlaywrightScraper, ScraperError, parse_price, parse_int, PLAYWRIGHT_AVAILABLE, SESSION_DIR
 from sources.portal_config import EAGENT_CONFIG
 from sources.adaptive_extract import extract_listings
+from sources.spreadsheet_extract import extract_stocklist
 from secrets_store import get_credentials
 
 logger = logging.getLogger("spb.scraper.eagent")
@@ -55,18 +57,27 @@ class EAgentSource(PropertySource):
                          "Run: python portal_login.py e_agent")
             return False
         try:
-            if self.cfg.open_login_selector:
+            # E-Agent is a Wix members site: the page opens on a SIGN-UP panel and the
+            # email/password fields only exist after clicking through
+            # "Log In" -> "Log in with Email". The modal is slow, so click, wait, and
+            # re-check for the password field rather than assuming one click is enough.
+            for sel in ("button:has-text('Log In')", "button:has-text('Already a member')",
+                        "a:has-text('Log In')", "button:has-text('Log in with Email')",
+                        "button:has-text('Sign in with email')"):
+                if page.query_selector(self.cfg.password_selector):
+                    break
                 try:
-                    page.click(self.cfg.open_login_selector, timeout=8000)
-                    scraper.throttle()
+                    el = page.query_selector(sel)
+                    if el and el.is_visible():
+                        el.click()
+                        page.wait_for_timeout(3000)
                 except Exception:
-                    pass  # form may already be visible
-                # E-Agent shows a "Log in with Email" choice before the fields appear
-                try:
-                    page.click("button:has-text('Log in with Email')", timeout=5000)
-                    scraper.throttle()
-                except Exception:
-                    pass
+                    continue
+            try:
+                page.wait_for_selector(self.cfg.password_selector, timeout=12000)
+            except Exception:
+                logger.error("E-Agent: login form never appeared (site layout may have changed).")
+                return False
             page.fill(self.cfg.email_selector, self.username, timeout=10000)
             page.fill(self.cfg.password_selector, self.password, timeout=10000)
             page.click(self.cfg.submit_selector, timeout=10000)
@@ -80,9 +91,47 @@ class EAgentSource(PropertySource):
             return False
         return True
 
+    def _scrape_stocklist_files(self, scraper: PlaywrightScraper) -> List[Dict[str, Any]]:
+        """E-Agent publishes stock as downloadable XLSX/PDF stocklists per state and
+        builder rather than as HTML listings — download and parse them."""
+        page = scraper.page
+        try:
+            links = page.evaluate(
+                """() => [...document.querySelectorAll('a[href*="_files/ugd"]')]
+                       .map(a => ({label: (a.innerText||'').trim().slice(0,40), href: a.href}))"""
+            )
+        except Exception:
+            return []
+        out: List[Dict[str, Any]] = []
+        seen = set()
+        for l in links or []:
+            href = l.get("href", "")
+            if not href or href in seen or not re.search(r"\.(xlsx|xls|pdf|csv)(\?|$)", href, re.I):
+                continue
+            seen.add(href)
+            try:
+                data = page.context.request.get(href, timeout=config.SCRAPER_NAV_TIMEOUT_MS).body()
+            except Exception as e:
+                logger.warning("E-Agent: could not download stocklist %s: %s", l.get("label"), e)
+                continue
+            got = extract_stocklist(data, source_label=href, builder_hint="")
+            for g in got:
+                g["source_channel"] = self.channel_name
+                g["date_checked"] = datetime.now().strftime("%d/%m/%Y")
+                g["verified"] = True
+                g["stocklist"] = l.get("label", "")
+            out.extend(got)
+            scraper.throttle()
+        logger.info("E-Agent: %d listing(s) from %d stocklist file(s).", len(out), len(seen))
+        return out
+
     def _scrape_listings(self, scraper: PlaywrightScraper) -> List[Dict[str, Any]]:
         page = scraper.page
         scraper.goto(self.cfg.listings_url)
+        # Stocklist FILES are E-Agent's real inventory channel — try them first.
+        from_files = self._scrape_stocklist_files(scraper)
+        if from_files:
+            return from_files
         cards = page.query_selector_all(self.cfg.listing_card_selector)
         if not cards:
             # No hand-mapped selector matched — infer the listing structure from the
@@ -136,9 +185,16 @@ class EAgentSource(PropertySource):
         try:
             scraper = PlaywrightScraper(session_name="e_agent")
             with scraper.session():
-                if not self._login(scraper):
-                    return []
-                listings = self._scrape_listings(scraper)
+                # E-Agent shows no reliable "Log Out" marker, so authentication is
+                # judged FUNCTIONALLY: if the stocklist files are reachable we are in.
+                # Only log in when they are not.
+                scraper.goto(self.cfg.listings_url)
+                listings = self._scrape_stocklist_files(scraper)
+                if not listings:
+                    logger.info("E-Agent: no stocklists visible anonymously — logging in.")
+                    if not self._login(scraper):
+                        return []
+                    listings = self._scrape_listings(scraper)
         except ScraperError as e:
             logger.error("E-Agent scraper error: %s", e)
             return []
