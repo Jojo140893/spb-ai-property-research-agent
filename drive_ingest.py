@@ -30,6 +30,8 @@ class DriveStocklistIngestor:
                 packages.extend(self.ingest_csv(file_path))
             elif file_path.suffix.lower() == '.pdf':
                 packages.extend(self.ingest_pdf(file_path))
+            elif file_path.suffix.lower() in ('.xlsx', '.xls'):
+                packages.extend(self.ingest_spreadsheet(file_path))
 
         return packages
 
@@ -70,47 +72,41 @@ class DriveStocklistIngestor:
         return packages
 
     def ingest_pdf(self, file_path: Path) -> List[Dict[str, Any]]:
+        """Parse a PDF stocklist (e.g. Shape Homes' weekly PDF).
+
+        Uses the adaptive stocklist extractor rather than a fixed regex: real
+        builder PDFs vary wildly in layout, and a rigid pattern silently returned
+        nothing for anything but one exact format.
         """
-        Parses text from PDF stocklists (e.g. Shape Homes PDF stocklists) using regex patterns.
-        """
-        packages = []
         try:
-            import pdfplumber
-            with pdfplumber.open(file_path) as pdf:
-                full_text = "\n".join([page.extract_text() or "" for page in pdf.pages])
-
-            # Regex pattern matching lot, suburb, design, beds, price
-            pattern = r'Lot\s+(\d+)\s+([A-Za-z\s]+)\s+([A-Za-z0-9\s]+)\s+(\d+)Bed\s+\$(\d{3},\d{3})'
-            matches = re.findall(pattern, full_text)
-
-            for m in matches:
-                lot_num, suburb, design, beds, price_str = m
-                price = float(price_str.replace(',', ''))
-                packages.append({
-                    'lot_address': f"Lot {lot_num} {suburb.strip()} Estate",
-                    'suburb': suburb.strip(),
-                    'state': 'VIC',
-                    'builder_name': 'Shape Homes',
-                    'house_design': design.strip(),
-                    'bedrooms': int(beds),
-                    'bathrooms': 2,
-                    'car_spaces': 2,
-                    'storeys': 1,
-                    'land_size_sqm': 400,
-                    'house_size_sqm': 185,
-                    'land_price': price * 0.45,
-                    'build_price': price * 0.55,
-                    'advertised_package_price': price,
-                    'inclusions': {'site_costs_fixed': True, 'driveway_included': True, 'fencing_included': True, 'landscaping_included': True, 'flooring_included': True, 'blinds_included': True, 'hvac_included': True},
-                    'title_status': 'Titled',
-                    'expected_title_date': 'Ready Now',
-                    'source_channel': 'drive_pdf',
-                    'source_url_or_ref': str(file_path.name),
-                    'date_checked': datetime.now().strftime("%d/%m/%Y")
-                })
-        except ImportError:
-            print("[DRIVE INGEST WARNING] pdfplumber not installed; PDF stocklist parsing deferred.")
+            from sources.spreadsheet_extract import extract_stocklist
         except Exception as e:
-            print(f"[DRIVE INGEST ERROR] PDF ingestion failed: {e}")
+            print(f"[DRIVE] cannot load stocklist extractor: {e}")
+            return []
+        try:
+            data = file_path.read_bytes()
+        except Exception as e:
+            print(f"[DRIVE] cannot read {file_path.name}: {e}")
+            return []
+        got = extract_stocklist(data, source_label=str(file_path.name), builder_hint="")
+        for g in got:
+            g.setdefault("source_channel", "Drive stocklist")
+            g["verified"] = False   # a document is a snapshot; confirm before presenting
+        return got
 
-        return packages
+    def ingest_spreadsheet(self, file_path: Path) -> List[Dict[str, Any]]:
+        """Parse an XLSX/XLS stocklist dropped into drive_input/."""
+        try:
+            from sources.spreadsheet_extract import extract_stocklist
+        except Exception:
+            return []
+        try:
+            data = file_path.read_bytes()
+        except Exception:
+            return []
+        got = extract_stocklist(data, source_label=str(file_path.name), builder_hint="")
+        for g in got:
+            g.setdefault("source_channel", "Drive stocklist")
+            g["verified"] = False
+        return got
+

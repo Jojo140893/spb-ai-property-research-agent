@@ -135,9 +135,20 @@ BUILDER_PORTAL_CONFIGS: Dict[str, PortalConfig] = {
     ),
     "proxima.com.au": PortalConfig(
         name="Proxima",
-        login_url="https://www.proxima.com.au/",
-        logged_in_selector="text=Log Out, text=Logout, text=Dashboard",
-        listings_url="https://www.proxima.com.au/",
+        # Confirmed live 2026-07-28: the real login is the Magento portal, NOT the
+        # marketing site (whose "Sign in" link points here). Fields #email / #pass,
+        # submit #send2.
+        login_url="https://portal.proxima.com.au/customer/account/login/",
+        email_selector="#email, input[name='login[username]']",
+        password_selector="#pass, input[name='login[password]']",
+        submit_selector="#send2, button.action.login",
+        login_verified=True,
+        # NOTE: Proxima enforces TWO-FACTOR AUTH — after a correct password it
+        # redirects to /customerauth/twofactor/authentication/. Automation cannot
+        # complete this; sign in once via portal_login.py (entering the 2FA code)
+        # and the saved session is reused thereafter.
+        logged_in_selector="text=Sign Out, text=Log Out, text=Logout, text=My Account",
+        listings_url="https://portal.proxima.com.au/",
         listing_card_selector=".property-card, .listing, .stock-item, article",
         field_selectors={"title": ".title, h2, h3", "price": ".price"},
         verified=False,
