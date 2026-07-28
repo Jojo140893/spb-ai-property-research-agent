@@ -260,13 +260,20 @@ def extract_listings(page, builder_hint: str = "", state_hint: str = "") -> List
         fields = parse_fields(text)
         if not fields["advertised_package_price"]:
             continue
-        # need at least an address-ish label or a bedroom count to be a real listing
-        if not fields["lot_address"] and fields["bedrooms"] is None:
-            continue
+        # A listing needs a price plus SOME identity. Prefer a lot number or a bed
+        # count, but many portals label cards by product/estate only
+        # ("Single Contract - Fraser Rise  $660,000"), so a short descriptive card is
+        # accepted too — with lower confidence. Filter/summary widgets are excluded
+        # by length and by their give-away wording.
         if not fields["lot_address"]:
-            # first meaningful line as the label
-            first = next((l for l in (text.splitlines()) if len(_clean(l)) > 4), "")
-            fields["lot_address"] = _clean(first)[:120]
+            first = next((l for l in text.splitlines() if len(_clean(l)) > 4), "")
+            first = _clean(first)[:120]
+            looks_like_widget = bool(re.search(
+                r"price\s*range|filters?\b|sort by|results?\b|showing\s+\d|per page", text, re.I))
+            if fields["bedrooms"] is None and (looks_like_widget or not (4 < len(first) <= 120)
+                                               or len(text) > 600):
+                continue
+            fields["lot_address"] = first
         key = (fields["lot_address"].lower(), fields["advertised_package_price"], (fields["suburb"] or "").lower())
         if key in seen:
             continue

@@ -127,10 +127,9 @@ BUILDER_PORTAL_CONFIGS: Dict[str, PortalConfig] = {
         logged_in_selector="text=Log Out, text=Logout",  # NOT "Agent Portal" — public nav item
         # Login CONFIRMED working (redirects to /agent-portal/ with LOGOUT markers).
         # Stock lives at /agent-stocklist/ behind a JS filter UI whose result cards
-        # (.component--card_lot_port) render inconsistently headless — may need a
-        # headed run or the filter form submitted. Deferred.
+        # Cards are .component--card_lot_portal (confirmed live 2026-07-28).
         listings_url="https://paramountliving.com.au/agent-stocklist/",
-        listing_card_selector=".component--card_lot_port, .card__content, .property-card, article",
+        listing_card_selector=".component--card_lot_portal, .card__content, .property-card, article",
         field_selectors={"title": ".title, h2, h3", "price": ".price"},
         verified=False,
     ),

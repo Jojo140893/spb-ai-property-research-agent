@@ -107,6 +107,16 @@ class BuilderPortalSource(PropertySource):
                     if not self._login(scraper, cfg, email, password):
                         return []
                     scraper.goto(cfg.listings_url)
+                # JS-rendered stock grids (e.g. Paramount's filter UI) finish painting
+                # well after networkidle — wait for the configured card selector before
+                # reading, otherwise extraction runs against an empty grid.
+                if cfg.listing_card_selector:
+                    try:
+                        scraper.page.wait_for_selector(cfg.listing_card_selector, timeout=15000)
+                        scraper.page.wait_for_timeout(1200)
+                    except Exception:
+                        pass
+
                 # Re-probe adaptively (page may have changed after a login) and take
                 # whichever path actually yields listings. A loose generic selector
                 # like 'tr' can "match" rows that hold no readable fields, so match
