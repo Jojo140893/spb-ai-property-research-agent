@@ -133,6 +133,15 @@ class PlaywrightScraper:
 
     def goto(self, url: str):
         self.page.goto(url, wait_until="domcontentloaded")
+        # Let client-rendered inventory hydrate before anything reads the DOM.
+        # (Bathla's /display renders stock via JS; without this the page is still
+        # empty at extraction time and the portal looks like it has no listings.)
+        for wait in (lambda: self.page.wait_for_load_state("networkidle", timeout=8000),
+                     lambda: self.page.wait_for_timeout(1500)):
+            try:
+                wait()
+            except Exception:
+                pass
         self.throttle()
 
     def text_or_none(self, scope, selector: str) -> Optional[str]:
@@ -164,6 +173,15 @@ class PlaywrightScraper:
         makes every login look like a failure. Split it and try each alternative,
         then fall back to a DOM heuristic.
         """
+        # A visible password field means we are still on a login screen, whatever
+        # markers the page shows. (Paramount's PUBLIC nav contains "AGENT PORTAL",
+        # which otherwise matched and made the logged-out homepage look authenticated,
+        # causing the login step to be skipped entirely.)
+        try:
+            if self.page.query_selector("input[type=password]") is not None:
+                return False
+        except Exception:
+            pass
         for sel in [s.strip() for s in (logged_in_selector or "").split(",") if s.strip()]:
             try:
                 if self.page.query_selector(sel) is not None:

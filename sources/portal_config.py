@@ -31,7 +31,8 @@ class PortalConfig:
     login_verified: bool = False           # login field selectors confirmed against the live page
     logged_in_selector: str = ""           # element only present once authenticated
     # Listings
-    listings_url: str = ""                  # page/route holding the stock list
+    listings_url: str = ""                  # primary page/route holding the stock list
+    extra_listings_urls: tuple = ()         # additional stock pages (portals split inventory)
     listing_card_selector: str = ""         # repeated element = one package
     field_selectors: Dict[str, str] = field(default_factory=dict)  # package field -> selector within a card
     link_selector: str = "a"                # link to the full listing within a card
@@ -78,7 +79,7 @@ BUILDER_PORTAL_CONFIGS: Dict[str, PortalConfig] = {
         submit_selector="button:has-text('LOG IN'), button:has-text('Log In')",
         login_verified=True,
         logged_in_selector="text=Log Out, text=Logout, text=Dashboard",
-        listings_url="https://portal.hermitagehomes.com.au/",
+        listings_url="https://portal.hermitagehomes.com.au/allpackages",  # discovered live: 171 listings
         listing_card_selector=".property-card, .listing, tr.stock-row",
         field_selectors={"title": ".title, td.address", "price": ".price, td.price"},
         verified=False,
@@ -93,7 +94,9 @@ BUILDER_PORTAL_CONFIGS: Dict[str, PortalConfig] = {
         submit_selector="button:has-text('Continue'), button:has-text('Sign in'), button[type=submit]",
         login_verified=True,
         logged_in_selector="text=Logout, text=Log Out, text=Dashboard",
-        listings_url="https://portal.bathla.com.au/",
+        listings_url="https://portal.bathla.com.au/display",  # discovered live
+        extra_listings_urls=("https://portal.bathla.com.au/granny",
+                             "https://portal.bathla.com.au/promotions"),
         listing_card_selector=".property-card, .stock-item, tr.stock-row",
         field_selectors={"title": ".title, td.address", "price": ".price, td.price"},
         verified=False,
@@ -121,7 +124,7 @@ BUILDER_PORTAL_CONFIGS: Dict[str, PortalConfig] = {
         password_selector="#input_2",
         submit_selector="button:has-text('Login'), input[value='Login'], button[type=submit]",
         login_verified=True,
-        logged_in_selector="text=Log Out, text=Logout, text=Agent Portal",
+        logged_in_selector="text=Log Out, text=Logout",  # NOT "Agent Portal" — public nav item
         listings_url="https://paramountliving.com.au/agent-portal/",
         listing_card_selector=".property-card, .package, .listing, article",
         field_selectors={"title": ".title, h2, h3", "price": ".price"},

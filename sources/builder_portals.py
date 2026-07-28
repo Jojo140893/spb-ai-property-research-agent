@@ -135,6 +135,18 @@ class BuilderPortalSource(PropertySource):
                         "date_checked": datetime.now().strftime("%d/%m/%Y"),
                         "verified": True,
                     })
+                # Some portals split inventory across several pages (e.g. Bathla
+                # /display + /granny) — collect those too.
+                for extra_url in (cfg.extra_listings_urls or ()):
+                    try:
+                        scraper.goto(extra_url)
+                        more = extract_listings(scraper.page, builder_hint=builder["builder_name"], state_hint=st0)
+                        if more:
+                            logger.info("[%s] +%d listing(s) from %s", cfg.name, len(more), extra_url)
+                            adaptive = (adaptive or []) + more
+                    except Exception as e:
+                        logger.warning("[%s] extra stock page %s failed: %s", cfg.name, extra_url, e)
+
                 # Whichever path read more real listings wins.
                 if len(adaptive) > len(results):
                     for a in adaptive:

@@ -93,6 +93,8 @@ def main(which: str):
                             page.click(extra, timeout=4000); page.wait_for_timeout(1200)
                         except Exception:
                             pass
+                if not page.query_selector(cfg.email_selector):
+                    raise RuntimeError('login form not found on page (email field missing)')
                 page.fill(cfg.email_selector, user, timeout=10000)
                 if cfg.continue_selector and not page.query_selector(cfg.password_selector):
                     page.click(cfg.continue_selector, timeout=8000)
