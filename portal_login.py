@@ -12,6 +12,8 @@ Usage:
     python portal_login.py                 # walk through every portal that needs a login
     python portal_login.py e_agent         # just one (session name or builder name)
     python portal_login.py --status        # show which sessions exist and how old they are
+    python portal_login.py <portal> --profile  # sign in inside a PERSISTENT browser profile
+                                              # (best for reCAPTCHA / 2FA portals)
 """
 
 import sys
@@ -131,6 +133,77 @@ def _open_login_form(page, name: str):
         return page.query_selector("input[type=password]") is not None
     except Exception:
         return False
+
+
+PROFILE_DIR = SESSION_DIR.parent / ".browser_profiles"
+
+
+def capture_profile(only: str = "", wait_minutes: int = 45):
+    """Sign in inside a PERSISTENT browser profile.
+
+    More robust than storage_state for sites behind reCAPTCHA/2FA: the profile
+    keeps cookies, local storage and device trust on disk, so the sign-in (and any
+    "remember this device" choice) survives future runs and the site is far less
+    likely to re-challenge. The scrapers can reuse the same profile directory.
+    """
+    if not (PLAYWRIGHT_AVAILABLE and sync_playwright):
+        print("[ERROR] Playwright missing. Run: pip install playwright && python -m playwright install chromium")
+        sys.exit(1)
+    targets = _targets()
+    if only:
+        q = only.lower()
+        targets = [t for t in targets if q in t[0].lower() or q in t[1].lower()]
+    if not targets:
+        print(f"[ERROR] no portal matches '{only}'")
+        sys.exit(1)
+
+    PROFILE_DIR.mkdir(exist_ok=True)
+    SESSION_DIR.mkdir(exist_ok=True)
+    with sync_playwright() as pw:
+        for name, label, url in targets:
+            prof = PROFILE_DIR / name
+            prof.mkdir(parents=True, exist_ok=True)
+            print("=" * 72)
+            print(f"  {label}\n  {url}")
+            print(f"  Persistent profile: {prof}")
+            print(f"  Sign in in the window. Tick 'remember me' if offered. Waiting up to {wait_minutes} min.")
+            ctx = pw.chromium.launch_persistent_context(
+                str(prof), headless=False, no_viewport=True, args=["--start-maximized"])
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(2500)
+                _open_login_form(page, name)
+            except Exception as e:
+                print(f"  (slow load: {e})")
+            saved = False
+            deadline = time.time() + wait_minutes * 60
+            while time.time() < deadline:
+                try:
+                    if page.is_closed():
+                        break
+                    if page.evaluate(_LOGGED_IN_JS):
+                        # keep BOTH: the profile (durable) and a storage_state export
+                        ctx.storage_state(path=str(SESSION_DIR / f"{name}.json"))
+                        print(f"  [SAVED] signed in — profile kept and session exported to {name}.json")
+                        saved = True
+                        break
+                except Exception:
+                    pass
+                time.sleep(3)
+            if not saved:
+                # even without positive detection the profile may now hold the login
+                try:
+                    ctx.storage_state(path=str(SESSION_DIR / f"{name}.json"))
+                    print(f"  [PROFILE KEPT] no signed-in state detected, but the profile and "
+                          f"any cookies were preserved — a harvest may still work.")
+                except Exception:
+                    print("  [NOT SAVED] nothing captured.")
+            try:
+                ctx.close()
+            except Exception:
+                pass
+    print("\nNext: python harvest_buildings.py")
 
 
 def capture_auto(only: str = "", wait_minutes: int = 45):
@@ -266,7 +339,9 @@ if __name__ == "__main__":
         raise SystemExit(0)
     pos = [a for a in args if not a.startswith("--")]
     only = pos[0] if pos else ""
-    if "--auto" in args or not sys.stdin.isatty():
+    if "--profile" in args:
+        capture_profile(only)
+    elif "--auto" in args or not sys.stdin.isatty():
         # No interactive terminal (or explicitly asked): auto-detect sign-in.
         if not sys.stdin.isatty() and "--auto" not in args:
             print("[i] No interactive terminal detected - using auto-detect mode.\n")
