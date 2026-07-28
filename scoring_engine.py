@@ -85,12 +85,20 @@ class ScoringEngine:
         # Distance search is a mandatory boundary, not just a scoring nudge: a client
         # asking for "within N km" must not be shown stock beyond it (SOP Step 3
         # predefined rejection rules).
-        if brief.search_radius_km and prop.distance_km_from_target is not None \
-                and prop.distance_km_from_target > brief.search_radius_km:
-            hard_rejection = True
-            rejection_reasons.append(
-                f"{prop.distance_km_from_target:.1f} km from {brief.primary_suburbs[0] if brief.primary_suburbs else 'target'} "
-                f"exceeds the {brief.search_radius_km:.0f} km search radius")
+        if brief.search_radius_km:
+            target = brief.primary_suburbs[0] if brief.primary_suburbs else 'target'
+            if prop.distance_km_from_target is None:
+                # Unknown distance must NOT be a free pass through a distance filter —
+                # that let stock ~200 km away be shortlisted for a 40 km brief.
+                hard_rejection = True
+                rejection_reasons.append(
+                    f"Location could not be verified (suburb not recognised), so the "
+                    f"{brief.search_radius_km:.0f} km radius from {target} cannot be confirmed")
+            elif prop.distance_km_from_target > brief.search_radius_km:
+                hard_rejection = True
+                rejection_reasons.append(
+                    f"{prop.distance_km_from_target:.1f} km from {target} "
+                    f"exceeds the {brief.search_radius_km:.0f} km search radius")
 
         # Defect #4 Fix: Mandatory House Size Minimum Check
         if prop.house_size_sqm < brief.house_size_min_sqm:

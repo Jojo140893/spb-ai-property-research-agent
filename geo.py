@@ -9,6 +9,7 @@ derived from the public australian_postcodes dataset).
 
 import csv
 import math
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -50,6 +51,28 @@ class SuburbGeoIndex:
 
     def locate(self, suburb: str, state: str) -> Optional[Tuple[float, float]]:
         return self._index.get((suburb.strip().lower(), state.strip().upper()))
+
+    def find_suburb_in_text(self, text: str, state: str = "") -> Optional[str]:
+        """Recover a suburb from a free-text address.
+
+        Stocklist rows often carry the locality only inside the address string
+        ("LOT 79 STELLA ST, COLAC 3250"), leaving the suburb field empty. Without
+        this the property cannot be geocoded, so a distance filter cannot judge it.
+        Matches the longest known locality name present, preferring `state`.
+        """
+        if not text or not self._index:
+            return None
+        words = re.findall(r"[A-Za-z][A-Za-z'\-]+", text)
+        states = [state.strip().upper()] if state else []
+        states += [s for s in self._by_state.keys() if s not in states]
+        # try 3-word, then 2-word, then single-word candidates (longest match wins)
+        for size in (3, 2, 1):
+            for i in range(len(words) - size + 1):
+                cand = " ".join(words[i:i + size])
+                for st in states:
+                    if (cand.lower(), st) in self._index:
+                        return cand.title()
+        return None
 
     def distance_between(self, suburb_a: str, suburb_b: str, state: str) -> Optional[float]:
         a = self.locate(suburb_a, state)

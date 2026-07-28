@@ -99,7 +99,17 @@ class KommoPropertyResearchAgent:
 
             # Step 7: Market Benchmarking against ingested comparables
             # (CoreLogic/REA exports from drive_input/; sample data is labelled).
-            pkg_suburb = raw_pkg.get('suburb', suburb_name)
+            pkg_suburb = raw_pkg.get('suburb') or ''
+            # Stocklist rows often carry the locality only inside the address text
+            # ("LOT 79 STELLA ST, COLAC 3250"). Recover it, otherwise the property
+            # cannot be geocoded and would slip past the distance filter unjudged.
+            if not pkg_suburb.strip():
+                pkg_suburb = self.geo.find_suburb_in_text(
+                    f"{raw_pkg.get('lot_address', '')} {raw_pkg.get('estate_context', '')}",
+                    raw_pkg.get('state', brief.state)) or ''
+                if pkg_suburb:
+                    raw_pkg['suburb'] = pkg_suburb
+            pkg_suburb = pkg_suburb or suburb_name
             bm_res = self.benchmark_engine.benchmark_package(
                 pkg_suburb, brief.state,
                 int(raw_pkg.get('bedrooms', 4)),
