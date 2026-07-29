@@ -63,6 +63,23 @@ _FRONTAGE_UNIT = re.compile(r"\b([0-9]{1,2}(?:\.[0-9]{1,2})?)\s*m\s*(?:frontage|
 
 # ---------- postcode ----------
 _FOUR_DIGIT = re.compile(r"\b(\d{4})\b")
+# Postcode ranges a HOUSE can be in. Australia Post reserves several blocks for
+# "large volume receivers" — bulk PO-box holders — and no dwelling is ever in one, so a
+# four-digit number landing there is something else: 1501, 1026 and 1528 were all lot or
+# design numbers on Victorian rows, and each one placed a Geelong lot in New South Wales.
+_DWELLING_POSTCODE_RANGES = (
+    (800, 899),        # NT      (0900-0999 is NT's LVR block)
+    (2000, 2599), (2600, 2618), (2619, 2899), (2900, 2920), (2921, 2999),   # NSW + ACT
+    (3000, 3999),      # VIC     (8000-8999 is VIC's LVR block)
+    (4000, 4999),      # QLD     (9000-9999 is QLD's LVR block)
+    (5000, 5799),      # SA      (5800-5999 LVR)
+    (6000, 6797),      # WA      (6800-6999 LVR)
+    (7000, 7799),      # TAS     (7800-7999 LVR)
+)
+
+
+def _is_dwelling_postcode(val: int) -> bool:
+    return any(low <= val <= high for low, high in _DWELLING_POSTCODE_RANGES)
 
 # ---------- incentives ----------
 _INCENTIVE_CONTEXT = (r"rebate|incentive|bonus|cash\s*back|cashback|credit|discount|gift|"
@@ -157,16 +174,30 @@ def parse_postcode(text: str) -> Optional[str]:
     t = re.sub(r"\bq[1-4][\s-]*\d{2,4}\b", " ", t, flags=re.I)
     t = _LOT_NUM.sub(" ", t)
     t = _STOCK_CODE.sub(" ", t)
+    candidates = []
     for m in _FOUR_DIGIT.finditer(t):
         val = int(m.group(1))
+        before = t[:m.start()]
         after = t[m.end():m.end() + 6].lower()
         if re.match(r"\s*(?:m2|m²|sqm|sq)", after):        # an area, not a postcode
             continue
         if 2015 <= val <= 2035:                            # a bare year
             continue
-        if 800 <= val <= 7999:
-            return m.group(1)
-    return None
+        # EVO's layout opens with the frontage aspect and then the LOT number:
+        # "West 2236 Grandview Truganina". That one pattern put a wrong postcode on 885
+        # rows — a NSW code on Truganina lots, WA and QLD codes on Werribee lots.
+        # Anchored to the START of the row on purpose: compass words are also ordinary
+        # parts of suburb names, and matching them anywhere threw away the real postcodes
+        # of "Melton South 3338" and "BRISBANE NORTH 4514".
+        if re.fullmatch(r"(?:north|south|east|west|northeast|northwest|southeast|"
+                        r"southwest|ne|nw|se|sw)\s+", before, re.I):
+            continue
+        if _is_dwelling_postcode(val):
+            candidates.append(m.group(1))
+    # The LAST one, not the first. An Australian postcode follows the suburb at the end of
+    # an address, so the first four-digit number in a row is usually the street or lot
+    # number: "1368 Margery St, Toolern Waters, Melton South 3338" was returning 1368.
+    return candidates[-1] if candidates else None
 
 
 def parse_incentive(text: str, package_price: Optional[float] = None) -> Dict[str, Any]:

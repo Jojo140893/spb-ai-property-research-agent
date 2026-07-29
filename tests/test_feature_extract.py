@@ -114,8 +114,40 @@ def test_combined_pass():
     assert f2["storey"] == "SINGLE" and f2["lot_number"] == "CC-0122"
 
 
+def test_postcode_rejects_the_three_things_that_were_faking_one():
+    """885 rows carried a postcode that was never a postcode, which is how Truganina and
+    Werribee lots ended up in NSW, WA and QLD. Three distinct causes, all real rows."""
+    from sources.feature_extract import parse_postcode
+
+    # 1. EVO opens a row with the frontage aspect, then the LOT number.
+    assert parse_postcode("West 2236 Grandview Truganina Available Brunswick 15") is None
+    assert parse_postcode("Southeast 4548 Riverwalk Werribee Available Mentone 20") is None
+    # ...but a compass word inside a suburb name must NOT cost us the real postcode
+    assert parse_postcode("1368 Margery St, Toolern Waters, Melton South 3338") == "3338"
+    assert parse_postcode("4 Windsor Street, BRISBANE NORTH 4514") == "4514"
+    assert parse_postcode("Clyde North 3978 Perch") == "3978"
+
+    # 2. The FIRST four-digit number in a row is usually the street or lot number. A
+    #    postcode follows the suburb, so the last valid candidate is the right one.
+    assert parse_postcode("1368 Margery St, Melton South 3338 $596,000") == "3338"
+
+    # 3. Australia Post reserves blocks for bulk PO-box holders. No dwelling is in one, so
+    #    a number landing there is a lot or design code: 1501, 1026 and 1528 all placed
+    #    Victorian lots in New South Wales.
+    for lvr in ("Armstrong Creek 1501", "Titled Packages 1026", "x 1528 y",
+                "y 8500 z", "z 9500 w", "a 5900 b", "b 6900 c", "c 7900 d"):
+        assert parse_postcode(lvr) is None, lvr
+
+    # every state's residential range still resolves, including the leading-zero ones
+    for text, want in {"Darwin 0810 NT": "0810", "Adelaide 5114": "5114",
+                       "Perth 6164": "6164", "Hobart 7000": "7000",
+                       "Canberra 2617": "2617", "Eagleby 4207 LOGAN QLD": "4207"}.items():
+        assert parse_postcode(text) == want, f"{text} -> {parse_postcode(text)}"
+
+
 def run_all():
     tests = [
+        ("postcode rejects fakes", test_postcode_rejects_the_three_things_that_were_faking_one),
         ("availability", test_availability),
         ("storey from real stocklists", test_storey_reads_bare_tokens_from_real_stocklists),
         ("storey rejects false friends", test_storey_rejects_false_friends),

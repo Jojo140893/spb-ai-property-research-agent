@@ -31,6 +31,7 @@ from tests.test_upsert import run_all as _upsert_suite
 from tests.test_price_parsing import run_all as _prices_suite
 from tests.test_row_links import run_all as _links_suite
 from tests.test_remote_stocklist import run_all as _remote_suite
+from tests.test_state_resolver import run_all as _state_suite
 from tests.test_adaptive_extract import test_adaptive_extracts_from_unknown_layouts
 
 
@@ -63,6 +64,7 @@ def run_all_tests():
         ("Prices: rent/yield, spaced numbers, title dates", lambda: (_ for _ in ()).throw(AssertionError("prices suite failed")) if _prices_suite() else None),
         ("Links: per-lot pdf/floorplan + address label", lambda: (_ for _ in ()).throw(AssertionError("links suite failed")) if _links_suite() else None),
         ("Remote: off-site stocklist hosts", lambda: (_ for _ in ()).throw(AssertionError("remote suite failed")) if _remote_suite() else None),
+        ("State: postcode / suburb / page resolution", lambda: (_ for _ in ()).throw(AssertionError("state suite failed")) if _state_suite() else None),
     ]
 
     passed = 0

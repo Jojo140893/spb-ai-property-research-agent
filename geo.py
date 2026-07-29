@@ -32,6 +32,11 @@ class SuburbGeoIndex:
         # {(suburb_lower, state): (lat, lng)}
         self._index: Dict[Tuple[str, str], Tuple[float, float]] = {}
         self._by_state: Dict[str, List[Tuple[str, float, float]]] = {}
+        # {suburb_lower: {states}} — the reverse lookup, for answering "which state is
+        # this suburb in?" when no state is known yet. Roughly a fifth of Australian
+        # locality names exist in more than one state, so the caller has to be told when
+        # the answer is ambiguous rather than handed the first match.
+        self._states_by_suburb: Dict[str, set] = {}
         self._load()
 
     def _load(self):
@@ -44,10 +49,21 @@ class SuburbGeoIndex:
                 lat, lng = float(row['lat']), float(row['lng'])
                 self._index[(suburb.lower(), state)] = (lat, lng)
                 self._by_state.setdefault(state, []).append((suburb, lat, lng))
+                self._states_by_suburb.setdefault(suburb.lower(), set()).add(state)
 
     @property
     def loaded(self) -> bool:
         return bool(self._index)
+
+    def states_for_suburb(self, suburb: str) -> List[str]:
+        """Every state that has a locality of this name, sorted. Empty if unknown.
+
+        A single element means the suburb identifies its state on its own; several means
+        the name is shared and something else has to break the tie.
+        """
+        if not suburb:
+            return []
+        return sorted(self._states_by_suburb.get(suburb.strip().lower(), ()))
 
     def locate(self, suburb: str, state: str) -> Optional[Tuple[float, float]]:
         return self._index.get((suburb.strip().lower(), state.strip().upper()))

@@ -34,6 +34,8 @@ BUILDINGS_EXTRA_COLUMNS = (
     ("incentive_text", "TEXT"),
     ("incentive_amount", "REAL"),
     # provenance / attribution
+    # Which signal decided the state, so a state in front of a buyer is traceable.
+    ("state_source", "TEXT"),
     ("builder_matched", "TEXT"),         # registry match, kept apart from the display name
     ("builder_source", "TEXT"),          # heading | filename | portal | registry_text
     ("attribution_scope", "TEXT"),       # builder | state_pooled

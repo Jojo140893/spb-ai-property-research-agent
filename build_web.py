@@ -37,7 +37,7 @@ import config
 # buildings: listing facts only. No dedup keys, no content hashes, no internal ids.
 BUILDING_FIELDS = [
     "builder_name", "lot_address", "suburb", "state", "availability_status",
-    "price", "land_price", "build_price", "bedrooms", "bathrooms", "car_spaces",
+    "state_source", "price", "land_price", "build_price", "bedrooms", "bathrooms", "car_spaces",
     "land_sqm", "house_sqm", "storey", "title_status", "estate_name",
     "incentive_amount", "incentive_text", "product_type", "source_channel",
     "attribution_scope", "date_checked", "listing_url", "floorplan_url",
