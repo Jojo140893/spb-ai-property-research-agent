@@ -129,6 +129,22 @@ def test_address_column_is_a_label_not_the_whole_row():
     # nothing recognisable -> None, so the caller keeps whatever it already had
     assert label("Package from $650,000 enquire now") is None
 
+    # Rows from the per-builder crawl. Several builders' files ARE just an address, so
+    # composing a label from parts would only throw half of it away.
+    assert label("Lot 444, Hillcrest $1,353,596") == "Lot 444, Hillcrest"
+    assert label("4 Windsor Street, BRISBANE NORTH $980,780") == "4 Windsor Street, BRISBANE NORTH"
+    assert label("520 Stony Drive, Alluvium $680,294") == "520 Stony Drive, Alluvium"
+    assert label("1368 Margery St, Toolern Waters , Melton South 3338 "
+                 "$596,000") == "1368 Margery St, Toolern Waters"
+    # a bare leading number is the lot on several stocklists ("103 Samara Estate ...")
+    assert label("103 Samara Estate Fraser Rise Available Bristol 15 $350,000 $335,970 "
+                 "$685,970") == "Lot 103, Samara"
+    # ...but Gallery Group's sheet title is not a locality
+    assert label("100 Park Royal Crescent, GALLERY STOCK LIST 2026 "
+                 "$1,328,810") == "100 Park Royal Crescent"
+    # a grid of figures is not an address, even when it is short
+    assert label("12 Brittlewood 300 26 CTM 5 Yes 3 2 N/A Double $1,430,000") == "Lot 12"
+
 
 def run_all():
     tests = [

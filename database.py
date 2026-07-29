@@ -5,6 +5,7 @@ and Kommo CRM payload audit trails.
 """
 
 import hashlib
+import logging
 import re
 import sqlite3
 import json
@@ -12,6 +13,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import config
+
+logger = logging.getLogger("spb.db")
 
 # Columns added to `buildings` after its original CREATE TABLE, with their types.
 # Declared here (not inline) so a new field is one line and the type is explicit.
@@ -154,6 +157,15 @@ def building_content_hash(b: Dict[str, Any]) -> str:
         "variant_key": _variant_key(b),
     }
     basis = "|".join(f"{k}={parts[k]}" for k in _HASH_FIELDS)
+    # Two rows in one stocklist can be identical in every field above and still be two
+    # real packages — verified on the APLACE, Met Invest and Paramount files, where the
+    # only difference is the price, which identity deliberately ignores so that a price
+    # move updates in place. The extractor numbers such siblings; without this, 10 of
+    # 983 per-builder listings silently replaced each other.
+    # Appended ONLY when non-zero, so every already-stored row's hash is unchanged.
+    ordinal = int(b.get("variant_ordinal") or 0)
+    if ordinal:
+        basis += f"|variant_ordinal={ordinal}"
     return f"{HASH_RECIPE_VERSION}:{hashlib.sha256(basis.encode('utf-8')).hexdigest()}"
 
 
@@ -323,9 +335,14 @@ class ResearchDatabase:
         price = float(b.get("advertised_package_price") or b.get("price") or 0)
         status = b.get("availability_status")
 
-        # legacy key, kept while the old UNIQUE column still exists
-        key = "||".join(str(b.get(k, "")).strip().lower() for k in
-                        ("builder_name", "lot_address", "suburb", "price"))
+        # `dedup_key` carries a UNIQUE constraint from before content_hash existed, and
+        # its old basis (builder||lot_address||suburb||price) silently rejected 160 of
+        # 943 real listings once lot_address became a short label: "Lot 68" repeats
+        # across estates where a whole jammed row never did. Setting it to the identity
+        # hash makes the legacy constraint agree with the real one instead of fighting
+        # it. (Dropping a UNIQUE column in SQLite means rebuilding the table, which is
+        # not worth doing to the client's reviewed data.)
+        key = h
 
         cols = {
             "builder_name": b.get("builder_name", ""),
@@ -383,8 +400,12 @@ class ResearchDatabase:
                                  tuple(cols.values()))
                     conn.commit()
                     return "new"
-                except sqlite3.IntegrityError:
-                    # legacy dedup_key collision on an otherwise-new identity
+                except sqlite3.IntegrityError as e:
+                    # Never silent: swallowing this is how 160 listings went missing
+                    # without a trace. A live listing dropped by a constraint is a bug
+                    # to see, not a row to quietly discard.
+                    logger.warning("buildings: %r rejected by a UNIQUE constraint (%s) — "
+                                   "listing NOT stored.", b.get("lot_address"), e)
                     return "unchanged"
 
             rid, old_price, old_status = existing

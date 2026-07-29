@@ -118,6 +118,43 @@ def test_identity_survives_the_110_char_truncation_boundary():
             f"re-harvesting this row would duplicate it:\n  {full[:90]}...")
 
 
+def test_price_only_siblings_are_numbered_so_both_survive():
+    """Verified on the live APLACE / Met Invest / Paramount stocklists: two rows in one
+    file can be identical in every field identity uses and still be two real packages,
+    differing only by price — which identity ignores on purpose so a price move updates
+    in place. 10 of 983 per-builder listings were silently replacing each other.
+
+    Byte-identical rows must still collapse: those are one row detected twice.
+    """
+    from sources.spreadsheet_extract import _assign_variant_ordinals
+
+    def row(text, price):
+        return {"source_channel": "E-Agent", "attribution_scope": "builder",
+                "builder_name": "Met Invest by Metricon", "suburb": "Bulla",
+                "source_text": text, "advertised_package_price": price}
+
+    text = "420 Alves Street Bulla VIC St Ronans House & Land 350.00 4 2 2 2 Part Contract"
+    variants = [row(f"{text} ${p:,}", p) for p in (736_364, 760_471)]
+    assert building_content_hash(variants[0]) == building_content_hash(variants[1]), \
+        "fixture no longer reproduces the collision it exists to test"
+    assert _assign_variant_ordinals(variants) == 1
+    assert building_content_hash(variants[0]) != building_content_hash(variants[1])
+
+    duplicates = [row(f"{text} $736,364", 736_364) for _ in range(3)]
+    assert _assign_variant_ordinals(duplicates) == 0, "identical rows must still collapse"
+    assert len({building_content_hash(d) for d in duplicates}) == 1
+
+
+def test_ordinal_zero_leaves_the_hash_byte_identical():
+    """The ordinal is appended to the hash basis ONLY when non-zero, so adding the
+    concept did not re-identify a single one of the rows already stored."""
+    base = building_content_hash(_ROW)
+    assert building_content_hash({**_ROW, "variant_ordinal": 0}) == base
+    assert building_content_hash({**_ROW, "variant_ordinal": None}) == base
+    assert building_content_hash({**_ROW, "variant_ordinal": 1}) != base
+    assert base == _PINNED
+
+
 def test_hash_never_empty_for_degenerate_rows():
     """A row with no lot number or design still gets a distinct, non-null hash."""
     a = building_content_hash({"source_channel": "E-Agent", "lot_address": "some blob A"})
@@ -165,6 +202,8 @@ def run_all():
         ("hash distinguishes real listings", test_hash_distinguishes_real_listings),
         ("hash separates designs on same lot", test_hash_separates_designs_on_the_same_lot),
         ("identity survives 110-char truncation", test_identity_survives_the_110_char_truncation_boundary),
+        ("price-only siblings both survive", test_price_only_siblings_are_numbered_so_both_survive),
+        ("ordinal 0 changes no stored hash", test_ordinal_zero_leaves_the_hash_byte_identical),
         ("hash never empty for degenerate rows", test_hash_never_empty_for_degenerate_rows),
         ("column spec types valid", test_column_spec_types_are_valid),
         ("migration idempotent + complete", test_migration_is_idempotent_and_adds_every_column),

@@ -98,6 +98,66 @@ STREET_RE = re.compile(
     r"Rise|Loop|Esplanade|Esp|Walk|Mews|Green)\b\.?")
 
 
+# Several per-builder stocklists open with a bare lot number rather than "Lot N"
+# — Aldrich "103 Samara Estate Fraser Rise ...", Hermitage "1123 COMPLETED HOME 444
+# ...". Only read it as a lot when the following word is not a street type (that case
+# is a street number, and STREET_RE has already claimed it) and not a status or month.
+_LEADING_LOT = re.compile(r"^(\d{1,5})[A-Za-z]?\s+(?=[A-Za-z])")
+_NOT_AN_ESTATE_WORD = re.compile(
+    r"^(available|not|unavailable|under|on|hold|sold|reserved|titled|untitled|registered|"
+    r"completed|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|single|double|house|land|"
+    r"eoi|new|lot|stage|from|price|total)$", re.I)
+
+
+def _leading_lot(text: str) -> Optional[str]:
+    m = _LEADING_LOT.match(_clean(text))
+    if not m or STREET_RE.search(_clean(text)[:60]):
+        return None
+    nxt = _clean(text)[m.end():].split(" ")[0]
+    return m.group(1) if nxt and not _NOT_AN_ESTATE_WORD.match(nxt) else None
+
+
+_PRICE_ANY = re.compile(r"\$\s?[\d,\.]+")
+_COMPACT_OK = re.compile(r"^(?=.*[A-Za-z])[A-Za-z0-9'\-/&,. ]{4,55}$")
+_PLACE_SEG = re.compile(r"^[A-Za-z][A-Za-z'\-]*(?: [A-Za-z'\-]+){0,2}(?: \d{4})?$")
+# Gallery Group's sheet puts its own title in the row: "100 Park Royal Crescent,
+# GALLERY STOCK LIST 2026". That is not a locality.
+_NOT_A_PLACE = re.compile(r"\b(stock|list|price\w*|package\w*|availabilit\w*|"
+                          r"release|stage|status|update[d]?|sheet|report)\b", re.I)
+# Words that mark a stocklist ROW rather than an address. Without these, a jammed row
+# that happens to be short once its prices are removed ("103 Samara Estate Fraser Rise
+# Available Bristol 15") passes for an address and lands in the client's sheet whole.
+_ROW_NOT_ADDRESS = re.compile(
+    r"\b(available|unavailable|under\s*offer|on\s*hold|hold|sold|reserved|leased|tbc|"
+    r"titled|untitled|registered|single|double|storey|completed|eoi|"
+    r"house\s*&?\s*land|dual\s*key)\b", re.I)
+
+
+def _already_an_address(text: str) -> Optional[str]:
+    """Some builders' PDFs give a row that IS just an address ("Lot 444, Hillcrest",
+    "4 Windsor Street, BRISBANE NORTH"). Composing a label from parts would only throw
+    half of it away, so keep it — minus the price."""
+    s = re.sub(r"\s+,", ",", _clean(_PRICE_ANY.sub(" ", text))).strip(" ,-")
+    if len(s) > 55 or not _COMPACT_OK.match(s) or _ROW_NOT_ADDRESS.search(s):
+        return None
+    # must actually look addressed: a leading number, a "Lot N", or a street type.
+    # Otherwise marketing copy ("Package from $650,000 enquire now") qualifies.
+    if not (re.match(r"^\d", s) or re.search(r"\blot\s*\d", s, re.I) or STREET_RE.search(s)):
+        return None
+    # a lot or street number, plus maybe a postcode, is fine; a grid of figures is not
+    return s if len(re.findall(r"(?<![\w/])\d+(?:\.\d+)?(?!\w)", s)) <= 2 else None
+
+
+def _place_suffix(text: str, after: int) -> Optional[str]:
+    """The first place-looking comma segment after a street match, so "520 Stony Drive"
+    keeps its ", Alluvium" instead of being trimmed to the street alone."""
+    for seg in _PRICE_ANY.sub(" ", text[after:]).split(","):
+        seg = _clean(seg).strip(" -")
+        if seg and _PLACE_SEG.match(seg) and not _NOT_A_PLACE.search(seg):
+            return seg
+    return None
+
+
 def _address_label(text: str, fields: dict, context: str = "") -> Optional[str]:
     """A short, human-readable label for the client's sheet, or None if the row
     offers nothing better than its own raw text.
@@ -109,9 +169,15 @@ def _address_label(text: str, fields: dict, context: str = "") -> Optional[str]:
     """
     parts = []
     street = STREET_RE.search(text)
-    lot = fields.get("lot_number")
+    lot = fields.get("lot_number") or _leading_lot(text)
     if street:
         parts.append(_clean(street.group(0)))
+        place = _place_suffix(text, street.end())
+        if place:
+            parts.append(place)
+            return ", ".join(parts)
+    elif (compact := _already_an_address(text)):
+        return compact
     elif lot:
         parts.append(f"Lot {lot}" if not str(lot).lower().startswith(("lot", "cc-")) else str(lot))
     estate = _clean(re.sub(r"^[^A-Za-z0-9]+", "",
@@ -227,15 +293,13 @@ def _links_in_band(annots: List[Tuple[float, float, str]], top: Any, bottom: Any
     return [("", uri) for _, uri in sorted(hits)]
 
 
-def _iter_rows_pdf(page: Any) -> Iterator[Tuple[str, LinkList]]:
-    """Tables first (most stocklists are tabular), then plain text lines. Either way
-    the row's vertical extent is kept so link annotations can be matched to it."""
-    annots = _annot_links(page)
-    emitted = False
+def _pdf_rows_from_tables(page: Any, annots: List[Tuple[float, float, str]]
+                          ) -> List[Tuple[str, LinkList]]:
     try:
         tables = page.find_tables() or []
     except Exception:
-        tables = []
+        return []
+    rows: List[Tuple[str, LinkList]] = []
     for table in tables:
         try:
             values = table.extract()
@@ -246,19 +310,31 @@ def _iter_rows_pdf(page: Any) -> Iterator[Tuple[str, LinkList]]:
             bbox = getattr(row_obj, "bbox", None)
             links = _links_in_band(annots, bbox[1], bbox[3]) if bbox else []
             if text or links:
-                emitted = True
-                yield text, links
-    if emitted:
-        return
+                rows.append((text, links))
+    return rows
+
+
+def _pdf_rows_from_lines(page: Any, annots: List[Tuple[float, float, str]]
+                         ) -> List[Tuple[str, LinkList]]:
     try:
         lines = page.extract_text_lines() or []
     except Exception:
         lines = [{"text": l, "top": None, "bottom": None}
                  for l in (page.extract_text() or "").splitlines()]
+    out = []
     for ln in lines:
         text = _clean(ln.get("text", ""))
         if text:
-            yield text, _links_in_band(annots, ln.get("top"), ln.get("bottom"))
+            out.append((text, _links_in_band(annots, ln.get("top"), ln.get("bottom"))))
+    return out
+
+
+# Both strategies are tried on every page and the one yielding more LISTINGS wins.
+# Preferring tables outright cost five builders entirely — FRD, Hudson (QLD and NSW),
+# Alete and Land Build Direct publish borderless PDFs where find_tables() detects a
+# handful of spurious regions, and merely producing rows was enough to suppress the
+# text-line path that reads them correctly.
+_PDF_STRATEGIES = (("tables", _pdf_rows_from_tables), ("lines", _pdf_rows_from_lines))
 
 
 # ------------------------------------------------------------------- extraction
@@ -295,6 +371,68 @@ def _listing_from_row(text: str, links: LinkList, context: str, source_label: st
     }
 
 
+def _rows_to_listings(rows: List[Tuple[str, LinkList]], context: str, source_label: str,
+                      builder_hint: str) -> Tuple[List[Dict[str, Any]], str]:
+    """Parse a batch of rows, carrying the estate/group header context through them.
+
+    Returns (listings, context) rather than mutating, so two competing PDF strategies
+    can each be tried on a page without one polluting the other's header context.
+    """
+    out: List[Dict[str, Any]] = []
+    for text, links in rows:
+        if not text:
+            continue
+        listing = _listing_from_row(text, links, context, source_label, builder_hint)
+        if listing is None:
+            if _is_group_header(text, {}):   # no price: _listing_from_row already told us
+                context = text
+            continue
+        out.append(listing)
+    return out, context
+
+
+def _assign_variant_ordinals(rows: List[Dict[str, Any]]) -> int:
+    """Number rows that share an identity but are genuinely different packages.
+
+    Identity ignores price so a price move updates in place. The cost is that two rows
+    in one file which differ ONLY by price collapse into one — verified on the APLACE,
+    Met Invest and Paramount stocklists. Numbering the siblings keeps both.
+
+    Byte-identical rows are left alone: those are duplicates in the source file (a
+    table detected twice across a page break) and SHOULD collapse. Returns the number
+    of siblings numbered, so a caller can report it.
+    """
+    from database import building_content_hash          # local: avoids an import cycle
+
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for r in rows:
+        groups.setdefault(building_content_hash(r), []).append(r)
+    numbered = 0
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+        seen, n = set(), 0
+        for r in group:
+            sig = (str(r.get("source_text")), r.get("advertised_package_price"))
+            if sig in seen:
+                continue                    # true duplicate — let it collapse
+            seen.add(sig)
+            if n:
+                r["variant_ordinal"] = n
+                numbered += 1
+            n += 1
+    return numbered
+
+
+def _log_yield(kind: str, source_label: str, out: List[Dict[str, Any]]) -> None:
+    numbered = _assign_variant_ordinals(out)
+    links = sum(1 for o in out if o.get("listing_url") or o.get("floorplan_url")
+                or o.get("brochure_url"))
+    logger.info("%s %s -> %d listing(s), %d with a per-lot link%s", kind,
+                source_label or "(file)", len(out), links,
+                f", {numbered} price-only sibling(s) numbered" if numbered else "")
+
+
 def extract_from_xlsx(data: bytes, source_label: str = "", builder_hint: str = "") -> List[Dict[str, Any]]:
     if not XLSX_AVAILABLE:
         logger.error("openpyxl not installed — cannot read xlsx stocklists.")
@@ -312,15 +450,10 @@ def extract_from_xlsx(data: bytes, source_label: str = "", builder_hint: str = "
             context, sheet = "", si
         if not text:
             continue
-        listing = _listing_from_row(text, links, context, source_label, builder_hint)
-        if listing is None:
-            if _is_group_header(text, {}):   # no price: _listing_from_row already told us
-                context = text
-            continue
-        out.append(listing)
-    logger.info("xlsx %s -> %d listing(s), %d with a per-lot link", source_label or "(file)",
-                len(out), sum(1 for o in out if o.get("listing_url") or o.get("floorplan_url")
-                              or o.get("brochure_url")))
+        listings, context = _rows_to_listings([(text, links)], context, source_label,
+                                              builder_hint)
+        out.extend(listings)
+    _log_yield("xlsx", source_label, out)
     return out
 
 
@@ -329,22 +462,28 @@ def extract_from_pdf(data: bytes, source_label: str = "", builder_hint: str = ""
         logger.error("pdfplumber not installed — cannot read pdf stocklists.")
         return []
     out: List[Dict[str, Any]] = []
+    used = {}
     try:
         with pdfplumber.open(io.BytesIO(data)) as pdf:
             context = ""
             for page in pdf.pages[:25]:
-                for text, links in _iter_rows_pdf(page):
-                    listing = _listing_from_row(text, links, context, source_label, builder_hint)
-                    if listing is None:
-                        if _is_group_header(text, {}):
-                            context = text
-                        continue
-                    out.append(listing)
+                annots = _annot_links(page)
+                best, best_ctx, best_name = [], context, ""
+                for name, strategy in _PDF_STRATEGIES:
+                    listings, ctx = _rows_to_listings(strategy(page, annots), context,
+                                                      source_label, builder_hint)
+                    if len(listings) > len(best):
+                        best, best_ctx, best_name = listings, ctx, name
+                out.extend(best)
+                context = best_ctx
+                if best_name:
+                    used[best_name] = used.get(best_name, 0) + len(best)
     except Exception as e:
         logger.warning("could not read pdf %s: %s", source_label, e)
-    logger.info("pdf %s -> %d listing(s), %d with a per-lot link", source_label or "(file)",
-                len(out), sum(1 for o in out if o.get("listing_url") or o.get("floorplan_url")
-                              or o.get("brochure_url")))
+    if len(used) > 1:
+        logger.info("pdf %s: mixed page layouts — %s", source_label or "(file)",
+                    ", ".join(f"{k} {v}" for k, v in used.items()))
+    _log_yield("pdf", source_label, out)
     return out
 
 

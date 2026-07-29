@@ -62,6 +62,27 @@ def test_title_status_populated_on_real_rows():
     assert parse_fields(QLD_DUAL)["title_status"] is not None
 
 
+def test_rent_words_must_be_bounded_not_matched_inside_words():
+    """The rent filter's "pa" abbreviation was unbounded, so it matched inside
+    "2-part Contract", "Package Price" and "Park" — and every price on such a row was
+    discarded as rental income. Five builders' entire stocklists were empty because of
+    it (FRD, Hudson QLD, Hudson NSW, Alete, Land Build Direct).
+
+    Real row from the Land Build Direct PDF:
+    """
+    row = ("Available Lot 404 House ZARA - 23 NORTH 136.0m2 300.0 m2 "
+           "4 beds / 2 baths / 1 car 2-part Contract $779,613 Portal Link")
+    f = parse_fields(row)
+    assert f["advertised_package_price"] == 779_613, \
+        f"'2-part Contract' still suppresses the price: {f['advertised_package_price']}"
+    for phrase in ("Package Price $650,000", "12 Park Street $650,000",
+                   "Comparable $650,000", "Departure $650,000"):
+        assert parse_fields(phrase)["advertised_package_price"] == 650_000, phrase
+    # ...while genuine rent figures are still excluded
+    assert 2_330 not in _ordered_package_prices("$ 2,330 pw $ 121,160 pa $ 850,000")
+    assert 121_160 not in _ordered_package_prices("$ 2,330 pw $ 121,160 pa $ 850,000")
+
+
 def test_mixed_money_rows_are_flagged_low_confidence():
     """A row where rent, yield and price are jumbled must not look authoritative."""
     f = parse_fields("Lot 9 $1,500 pw $78,000 pa 7.78% $960,000")
@@ -76,6 +97,7 @@ def run_all():
         ("price with internal space", test_price_with_space_inside_the_number),
         ("title dates now match", test_title_dates_that_previously_never_matched),
         ("title_status on real rows", test_title_status_populated_on_real_rows),
+        ("rent words are word-bounded", test_rent_words_must_be_bounded_not_matched_inside_words),
         ("mixed-money rows flagged", test_mixed_money_rows_are_flagged_low_confidence),
     ]
     failed = 0

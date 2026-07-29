@@ -72,7 +72,12 @@ _AMOUNT = r"\$\s?([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,6}|[0-9]{1,3}\s*k)"
 _INCENTIVE_BEFORE = re.compile(rf"(?:{_INCENTIVE_CONTEXT})[^$\n]{{0,40}}{_AMOUNT}", re.I)
 _INCENTIVE_AFTER = re.compile(rf"{_AMOUNT}[^$\n]{{0,40}}(?:{_INCENTIVE_CONTEXT})", re.I)
 # Anything that means the figure is rent or a yield, not a rebate.
-_MONEY_NOT_INCENTIVE = re.compile(r"p\.?w\.?|per\s*week|weekly|rent|yield|p\.?a\.?|per\s*annum|%", re.I)
+# Bounded: an unbounded p\.?a\.? matches the "pa" in "part"/"Package" — see the note
+# on adaptive_extract._RENTY, where that cost five builders their whole stocklist.
+_MONEY_NOT_INCENTIVE = re.compile(
+    r"(?<![A-Za-z])p\.?\s?w\.?(?![A-Za-z])"
+    r"|(?<![A-Za-z])p\.?\s?a\.?(?![A-Za-z])"
+    r"|per\s*week|per\s*annum|weekly|\brent\w*|\byield\w*|%", re.I)
 
 
 def _clean(s: Optional[str]) -> str:

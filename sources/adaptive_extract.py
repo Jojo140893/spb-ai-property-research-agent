@@ -66,7 +66,14 @@ def _money(s: Optional[str]) -> Optional[float]:
 
 
 # Marks a money figure as rent or a yield rather than part of the package price.
-_RENTY = re.compile(r"p\.?w\.?|per\s*week|weekly|rent|yield|p\.?a\.?|per\s*annum", re.I)
+# The "pa"/"pw" abbreviations MUST be bounded. Without the lookarounds they matched
+# inside ordinary words — "2-**pa**rt Contract", "**Pa**ckage Price", "**Pa**rk" — so
+# every price on those rows was thrown away as rental income. That silently cost five
+# builders their entire stocklist (FRD, Hudson x2, Alete, Land Build Direct).
+_RENTY = re.compile(
+    r"(?<![A-Za-z])p\.?\s?w\.?(?![A-Za-z])"
+    r"|(?<![A-Za-z])p\.?\s?a\.?(?![A-Za-z])"
+    r"|per\s*week|per\s*annum|weekly|\brent\w*|\byield\w*", re.I)
 
 
 def _ordered_package_prices(text: str) -> List[float]:

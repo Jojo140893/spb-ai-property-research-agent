@@ -127,11 +127,26 @@ def test_pipeline_end_to_end_with_radius_and_report():
 
 def test_live_sources_return_nothing_without_credentials():
     # With no credentials/Playwright config, live search must return [] — never fake data.
-    from sources.e_agent import EAgentSource
+    import tempfile
+    from pathlib import Path
+
+    from sources import e_agent as ea_mod
     from sources.builder_portals import BuilderPortalSource
-    ea = EAgentSource()
-    ea.username = ea.password = ""  # simulate unconfigured
-    assert ea.search({'state': 'QLD', 'budget_max': 780000, 'primary_suburbs': ['Coomera']}) == []
+    from sources.e_agent import EAgentSource
+
+    # Blanking the credentials is not enough to keep this test offline: a saved session
+    # from portal_login.py is treated as sufficient authentication, so the assertion
+    # below would launch a real crawl of every category page. Point the session
+    # directory at an empty temp dir for the duration.
+    original = ea_mod.SESSION_DIR
+    ea_mod.SESSION_DIR = Path(tempfile.mkdtemp())
+    try:
+        ea = EAgentSource()
+        ea.username = ea.password = ""  # simulate unconfigured
+        assert ea.search({'state': 'QLD', 'budget_max': 780000,
+                          'primary_suburbs': ['Coomera']}) == []
+    finally:
+        ea_mod.SESSION_DIR = original
     bp = BuilderPortalSource()
     got = bp.search({'state': 'ZZ', 'budget_max': 780000, 'primary_suburbs': []})
     assert got == []  # no builders in a bogus state

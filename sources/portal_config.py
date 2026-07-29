@@ -17,6 +17,23 @@ from typing import Dict, Optional
 from urllib.parse import urlparse
 
 
+@dataclass(frozen=True)
+class CategoryPage:
+    """A per-state E-Agent category page.
+
+    E-Agent's pooled `/access-projects` stocklists name no builder, which is why 194
+    harvested rows have a blank builder column — Coleen's headline complaint. The
+    category pages stack one section per builder, each with its own "Live Packages"
+    file, so the builder is recoverable from the heading above the link.
+
+    Deliberately NOT modelled as `extra_listings_urls`: builder_portals.py iterates
+    that field as plain URLs and would crash on a tuple.
+    """
+    url: str
+    state: str = ""
+    product_type: str = ""
+
+
 @dataclass
 class PortalConfig:
     name: str
@@ -33,6 +50,7 @@ class PortalConfig:
     # Listings
     listings_url: str = ""                  # primary page/route holding the stock list
     extra_listings_urls: tuple = ()         # additional stock pages (portals split inventory)
+    category_pages: tuple = ()              # CategoryPage entries: stock grouped BY BUILDER
     listing_card_selector: str = ""         # repeated element = one package
     field_selectors: Dict[str, str] = field(default_factory=dict)  # package field -> selector within a card
     link_selector: str = "a"                # link to the full listing within a card
@@ -53,6 +71,26 @@ EAGENT_CONFIG = PortalConfig(
     submit_selector="button:has-text('Log In')",
     logged_in_selector="text=Log Out, text=My Account",
     listings_url="https://www.e-agent.com.au/access-projects",
+    # Per-builder stock. The pooled files on /access-projects stay as a safety net
+    # (they are the proven source of the current rows) but name no builder.
+    # Routes and states read off the live navigation on 2026-07-29. The slugs do NOT
+    # describe their contents — /copy-of-house-and-land-qld is the NEW SOUTH WALES
+    # page, and /copy-of-house-and-land- (trailing dash) is a 404. Take the state from
+    # the nav label, never from the slug.
+    category_pages=(
+        CategoryPage("https://www.e-agent.com.au/house-and-land-1", "VIC", "House & Land"),
+        CategoryPage("https://www.e-agent.com.au/copy-of-house-and-land", "QLD", "House & Land"),
+        CategoryPage("https://www.e-agent.com.au/copy-of-house-and-land-qld", "NSW", "House & Land"),
+        CategoryPage("https://www.e-agent.com.au/projects-6", "SA", "House & Land"),
+        CategoryPage("https://www.e-agent.com.au/land-estates", "VIC", "Land"),
+        CategoryPage("https://www.e-agent.com.au/townhouses", "VIC", "Townhouse"),
+        CategoryPage("https://www.e-agent.com.au/copy-of-townhouses", "QLD", "Townhouse"),
+        CategoryPage("https://www.e-agent.com.au/apartments-1", "VIC", "Apartment"),
+        CategoryPage("https://www.e-agent.com.au/copy-of-apartments", "QLD", "Apartment"),
+        CategoryPage("https://www.e-agent.com.au/copy-of-apartments-1", "NSW", "Apartment"),
+        CategoryPage("https://www.e-agent.com.au/commercial-properties", "", "Commercial"),
+        CategoryPage("https://www.e-agent.com.au/copy-of-commercial-properties", "", "Commercial"),
+    ),
     listing_card_selector="[data-hook='listing-card'], .listing-card, li[role='listitem']",
     field_selectors={
         "title": "h2, h3, [data-hook='title']",

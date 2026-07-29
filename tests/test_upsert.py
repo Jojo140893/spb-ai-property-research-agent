@@ -135,6 +135,23 @@ def test_reharvest_rewrites_the_address_label_and_source_text():
     assert r["source_text"] == _ROW["lot_address"], "full row not retained"
 
 
+def test_two_lots_sharing_a_short_label_are_both_stored():
+    """`dedup_key` carries a UNIQUE constraint predating content_hash, keyed on
+    builder+address+suburb+price. Once the address became a short label, "Lot 68"
+    started repeating across estates and the constraint silently rejected 160 of 943
+    real listings. Both of these must survive."""
+    db = _fresh_db()
+    a = dict(_ROW, lot_address="Lot 68", suburb=None, land_size_sqm=None,
+             advertised_package_price=615228,
+             source_text="Lot 68 Clearwater 392 Arklay 17 $615,228 Available")
+    b = dict(_ROW, lot_address="Lot 68", suburb=None, land_size_sqm=None,
+             advertised_package_price=615228,
+             source_text="Lot 68 Riverbend 501 Dunestone 22 $615,228 Available")
+    assert db.record_building(a) == "new"
+    assert db.record_building(b) == "new", "a shared address label lost a real listing"
+    assert len(db.get_buildings()) == 2
+
+
 def test_nothing_is_deleted_when_a_source_returns_nothing():
     """A failed login must leave existing stock alone — the reason we upsert rather
     than wipe-and-rebuild."""
@@ -155,6 +172,7 @@ def run_all():
         ("enriched columns survive re-harvest", test_enrichment_owned_columns_survive_a_reharvest),
         ("thin run does not erase fields", test_a_run_that_cannot_read_a_field_does_not_erase_it),
         ("re-harvest rewrites label + source_text", test_reharvest_rewrites_the_address_label_and_source_text),
+        ("shared short label keeps both lots", test_two_lots_sharing_a_short_label_are_both_stored),
         ("empty source deletes nothing", test_nothing_is_deleted_when_a_source_returns_nothing),
     ]
     failed = 0
