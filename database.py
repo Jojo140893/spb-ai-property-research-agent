@@ -50,6 +50,10 @@ BUILDINGS_EXTRA_COLUMNS = (
     ("benchmark_median", "REAL"), ("benchmark_variance_pct", "REAL"),
     ("benchmark_classification", "TEXT"), ("benchmark_basis", "TEXT"),
     # identity + change tracking
+    # Persisted so a re-hash can reproduce the identity the extractor computed. Without
+    # it, migrating price-only siblings collapses them into a colliding pair and the
+    # unique index cannot be created.
+    ("variant_ordinal", "INTEGER"),
     ("content_hash", "TEXT"),
     ("first_seen", "TEXT"), ("last_seen", "TEXT"),
     ("price_previous", "REAL"), ("status_previous", "TEXT"),
@@ -382,6 +386,7 @@ class ResearchDatabase:
             "storey_source": b.get("storey_source"),
             "incentive_source": b.get("incentive_source"),
             "source_text": b.get("source_text") or b.get("lot_address", ""),
+            "variant_ordinal": int(b.get("variant_ordinal") or 0),
             "content_hash": h,
             "first_seen": now_date,
             "last_seen": now_date,

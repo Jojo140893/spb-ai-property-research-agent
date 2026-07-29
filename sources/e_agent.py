@@ -72,6 +72,10 @@ def _project_from_label(label: str) -> str:
     name = re.sub(r"\d{1,2}[-./ ]\d{1,2}[-./ ]\d{2,4}", " ", name)
     name = re.sub(r"[_\-]+", " ", name)
     name = re.sub(r"\[.*?\]|\(.*?\)", " ", name)            # "[ ]", "(1)"
+    # Split letter->digit runs BEFORE matching noise words: "Pricelist2026.xlsx" has no
+    # word boundary after "Pricelist", so \bpricelist\b never matched it and 75 rows were
+    # attributed to a builder called "Pricelist".
+    name = re.sub(r"(?<=[A-Za-z])(?=\d)", " ", name)
     name = _FILENAME_NOISE.sub(" ", name)
     name = re.sub(r"[\d.]{3,}", " ", name)                  # version/serial runs
     name = re.sub(r"\s+", " ", name).strip(" -–—.,&")

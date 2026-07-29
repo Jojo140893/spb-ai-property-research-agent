@@ -25,3 +25,5 @@ _probe_*.py
 _patch_*.py
 tmp_probe_*/
 _harvest.log
+vercel_site/
+.vercel/

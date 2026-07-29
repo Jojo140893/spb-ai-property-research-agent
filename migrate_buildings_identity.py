@@ -21,6 +21,7 @@ Usage:
     python migrate_buildings_identity.py            # migrate
     python migrate_buildings_identity.py --dry-run  # report only, change nothing
     python migrate_buildings_identity.py --force    # re-run even if already marked
+    python migrate_buildings_identity.py --dedupe   # also drop EXACT duplicate rows
 """
 
 import shutil
@@ -44,7 +45,7 @@ def backup_db() -> str:
     return dest
 
 
-def main(dry_run: bool = False, force: bool = False):
+def main(dry_run: bool = False, force: bool = False, dedupe: bool = False):
     db = ResearchDatabase()
 
     stored_recipe = db.get_meta(RECIPE_MARKER)
@@ -127,6 +128,47 @@ def main(dry_run: bool = False, force: bool = False):
 
     collisions = {h: ids for h, ids in hashes.items() if len(ids) > 1}
 
+    # A collision between rows that are genuinely different is the price-only sibling
+    # case the extractor numbers at harvest time (verified on the APLACE, Met Invest and
+    # Paramount files). Re-derive that number here, in id order — which is the order the
+    # rows were read out of the file — so the migration reproduces the identity the
+    # extractor computed instead of collapsing the pair.
+    renumbered = 0
+    for h, ids in list(collisions.items()):
+        group = conn.execute(
+            "SELECT id, source_text, lot_address, price, source_channel, attribution_scope,"
+            " builder_name, suburb, lot_number, land_sqm FROM buildings "
+            f"WHERE id IN ({','.join('?' * len(ids))}) ORDER BY id", ids).fetchall()
+        distinct = {(r["source_text"] or r["lot_address"], r["price"]) for r in group}
+        if len(distinct) < 2:
+            continue                      # true duplicates: leave them to be judged
+        seen, ordinal = set(), 0
+        for r in group:
+            sig = (r["source_text"] or r["lot_address"], r["price"])
+            if sig in seen:
+                continue
+            seen.add(sig)
+            if ordinal:
+                new_hash = building_content_hash({
+                    "source_channel": r["source_channel"],
+                    "attribution_scope": r["attribution_scope"],
+                    "builder_name": r["builder_name"], "suburb": r["suburb"],
+                    "lot_number": r["lot_number"], "house_design": None,
+                    "land_size_sqm": r["land_sqm"], "lot_address": r["lot_address"],
+                    "source_text": r["source_text"], "variant_ordinal": ordinal,
+                })
+                if not dry_run:
+                    conn.execute("UPDATE buildings SET variant_ordinal=?, content_hash=? "
+                                 "WHERE id=?", (ordinal, new_hash, r["id"]))
+                hashes.setdefault(new_hash, []).append(r["id"])
+                hashes[h].remove(r["id"])
+                renumbered += 1
+            ordinal += 1
+    if renumbered:
+        print(f"\n  [+] {renumbered} price-only sibling(s) renumbered so both keep a "
+              f"distinct identity")
+    collisions = {h: ids for h, ids in hashes.items() if len(ids) > 1}
+
     if not dry_run:
         conn.commit()
 
@@ -135,6 +177,28 @@ def main(dry_run: bool = False, force: bool = False):
         print(f"    {k:<22} {v:>4}")
 
     print(f"\n  distinct identities: {len(hashes)} for {len(rows)} row(s)")
+
+    # Rows that are identical in EVERY field identity uses AND in their source text and
+    # price are the same listing stored twice — normally impossible, but reachable when a
+    # name is normalised (blanking a wrongly-derived builder can make two rows equal).
+    # Only ever removed with --dedupe, keeping the oldest row so its history survives.
+    if collisions and dedupe and not dry_run:
+        removed = 0
+        for h, ids in list(collisions.items()):
+            group = conn.execute(
+                "SELECT id, source_text, lot_address, price FROM buildings "
+                f"WHERE id IN ({','.join('?' * len(ids))}) ORDER BY id", ids).fetchall()
+            if len({(r["source_text"] or r["lot_address"], r["price"]) for r in group}) > 1:
+                continue                              # genuinely different — leave alone
+            for r in group[1:]:
+                conn.execute("DELETE FROM buildings WHERE id=?", (r["id"],))
+                hashes[h].remove(r["id"])
+                removed += 1
+        if removed:
+            conn.commit()
+            print(f"  [+] removed {removed} exact duplicate row(s), keeping the oldest of each")
+        collisions = {h: ids for h, ids in hashes.items() if len(ids) > 1}
+
     if collisions:
         print(f"  [!] {len(collisions)} hash collision group(s) — NOT deleting anything.")
         print("      These are either genuine duplicates or listings the recipe can't tell apart:")
@@ -163,4 +227,5 @@ def main(dry_run: bool = False, force: bool = False):
 
 
 if __name__ == "__main__":
-    sys.exit(main(dry_run="--dry-run" in sys.argv, force="--force" in sys.argv))
+    sys.exit(main(dry_run="--dry-run" in sys.argv, force="--force" in sys.argv,
+                  dedupe="--dedupe" in sys.argv))
