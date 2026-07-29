@@ -157,12 +157,101 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
 
     # the app's own frontend, unmodified
     shutil.copyfile(app / "index.html", out_dir / "index.html")
-    (out_dir / "vercel.json").write_text(json.dumps({
+    fn = _bundle_research_function(app, out_dir)
+    meta["function_files"] = fn
+
+    vercel = {
         "$schema": "https://openapi.vercel.sh/vercel.json",
         "headers": [{"source": "/(.*)", "headers": [
             {"key": "X-Robots-Tag", "value": "noindex, nofollow"}]}],
-    }, indent=2), encoding="utf-8")
+    }
+    if fn:
+        # Research & Scoring runs the Python pipeline, so on a static host it needs a
+        # serverless function. Under api/ because Vercel's static builder excludes that
+        # path — the pipeline source is bundled with the function, not served.
+        vercel["functions"] = {"api/research.py": {
+            "memory": 1024, "maxDuration": 30,
+            "includeFiles": "{api/_bootstrap.py,api/_candidates.py,"
+                            "api/_export_builders.py,api/_data/**,api/_lib/**,stock.json}",
+        }}
+    (out_dir / "vercel.json").write_text(json.dumps(vercel, indent=2), encoding="utf-8")
+    # Belt and braces if anyone ever deploys from the repo root instead of vercel_site.
+    (out_dir / ".vercelignore").write_text("\n".join((
+        "requirements.txt", "Book1(Builders) List.csv", "drive_input/", ".sessions/",
+        ".env", "credentials.json", "spb_research_audit.db", "spb_research_audit.db.bak-*",
+        "output/", "server.py", "build_web.py", "harvest_buildings.py", "portal_login.py",
+        "enrich_buildings.py", "migrate_buildings_identity.py", "tests/", "__pycache__/",
+        "_harvest.log", "_server.log", "",
+    )), encoding="utf-8")
     return meta
+
+
+# The transitive import closure of kommo_agent — nothing else is needed, and nothing
+# else should be shipped.
+_FUNCTION_ROOT_MODULES = (
+    "benchmark.py", "brief_parser.py", "builder_registry.py", "client_report.py",
+    "config.py", "database.py", "drive_ingest.py", "geo.py", "kommo_agent.py",
+    "kommo_client.py", "qa_checker.py", "report_generator.py", "schema.py",
+    "scoring_engine.py", "secrets_store.py", "state_resolver.py",
+    "turnkey_calculator.py",
+)
+_FUNCTION_SOURCES = (
+    "__init__.py", "adaptive_extract.py", "base.py", "builder_portals.py", "dedupe.py",
+    "drive_pdf.py", "e_agent.py", "feature_extract.py", "portal_config.py",
+    "remote_stocklist.py", "scraper_base.py", "spreadsheet_extract.py",
+)
+_FUNCTION_ENTRY = ("research.py", "_bootstrap.py", "_candidates.py", "_export_builders.py")
+
+
+def _bundle_research_function(app: Path, out_dir: Path) -> int:
+    """Ship the Research & Scoring endpoint, or nothing at all.
+
+    Deliberately explicit rather than a directory sweep: `requirements.txt` alone would
+    make Vercel pip-install Playwright and pdfminer into the function — hundreds of MB,
+    and cold start measured at 3.8s instead of 0.6s — and a sweep of the repo root would
+    carry the credential CSV, the vendor CSV and the saved portal sessions with it.
+    """
+    src_api = app / "api"
+    if not (src_api / "research.py").is_file():
+        print("[i] api/research.py absent — deploying without the research endpoint")
+        return 0
+    dest_api = out_dir / "api"
+    lib = dest_api / "_lib"
+    lib.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for name in _FUNCTION_ENTRY:
+        if (src_api / name).is_file():
+            shutil.copyfile(src_api / name, dest_api / name)
+            n += 1
+    for name in _FUNCTION_ROOT_MODULES:
+        if (app / name).is_file():
+            shutil.copyfile(app / name, lib / name)
+            n += 1
+    (lib / "sources").mkdir(exist_ok=True)
+    for name in _FUNCTION_SOURCES:
+        if (app / "sources" / name).is_file():
+            shutil.copyfile(app / "sources" / name, lib / "sources" / name)
+            n += 1
+    # geo.py resolves the suburb index as PROJECT_ROOT/data/au_suburbs.csv
+    (lib / "data").mkdir(exist_ok=True)
+    if (app / "data" / "au_suburbs.csv").is_file():
+        shutil.copyfile(app / "data" / "au_suburbs.csv", lib / "data" / "au_suburbs.csv")
+        n += 1
+    # the builder directory with every credential column blanked
+    try:
+        sys.path.insert(0, str(app))
+        from api._export_builders import write_public_registry
+        path, rows = write_public_registry(out_dir)      # it appends api/_data itself
+        print(f"[+] builder directory for the function: {rows} rows, credentials blanked")
+        n += 1
+    except Exception as e:
+        print(f"[!] could not write the public builder registry ({e}) — "
+              f"deploying without the research endpoint")
+        shutil.rmtree(dest_api, ignore_errors=True)
+        return 0
+    for junk in dest_api.rglob("__pycache__"):
+        shutil.rmtree(junk, ignore_errors=True)
+    return n
 
 
 if __name__ == "__main__":

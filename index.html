@@ -852,6 +852,19 @@
         return `<span class="pill ${cls}">${esc(v || '—')}</span>`;
     }
 
+    /* A blank builder is deliberate — the project never guesses one — but "not named" on its
+       own looks like a bug. Say which kind of blank it is, so the gap is legible. */
+    function unnamedPill(b) {
+        const scope = b.attribution_scope || '';
+        if (scope === 'state_pooled') return '<span class="pill pill-muted" title="This lot came '
+            + 'from one of E-Agent\'s pooled state stocklists, which list several builders\' '
+            + 'stock in one file without saying which lot belongs to which.">pooled file</span>';
+        if (scope === 'project') return '<span class="pill pill-muted" title="An apartment or '
+            + 'townhouse development. E-Agent lists these by development rather than builder, '
+            + 'and this one is not named on the page or in its price list.">development</span>';
+        return '<span class="pill pill-muted">not named</span>';
+    }
+
     async function loadBuildings() {
         if (STOCK.length) { renderStock(); return; }        // already loaded
         const el = document.getElementById('buildingsContent');
@@ -978,7 +991,7 @@
             if (c.pill) return `<td>${availPill(v)}</td>`;
             if (c.money) return `<td class="num">${money(v)}</td>`;
             if (c.strong) return `<td>${v ? `<strong>${esc(v)}</strong>`
-                : '<span class="pill pill-muted">not named</span>'}</td>`;
+                : unnamedPill(b)}</td>`;
             return `<td class="${c.cls || ''}">${esc(v ?? '')}</td>`;
         }).join('') + '</tr>').join('');
 
