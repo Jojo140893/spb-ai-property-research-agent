@@ -15,3 +15,4 @@ drive_input/
 output/client_report_*.html
 assets/
 .browser_profiles/
+*.db.bak-*

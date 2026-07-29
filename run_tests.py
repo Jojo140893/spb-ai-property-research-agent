@@ -26,6 +26,7 @@ from tests.test_vendor_pipeline import (
 )
 from tests.test_harvest_buildings import _run_without_pytest as test_harvest_buildings
 from tests.test_identity import run_all as _identity_suite
+from tests.test_feature_extract import run_all as _features_suite
 from tests.test_adaptive_extract import test_adaptive_extracts_from_unknown_layouts
 
 
@@ -53,6 +54,7 @@ def run_all_tests():
         ("Buildings: harvest runner stores + dedupes", test_harvest_buildings),
         ("Adaptive: extracts listings from unknown layouts", test_adaptive_extracts_from_unknown_layouts),
         ("Identity: content_hash + column spec", lambda: (_ for _ in ()).throw(AssertionError("identity suite failed")) if _identity_suite() else None),
+        ("Features: availability/storey/lot/incentives", lambda: (_ for _ in ()).throw(AssertionError("features suite failed")) if _features_suite() else None),
     ]
 
     passed = 0

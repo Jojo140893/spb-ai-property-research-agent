@@ -56,11 +56,36 @@ HASH_RECIPE_VERSION = "v1"
 # rather than create a second row. Also excludes state/builder_matched, which the
 # enrichment pass writes: hashing them would make enrichment duplicate the table.
 _HASH_FIELDS = ("source_channel", "attribution_scope", "builder_key", "suburb_norm",
-                "lot_number", "house_design", "land_sqm")
+                "lot_number", "house_design", "land_sqm", "variant_key")
 
 
 def _norm(v: Any) -> str:
     return re.sub(r"\s+", " ", str(v or "")).strip().lower()
+
+
+# Volatile content stripped out of the variant key, so a price move or a status
+# flip does not change a listing's identity.
+_STRIP_MONEY = re.compile(r"\$\s?[\d,\.]+\s*k?", re.I)
+_STRIP_STATUS = re.compile(r"\b(available|not\s*available|unavailable|on\s*hold|hold|"
+                           r"under\s*offer|sold|reserved|leased|tbc)\b", re.I)
+_STRIP_DATES = re.compile(r"\b(?:q[1-4][\s-]*\d{2,4}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|"
+                          r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s-]*\d{2,4})\b", re.I)
+_STRIP_PCT = re.compile(r"\d+(?:\.\d+)?\s*%")
+
+
+def _variant_key(b: Dict[str, Any]) -> str:
+    """Distinguishes real product variants that share a lot number.
+
+    Verified need: the VIC Regional stocklist lists Lot 414 twice — once as
+    "Arklay 17" and once as "Dunestone 22" — and NSW lists Lot 116 as both
+    "Vesper SG" and "Vesper DG". Those are different packages at different prices
+    and must stay separate rows. Prices, availability, dates and yields are
+    stripped so the *same* package keeps its identity when its price moves.
+    """
+    t = _norm(b.get("lot_address"))
+    for rx in (_STRIP_MONEY, _STRIP_STATUS, _STRIP_DATES, _STRIP_PCT):
+        t = rx.sub(" ", t)
+    return re.sub(r"\s+", " ", t).strip()[:140]
 
 
 def building_content_hash(b: Dict[str, Any]) -> str:
@@ -78,13 +103,9 @@ def building_content_hash(b: Dict[str, Any]) -> str:
         "lot_number": _norm(b.get("lot_number")),
         "house_design": _norm(b.get("house_design")),
         "land_sqm": _norm(b.get("land_size_sqm") or b.get("land_sqm")),
+        "variant_key": _variant_key(b),
     }
     basis = "|".join(f"{k}={parts[k]}" for k in _HASH_FIELDS)
-    # Degenerate rows (no lot number, no design) would otherwise all collide or go
-    # NULL — SQLite treats NULLs as distinct in a unique index, so fall back to the
-    # raw row text to guarantee every row gets a value.
-    if not (parts["lot_number"] or parts["house_design"]):
-        basis += "|raw=" + _norm(b.get("lot_address"))[:200]
     return f"{HASH_RECIPE_VERSION}:{hashlib.sha256(basis.encode('utf-8')).hexdigest()}"
 
 

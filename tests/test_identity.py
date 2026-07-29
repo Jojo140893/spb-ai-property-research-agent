@@ -28,7 +28,7 @@ _ROW = {
 # Pinned: if this changes, every stored row's identity changes and the next
 # harvest re-inserts the entire table as new rows. Change it only deliberately,
 # alongside a HASH_RECIPE_VERSION bump and a migration.
-_PINNED = "v1:1f5713f63269d1b4b4480e6ed5eda1be1d830c607910ef8e9fae825de8eb862e"
+_PINNED = "v1:d62b7860f32b1f228e7e475b478149a98afbf9bae45e0585a020b7c4c62670d1"
 
 
 def test_hash_matches_pinned_value():
@@ -61,6 +61,24 @@ def test_hash_distinguishes_real_listings():
                      {"suburb": "Tarneit"}, {"house_design": "Westgarth 22"},
                      {"land_size_sqm": 400}, {"attribution_scope": "state_pooled"}):
         assert building_content_hash({**_ROW, **distinct}) != base, f"{distinct} collided"
+
+
+def test_hash_separates_designs_on_the_same_lot():
+    """Verified live: the VIC stocklist lists Lot 414 twice, as "Arklay 17" and
+    "Dunestone 22" — different packages at different prices, so different rows.
+    NSW does the same with "Vesper SG" / "Vesper DG"."""
+    base = {"source_channel": "E-Agent", "attribution_scope": "state_pooled",
+            "builder_name": "", "suburb": "Colac", "lot_number": "414"}
+    arklay = {**base, "lot_address": "Lot 414 Clearwater Estate (Arklay 17) 392 162.1 14.0 "
+                                     "Q2-2026 Arklay 17 4x2x2 $249,000 $366,228 $615,228 Available"}
+    dune = {**base, "lot_address": "Lot 414 Clearwater Estate (Dunestone 22) 392 203.5 14.0 "
+                                   "Q2-2026 Dunestone 22 4x2x2 $249,000 $397,121 $646,121 Available"}
+    assert building_content_hash(arklay) != building_content_hash(dune)
+
+    # ...but the SAME package keeps its identity when price and status move
+    moved = {**base, "lot_address": "Lot 414 Clearwater Estate (Arklay 17) 392 162.1 14.0 "
+                                    "Q2-2026 Arklay 17 4x2x2 $249,000 $370,000 $625,000 On hold"}
+    assert building_content_hash(arklay) == building_content_hash(moved)
 
 
 def test_hash_never_empty_for_degenerate_rows():
@@ -108,6 +126,7 @@ def run_all():
         ("hash matches pinned value", test_hash_matches_pinned_value),
         ("hash ignores volatile fields", test_hash_ignores_volatile_fields),
         ("hash distinguishes real listings", test_hash_distinguishes_real_listings),
+        ("hash separates designs on same lot", test_hash_separates_designs_on_the_same_lot),
         ("hash never empty for degenerate rows", test_hash_never_empty_for_degenerate_rows),
         ("column spec types valid", test_column_spec_types_are_valid),
         ("migration idempotent + complete", test_migration_is_idempotent_and_adds_every_column),
