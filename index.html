@@ -325,6 +325,111 @@
             background: #f8fafc;
         }
 
+        /* Building Stock: summary cards, breakdowns, filters, sortable table */
+        .stat-cards {
+            display: grid;
+            gap: 0.6rem;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            margin-bottom: 0.9rem;
+        }
+        .stat-cards .sc {
+            background: #f8fafc;
+            border: 1px solid var(--border-light);
+            border-radius: 8px;
+            padding: 0.7rem 0.85rem;
+        }
+        .stat-cards .sc-n {
+            font-size: 1.35rem;
+            font-weight: 750;
+            color: var(--text-heading);
+            letter-spacing: -0.02em;
+        }
+        .stat-cards .sc-k {
+            font-size: 0.74rem;
+            color: var(--text-muted);
+            margin-top: 0.1rem;
+        }
+        .mini-panels {
+            display: grid;
+            gap: 0.6rem;
+            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+            margin-bottom: 1rem;
+        }
+        .mini-panels .mp {
+            background: var(--surface-white);
+            border: 1px solid var(--border-light);
+            border-radius: 8px;
+            padding: 0.7rem 0.85rem;
+        }
+        .mini-panels h4 {
+            margin: 0 0 0.4rem;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--text-muted);
+            font-weight: 700;
+        }
+        .mini-panels .mp-row {
+            display: flex;
+            justify-content: space-between;
+            gap: 0.5rem;
+            font-size: 0.8rem;
+            padding: 0.12rem 0;
+            color: var(--text-body);
+        }
+        .mini-panels .mp-row b { color: var(--text-muted); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+        .filter-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            align-items: center;
+            margin-bottom: 0.9rem;
+        }
+        .filter-bar input[type=search], .filter-bar select {
+            background: var(--surface-white);
+            border: 1px solid var(--border-strong);
+            border-radius: 7px;
+            padding: 0.45rem 0.6rem;
+            font-size: 0.82rem;
+            font-family: inherit;
+            color: var(--text-body);
+            min-width: 0;
+        }
+        .filter-bar input[type=search] { flex: 1 1 220px; }
+        .filter-count { margin-left: auto; font-size: 0.8rem; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+        .btn-ghost {
+            background: var(--surface-white);
+            border: 1px solid var(--border-strong);
+            border-radius: 7px;
+            padding: 0.45rem 0.8rem;
+            font-size: 0.82rem;
+            font-family: inherit;
+            color: var(--text-body);
+            cursor: pointer;
+        }
+        .btn-ghost:hover { border-color: var(--accent-blue); color: var(--accent-blue); }
+        .btn-more { display: block; width: 100%; margin-top: 0.9rem; }
+
+        .builder-table th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+        .builder-table th.sortable:hover { color: var(--accent-blue); }
+        .builder-table th.sortable[data-dir]::after { content: " \2191"; color: var(--accent-blue); }
+        .builder-table th.sortable[data-dir="desc"]::after { content: " \2193"; }
+        .builder-table td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .builder-table td.addr { min-width: 190px; max-width: 300px; }
+        .stock-table-wrap { overflow-x: auto; border: 1px solid var(--border-light); border-radius: 8px; }
+        .stock-table-wrap .builder-table th { position: sticky; top: 0; z-index: 1; }
+        .pill-muted { background: #f1f5f9; color: var(--text-muted); border: 1px solid var(--border-light); }
+        .offline-note {
+            background: var(--amber-bg);
+            border: 1px solid rgba(180, 83, 9, 0.25);
+            color: var(--amber-yellow);
+            border-radius: 8px;
+            padding: 0.7rem 0.9rem;
+            font-size: 0.82rem;
+            margin-bottom: 0.9rem;
+        }
+
         .json-code {
             font-family: 'JetBrains Mono', monospace;
             font-size: 0.8rem;
@@ -383,6 +488,11 @@
             .panel-card { padding: 1rem; border-radius: 10px; }
             .form-row { grid-template-columns: 1fr; }
             .metrics-grid { grid-template-columns: 1fr; }
+            .stat-cards { grid-template-columns: repeat(2, 1fr); }
+            .mini-panels { grid-template-columns: 1fr; }
+            .filter-bar input[type=search], .filter-bar select { flex: 1 1 100%; }
+            .filter-count { margin-left: 0; width: 100%; }
+            .builder-table td.addr { max-width: 160px; }
             .tab-btn { padding: 0.5rem 0.75rem; font-size: 0.78rem; }
             .json-code { font-size: 0.72rem; padding: 0.85rem; }
             h1 { word-break: break-word; }
@@ -556,10 +666,26 @@
             <span id="buildingsBadge" class="pill pill-recommend">0 buildings</span>
         </div>
         <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">
-            All current stock harvested from the credentialed sources, deduped. Run
-            <code>python harvest_buildings.py</code> in your environment to populate this.
+            All current stock harvested from the credentialed sources, deduped by listing
+            identity so a re-harvest updates a lot in place rather than duplicating it. Run
+            <code>python harvest_buildings.py</code> to refresh.
         </p>
+
+        <div class="stat-cards" id="buildingsStats"></div>
+        <div class="mini-panels" id="buildingsBreakdown"></div>
+
+        <div class="filter-bar">
+            <input type="search" id="bSearch" placeholder="Search builder, address, suburb, estate…">
+            <select id="bBuilder"><option value="">All builders</option></select>
+            <select id="bState"><option value="">All states</option></select>
+            <select id="bAvail"><option value="">Any availability</option></select>
+            <select id="bProduct"><option value="">All products</option></select>
+            <button type="button" class="btn-ghost" id="bReset">Reset</button>
+            <span class="filter-count" id="bCount"></span>
+        </div>
+
         <div id="buildingsContent" style="font-size:0.9rem; overflow-x:auto;">Loading building stock…</div>
+        <button type="button" class="btn-ghost btn-more" id="bMore" hidden></button>
     </div>
 </div>
 
@@ -601,9 +727,8 @@
 
     async function loadBuilderDirectory() {
         try {
-            const res = await fetch('/api/builders');
-            const data = await res.json();
-            if (data.status === 'success') {
+            const data = await getJSON('/api/builders', 'builders.json');
+            if (data.builders) {
                 const tbody = document.getElementById('builderTableBody');
                 tbody.innerHTML = '';
                 document.getElementById('builderTotalCount').textContent = `${data.count} Approved Builders Indexed`;
@@ -627,47 +752,235 @@
         }
     }
 
+    /* ---------------------------------------------------------------- data access
+       The same page runs two ways: against server.py locally, and as a static
+       deployment where build_web.py has written the JSON next to it. Try the live API
+       first, fall back to the static snapshot, and remember which one answered so each
+       tab can say honestly whether it is looking at live data.                       */
+    let DATA_MODE = null;              // 'live' | 'snapshot'
+
+    async function getJSON(apiPath, staticPath) {
+        try {
+            const res = await fetch(apiPath, { cache: 'no-store' });
+            if (res.ok) {
+                const ct = res.headers.get('Content-Type') || '';
+                if (ct.includes('json')) {
+                    DATA_MODE = DATA_MODE || 'live';
+                    return await res.json();
+                }
+            }
+        } catch (e) { /* no server here — fall through to the snapshot */ }
+        const res = await fetch(staticPath, { cache: 'no-store' });
+        if (!res.ok) throw new Error(`${apiPath} unavailable and ${staticPath} missing`);
+        DATA_MODE = 'snapshot';
+        return await res.json();
+    }
+
+    function snapshotNote(what) {
+        if (DATA_MODE !== 'snapshot') return '';
+        return `<div class="offline-note"><strong>Snapshot.</strong> ${what} is being read from a
+            static export, not a running server. Rebuild it with <code>python build_web.py</code>
+            after a harvest.</div>`;
+    }
+
+    /* ---------------------------------------------------------------- building stock */
+    const STOCK_COLUMNS = [
+        { k: 'builder_name',        t: 'Builder / development', cls: '', strong: true },
+        { k: 'lot_address',         t: 'Address',        cls: 'addr' },
+        { k: 'suburb',              t: 'Suburb' },
+        { k: 'state',               t: 'State' },
+        { k: 'availability_status', t: 'Availability',   pill: true },
+        { k: 'price',               t: 'Package',        cls: 'num', money: true },
+        { k: 'land_price',          t: 'Land',           cls: 'num', money: true },
+        { k: 'build_price',         t: 'Build',          cls: 'num', money: true },
+        { k: 'bedrooms',            t: 'Bed',            cls: 'num' },
+        { k: 'bathrooms',           t: 'Bath',           cls: 'num' },
+        { k: 'car_spaces',          t: 'Car',            cls: 'num' },
+        { k: 'land_sqm',            t: 'Land m²',        cls: 'num' },
+        { k: 'house_sqm',           t: 'House m²',       cls: 'num' },
+        { k: 'storey',              t: 'Storey' },
+        { k: 'title_status',        t: 'Title' },
+        { k: 'estate_name',         t: 'Estate' },
+        { k: 'incentive_amount',    t: 'Incentive',      cls: 'num', money: true },
+        { k: 'product_type',        t: 'Product' },
+        { k: 'source_channel',      t: 'Source' },
+        { k: 'attribution_scope',   t: 'Attribution' },
+        { k: 'date_checked',        t: 'Checked' },
+        { k: 'listing_url',         t: 'PDF',            link: 'open' },
+        { k: 'floorplan_url',       t: 'Floorplan',      link: 'plan' },
+        { k: 'brochure_url',        t: 'Brochure',       link: 'file' },
+    ];
+    const STOCK_PAGE = 150;
+    let STOCK = [], stockView = [], stockShown = 0, stockSort = null, stockDir = 1;
+
+    const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const money = v => (v === null || v === undefined || v === '' || Number(v) === 0)
+        ? '' : '$' + Math.round(Number(v)).toLocaleString();
+
+    function availPill(v) {
+        const s = String(v || '').toLowerCase();
+        let cls = 'pill-muted';
+        if (s.includes('avail') && !s.includes('not') && !s.includes('un')) cls = 'pill-recommend';
+        else if (s.includes('hold') || s.includes('offer') || s.includes('reserv')) cls = 'pill-conditions';
+        else if (s.includes('sold') || s.includes('not') || s.includes('un') || s.includes('leas')) cls = 'pill-reject';
+        return `<span class="pill ${cls}">${esc(v || '—')}</span>`;
+    }
+
     async function loadBuildings() {
+        if (STOCK.length) { renderStock(); return; }        // already loaded
         const el = document.getElementById('buildingsContent');
         el.innerHTML = 'Loading building stock…';
+        let data;
         try {
-            const res = await fetch('/api/buildings');
-            const data = await res.json();
-            document.getElementById('buildingsBadge').textContent = `${data.total} buildings`;
-            if (!data.buildings || data.buildings.length === 0) {
-                el.innerHTML = '<p style="color:var(--text-muted);">No building stock harvested yet. Run <code>python harvest_buildings.py</code> (logs into E-Agent + the direct portals in your environment).</p>';
-                return;
-            }
-            const money = v => v ? '$' + Number(v).toLocaleString() : '—';
-            const chanSummary = (data.by_channel || []).map(c => `${c.source_channel}: ${c.n}`).join(' · ');
-            const rows = data.buildings.map(b => `<tr>
-                <td><strong>${b.builder_name || '—'}</strong></td>
-                <td>${b.lot_address || '—'}</td>
-                <td>${b.suburb || ''} ${b.state || ''}</td>
-                <td>${money(b.price)}</td>
-                <td>${[b.bedrooms,b.bathrooms,b.car_spaces].map(x=>x||'-').join(' / ')}</td>
-                <td>${b.source_channel || ''}</td>
-                <td>${b.source_url ? `<a href="${b.source_url}" target="_blank" style="color:var(--accent-blue);">link</a>` : ''}</td>
-            </tr>`).join('');
-            el.innerHTML = `<p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:0.6rem;">${chanSummary}</p>
-                <table class="builder-table" style="width:100%; border-collapse:collapse; font-size:0.85rem;">
-                <thead><tr>
-                    <th style="text-align:left;">Builder</th><th style="text-align:left;">Lot / Address</th>
-                    <th style="text-align:left;">Suburb</th><th style="text-align:left;">Price</th>
-                    <th style="text-align:left;">Bed/Bath/Car</th><th style="text-align:left;">Source</th><th></th>
-                </tr></thead><tbody>${rows}</tbody></table>`;
+            data = await getJSON('/api/buildings', 'stock.json');
         } catch (e) {
-            el.innerHTML = '<p style="color:#b91c1c;">Failed to load building stock.</p>';
-            console.error("Error loading buildings:", e);
+            el.innerHTML = `<p style="color:var(--rose-red);">Could not load building stock. Start the
+                app with <code>python server.py</code>, or build the static snapshot with
+                <code>python build_web.py</code>.</p>`;
+            console.error('buildings:', e);
+            return;
         }
+        STOCK = data.buildings || [];
+        document.getElementById('buildingsBadge').textContent =
+            `${STOCK.length.toLocaleString()} buildings`;
+        if (!STOCK.length) {
+            el.innerHTML = `<p style="color:var(--text-muted);">No building stock harvested yet. Run
+                <code>python harvest_buildings.py</code>.</p>`;
+            return;
+        }
+
+        const uniq = key => {
+            const m = new Map();
+            STOCK.forEach(b => {
+                const v = (b[key] ?? '').toString().trim();
+                if (v) m.set(v, (m.get(v) || 0) + 1);
+            });
+            return [...m.entries()].sort((a, b) => b[1] - a[1]);
+        };
+        const named = STOCK.filter(b => (b.builder_name || '').trim()).length;
+        const withLinks = STOCK.filter(b => b.listing_url || b.floorplan_url || b.brochure_url).length;
+        const withAvail = STOCK.filter(b => b.availability_status).length;
+        const withState = STOCK.filter(b => (b.state || '').trim()).length;
+
+        document.getElementById('buildingsStats').innerHTML = [
+            [STOCK.length.toLocaleString(), 'listings'],
+            [uniq('builder_name').length, 'builders / developments'],
+            [named.toLocaleString(), 'with a named builder'],
+            [withAvail.toLocaleString(), 'with availability'],
+            [withLinks.toLocaleString(), 'with a PDF or plan'],
+            [withState.toLocaleString(), 'with a state'],
+        ].map(([n, k]) => `<div class="sc"><div class="sc-n">${n}</div><div class="sc-k">${k}</div></div>`).join('');
+
+        const mp = (title, pairs, limit) => `<div class="mp"><h4>${title}</h4>` +
+            pairs.slice(0, limit || 8).map(([v, n]) =>
+                `<div class="mp-row"><span>${esc(v)}</span><b>${n.toLocaleString()}</b></div>`).join('') +
+            `</div>`;
+        document.getElementById('buildingsBreakdown').innerHTML =
+            mp('By state', uniq('state')) +
+            mp('By availability', uniq('availability_status')) +
+            mp('By product', uniq('product_type')) +
+            mp('By source', uniq('source_channel')) +
+            mp('Attribution', uniq('attribution_scope')) +
+            mp('Top builders', uniq('builder_name'), 8);
+
+        const fill = (id, pairs) => {
+            const sel = document.getElementById(id);
+            sel.length = 1;
+            pairs.forEach(([v, n]) => sel.add(new Option(`${v} (${n})`, v)));
+        };
+        fill('bBuilder', uniq('builder_name'));
+        fill('bState', uniq('state'));
+        fill('bAvail', uniq('availability_status'));
+        fill('bProduct', uniq('product_type'));
+
+        ['bSearch', 'bBuilder', 'bState', 'bAvail', 'bProduct'].forEach(id => {
+            const e2 = document.getElementById(id);
+            e2.oninput = e2.onchange = () => renderStock();
+        });
+        document.getElementById('bReset').onclick = () => {
+            ['bSearch', 'bBuilder', 'bState', 'bAvail', 'bProduct']
+                .forEach(id => document.getElementById(id).value = '');
+            stockSort = null;
+            renderStock();
+        };
+        document.getElementById('bMore').onclick = () => {
+            stockShown += STOCK_PAGE;
+            paintStock();
+        };
+        renderStock();
+    }
+
+    function renderStock() {
+        const q = document.getElementById('bSearch').value.trim().toLowerCase();
+        const fb = document.getElementById('bBuilder').value;
+        const fs = document.getElementById('bState').value;
+        const fa = document.getElementById('bAvail').value;
+        const fp = document.getElementById('bProduct').value;
+        const fields = ['builder_name', 'lot_address', 'suburb', 'estate_name', 'state', 'availability_status'];
+
+        stockView = STOCK.filter(b => {
+            if (fb && (b.builder_name || '') !== fb) return false;
+            if (fs && (b.state || '') !== fs) return false;
+            if (fa && (b.availability_status || '') !== fa) return false;
+            if (fp && (b.product_type || '') !== fp) return false;
+            if (!q) return true;
+            return fields.some(f => String(b[f] ?? '').toLowerCase().includes(q));
+        });
+
+        if (stockSort) {
+            const col = STOCK_COLUMNS.find(c => c.k === stockSort);
+            const numeric = !!(col && (col.money || col.cls === 'num'));
+            stockView.sort((x, y) => {
+                let a = x[stockSort], b = y[stockSort];
+                if (numeric) return ((Number(a) || 0) - (Number(b) || 0)) * stockDir;
+                return String(a ?? '').localeCompare(String(b ?? '')) * stockDir;
+            });
+        }
+        stockShown = STOCK_PAGE;
+        paintStock();
+    }
+
+    function paintStock() {
+        const head = STOCK_COLUMNS.map(c =>
+            `<th class="sortable" data-k="${c.k}"${stockSort === c.k
+                ? ` data-dir="${stockDir === 1 ? 'asc' : 'desc'}"` : ''}>${c.t}</th>`).join('');
+        const body = stockView.slice(0, stockShown).map(b => '<tr>' + STOCK_COLUMNS.map(c => {
+            const v = b[c.k];
+            if (c.link) return `<td>${v ? `<a href="${esc(v)}" target="_blank" rel="noopener noreferrer"
+                style="color:var(--accent-blue);">${c.link}</a>` : ''}</td>`;
+            if (c.pill) return `<td>${availPill(v)}</td>`;
+            if (c.money) return `<td class="num">${money(v)}</td>`;
+            if (c.strong) return `<td>${v ? `<strong>${esc(v)}</strong>`
+                : '<span class="pill pill-muted">not named</span>'}</td>`;
+            return `<td class="${c.cls || ''}">${esc(v ?? '')}</td>`;
+        }).join('') + '</tr>').join('');
+
+        document.getElementById('buildingsContent').innerHTML = snapshotNote('Building stock') +
+            `<div class="stock-table-wrap"><table class="builder-table">
+                <thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+
+        document.querySelectorAll('#buildingsContent th.sortable').forEach(th => {
+            th.onclick = () => {
+                const k = th.dataset.k;
+                if (stockSort === k) stockDir = -stockDir; else { stockSort = k; stockDir = 1; }
+                renderStock();
+            };
+        });
+
+        document.getElementById('bCount').textContent =
+            `${stockView.length.toLocaleString()} of ${STOCK.length.toLocaleString()} shown`
+            + (stockView.length > stockShown ? ` · first ${stockShown.toLocaleString()}` : '');
+        const more = document.getElementById('bMore');
+        more.hidden = stockView.length <= stockShown;
+        more.textContent = `Show ${Math.min(STOCK_PAGE, stockView.length - stockShown).toLocaleString()} more`;
     }
 
     async function loadVendorAssets() {
         const el = document.getElementById('vendorAssetsContent');
         el.innerHTML = 'Loading harvested assets…';
         try {
-            const res = await fetch('/api/vendor-assets');
-            const data = await res.json();
+            const data = await getJSON('/api/vendor-assets', 'vendor-assets.json');
             document.getElementById('vendorAssetsBadge').textContent = `${data.total_assets} assets`;
             if (!data.assets || data.assets.length === 0) {
                 el.innerHTML = '<p style="color:var(--text-muted);">No brochures harvested yet. Run <code>python import_and_scrape.py drive_input/vendors.csv</code> to collect them.</p>';
@@ -725,6 +1038,14 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ client_brief: brief })
             });
+            if (!res.ok || !(res.headers.get('Content-Type') || '').includes('json')) {
+                // Scoring runs Python: it cannot work on a static deployment.
+                resultsDiv.innerHTML = `<div class="offline-note"><strong>Needs the local app.</strong>
+                    Research &amp; scoring runs the Python pipeline, so it only works with
+                    <code>python server.py</code> running. The Building Stock, Builder Directory and
+                    Brochure tabs work here from the exported snapshot.</div>`;
+                return;
+            }
 
             const data = await res.json();
             if (data.status === 'success') {

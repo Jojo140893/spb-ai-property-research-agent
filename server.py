@@ -174,8 +174,14 @@ class PropertyAgentRequestHandler(http.server.SimpleHTTPRequestHandler):
 
 
 def run_server():
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("", PORT), PropertyAgentRequestHandler) as httpd:
+    # ThreadingHTTPServer, not TCPServer. A browser opens several connections at once and
+    # holds speculative keep-alive ones open, so a single-threaded server accepts one and
+    # then blocks reading a request that never arrives — every later call, including
+    # /api/buildings, queues behind it forever. The Building Stock tab simply never
+    # loaded. Threads also stop one slow multi-megabyte response from stalling the page.
+    http.server.ThreadingHTTPServer.allow_reuse_address = True
+    http.server.ThreadingHTTPServer.daemon_threads = True
+    with http.server.ThreadingHTTPServer(("", PORT), PropertyAgentRequestHandler) as httpd:
         print(f"[+] SPB AI Property Research Agent Server running at http://localhost:{PORT}")
         httpd.serve_forever()
 

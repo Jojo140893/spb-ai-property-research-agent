@@ -27,3 +27,4 @@ tmp_probe_*/
 _harvest.log
 vercel_site/
 .vercel/
+_server.log
