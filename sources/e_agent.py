@@ -21,9 +21,69 @@ from sources.scraper_base import PlaywrightScraper, ScraperError, parse_price, p
 from sources.portal_config import EAGENT_CONFIG
 from sources.adaptive_extract import extract_listings
 from sources.spreadsheet_extract import extract_stocklist
+from sources import remote_stocklist as remote
 from secrets_store import get_credentials
 
 logger = logging.getLogger("spb.scraper.eagent")
+
+# Words to strip out of a stocklist FILE name to leave the development it belongs to.
+_FILENAME_NOISE = re.compile(
+    r"\b(master\s*-?\s*price\s*-?\s*list|masterpricelist|price\s*-?\s*list|pricelist|"
+    r"pricing|stock\s*-?\s*list|stocklist|availabilit\w*|release|as\s*at|bonus|"
+    r"master|final|current|updated?|copy|new|report|flyer|brochure|sales?|"
+    r"january|february|march|april|june|july|august|september|october|november|december|"
+    r"jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|"
+    r"v\d+|rev\s*\d*|jr|"
+    # last, so the multi-word forms above win the alternation
+    r"price|prices|list|sheet)\b", re.I)
+# Structural words. A name made only of these describes a slice of a development, not
+# the development: "Stage 1" tells the client nothing about whose stock it is.
+_STRUCTURAL_WORDS = frozenset(
+    "stage lot lots tower level precinct block building stock unit units apartment "
+    "apartments townhouse townhouses villa villas house houses land one two three four "
+    "five part final release north south east west".split())
+
+
+def _structural_only(name: str) -> bool:
+    tokens = [t for t in re.split(r"[\s\W]+", name.lower()) if t]
+    return bool(tokens) and all(t in _STRUCTURAL_WORDS or t.isdigit() for t in tokens)
+
+
+def _project_from_label(label: str) -> str:
+    """Name the development from the FILE it was published as.
+
+    The apartment, townhouse and commercial pages group stock by DEVELOPMENT, not by
+    builder, and on some of them the development name is in no heading element at all —
+    but it is in the file name ("eastbury-wheelers-hill-pricelist.pdf").
+
+    Held to a high bar on purpose. A first pass at this put "Masterpricelist Millwell
+    New", "Report Murcia", "Pricelist" and "Access Portal" in the builder column across
+    374 rows, which is worse than a blank: it looks like data. Anything that does not
+    reduce to a plausible name returns "" so the field stays empty and honest.
+    """
+    label = label or ""
+    # Must be a file name from a folder listing. Without this the LINK's own text leaks
+    # through and every apartment project is called "Access Portal".
+    if "/" not in label:
+        return ""
+    name = label.rsplit("/", 1)[-1].strip()
+    name = re.sub(r"\.(xlsx|xlsm|xls|csv|pdf)$", "", name, flags=re.I)
+    # Dates first, whole: "15-6-26" must go before "-" becomes a space, or the 6 survives.
+    name = re.sub(r"\d{1,2}[-./ ]\d{1,2}[-./ ]\d{2,4}", " ", name)
+    name = re.sub(r"[_\-]+", " ", name)
+    name = re.sub(r"\[.*?\]|\(.*?\)", " ", name)            # "[ ]", "(1)"
+    name = _FILENAME_NOISE.sub(" ", name)
+    name = re.sub(r"[\d.]{3,}", " ", name)                  # version/serial runs
+    name = re.sub(r"\s+", " ", name).strip(" -–—.,&")
+    name = re.sub(r"(?:\s+\b[A-Za-z]\b)+$", "", name)       # trailing stray initials
+    name = re.sub(r"\s+", " ", name).strip(" -–—.,&")
+    # A real name has a word in it. Engineering-plan file names reduce to initialisms
+    # ("1101438-16S-PS-V1.pdf" -> "16S PS"), which name nothing.
+    if not (2 < len(name) <= 44) or not re.search(r"[A-Za-z]{4}", name):
+        return ""
+    if _structural_only(name):
+        return ""
+    return name.title()
 
 
 class EAgentSource(PropertySource):
@@ -43,6 +103,10 @@ class EAgentSource(PropertySource):
         self.username, self.password, self.cred_source = get_credentials("e_agent", (csv_user, csv_pass))
         if self.username:
             logger.info("E-Agent credentials resolved from %s", self.cred_source)
+        # One session for every off-site host, so cookies persist across a folder's
+        # list-then-download pair (SharePoint and OneDrive will not serve the file
+        # otherwise). Created lazily; none of these hosts needs a login.
+        self._http = remote._session() if remote.REQUESTS_AVAILABLE else None
 
     @property
     def channel_name(self) -> str:
@@ -115,7 +179,7 @@ class EAgentSource(PropertySource):
             }
             return '';
         };
-        return [...document.querySelectorAll('a[href*="_files/ugd"]')].map(a => ({
+        return [...document.querySelectorAll('a[href]')].map(a => ({
             href: a.href,
             label: txt(a).slice(0, 60),
             heading: nearest(a).slice(0, 80),
@@ -130,6 +194,9 @@ class EAgentSource(PropertySource):
         r"house\s*&?\s*land|townhouses?|apartments?|commercial(\s*propert\w*)?|"
         r"dual\s*(key|occupancy)|projects?|our\s*builders?|new\s*(homes?|stock)|"
         r"home|about|contact|log\s*in|login|sign\s*up|access\s*projects|"
+        # the site-wide page title; it is what the heading walk returns when a link has
+        # no section heading of its own, so it must never be taken for a builder
+        r"wholesale\s*agent\s*platform|e-?agent|"
         r"victoria|new\s*south\s*wales|queensland|south\s*australia|"
         r"vic|nsw|qld|sa|wa|nt|act|tas)$", re.I)
 
@@ -146,6 +213,15 @@ class EAgentSource(PropertySource):
             return False
         return not self._NOT_A_BUILDER.match(h)
 
+    # A stocklist is identified by what the LINK SAYS, not by where it points. Filtering
+    # on `_files/ugd` (E-Agent's own file store) missed 21 builders — including Tomorrow
+    # Homes, which the client reaches by hand — because builders publish their live
+    # packages to Google Sheets, Smartsheet, SharePoint, OneDrive and Dropbox instead.
+    _STOCK_LABEL = re.compile(
+        r"live\s*packages?|price\s*-?\s*list|pricelist|stock\s*-?\s*list|stocklist|"
+        r"availabilit\w*|access\s*portal|part\s*h\s*&?\s*l|current\s*stock|inventory", re.I)
+    _DIRECT_FILE = re.compile(r"\.(xlsx|xlsm|xls|csv|pdf)(\?|$)", re.I)
+
     def _stocklist_links(self, scraper: PlaywrightScraper) -> List[Dict[str, str]]:
         try:
             links = scraper.page.evaluate(self._LINKS_WITH_HEADINGS_JS)
@@ -154,33 +230,85 @@ class EAgentSource(PropertySource):
             return []
         out, seen = [], set()
         for l in links or []:
-            href = l.get("href", "")
-            if not href or href in seen or not re.search(r"\.(xlsx|xls|pdf|csv)(\?|$)", href, re.I):
+            href = (l.get("href") or "").strip()
+            label = l.get("label") or ""
+            if not href or href.lower().startswith("mailto:"):
+                continue
+            if not (self._STOCK_LABEL.search(label) or self._DIRECT_FILE.search(href)):
+                continue
+            if self._NOT_STOCK_LABEL.search(label):
+                continue
+            # Two estates can share one workbook and differ only by #gid=, so the
+            # fragment is part of the identity of a Google Sheets tab.
+            if href in seen:
                 continue
             seen.add(href)
             out.append(l)
+        return out
+
+    def _scrape_html_stocklist(self, scraper: PlaywrightScraper, url: str,
+                               builder_hint: str, state_hint: str) -> List[Dict[str, Any]]:
+        """Some builders publish a PAGE rather than a file (Torsion Homes). The adaptive
+        HTML extractor reads it unchanged."""
+        try:
+            scraper.goto(url)
+        except Exception as e:
+            logger.warning("E-Agent: %s unreachable: %s", url, e)
+            return []
+        rows = extract_listings(scraper.page, builder_hint=builder_hint, state_hint=state_hint)
+        if not rows:
+            # An expired capability id still answers 200 with a normal-looking page and
+            # no cards, so an empty result here is a failure to report, not "no stock".
+            logger.warning("E-Agent: %s rendered no stock cards — the link's id has "
+                           "probably been rotated.", url)
+        return rows
+
+    def _fetch_pieces(self, scraper: PlaywrightScraper, href: str, label: str,
+                      builder_hint: str, state_hint: str) -> List[Dict[str, Any]]:
+        """Everything parseable behind one stock link, wherever it is hosted."""
+        if not remote.is_offsite(href):
+            try:
+                data = scraper.page.context.request.get(
+                    href, timeout=config.SCRAPER_NAV_TIMEOUT_MS).body()
+            except Exception as e:
+                logger.warning("E-Agent: could not download stocklist %s: %s", label, e)
+                return []
+            return extract_stocklist(data, source_label=href, builder_hint=builder_hint)
+
+        out: List[Dict[str, Any]] = []
+        for piece in remote.fetch_stocklist(href, builder_hint or label, self._http):
+            if piece.problem:
+                continue
+            if piece.kind == remote.KIND_HTML:
+                out.extend(self._scrape_html_stocklist(scraper, piece.url, builder_hint,
+                                                       state_hint))
+                continue
+            # A project folder names its development in the file, not in a page heading.
+            derived = "" if builder_hint else _project_from_label(piece.label)
+            hint = builder_hint or derived
+            got = extract_stocklist(piece.data, source_label=piece.url, builder_hint=hint)
+            for g in got:
+                g["stocklist"] = piece.label        # more use than a bare "Access Portal"
+                if derived:
+                    g["builder_source"] = "e-agent stocklist file name"
+            out.extend(got)
         return out
 
     def _parse_stocklist(self, scraper: PlaywrightScraper, link: Dict[str, str],
                          builder_hint: str, scope: str, state_hint: str = "",
                          product_type: str = "") -> List[Dict[str, Any]]:
         href = link.get("href", "")
-        try:
-            data = scraper.page.context.request.get(
-                href, timeout=config.SCRAPER_NAV_TIMEOUT_MS).body()
-        except Exception as e:
-            logger.warning("E-Agent: could not download stocklist %s: %s", link.get("label"), e)
-            return []
-        got = extract_stocklist(data, source_label=href, builder_hint=builder_hint)
+        got = self._fetch_pieces(scraper, href, link.get("label", ""), builder_hint,
+                                 state_hint)
         for g in got:
             g["source_channel"] = self.channel_name
             g["date_checked"] = datetime.now().strftime("%d/%m/%Y")
             g["verified"] = True
-            g["stocklist"] = link.get("label", "")
+            g.setdefault("stocklist", link.get("label", ""))
             g["stocklist_file"] = href
             g["attribution_scope"] = scope
             if builder_hint:
-                g["builder_source"] = "e-agent category heading"
+                g.setdefault("builder_source", "e-agent category heading")
             if state_hint:
                 g["source_state_hint"] = state_hint
             if product_type:
@@ -212,10 +340,23 @@ class EAgentSource(PropertySource):
         seen_files = seen_files if seen_files is not None else set()
         builders, unattributed = {}, 0
         for cat in (self.cfg.category_pages or ()):
-            try:
-                scraper.goto(cat.url)
-            except Exception as e:
-                logger.warning("E-Agent: category page %s unreachable: %s", cat.url, e)
+            # One retry. The Victoria apartments page timed out on a live run and took
+            # all 24 of its developments with it, which reads exactly like "no stock here".
+            loaded = False
+            for attempt in (1, 2):
+                try:
+                    scraper.goto(cat.url)
+                    loaded = True
+                    break
+                except Exception as e:
+                    if attempt == 2:
+                        logger.error("E-Agent: category page %s unreachable after 2 "
+                                     "attempts (%s) — its stock is NOT in this harvest.",
+                                     cat.url, e)
+                    else:
+                        logger.warning("E-Agent: %s timed out, retrying once.", cat.url)
+                        scraper.throttle()
+            if not loaded:
                 continue
             # Route-change guard. E-Agent is a Wix client-side-routed SPA: a failed
             # navigation leaves the PREVIOUS page rendered, which would attribute the
@@ -247,16 +388,25 @@ class EAgentSource(PropertySource):
                     logger.debug("E-Agent: %r under %r is not a stocklist — skipped.",
                                  l.get("label"), heading)
                     continue
-                if not self._is_builder_heading(heading):
+                # Apartments, townhouses and commercial are grouped by DEVELOPMENT, not
+                # by builder — that is how E-Agent presents them, and the heading is the
+                # project. Tagged `project` so they never mix with builder-attributed
+                # rows; where no heading exists the development is read off the file name.
+                is_builder = self._is_builder_heading(heading)
+                project_page = cat.product_type not in ("House & Land", "")
+                if not is_builder and not project_page:
                     unattributed += 1
                     logger.debug("E-Agent: no builder heading for %s (saw %r)",
                                  l.get("label"), heading)
                     continue
+                scope = "builder" if (is_builder and not project_page) else "project"
+                hint = heading if is_builder else ""
                 seen_files.add(l["href"])
-                got = self._parse_stocklist(scraper, l, heading, "builder",
+                got = self._parse_stocklist(scraper, l, hint, scope,
                                             cat.state, cat.product_type)
                 if got:
-                    builders[heading] = builders.get(heading, 0) + len(got)
+                    named = hint or (got[0].get("builder_name") or "").strip() or "(unnamed)"
+                    builders[named] = builders.get(named, 0) + len(got)
                 out.extend(got)
         if builders:
             logger.info("E-Agent: per-builder stock: %s",

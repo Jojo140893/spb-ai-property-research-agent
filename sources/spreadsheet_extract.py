@@ -25,6 +25,7 @@ Nothing is invented: a row without a recognisable price is skipped, and fields
 that cannot be found stay None.
 """
 
+import csv
 import io
 import logging
 import re
@@ -196,6 +197,101 @@ def _estate_from_context(header: str) -> Optional[str]:
     return first or None
 
 
+# Column-name vocabulary. A header row has no price and few digits, so it used to be
+# mistaken for an estate banner and remembered as context — which is how six rows ended
+# up addressed "Gallery Stock List Hold Tradition Lot Land Title Date House Design ...".
+_HEADER_WORDS = frozenset("""
+status lot lots street st no num number land size sizes sqm m2 area floor price prices
+title titled est estimated building build design designs name facade type types bed beds
+bedroom bedrooms bath baths bathroom bathrooms car cars garage contract package packages
+portal link links suburb estate address frontage storey storeys total totals yield rent
+rental house houses furniture date dates stage release avail available availability
+region state postcode deposit gross net weekly annual comments notes ref code product
+completion settlement developer builder agent width depth aspect orientation
+""".split())
+
+
+def _is_column_header(text: str) -> bool:
+    """True for a row of column names rather than a lot or an estate banner."""
+    if _PRICE_ANY.search(text):
+        return False
+    words = [w for w in re.findall(r"[A-Za-z][A-Za-z']*", text.lower()) if len(w) > 1]
+    if not words:
+        return False
+    known = sum(1 for w in words if w in _HEADER_WORDS)
+    # a wrapped second header line is short but entirely column names ("Street # Type")
+    if known == len(words) and len(words) >= 2:
+        return True
+    return len(words) >= 4 and known / len(words) >= 0.6
+
+
+# Which column headers name money. "Land Price" is money; "Land Size" is not, and
+# "Total (sqm)" is not either — hence the exclusion list, which is checked first.
+_PRICE_WORD = re.compile(r"price|cost|\$|total|amount|value|deposit|rrp|package|pkg", re.I)
+_NOT_PRICE_WORD = re.compile(
+    r"size|area|sqm|m2|m²|width|depth|frontage|bed|bath|car|garage|storey|living|"
+    r"no\.|number|lot|date|title|status|design|facade|link|brochure|yield|%|"
+    r"floor|internal|external|aspect|orientation|stage|type|name|comment|note", re.I)
+
+
+def _is_price_header(label: str) -> bool:
+    label = label or ""
+    return bool(_PRICE_WORD.search(label)) and not bool(_NOT_PRICE_WORD.search(label))
+
+
+class _MoneyColumns:
+    """Remembers which columns a stocklist's own header row says hold money.
+
+    Every off-site host surfaced the same blocker: an xlsx or Google Sheets tab stores
+    prices as NUMBERS, so a flattened row reads "519000.0" and `parse_fields` — which
+    requires a literal "$" — throws the whole listing away. Measured on live files: Kemps
+    yielded 0 listings instead of 107, AVIA 0 of 91, Invision 0 of 13, DBN Homes and
+    Prosperity Residential 0 entirely, and all four Dropbox workbooks 0.
+
+    The spreadsheet already knew which columns were money. This puts the "$" back from
+    that knowledge, rather than loosening the price pattern — which would immediately
+    start reading land sizes and floor areas as prices.
+    """
+
+    MIN_MONEY = 1000        # below this a bare number in a price column is not a price
+
+    def __init__(self):
+        self.cols: set = set()
+        self._labels: Dict[int, str] = {}
+        self._prev_was_header = False
+
+    def feed_header(self, cells: List[Tuple[str, bool, int]], is_header: bool) -> None:
+        """Header rows are often wrapped over two lines ("Land" / "Price"), so
+        consecutive header rows accumulate per column instead of replacing."""
+        if not is_header:
+            self._prev_was_header = False
+            return
+        if not self._prev_was_header:
+            self._labels = {}
+        for text, _cur, idx in cells:
+            if text:
+                self._labels[idx] = f"{self._labels.get(idx, '')} {text}".strip()
+        self.cols = {i for i, lab in self._labels.items() if _is_price_header(lab)}
+        self._prev_was_header = True
+
+    def render(self, cells: List[Tuple[str, bool, int]]) -> str:
+        parts = []
+        for text, is_currency, idx in cells:
+            if not text:
+                continue
+            if "$" not in text and (is_currency or idx in self.cols):
+                try:
+                    value = float(str(text).replace(",", "").strip())
+                except ValueError:
+                    parts.append(text)
+                    continue
+                if abs(value) >= self.MIN_MONEY:
+                    parts.append(f"${value:,.0f}")
+                    continue
+            parts.append(text)
+        return _clean(" ".join(parts))
+
+
 def _is_group_header(text: str, fields: Dict[str, Any]) -> bool:
     """Estate/builder/region banner rather than a lot row."""
     if fields.get("advertised_package_price"):
@@ -242,27 +338,35 @@ def _formula_links(data: bytes) -> Dict[Tuple[int, int, int], str]:
     return out
 
 
-def _iter_rows_xlsx(data: bytes) -> Iterator[Tuple[int, str, LinkList]]:
-    """Yield (sheet index, row text, links). Cells are read as objects rather than
-    values so `cell.hyperlink` survives — that is the per-lot link."""
+_CURRENCY_FORMAT = re.compile(r"\$|currency|\[\$", re.I)
+
+
+def _iter_rows_xlsx(data: bytes) -> Iterator[Tuple[int, List[Tuple[str, bool, int]], LinkList]]:
+    """Yield (sheet index, cells, links).
+
+    Cells are read as objects rather than values so two things survive that
+    `values_only=True` discards: `cell.hyperlink` (the per-lot link) and
+    `cell.number_format` (which says a bare number is money).
+    """
     wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
     formulas = {} if any(getattr(ws, "_hyperlinks", None) for ws in wb.worksheets) \
         else _formula_links(data)
     for si, sheet in enumerate(wb.worksheets):
         for row in sheet.iter_rows():
-            parts: List[str] = []
+            cells: List[Tuple[str, bool, int]] = []
             links: LinkList = []
             for c in row:
                 s = str(c.value).strip() if c.value is not None else ""
+                is_currency = bool(isinstance(c.value, (int, float))
+                                   and _CURRENCY_FORMAT.search(c.number_format or ""))
                 if s:
-                    parts.append(s)
+                    cells.append((s, is_currency, c.column))
                 url = getattr(getattr(c, "hyperlink", None), "target", None) \
                     or formulas.get((si, c.row, c.column))
                 if url:
                     links.append((s, str(url)))
-            text = _clean(" ".join(parts))
-            if text or links:
-                yield si, text, links
+            if cells or links:
+                yield si, cells, links
 
 
 def _annot_links(page: Any) -> List[Tuple[float, float, str]]:
@@ -349,6 +453,14 @@ def _listing_from_row(text: str, links: LinkList, context: str, source_label: st
         if v is not None})
     if not fields.get("advertised_package_price"):
         return None
+    # A row that is nothing but a wall of prices is a summary or a transposed layout, not a
+    # listing — seen live on the commercial pages ("$1,300,000 $1,250,000 $1,250,000 ...").
+    # Guarded by "and nothing that identifies a property", so the QLD dual-occupancy rows
+    # (five figures, but a stock code) are unaffected.
+    if len(_PRICE_ANY.findall(text)) >= 5 and not (
+            fields.get("lot_number") or fields.get("bedrooms")
+            or _leading_lot(text) or STREET_RE.search(text)):
+        return None
     fields["source_text"] = text                 # UNtruncated: the parser needs it all
     if not fields.get("estate_name"):
         fields["estate_name"] = _estate_from_context(context)
@@ -382,6 +494,8 @@ def _rows_to_listings(rows: List[Tuple[str, LinkList]], context: str, source_lab
     for text, links in rows:
         if not text:
             continue
+        if _is_column_header(text):
+            continue                         # column names: neither a lot nor a banner
         listing = _listing_from_row(text, links, context, source_label, builder_hint)
         if listing is None:
             if _is_group_header(text, {}):   # no price: _listing_from_row already told us
@@ -444,14 +558,19 @@ def extract_from_xlsx(data: bytes, source_label: str = "", builder_hint: str = "
         return []
 
     out: List[Dict[str, Any]] = []
-    context, sheet = "", -1
-    for si, text, links in rows:
+    context, sheet, money = "", -1, _MoneyColumns()
+    for si, cells, links in rows:
         if si != sheet:
-            context, sheet = "", si
-        if not text:
+            context, sheet, money = "", si, _MoneyColumns()   # headers are per sheet
+        plain = _clean(" ".join(t for t, _c, _i in cells))
+        if not plain:
             continue
-        listings, context = _rows_to_listings([(text, links)], context, source_label,
-                                              builder_hint)
+        is_header = _is_column_header(plain)
+        money.feed_header(cells, is_header)
+        if is_header:
+            continue
+        listings, context = _rows_to_listings([(money.render(cells), links)], context,
+                                              source_label, builder_hint)
         out.extend(listings)
     _log_yield("xlsx", source_label, out)
     return out
@@ -487,11 +606,52 @@ def extract_from_pdf(data: bytes, source_label: str = "", builder_hint: str = ""
     return out
 
 
+def extract_from_csv(data: bytes, source_label: str = "", builder_hint: str = "") -> List[Dict[str, Any]]:
+    """CSV/TSV stocklists — what a Google Sheets or Smartsheet tab exports as."""
+    for encoding in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
+        try:
+            text = data.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        logger.warning("could not decode csv %s", source_label)
+        return []
+    sample = text[:4000]
+    delimiter = "\t" if sample.count("\t") > sample.count(",") else ","
+    rows: List[Tuple[str, LinkList]] = []
+    money = _MoneyColumns()
+    for raw in csv.reader(io.StringIO(text), delimiter=delimiter):
+        cells = [(str(v).strip(), False, i) for i, v in enumerate(raw) if str(v).strip()]
+        plain = _clean(" ".join(t for t, _c, _i in cells))
+        if not plain:
+            continue
+        is_header = _is_column_header(plain)
+        money.feed_header(cells, is_header)
+        if not is_header:
+            rows.append((money.render(cells), []))
+    out, _ = _rows_to_listings(rows, "", source_label, builder_hint)
+    _log_yield("csv", source_label, out)
+    return out
+
+
 def extract_stocklist(data: bytes, source_label: str = "", builder_hint: str = "") -> List[Dict[str, Any]]:
-    """Dispatch on file magic bytes."""
+    """Dispatch on content. Magic bytes for the binary formats, then a text sniff — a
+    Google Sheets or Smartsheet export arrives as CSV with no magic bytes at all."""
+    if not data:
+        return []
     if data[:2] == b"PK":
         return extract_from_xlsx(data, source_label, builder_hint)
     if data[:4] == b"%PDF":
         return extract_from_pdf(data, source_label, builder_hint)
-    logger.warning("unrecognised stocklist format for %s", source_label)
+    head = data[:600].lstrip()
+    if head[:1] in (b"<",):
+        # An HTML page where a file was expected is a sign-in wall or an error page,
+        # never stock. Say so plainly rather than parsing a login form.
+        logger.warning("stocklist %s returned an HTML page, not a file — the link most "
+                       "likely needs a signed-in session.", source_label)
+        return []
+    if b"," in head or b"\t" in head:
+        return extract_from_csv(data, source_label, builder_hint)
+    logger.warning("unrecognised stocklist format for %s (starts %r)", source_label, data[:12])
     return []

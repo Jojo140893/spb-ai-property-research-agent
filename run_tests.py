@@ -30,6 +30,7 @@ from tests.test_feature_extract import run_all as _features_suite
 from tests.test_upsert import run_all as _upsert_suite
 from tests.test_price_parsing import run_all as _prices_suite
 from tests.test_row_links import run_all as _links_suite
+from tests.test_remote_stocklist import run_all as _remote_suite
 from tests.test_adaptive_extract import test_adaptive_extracts_from_unknown_layouts
 
 
@@ -61,6 +62,7 @@ def run_all_tests():
         ("Upsert: idempotent re-harvest, no data loss", lambda: (_ for _ in ()).throw(AssertionError("upsert suite failed")) if _upsert_suite() else None),
         ("Prices: rent/yield, spaced numbers, title dates", lambda: (_ for _ in ()).throw(AssertionError("prices suite failed")) if _prices_suite() else None),
         ("Links: per-lot pdf/floorplan + address label", lambda: (_ for _ in ()).throw(AssertionError("links suite failed")) if _links_suite() else None),
+        ("Remote: off-site stocklist hosts", lambda: (_ for _ in ()).throw(AssertionError("remote suite failed")) if _remote_suite() else None),
     ]
 
     passed = 0

@@ -146,9 +146,82 @@ def test_address_column_is_a_label_not_the_whole_row():
     assert label("12 Brittlewood 300 26 CTM 5 Yes 3 2 N/A Double $1,430,000") == "Lot 12"
 
 
+def test_column_header_rows_never_become_estate_context():
+    """A header row has no price and few digits, so it used to pass for an estate banner
+    and be remembered as context — which is how six live rows ended up addressed
+    "Gallery Stock List Hold Tradition Lot Land Title Date House Design ...".
+    All fixtures below are real header lines from the builders' own files."""
+    from sources.spreadsheet_extract import _is_column_header
+
+    for header in (
+        "Status Lot/ Land Size Land Price Est. Title Building Design Name Floor Area "
+        "Bed / Bath / Car Build Package Price Est. Gross",
+        "Gallery Stock List Hold Tradition Lot Land Title Date House Design Facade "
+        "Land Price House Price Furniture Total",
+        "Status,Lot,Estate,Suburb,Land,House,Design,Beds,Land Price,Build Price,Package",
+        "Street # Type",                      # a wrapped second header line
+    ):
+        assert _is_column_header(header), f"header not recognised: {header[:60]}"
+
+    for not_a_header in (
+        "Aberdeen - Winter Valley - VIC - House & Land",     # estate banner
+        "ANGLE VALE SA - 23 - NORTH ESTATE, Angle Vale",
+        "Paradise in Parkinson - Stage 2, Parkinson",
+        "Lot 82 Aberdeen 282 142.8 12.0 Sep-26 Empley 15 3x2x2 $205,000 $335,220 "
+        "$540,220 Available",                                # a real lot
+    ):
+        assert not _is_column_header(not_a_header), f"wrongly a header: {not_a_header[:60]}"
+
+
+def test_csv_stocklist_is_parsed():
+    """A Google Sheets or Smartsheet tab exports as CSV, which has no magic bytes at all
+    — the dispatcher used to reject it as an unrecognised format."""
+    from sources.spreadsheet_extract import extract_stocklist
+    data = "\n".join((
+        "Status,Lot,Estate,Suburb,Land,House,Design,Beds,Land Price,Build Price,Package",
+        "Available,Lot 82,Aberdeen,Winter Valley,282,142.8,Empley 15,3,$205000,$335220,$540220",
+        "Under offer,Lot 83,Aberdeen,Winter Valley,300,150.0,Empley 18,4,$210000,$350000,$560000",
+    )).encode("utf-8")
+    rows = extract_stocklist(data, "sheet.csv", "Tomorrow Homes")
+    assert len(rows) == 2, f"csv gave {len(rows)} listings"
+    assert rows[0]["lot_address"] == "Lot 82", rows[0]["lot_address"]
+    assert rows[0]["advertised_package_price"] == 540_220
+    assert rows[0]["availability_status"] == "Available"
+    assert rows[1]["availability_status"] == "Under Offer"
+    assert all(r["builder_name"] == "Tomorrow Homes" for r in rows)
+
+    # an HTML sign-in wall where a file was expected must yield nothing, not be parsed
+    assert extract_stocklist(b"<!DOCTYPE html><html><body>Sign in to continue", "x") == []
+
+
+def test_a_wall_of_prices_is_not_a_listing():
+    """Real row from E-Agent's commercial page: a transposed sheet whose row is nothing
+    but every unit's price. It parsed as a $1,990,000 "listing" with that whole string as
+    its address. Rejected only when nothing in the row identifies a property, so the QLD
+    dual-occupancy rows — five figures each, but a stock code — are unaffected."""
+    from sources.spreadsheet_extract import _listing_from_row
+
+    def kept(text):
+        return _listing_from_row(text, [], "", "src", "Builder") is not None
+
+    assert not kept("$1,300,000 $1,250,000 $1,250,000 $1,300,000 $1,990,000 Price "
+                    "$650,000 $1,500,000 $1,500,000 $650,000 $1,850,000")
+    # five money figures, but identified by a stock code -> a real package
+    assert kept("CC-0114 506 Titled 200 5 + 5 + 3 MORETON SINGLE $ 2,380 $ 123,760 8.07% "
+                "Download $ 839,000 $ 694,199 $ 1,533,199")
+    # ...or by a street address
+    assert kept("Woodford 4 Windsor Street Park Rise Jan-27 600 Rectangular $520,000 "
+                "Malanda A 4 192.75 4 | 2 | 2 $460,780 $980,780 $5,000 $975,780")
+    assert kept("Lot 82 Aberdeen 282 142.8 12.0 Sep-26 Empley 15 3x2x2 $205,000 "
+                "$335,220 $540,220 Available")
+
+
 def run_all():
     tests = [
         ("address column is a label", test_address_column_is_a_label_not_the_whole_row),
+        ("column headers are not context", test_column_header_rows_never_become_estate_context),
+        ("csv stocklist parsed", test_csv_stocklist_is_parsed),
+        ("wall of prices is not a listing", test_a_wall_of_prices_is_not_a_listing),
         ("xlsx cell hyperlink survives", test_cell_hyperlink_reaches_the_listing),
         ("=HYPERLINK() target recovered", test_hyperlink_formula_target_is_recovered),
         ("rows without links unaffected", test_rows_without_links_are_unaffected),

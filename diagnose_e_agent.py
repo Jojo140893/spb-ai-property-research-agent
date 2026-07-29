@@ -62,12 +62,19 @@ def main(parse: bool = False) -> int:
                 continue
             for l in links:
                 heading = (l.get("heading") or "").strip(" -–—:|")
-                ok = src._is_builder_heading(heading)
-                mark = "builder" if ok else "SKIP   "
+                # mirrors _scrape_category_pages: apartments / townhouses / commercial
+                # are grouped by development, not by builder
+                is_builder = src._is_builder_heading(heading)
+                project_page = cat.product_type not in ("House & Land", "")
+                skip = src._NOT_STOCK_LABEL.search(l.get("label") or "") or \
+                    (not is_builder and not project_page)
+                ok = not skip
+                scope = "builder" if (is_builder and not project_page) else "project"
+                mark = (scope[:7] if ok else "SKIP   ").ljust(7)
                 extra = ""
                 if parse and ok:
-                    rows = src._parse_stocklist(scraper, l, heading, "builder",
-                                                cat.state, cat.product_type)
+                    rows = src._parse_stocklist(scraper, l, heading if is_builder else "",
+                                                scope, cat.state, cat.product_type)
                     total_rows += len(rows)
                     extra = f"  -> {len(rows)} listing(s)"
                     if rows:

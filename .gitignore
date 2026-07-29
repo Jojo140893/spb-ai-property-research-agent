@@ -16,3 +16,12 @@ output/client_report_*.html
 assets/
 .browser_profiles/
 *.db.bak-*
+
+# throwaway probe artefacts (hold the client's supplier URLs; this repo is public)
+_families.json
+_inventory.json
+_ss_body.txt
+_probe_*.py
+_patch_*.py
+tmp_probe_*/
+_harvest.log
