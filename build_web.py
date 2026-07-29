@@ -16,10 +16,15 @@ reach the browser. That matters most for the builder registry: `/api/builders` s
 leave the machine.
 
 Usage:
-    python build_web.py [--out vercel_site]
+    python build_web.py [--out vercel_site] [--no-assets]
+
+`--no-assets` skips bundling the harvested PDFs (76 MB), which makes the deploy much
+faster but leaves the brochure links pointing at the builders' own sites, where several
+answer a direct request with HTML rather than the file.
 """
 
 import json
+import re
 import shutil
 import sqlite3
 import sys
@@ -61,12 +66,16 @@ def _check(name: str, fields) -> None:
             raise SystemExit(f"[ABORT] {name}: refusing to export field {f!r}")
 
 
+def _slug(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", (name or "builder").lower()).strip("_") or "builder"
+
+
 def _pick(row, fields):
     d = dict(row) if not isinstance(row, dict) else row
     return {f: d.get(f) for f in fields}
 
 
-def build(out_dir: Path) -> dict:
+def build(out_dir: Path, with_assets: bool = True) -> dict:
     for name, fields in (("buildings", BUILDING_FIELDS), ("builders", BUILDER_FIELDS),
                          ("assets", ASSET_FIELDS)):
         _check(name, fields)
@@ -83,9 +92,15 @@ def build(out_dir: Path) -> dict:
     by_channel = [{"source_channel": r[0], "n": r[1]} for r in conn.execute(
         "SELECT source_channel, COUNT(*) FROM buildings GROUP BY 1 ORDER BY 2 DESC")]
     stamp = datetime.now().strftime("%d %b %Y, %H:%M")
+    # Columnar, not a list of objects. Repeating 28 field names across 4,300 rows costs
+    # 3 MB against 1.2 MB, and that difference was 18 seconds of blank table on the
+    # deployed site. index.html accepts either shape (see asBuildings there), so the
+    # live API can keep returning objects.
     (out_dir / "stock.json").write_text(json.dumps({
         "status": "success", "total": len(buildings), "by_channel": by_channel,
-        "generated": stamp, "buildings": buildings,
+        "generated": stamp,
+        "keys": BUILDING_FIELDS,
+        "rows": [[b[f] for f in BUILDING_FIELDS] for b in buildings],
     }, separators=(",", ":"), default=str), encoding="utf-8")
 
     # builder registry, credentials stripped
@@ -100,12 +115,27 @@ def build(out_dir: Path) -> dict:
         separators=(",", ":"), default=str), encoding="utf-8")
 
     # harvested brochures / floorplans
-    assets, by_builder = [], []
+    assets, by_builder, copied = [], [], 0
     try:
         arows = conn.execute(
-            f"SELECT {', '.join(ASSET_FIELDS)} FROM builder_assets "
+            f"SELECT {', '.join(ASSET_FIELDS)}, local_path FROM builder_assets "
             "ORDER BY builder_name, asset_type").fetchall()
-        assets = [_pick(r, ASSET_FIELDS) for r in arows]
+        for r in arows:
+            a = _pick(r, ASSET_FIELDS)
+            # Ship the PDF itself. Linking to the builder's own source_url is not
+            # reliable — 3 of 5 sampled builder sites answer a direct request with HTML
+            # rather than the file — and before this every brochure title on the
+            # deployed site pointed at "#" and opened nothing.
+            src = Path(r["local_path"] or "")
+            if src.is_file() and with_assets:
+                rel = f"assets/{_slug(a['builder_name'])}/{src.name}"
+                dest = out_dir / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if not dest.exists() or dest.stat().st_size != src.stat().st_size:
+                    shutil.copyfile(src, dest)
+                a["web_path"] = rel                  # relative: works at any mount point
+                copied += 1
+            assets.append(a)
         by_builder = [{"builder_name": r[0], "n": r[1]} for r in conn.execute(
             "SELECT builder_name, COUNT(*) FROM builder_assets GROUP BY 1 ORDER BY 2 DESC")]
     except sqlite3.OperationalError:
@@ -121,7 +151,7 @@ def build(out_dir: Path) -> dict:
         "builders": len({(b.get("builder_name") or "").strip() for b in buildings
                          if (b.get("builder_name") or "").strip()}),
         "with_state": sum(1 for b in buildings if (b.get("state") or "").strip()),
-        "assets": len(assets), "registry": len(regs),
+        "assets": len(assets), "registry": len(regs), "copied": copied,
     }
     conn.close()
 
@@ -138,11 +168,12 @@ def build(out_dir: Path) -> dict:
 if __name__ == "__main__":
     where = Path(sys.argv[sys.argv.index("--out") + 1]) if "--out" in sys.argv \
         else Path(__file__).with_name("vercel_site")
-    m = build(where)
+    m = build(where, with_assets="--no-assets" not in sys.argv)
     print(f"[+] {where}  built from index.html (the app's own frontend)")
     print(f"    {m['total']:,} listings · {m['builders']} builders/developments · "
           f"{m['named']:,} named · {m['with_state']:,} with a state")
-    print(f"    {m['registry']} registry builders (credentials excluded) · {m['assets']} assets")
+    print(f"    {m['registry']} registry builders (credentials excluded) · "
+          f"{m['assets']} assets, {m['copied']} PDF(s) bundled so they actually open")
     for f in ("stock.json", "builders.json", "vendor-assets.json"):
         print(f"    {f:<20} {(where / f).stat().st_size:>10,} bytes")
     print("    X-Robots-Tag: noindex set (a Vercel URL is public by default)")

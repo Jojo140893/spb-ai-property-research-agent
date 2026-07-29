@@ -28,3 +28,4 @@ _harvest.log
 vercel_site/
 .vercel/
 _server.log
+vercel_site/assets/

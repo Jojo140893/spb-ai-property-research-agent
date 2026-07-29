@@ -760,20 +760,44 @@
     let DATA_MODE = null;              // 'live' | 'snapshot'
 
     async function getJSON(apiPath, staticPath) {
+        // Both are attempted CONCURRENTLY and the first usable answer wins. Trying the
+        // API first and waiting cost 10 seconds of dead time on every load of the static
+        // deployment, because Vercel takes that long to return the 404 — the page just
+        // read as broken for the whole time.
+        const live = fetch(apiPath, { cache: 'no-store' }).then(async res => {
+            if (!res.ok) throw new Error(`api ${res.status}`);
+            if (!(res.headers.get('Content-Type') || '').includes('json'))
+                throw new Error('api did not return json');
+            return { mode: 'live', data: await res.json() };
+        });
+        const snap = fetch(staticPath, { cache: 'no-store' }).then(async res => {
+            if (!res.ok) throw new Error(`snapshot ${res.status}`);
+            return { mode: 'snapshot', data: await res.json() };
+        });
+        let won;
         try {
-            const res = await fetch(apiPath, { cache: 'no-store' });
-            if (res.ok) {
-                const ct = res.headers.get('Content-Type') || '';
-                if (ct.includes('json')) {
-                    DATA_MODE = DATA_MODE || 'live';
-                    return await res.json();
-                }
-            }
-        } catch (e) { /* no server here — fall through to the snapshot */ }
-        const res = await fetch(staticPath, { cache: 'no-store' });
-        if (!res.ok) throw new Error(`${apiPath} unavailable and ${staticPath} missing`);
-        DATA_MODE = 'snapshot';
-        return await res.json();
+            won = await Promise.any([live, snap]);
+        } catch (e) {
+            throw new Error(`${apiPath} unavailable and ${staticPath} missing`);
+        }
+        DATA_MODE = won.mode;
+        return won.data;
+    }
+
+    /* A stocklist snapshot is columnar to keep it small: 4,308 listings are 3 MB as
+       objects and 1.2 MB as rows, and that difference was 18 seconds of blank table.
+       The live API returns objects, so accept either shape. */
+    function asBuildings(payload) {
+        if (Array.isArray(payload.buildings)) return payload.buildings;
+        if (Array.isArray(payload.keys) && Array.isArray(payload.rows)) {
+            const keys = payload.keys;
+            return payload.rows.map(r => {
+                const o = {};
+                for (let i = 0; i < keys.length; i++) o[keys[i]] = r[i];
+                return o;
+            });
+        }
+        return [];
     }
 
     function snapshotNote(what) {
@@ -830,7 +854,8 @@
     async function loadBuildings() {
         if (STOCK.length) { renderStock(); return; }        // already loaded
         const el = document.getElementById('buildingsContent');
-        el.innerHTML = 'Loading building stock…';
+        el.innerHTML = '<p style="color:var(--text-muted);">Loading building stock… '
+            + '(a few thousand listings, this takes a moment on first load)</p>';
         let data;
         try {
             data = await getJSON('/api/buildings', 'stock.json');
@@ -841,7 +866,7 @@
             console.error('buildings:', e);
             return;
         }
-        STOCK = data.buildings || [];
+        STOCK = asBuildings(data);
         document.getElementById('buildingsBadge').textContent =
             `${STOCK.length.toLocaleString()} buildings`;
         if (!STOCK.length) {
@@ -994,8 +1019,12 @@
                     const details = (a.extracted_text || '').trim();
                     const snippet = details ? `<div style="font-size:0.8rem; color:var(--text-muted); margin:0.2rem 0 0.5rem; white-space:pre-wrap; max-height:6em; overflow:auto; border-left:2px solid var(--border-light); padding-left:0.6rem;">${details.slice(0,600).replace(/</g,'&lt;')}${details.length>600?'…':''}</div>` : '';
                     const sizeKb = Math.round((a.file_size||0)/1024);
+                    const open = a.web_path || a.source_url || '';
+                    const titleHtml = open
+                        ? `<a href="${open}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-blue); font-weight:600;">${a.title || 'brochure'}</a>`
+                        : `<span style="font-weight:600; color:var(--text-muted);">${a.title || 'brochure'}</span>`;
                     return `<li style="margin-bottom:0.6rem;">
-                        <a href="${a.web_path || '#'}" target="_blank" style="color:var(--accent-blue); font-weight:600;">${a.title || 'brochure'}</a>
+                        ${titleHtml}
                         <span class="pill pill-conditions" style="margin-left:0.4rem;">${a.asset_type}</span>
                         <span style="font-size:0.78rem; color:var(--text-muted);"> ${sizeKb} KB · <a href="${a.source_url}" target="_blank" style="color:var(--text-muted);">source</a></span>
                         ${snippet}
