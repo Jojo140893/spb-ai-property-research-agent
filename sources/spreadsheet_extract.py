@@ -15,6 +15,12 @@ prices, sizes, bed/bath/car, suburb and titles are recognised wherever they sit.
 Group/estate header rows (no price, few numbers) are remembered and used as
 context for the lot rows beneath them.
 
+Per-row hyperlinks are kept. A stocklist's "Download" cell carries the link to
+that lot's own flyer or floorplan, which is the only per-listing link these files
+contain — the file URL itself is shared by every row in the file. In XLSX that
+link lives on `cell.hyperlink` (or inside a `=HYPERLINK()` formula); in PDF it is
+a page annotation, matched to a row by vertical position.
+
 Nothing is invented: a row without a recognisable price is skipped, and fields
 that cannot be found stay None.
 """
@@ -22,7 +28,7 @@ that cannot be found stay None.
 import io
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from sources.adaptive_extract import parse_fields, _clean
 from sources.feature_extract import parse_listing_features
@@ -45,6 +51,17 @@ LOT_TOKEN = re.compile(r"\blot\s*\d+", re.I)
 # Estate/region/builder header lines look like 'ʊ  Aberdeen - Winter Valley - VIC - House & Land'
 HEADER_JUNK = re.compile(r"^[^\w]*", re.M)
 
+# A link is only labelled a floorplan/brochure when it says so. Anything else is
+# the lot's own page or file, which is still far more use than the shared
+# stocklist URL currently stored on every row.
+_LINK_KINDS = (
+    ("floorplan_url", re.compile(r"floor\s*-?\s*plan|floorplan|site\s*plan", re.I)),
+    ("brochure_url", re.compile(r"brochure|flyer|booklet|fact\s*sheet|spec\w*sheet", re.I)),
+)
+# openpyxl loses a =HYPERLINK() target when the workbook is opened for values.
+_HYPERLINK_FN = re.compile(r'HYPERLINK\(\s*"([^"]+)"', re.I)
+LinkList = List[Tuple[str, str]]          # [(anchor text, url), ...]
+
 
 def _row_to_text(cells: List[Any]) -> str:
     """Flatten a spreadsheet row to a single normalised text line."""
@@ -58,25 +75,59 @@ def _row_to_text(cells: List[Any]) -> str:
     return _clean(" ".join(parts))
 
 
-def _address_label(text: str, fields: dict, context: str = "") -> str:
-    """A short, human-readable label for the client's sheet.
+def _classify_link(url: str, anchor: str = "") -> str:
+    for key, rx in _LINK_KINDS:
+        if rx.search(f"{anchor} {url}"):
+            return key
+    return "listing_url"
 
-    Coleen's complaint was that the address column held the entire row. Prefer
-    "Lot 82, Aberdeen Estate" over the raw blob; fall back to a trimmed slice only
-    when there is nothing better.
+
+def _link_fields(links: LinkList) -> Dict[str, str]:
+    """First link of each kind wins — stocklists list them left to right."""
+    out: Dict[str, str] = {}
+    for anchor, url in links:
+        if url:
+            out.setdefault(_classify_link(url, anchor), url)
+    return out
+
+
+STREET_RE = re.compile(
+    r"\b\d+[A-Za-z]?(?:[/-]\d+[A-Za-z]?)?\s+[A-Z][A-Za-z'\-]+(?:\s+[A-Z][A-Za-z'\-]+)?\s+"
+    r"(?:Street|St|Road|Rd|Avenue|Ave|Drive|Dr|Court|Ct|Place|Pl|Crescent|Cres|Way|"
+    r"Circuit|Cct|Parade|Pde|Boulevard|Blvd|Terrace|Tce|Close|Cl|Lane|Ln|Grove|Gr|"
+    r"Rise|Loop|Esplanade|Esp|Walk|Mews|Green)\b\.?")
+
+
+def _address_label(text: str, fields: dict, context: str = "") -> Optional[str]:
+    """A short, human-readable label for the client's sheet, or None if the row
+    offers nothing better than its own raw text.
+
+    Coleen's complaint was that the address column held the entire stocklist row —
+    `parse_fields` sets `lot_address` to the whole line containing "Lot N", which for
+    a flattened spreadsheet row is everything. Prefer "105 Almond Street, Denman" or
+    "Lot 82, Aberdeen". The full row is never lost: it is kept in `source_text`.
     """
-    lot = fields.get("lot_number")
-    estate = fields.get("estate_name") or _clean(context).split(" - ")[0] if context else fields.get("estate_name")
-    estate = _clean(re.sub(r"^[^A-Za-z0-9]+", "", str(estate or "")))
     parts = []
-    if lot:
+    street = STREET_RE.search(text)
+    lot = fields.get("lot_number")
+    if street:
+        parts.append(_clean(street.group(0)))
+    elif lot:
         parts.append(f"Lot {lot}" if not str(lot).lower().startswith(("lot", "cc-")) else str(lot))
-    if estate and 2 < len(estate) <= 44 and "$" not in estate:
+    estate = _clean(re.sub(r"^[^A-Za-z0-9]+", "",
+                           str(fields.get("estate_name") or _estate_from_context(context) or "")))
+    if parts and estate and 2 < len(estate) <= 44 and "$" not in estate \
+            and estate.lower() not in parts[0].lower():
         parts.append(estate)
-    if parts:
-        return ", ".join(parts)
-    first = next((l for l in _clean(text).split("  ") if len(l) > 4), _clean(text))
-    return first[:110]
+    return ", ".join(parts) if parts else None
+
+
+def _estate_from_context(header: str) -> Optional[str]:
+    """'ʊ Aberdeen - Winter Valley - VIC - House & Land' -> 'Aberdeen'."""
+    if not header:
+        return None
+    first = _clean(re.sub(r"^[^A-Za-z0-9]+", "", header)).split(" - ")[0].strip()
+    return first or None
 
 
 def _is_group_header(text: str, fields: Dict[str, Any]) -> bool:
@@ -102,47 +153,174 @@ def _context_suburb(header: str) -> Optional[str]:
     return bits[1] if len(bits) > 1 else (bits[0] if bits else None)
 
 
+# ---------------------------------------------------------------- row iterators
+
+def _formula_links(data: bytes) -> Dict[Tuple[int, int, int], str]:
+    """(sheet index, row, column) -> url for `=HYPERLINK("...")` cells.
+
+    Only consulted when a workbook carries no real cell hyperlinks, since loading
+    it a second time for formulas is pure overhead otherwise.
+    """
+    out: Dict[Tuple[int, int, int], str] = {}
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(data), data_only=False)
+    except Exception:
+        return out
+    for si, sheet in enumerate(wb.worksheets):
+        for row in sheet.iter_rows():
+            for c in row:
+                if isinstance(c.value, str) and "HYPERLINK(" in c.value.upper():
+                    m = _HYPERLINK_FN.search(c.value)
+                    if m:
+                        out[(si, c.row, c.column)] = m.group(1)
+    return out
+
+
+def _iter_rows_xlsx(data: bytes) -> Iterator[Tuple[int, str, LinkList]]:
+    """Yield (sheet index, row text, links). Cells are read as objects rather than
+    values so `cell.hyperlink` survives — that is the per-lot link."""
+    wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+    formulas = {} if any(getattr(ws, "_hyperlinks", None) for ws in wb.worksheets) \
+        else _formula_links(data)
+    for si, sheet in enumerate(wb.worksheets):
+        for row in sheet.iter_rows():
+            parts: List[str] = []
+            links: LinkList = []
+            for c in row:
+                s = str(c.value).strip() if c.value is not None else ""
+                if s:
+                    parts.append(s)
+                url = getattr(getattr(c, "hyperlink", None), "target", None) \
+                    or formulas.get((si, c.row, c.column))
+                if url:
+                    links.append((s, str(url)))
+            text = _clean(" ".join(parts))
+            if text or links:
+                yield si, text, links
+
+
+def _annot_links(page: Any) -> List[Tuple[float, float, str]]:
+    """(vertical centre, x0, uri) for every URI annotation on the page."""
+    out: List[Tuple[float, float, str]] = []
+    for a in (getattr(page, "annots", None) or []):
+        uri = a.get("uri") or ((a.get("data") or {}).get("A") or {}).get("URI")
+        if isinstance(uri, bytes):
+            uri = uri.decode("utf-8", "ignore")
+        if not uri or a.get("top") is None or a.get("bottom") is None:
+            continue
+        try:
+            yc = (float(a["top"]) + float(a["bottom"])) / 2.0
+            out.append((yc, float(a.get("x0") or 0.0), str(uri)))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _links_in_band(annots: List[Tuple[float, float, str]], top: Any, bottom: Any,
+                   pad: float = 2.0) -> LinkList:
+    """Annotations whose centre falls on this row, ordered left to right."""
+    try:
+        top, bottom = float(top), float(bottom)
+    except (TypeError, ValueError):
+        return []
+    hits = [(x0, uri) for (yc, x0, uri) in annots if top - pad <= yc <= bottom + pad]
+    return [("", uri) for _, uri in sorted(hits)]
+
+
+def _iter_rows_pdf(page: Any) -> Iterator[Tuple[str, LinkList]]:
+    """Tables first (most stocklists are tabular), then plain text lines. Either way
+    the row's vertical extent is kept so link annotations can be matched to it."""
+    annots = _annot_links(page)
+    emitted = False
+    try:
+        tables = page.find_tables() or []
+    except Exception:
+        tables = []
+    for table in tables:
+        try:
+            values = table.extract()
+        except Exception:
+            continue
+        for row_obj, cells in zip(getattr(table, "rows", []), values):
+            text = _row_to_text(list(cells))
+            bbox = getattr(row_obj, "bbox", None)
+            links = _links_in_band(annots, bbox[1], bbox[3]) if bbox else []
+            if text or links:
+                emitted = True
+                yield text, links
+    if emitted:
+        return
+    try:
+        lines = page.extract_text_lines() or []
+    except Exception:
+        lines = [{"text": l, "top": None, "bottom": None}
+                 for l in (page.extract_text() or "").splitlines()]
+    for ln in lines:
+        text = _clean(ln.get("text", ""))
+        if text:
+            yield text, _links_in_band(annots, ln.get("top"), ln.get("bottom"))
+
+
+# ------------------------------------------------------------------- extraction
+
+def _listing_from_row(text: str, links: LinkList, context: str, source_label: str,
+                      builder_hint: str) -> Optional[Dict[str, Any]]:
+    """A parsed listing, or None if the row is not one."""
+    fields = parse_fields(text)
+    # availability/storey/lot/postcode/estate/incentives, from the FULL row
+    fields.update({k: v for k, v in parse_listing_features(
+        text, context, fields.get("advertised_package_price")).items()
+        if v is not None})
+    if not fields.get("advertised_package_price"):
+        return None
+    fields["source_text"] = text                 # UNtruncated: the parser needs it all
+    if not fields.get("estate_name"):
+        fields["estate_name"] = _estate_from_context(context)
+    label = _address_label(text, fields, context)
+    if label:                                    # beats the raw row parse_fields found
+        fields["lot_address"] = label
+    elif not fields.get("lot_address"):
+        fields["lot_address"] = _clean(text)[:110]
+    if not fields.get("suburb"):
+        fields["suburb"] = _context_suburb(context)
+    fields.update(_link_fields(links))
+    filled = sum(1 for k in ("bedrooms", "land_size_sqm", "suburb", "house_size_sqm")
+                 if fields.get(k))
+    return {
+        **fields,
+        "builder_name": builder_hint,
+        "estate_context": _clean(context)[:110],
+        "source_url_or_ref": source_label,
+        "extraction_confidence": round(min(1.0, 0.5 + 0.12 * filled), 2),
+    }
+
+
 def extract_from_xlsx(data: bytes, source_label: str = "", builder_hint: str = "") -> List[Dict[str, Any]]:
     if not XLSX_AVAILABLE:
         logger.error("openpyxl not installed — cannot read xlsx stocklists.")
         return []
     try:
-        wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+        rows = list(_iter_rows_xlsx(data))
     except Exception as e:
         logger.warning("could not open xlsx %s: %s", source_label, e)
         return []
 
     out: List[Dict[str, Any]] = []
-    for sheet in wb.worksheets:
-        context = ""
-        for row in sheet.iter_rows(values_only=True):
-            text = _row_to_text(list(row))
-            if not text:
-                continue
-            fields = parse_fields(text)
-            # availability/storey/lot/postcode/estate/incentives, from the FULL row
-            fields.update({k: v for k, v in parse_listing_features(
-                text, context, fields.get('advertised_package_price')).items()
-                if v is not None})
-            if _is_group_header(text, fields):
+    context, sheet = "", -1
+    for si, text, links in rows:
+        if si != sheet:
+            context, sheet = "", si
+        if not text:
+            continue
+        listing = _listing_from_row(text, links, context, source_label, builder_hint)
+        if listing is None:
+            if _is_group_header(text, {}):   # no price: _listing_from_row already told us
                 context = text
-                continue
-            if not fields.get("advertised_package_price"):
-                continue
-            fields["source_text"] = text          # UNtruncated: the parser needs it all
-            if not fields.get("lot_address"):
-                fields["lot_address"] = _address_label(text, fields, context)
-            if not fields.get("suburb"):
-                fields["suburb"] = _context_suburb(context)
-            filled = sum(1 for k in ("bedrooms", "land_size_sqm", "suburb", "house_size_sqm") if fields.get(k))
-            out.append({
-                **fields,
-                "builder_name": builder_hint,
-                "estate_context": _clean(context)[:110],
-                "source_url_or_ref": source_label,
-                "extraction_confidence": round(min(1.0, 0.5 + 0.12 * filled), 2),
-            })
-    logger.info("xlsx %s -> %d listing(s)", source_label or "(file)", len(out))
+            continue
+        out.append(listing)
+    logger.info("xlsx %s -> %d listing(s), %d with a per-lot link", source_label or "(file)",
+                len(out), sum(1 for o in out if o.get("listing_url") or o.get("floorplan_url")
+                              or o.get("brochure_url")))
     return out
 
 
@@ -155,45 +333,18 @@ def extract_from_pdf(data: bytes, source_label: str = "", builder_hint: str = ""
         with pdfplumber.open(io.BytesIO(data)) as pdf:
             context = ""
             for page in pdf.pages[:25]:
-                # tables first (most stocklists are tabular), then plain lines
-                rows: List[str] = []
-                try:
-                    for table in (page.extract_tables() or []):
-                        for r in table:
-                            rows.append(_row_to_text(list(r)))
-                except Exception:
-                    pass
-                if not rows:
-                    rows = [_clean(l) for l in (page.extract_text() or "").splitlines()]
-                for text in rows:
-                    if not text:
+                for text, links in _iter_rows_pdf(page):
+                    listing = _listing_from_row(text, links, context, source_label, builder_hint)
+                    if listing is None:
+                        if _is_group_header(text, {}):
+                            context = text
                         continue
-                    fields = parse_fields(text)
-                    # availability/storey/lot/postcode/estate/incentives, from the FULL row
-                    fields.update({k: v for k, v in parse_listing_features(
-                        text, context, fields.get('advertised_package_price')).items()
-                        if v is not None})
-                    if _is_group_header(text, fields):
-                        context = text
-                        continue
-                    if not fields.get("advertised_package_price"):
-                        continue
-                    fields["source_text"] = text
-                    if not fields.get("lot_address"):
-                        fields["lot_address"] = _address_label(text, fields, context)
-                    if not fields.get("suburb"):
-                        fields["suburb"] = _context_suburb(context)
-                    filled = sum(1 for k in ("bedrooms", "land_size_sqm", "suburb", "house_size_sqm") if fields.get(k))
-                    out.append({
-                        **fields,
-                        "builder_name": builder_hint,
-                        "estate_context": _clean(context)[:110],
-                        "source_url_or_ref": source_label,
-                        "extraction_confidence": round(min(1.0, 0.5 + 0.12 * filled), 2),
-                    })
+                    out.append(listing)
     except Exception as e:
         logger.warning("could not read pdf %s: %s", source_label, e)
-    logger.info("pdf %s -> %d listing(s)", source_label or "(file)", len(out))
+    logger.info("pdf %s -> %d listing(s), %d with a per-lot link", source_label or "(file)",
+                len(out), sum(1 for o in out if o.get("listing_url") or o.get("floorplan_url")
+                              or o.get("brochure_url")))
     return out
 
 

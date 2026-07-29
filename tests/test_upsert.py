@@ -102,6 +102,39 @@ def test_enrichment_owned_columns_survive_a_reharvest():
     assert r["benchmark_median"] == 620000
 
 
+def test_a_run_that_cannot_read_a_field_does_not_erase_it():
+    """Availability and title status are two of the columns Coleen asked for by name.
+    Writing them unconditionally on update meant a single row whose status the parser
+    could not see blanked the stored value — and zeroed the price."""
+    db = _fresh_db()
+    db.record_building(dict(_ROW, title_status="Q2-2026", land_price=249000))
+    # same listing, but this run's parse came back thin
+    thin = {k: v for k, v in _ROW.items()
+            if k not in ("availability_status", "advertised_package_price")}
+    assert db.record_building(thin) == "unchanged", "an unparsed row looked like a change"
+    r = db.get_buildings()[0]
+    assert r["availability_status"] == "Available", "availability was erased"
+    assert r["title_status"] == "Q2-2026", "title status was erased"
+    assert r["price"] == 615228, f"price was zeroed: {r['price']}"
+    assert r["land_price"] == 249000
+    assert r["price_previous"] is None, "a non-change recorded price history"
+
+
+def test_reharvest_rewrites_the_address_label_and_source_text():
+    """Both are re-derived from the same source row each run, so the current parse wins.
+    Without this, re-harvesting left the old jammed-together address in place — the
+    exact cell Coleen pointed at on screen."""
+    db = _fresh_db()
+    db.record_building(dict(_ROW))                       # stored with the raw blob
+    assert "$" in db.get_buildings()[0]["lot_address"]
+    db.record_building(dict(_ROW, lot_address="Lot 414, Clearwater",
+                            source_text=_ROW["lot_address"]))
+    r = db.get_buildings()[0]
+    assert len(db.get_buildings()) == 1, "the new label created a second row"
+    assert r["lot_address"] == "Lot 414, Clearwater"
+    assert r["source_text"] == _ROW["lot_address"], "full row not retained"
+
+
 def test_nothing_is_deleted_when_a_source_returns_nothing():
     """A failed login must leave existing stock alone — the reason we upsert rather
     than wipe-and-rebuild."""
@@ -120,6 +153,8 @@ def run_all():
         ("different design = separate row", test_different_design_on_same_lot_is_a_separate_row),
         ("update fills blanks, keeps values", test_update_fills_blanks_without_clobbering_existing_values),
         ("enriched columns survive re-harvest", test_enrichment_owned_columns_survive_a_reharvest),
+        ("thin run does not erase fields", test_a_run_that_cannot_read_a_field_does_not_erase_it),
+        ("re-harvest rewrites label + source_text", test_reharvest_rewrites_the_address_label_and_source_text),
         ("empty source deletes nothing", test_nothing_is_deleted_when_a_source_returns_nothing),
     ]
     failed = 0

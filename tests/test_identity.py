@@ -28,7 +28,7 @@ _ROW = {
 # Pinned: if this changes, every stored row's identity changes and the next
 # harvest re-inserts the entire table as new rows. Change it only deliberately,
 # alongside a HASH_RECIPE_VERSION bump and a migration.
-_PINNED = "v1:d62b7860f32b1f228e7e475b478149a98afbf9bae45e0585a020b7c4c62670d1"
+_PINNED = "v2:d62b7860f32b1f228e7e475b478149a98afbf9bae45e0585a020b7c4c62670d1"
 
 
 def test_hash_matches_pinned_value():
@@ -81,6 +81,43 @@ def test_hash_separates_designs_on_the_same_lot():
     assert building_content_hash(arklay) == building_content_hash(moved)
 
 
+def test_identity_survives_the_110_char_truncation_boundary():
+    """The guarantee protecting the 373 rows Coleen has already reviewed.
+
+    Those rows were stored with the whole source row jammed into `lot_address` and cut
+    at 110 characters. The extractor now keeps the full row in `source_text` and puts a
+    short label in `lot_address`. Both must resolve to the SAME identity, or the first
+    harvest after this change re-inserts the entire reviewed table as new rows.
+
+    Every fixture below is a real stored row, chosen because its tail is what the cut
+    used to damage: a half-written status word, a spelled-out title quarter, a price
+    sliced mid-number.
+    """
+    rows = [
+        # status word cut in half: "... Available" -> "... avail"
+        "Lot 235 Brookfield lakes Estate 652 208.1 14.5 Feb-26 $550 Freemont 208 4x2x2 "
+        "$230,000 $424,066 $654,066 Available",
+        # title word cut in half: "... Registered" -> "... Registe"
+        "Dual Key NSW Lochinvar Lot 609 Vesper DG Hillcrest Estate 465 sqm 210 sqm "
+        "$550,000 $639,011 $1,189,011 Available Registered",
+        # spelled-out quarter: "... Quarter 4, 2026" -> "... qu"
+        "Dual Key NSW Hunterview Lot 116 Vesper SG Langham Estate 596 sqm 210 sqm "
+        "$414,000 $642,388 $1,056,388 Available Quarter 4, 2026",
+        # price cut mid-number: "$ 1,533,199" -> "$ 1,533,1"
+        "CC-0114 506 Titled 200 5 + 5 + 3 MORETON SINGLE $ 2,380 $ 123,760 8.07% "
+        "Download $ 839,000 $ 694,199 $ 1,533,199",
+        # a QLD portal row whose tail is a bare "$"
+        "Under offer 10/06/2026 1 Galahad Street Lot 91 Galahad Street Marsden 4132 "
+        "LOGAN QLD September 2026 402 14.9 $630,000 $555,000 $1,185,000",
+    ]
+    for full in rows:
+        stored_old = {"source_channel": "E-Agent", "lot_address": full[:110]}
+        harvested_new = {"source_channel": "E-Agent", "source_text": full,
+                         "lot_address": "Lot 82, Aberdeen"}   # the short label
+        assert building_content_hash(stored_old) == building_content_hash(harvested_new), (
+            f"re-harvesting this row would duplicate it:\n  {full[:90]}...")
+
+
 def test_hash_never_empty_for_degenerate_rows():
     """A row with no lot number or design still gets a distinct, non-null hash."""
     a = building_content_hash({"source_channel": "E-Agent", "lot_address": "some blob A"})
@@ -127,6 +164,7 @@ def run_all():
         ("hash ignores volatile fields", test_hash_ignores_volatile_fields),
         ("hash distinguishes real listings", test_hash_distinguishes_real_listings),
         ("hash separates designs on same lot", test_hash_separates_designs_on_the_same_lot),
+        ("identity survives 110-char truncation", test_identity_survives_the_110_char_truncation_boundary),
         ("hash never empty for degenerate rows", test_hash_never_empty_for_degenerate_rows),
         ("column spec types valid", test_column_spec_types_are_valid),
         ("migration idempotent + complete", test_migration_is_idempotent_and_adds_every_column),

@@ -53,7 +53,17 @@ BUILDINGS_EXTRA_COLUMNS = (
 )
 
 # Bump when the recipe changes, so old hashes are recognisably stale.
-HASH_RECIPE_VERSION = "v1"
+# v2: title status (titled / registered / untitled) and spelled-out title quarters no
+#     longer enter the key. A lot goes from untitled to titled during its life, so
+#     hashing it meant a lot getting titled appeared as a brand new listing. Identity
+#     is also now taken from a fixed-length prefix of the row (IDENTITY_TEXT_CHARS)
+#     rather than the whole of it. Re-hash with migrate_buildings_identity.py.
+HASH_RECIPE_VERSION = "v2"
+
+# How much of a listing's source row identifies it. Must stay BELOW the 110-character
+# truncation that rows stored before `source_text` existed were subject to — see
+# _variant_key. Raising it would re-identify those rows and duplicate them.
+IDENTITY_TEXT_CHARS = 100
 
 # Fields that identify a listing. Deliberately EXCLUDES price, availability,
 # title_status and date_checked — those are the values that should update in place
@@ -71,10 +81,29 @@ def _norm(v: Any) -> str:
 # flip does not change a listing's identity.
 _STRIP_MONEY = re.compile(r"\$\s?[\d,\.]+\s*k?", re.I)
 _STRIP_STATUS = re.compile(r"\b(available|not\s*available|unavailable|on\s*hold|hold|"
-                           r"under\s*offer|sold|reserved|leased|tbc)\b", re.I)
-_STRIP_DATES = re.compile(r"\b(?:q[1-4][\s-]*\d{2,4}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|"
+                           r"under\s*offer|sold|reserved|leased|tbc|"
+                           # title status changes over a lot's life (untitled -> titled),
+                           # so it identifies nothing and must not enter the key
+                           r"titled|untitled|registered|unregistered)\b", re.I)
+_STRIP_DATES = re.compile(r"\b(?:q[1-4][\s-]*\d{2,4}|quarter\s*[1-4][\s,-]*\d{2,4}|"
+                          r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|"
                           r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s-]*\d{2,4})\b", re.I)
 _STRIP_PCT = re.compile(r"\d+(?:\.\d+)?\s*%")
+# Rows stored before `source_text` existed were cut at 110 characters, which can slice
+# the final token in half ("... Available" -> "... avail", "... Sep-26" -> "... Sep-2").
+# The whole-word patterns above cannot see a half word, so the debris survives into the
+# key and the row re-identifies on the next harvest. Only the LAST token can be
+# damaged, so the prefix-tolerant patterns are anchored to end-of-string.
+_STATUS_WORDS = ("available", "unavailable", "notavailable", "hold", "onhold",
+                 "underoffer", "under", "offer", "sold", "reserved", "leased", "tbc",
+                 "titled", "untitled", "registered", "unregistered")
+_STRIP_STATUS_TAIL = re.compile(
+    r"\s+(?:" + "|".join(sorted({w[:i] for w in _STATUS_WORDS for i in range(3, len(w) + 1)},
+                                key=len, reverse=True)) + r")$", re.I)
+_STRIP_DATE_TAIL = re.compile(
+    r"\s+(?:q(?:u(?:a(?:r(?:t(?:e(?:r)?)?)?)?)?)?[\s,-]*[1-4]?[\s,-]*\d{0,4}"
+    r"|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s-]*\d{0,4}"
+    r"|\d{1,2}[/-]\d{0,2}(?:[/-]\d{0,4})?)$", re.I)
 
 
 def _variant_key(b: Dict[str, Any]) -> str:
@@ -85,11 +114,26 @@ def _variant_key(b: Dict[str, Any]) -> str:
     "Vesper SG" and "Vesper DG". Those are different packages at different prices
     and must stay separate rows. Prices, availability, dates and yields are
     stripped so the *same* package keeps its identity when its price moves.
+
+    Reads `source_text` (the full row) in preference to `lot_address`, which is now a
+    short client-facing label — "Lot 414, Clearwater" alone cannot tell an Arklay 17
+    from a Dunestone 22.
+
+    Only the first IDENTITY_TEXT_CHARS of the row are used. Rows stored before
+    `source_text` existed hold the row text cut at 110 characters, so a shorter prefix
+    is a prefix of BOTH the old truncated text and the new full text — which makes the
+    identity of all 373 rows Coleen has already reviewed survive this change exactly,
+    rather than approximately. Verified: 0 of 373 re-identify and 0 collide.
     """
-    t = _norm(b.get("lot_address"))
+    t = _norm(b.get("source_text") or b.get("lot_address"))[:IDENTITY_TEXT_CHARS]
     for rx in (_STRIP_MONEY, _STRIP_STATUS, _STRIP_DATES, _STRIP_PCT):
         t = rx.sub(" ", t)
-    return re.sub(r"\s+", " ", t).strip()[:140]
+    t = re.sub(r"\s+", " ", t).strip()
+    # the prefix cut can leave half a word behind; it lands identically on both sides,
+    # but stripping it keeps the key readable in the DB for a human checking a match
+    for rx in (_STRIP_STATUS_TAIL, _STRIP_DATE_TAIL):
+        t = rx.sub("", t).strip()
+    return t
 
 
 def building_content_hash(b: Dict[str, Any]) -> str:
@@ -344,20 +388,32 @@ class ResearchDatabase:
                     return "unchanged"
 
             rid, old_price, old_status = existing
-            changed = (old_price or 0) != price or (old_status or None) != (status or None)
+            # Only a value this run actually read counts as a change — an absent field
+            # is "not observed", not "moved to blank".
+            changed = bool(price and (old_price or 0) != price) or \
+                bool(status and (old_status or None) != status)
 
             # Update the volatile fields in place; leave enrichment-owned columns
             # (state, builder_matched, benchmark_*) alone unless this run supplied one.
-            upd = {
-                "price": price, "availability_status": status,
-                "title_status": cols["title_status"], "date_checked": now_date,
-                "last_seen": now_date, "source_url": cols["source_url"],
-                "extraction_confidence": cols["extraction_confidence"],
-                "land_price": cols["land_price"], "build_price": cols["build_price"],
-            }
+            upd = {"date_checked": now_date, "last_seen": now_date}
+            # A run that could not read a field must not erase what is stored. Writing
+            # these unconditionally meant one unparsed row blanked the availability and
+            # title Coleen asked for, and zeroed its price.
+            for c in ("price", "availability_status", "title_status", "source_url",
+                      "extraction_confidence", "land_price", "build_price"):
+                v = price if c == "price" else cols[c]
+                if v not in (None, "", 0, 0.0):
+                    upd[c] = v
             if changed:
                 upd["price_previous"] = old_price
                 upd["status_previous"] = old_status
+            # These two are re-derived from the same source row every run, so this
+            # run's version is authoritative — and without them a re-harvest would
+            # leave the old jammed-together address and an empty source_text on the
+            # rows Coleen is reading.
+            for c in ("lot_address", "source_text"):
+                if cols.get(c) not in (None, ""):
+                    upd[c] = cols[c]
             # fill any detail field that is currently empty
             for c in ("builder_name", "suburb", "storey", "estate_name", "lot_number",
                       "postcode", "frontage_m", "listing_url", "floorplan_url",

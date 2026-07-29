@@ -29,10 +29,12 @@ import sys
 from datetime import datetime
 
 import config
-from database import ResearchDatabase, building_content_hash
+from database import (HASH_RECIPE_VERSION, ResearchDatabase,
+                      building_content_hash)
 from sources.feature_extract import parse_listing_features
 
 MARKER = "buildings_identity_backfilled"
+RECIPE_MARKER = "buildings_hash_recipe"
 
 
 def backup_db() -> str:
@@ -45,9 +47,14 @@ def backup_db() -> str:
 def main(dry_run: bool = False, force: bool = False):
     db = ResearchDatabase()
 
-    if db.get_meta(MARKER) and not force:
-        print(f"[i] already migrated ({MARKER}={db.get_meta(MARKER)}). Use --force to re-run.")
+    stored_recipe = db.get_meta(RECIPE_MARKER)
+    if db.get_meta(MARKER) and stored_recipe == HASH_RECIPE_VERSION and not force:
+        print(f"[i] already migrated ({MARKER}={db.get_meta(MARKER)}, "
+              f"recipe={stored_recipe}). Use --force to re-run.")
         return 0
+    if db.get_meta(MARKER) and stored_recipe != HASH_RECIPE_VERSION:
+        print(f"[i] hash recipe changed ({stored_recipe or 'v1'} -> {HASH_RECIPE_VERSION}); "
+              "re-hashing every row so the next harvest updates in place.")
 
     if not dry_run:
         try:
@@ -63,6 +70,12 @@ def main(dry_run: bool = False, force: bool = False):
     conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM buildings").fetchall()
     print(f"[+] {len(rows)} building(s) to process")
+
+    if not dry_run:
+        # Re-hashing in place can transiently give row A the hash row B still holds,
+        # which the unique index would reject even though the final state is unique.
+        # It is recreated below, and only if there are no collisions.
+        conn.execute("DROP INDEX IF EXISTS idx_buildings_content_hash")
 
     filled = {k: 0 for k in ("availability_status", "storey", "lot_number", "estate_name",
                              "postcode", "frontage_m", "attribution_scope", "content_hash")}
@@ -93,6 +106,8 @@ def main(dry_run: bool = False, force: bool = False):
             "lot_number": updates.get("lot_number") or r["lot_number"],
             "house_design": None, "land_size_sqm": r["land_sqm"],
             "lot_address": text,
+            # present once a row has been re-harvested by the current extractor
+            "source_text": (r["source_text"] if "source_text" in r.keys() else None),
         })
         updates["content_hash"] = h
         if not (r["first_seen"] if "first_seen" in r.keys() else None):
@@ -139,6 +154,7 @@ def main(dry_run: bool = False, force: bool = False):
 
     if not dry_run:
         db.set_meta("buildings_schema_version", "2")
+        db.set_meta(RECIPE_MARKER, HASH_RECIPE_VERSION)
         db.set_meta(MARKER, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         if collisions:
             db.set_meta("buildings_hash_collisions", str(len(collisions)))
