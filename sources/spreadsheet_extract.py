@@ -25,6 +25,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from sources.adaptive_extract import parse_fields, _clean
+from sources.feature_extract import parse_listing_features
 
 logger = logging.getLogger("spb.extract.sheet")
 
@@ -55,6 +56,27 @@ def _row_to_text(cells: List[Any]) -> str:
         if s:
             parts.append(s)
     return _clean(" ".join(parts))
+
+
+def _address_label(text: str, fields: dict, context: str = "") -> str:
+    """A short, human-readable label for the client's sheet.
+
+    Coleen's complaint was that the address column held the entire row. Prefer
+    "Lot 82, Aberdeen Estate" over the raw blob; fall back to a trimmed slice only
+    when there is nothing better.
+    """
+    lot = fields.get("lot_number")
+    estate = fields.get("estate_name") or _clean(context).split(" - ")[0] if context else fields.get("estate_name")
+    estate = _clean(re.sub(r"^[^A-Za-z0-9]+", "", str(estate or "")))
+    parts = []
+    if lot:
+        parts.append(f"Lot {lot}" if not str(lot).lower().startswith(("lot", "cc-")) else str(lot))
+    if estate and 2 < len(estate) <= 44 and "$" not in estate:
+        parts.append(estate)
+    if parts:
+        return ", ".join(parts)
+    first = next((l for l in _clean(text).split("  ") if len(l) > 4), _clean(text))
+    return first[:110]
 
 
 def _is_group_header(text: str, fields: Dict[str, Any]) -> bool:
@@ -98,13 +120,18 @@ def extract_from_xlsx(data: bytes, source_label: str = "", builder_hint: str = "
             if not text:
                 continue
             fields = parse_fields(text)
+            # availability/storey/lot/postcode/estate/incentives, from the FULL row
+            fields.update({k: v for k, v in parse_listing_features(
+                text, context, fields.get('advertised_package_price')).items()
+                if v is not None})
             if _is_group_header(text, fields):
                 context = text
                 continue
             if not fields.get("advertised_package_price"):
                 continue
+            fields["source_text"] = text          # UNtruncated: the parser needs it all
             if not fields.get("lot_address"):
-                fields["lot_address"] = text[:110]
+                fields["lot_address"] = _address_label(text, fields, context)
             if not fields.get("suburb"):
                 fields["suburb"] = _context_suburb(context)
             filled = sum(1 for k in ("bedrooms", "land_size_sqm", "suburb", "house_size_sqm") if fields.get(k))
@@ -142,13 +169,18 @@ def extract_from_pdf(data: bytes, source_label: str = "", builder_hint: str = ""
                     if not text:
                         continue
                     fields = parse_fields(text)
+                    # availability/storey/lot/postcode/estate/incentives, from the FULL row
+                    fields.update({k: v for k, v in parse_listing_features(
+                        text, context, fields.get('advertised_package_price')).items()
+                        if v is not None})
                     if _is_group_header(text, fields):
                         context = text
                         continue
                     if not fields.get("advertised_package_price"):
                         continue
+                    fields["source_text"] = text
                     if not fields.get("lot_address"):
-                        fields["lot_address"] = text[:110]
+                        fields["lot_address"] = _address_label(text, fields, context)
                     if not fields.get("suburb"):
                         fields["suburb"] = _context_suburb(context)
                     filled = sum(1 for k in ("bedrooms", "land_size_sqm", "suburb", "house_size_sqm") if fields.get(k))

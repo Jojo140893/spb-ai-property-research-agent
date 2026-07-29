@@ -22,7 +22,7 @@ import re
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
-PRICE_RE = re.compile(r"\$\s?([\d]{1,3}(?:,\d{3})+|\d{5,7})(?:\.\d{2})?\b")
+PRICE_RE = re.compile(r"\$\s*(\d{1,3}(?:[\s,]+\d{3})+|\d{4,7})(?:\.\d{2})?")
 # "4 bed", "4 Bedrooms", "4br", "4 x bed"
 BEDS_RE = re.compile(r"(\d+)\s*(?:x\s*)?(?:bed|bd|br)\b", re.I)
 BATHS_RE = re.compile(r"(\d+(?:\.5)?)\s*(?:x\s*)?(?:bath|ba)\b", re.I)
@@ -30,7 +30,12 @@ CARS_RE = re.compile(r"(\d+)\s*(?:x\s*)?(?:car|garage|gge)\b", re.I)
 # 400m2 / 400 sqm / 400 m²
 AREA_RE = re.compile(r"(\d{2,4}(?:\.\d+)?)\s*(?:m2|m²|sqm|sq\.?m)\b", re.I)
 LOT_RE = re.compile(r"\blot\s*\d+[A-Za-z]?\b", re.I)
-TITLE_RE = re.compile(r"\b(titled|registered|untitled|title\s+(?:due|expected)[^,|\n]{0,30}|q[1-4]\s*20\d{2})\b", re.I)
+TITLE_RE = re.compile(
+    r"\b(titled|registered|untitled"
+    r"|title\s+(?:due|expected)[^,|\n]{0,30}"
+    r"|q[1-4][\s-]*(?:20)?\d{2}"                       # Q1 2026, Q1-2026, Q1-26
+    r"|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s-]*(?:20)?\d{2}"  # Sep-26
+    r"|tbc)\b", re.I)
 AU_STATES = ("QLD", "NSW", "VIC", "SA", "WA", "NT", "ACT", "TAS")
 
 # Explicitly labelled fields (common on real portal stock lists), e.g.
@@ -41,7 +46,9 @@ LBL_HOUSE_SIZE = re.compile(r"(?:house|home|build)\s*size\s*:?\s*([\d.]+)\s*(?:m
 LBL_LAND_PRICE = re.compile(r"land\s*price\s*:?\s*\$?\s*([\d,]+)", re.I)
 LBL_BUILD_PRICE = re.compile(r"(?:house|home|build)\s*price\s*:?\s*\$?\s*([\d,]+)", re.I)
 LBL_PACKAGE_PRICE = re.compile(r"(?:package|total)\s*(?:price)?\s*:?\s*\$?\s*([\d,]+)", re.I)
-LBL_REGISTRATION = re.compile(r"(?:land\s*)?registration\s*:?\s*([A-Za-z]{3,9}\s*20\d{2}|q[1-4]\s*20\d{2})", re.I)
+LBL_REGISTRATION = re.compile(
+    r"(?:land\s*)?registration\s*:?\s*"
+    r"([A-Za-z]{3,9}[\s-]*(?:20)?\d{2}|q[1-4][\s-]*(?:20)?\d{2})", re.I)
 # Unlabelled bed/bath/car triple: three small numbers on their own lines/cells.
 BARE_TRIPLE_RE = re.compile(r"^\s*(\d{1,2})\s*$")
 
@@ -50,10 +57,37 @@ def _money(s: Optional[str]) -> Optional[float]:
     if not s:
         return None
     try:
-        v = float(s.replace(",", ""))
+        # pdfplumber sometimes emits "$ 1 ,757,400" — strip spaces as well as commas,
+        # otherwise that row's $1,757,400 package was read as $1,035,000.
+        v = float(re.sub(r"[,\s]", "", s))
         return v if v > 0 else None
     except ValueError:
         return None
+
+
+# Marks a money figure as rent or a yield rather than part of the package price.
+_RENTY = re.compile(r"p\.?w\.?|per\s*week|weekly|rent|yield|p\.?a\.?|per\s*annum", re.I)
+
+
+def _ordered_package_prices(text: str) -> List[float]:
+    """Plausible package-component prices, in the order they appear.
+
+    Discards any figure that is immediately followed by a percentage (that is the
+    annual-rent/yield pair in the QLD stocklists) or that sits next to rent wording.
+    """
+    out: List[float] = []
+    for m in PRICE_RE.finditer(text):
+        v = _money(m.group(1))
+        if not v or not (50_000 <= v <= 5_000_000):
+            continue
+        after = text[m.end():m.end() + 14]
+        before = text[max(0, m.start() - 22):m.start()]
+        if re.search(r"^\s*\d+(?:\.\d+)?\s*%", after):      # "$121,160 8.03%" -> annual rent
+            continue
+        if _RENTY.search(after) or _RENTY.search(before):
+            continue
+        out.append(v)
+    return out
 
 
 _GEO_SUBURBS = None
@@ -164,26 +198,43 @@ def parse_fields(text: str) -> Dict[str, Any]:
     build_price = _money(LBL_BUILD_PRICE.search(t).group(1)) if LBL_BUILD_PRICE.search(t) else None
 
     # A stocklist row often carries Land Price, Build Price AND Total Price with no
-    # labels (fixed-width exports). Taking the FIRST match returns the land price
-    # and understates the package badly, so gather every plausible price and treat
-    # the largest as the package total, deriving land/build from the smaller two.
-    all_prices = sorted({v for v in (_money(m) for m in PRICE_RE.findall(t))
-                         if v and 50_000 <= v <= 5_000_000})
+    # labels. Prices are read in DOCUMENT ORDER (that is the column order in every
+    # observed stocklist: land, build, total) and any figure that is actually rent or
+    # a yield is discarded first — the QLD dual-occupancy rows carry weekly rent,
+    # annual rent AND a yield %, and sorting numerically used to store the annual
+    # rent ($121,160) as the land price of an $850,000 lot.
+    ordered = _ordered_package_prices(t)
     price = pkg
-    if price is None and all_prices:
-        price = all_prices[-1]
+    if price is None and ordered:
+        price = max(ordered)
     if price is None and land_price and build_price:
         price = land_price + build_price
-    if len(all_prices) >= 3:
-        land_price = land_price or all_prices[0]
-        build_price = build_price or all_prices[1]
-    elif len(all_prices) == 2 and price == all_prices[-1]:
-        land_price = land_price or all_prices[0]
+
+    if not (land_price and build_price) and len(ordered) >= 3 and price:
+        # Only accept an unlabelled split when it ADDS UP: land + build == total.
+        for i in range(len(ordered) - 1):
+            a, b = ordered[i], ordered[i + 1]
+            if a + b and abs((a + b) - price) <= max(2.0, price * 0.005):
+                land_price = land_price or a          # document order: land before build
+                build_price = build_price or b
+                break
+
+    # Rows where several money figures are mixed together (rent, yield, deposit) are
+    # the ones that mis-parse. Flag them rather than presenting them as authoritative.
+    price_confidence = 1.0
+    if len(ordered) >= 3 and not (land_price and build_price):
+        price_confidence = 0.4
+    if _RENTY.search(t) and not (LBL_LAND_PRICE.search(t) or LBL_BUILD_PRICE.search(t)):
+        price_confidence = min(price_confidence, 0.6)
 
     return {
         "advertised_package_price": price,
         "land_price": land_price,
         "build_price": build_price,
+        # <1.0 means several money figures were jumbled in this row (rent, yield,
+        # deposit) and the split could not be verified — surfaced so a low-confidence
+        # row is never presented to a client as authoritative.
+        "price_confidence": price_confidence,
         "bedrooms": beds,
         "bathrooms": baths,
         "car_spaces": cars,

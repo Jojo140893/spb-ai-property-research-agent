@@ -39,6 +39,10 @@ BUILDINGS_EXTRA_COLUMNS = (
     ("stocklist_file", "TEXT"),
     ("storey_source", "TEXT"),
     ("incentive_source", "TEXT"),
+    # Full untruncated source row. lot_address is a short, human-readable label for
+    # the client's sheet; this keeps everything the parser needs (and an audit
+    # trail). Truncating to 110 chars used to cut prices in half mid-number.
+    ("source_text", "TEXT"),
     # benchmarking (Coleen's 22 July ask)
     ("benchmark_median", "REAL"), ("benchmark_variance_pct", "REAL"),
     ("benchmark_classification", "TEXT"), ("benchmark_basis", "TEXT"),
@@ -316,6 +320,7 @@ class ResearchDatabase:
             "stocklist_file": b.get("stocklist_file"),
             "storey_source": b.get("storey_source"),
             "incentive_source": b.get("incentive_source"),
+            "source_text": b.get("source_text") or b.get("lot_address", ""),
             "content_hash": h,
             "first_seen": now_date,
             "last_seen": now_date,

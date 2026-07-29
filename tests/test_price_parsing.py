@@ -1,0 +1,94 @@
+"""
+Regression tests for the price/date bugs found in the CSV Coleen reviewed.
+
+All three fixtures are real rows from the live database. Each one was producing a
+wrong number that would have gone in front of a buyer.
+"""
+
+from sources.adaptive_extract import (PRICE_RE, TITLE_RE, _money,
+                                      _ordered_package_prices, parse_fields)
+
+# Real row. Column order: code | land m2 | title | house m2 | bed+bath+car | design |
+# storey | WEEKLY RENT | ANNUAL RENT | yield | title | land $ | build $ | total $
+QLD_DUAL = ("CC-0122 417 Jul-26 173 5 + 5 + 3 FLINDERS SINGLE $ 2,330 $ 121,160 "
+            "8.03% TBC $ 850,000 $ 659,400 $ 1,509,400")
+VIC_REGIONAL = ("Lot 82 Aberdeen 282 142.8 12.0 Sep-26 Empley 15 3x2x2 "
+                "$205,000 $335,220 $540,220 Available")
+
+
+def test_rent_and_yield_are_not_treated_as_package_prices():
+    """Was storing the $121,160 ANNUAL RENT as the land price of an $850,000 lot."""
+    ordered = _ordered_package_prices(QLD_DUAL)
+    assert 121_160 not in ordered, "annual rent leaked into the price list"
+    assert 2_330 not in ordered, "weekly rent leaked into the price list"
+    assert ordered == [850_000.0, 659_400.0, 1_509_400.0], ordered
+
+
+def test_qld_row_splits_land_and_build_correctly():
+    f = parse_fields(QLD_DUAL)
+    assert f["advertised_package_price"] == 1_509_400
+    assert f["land_price"] == 850_000, f"land price wrong: {f['land_price']}"
+    assert f["build_price"] == 659_400, f"build price wrong: {f['build_price']}"
+    # the split must add up to the package
+    assert f["land_price"] + f["build_price"] == f["advertised_package_price"]
+
+
+def test_vic_row_still_splits_correctly():
+    """Guard against fixing QLD by breaking VIC."""
+    f = parse_fields(VIC_REGIONAL)
+    assert f["advertised_package_price"] == 540_220
+    assert f["land_price"] == 205_000
+    assert f["build_price"] == 335_220
+
+
+def test_price_with_space_inside_the_number():
+    """pdfplumber emits "$ 1 ,757,400"; this row's package read as $1,035,000."""
+    assert [_money(m) for m in PRICE_RE.findall("$ 1 ,757,400")] == [1_757_400.0]
+    assert _money("1 ,757,400") == 1_757_400.0
+    assert _money("$1,035,000".lstrip("$")) == 1_035_000.0
+
+
+def test_title_dates_that_previously_never_matched():
+    for text, expected in (("Q1-2026", "Q1-2026"), ("Sep-26", "Sep-26"),
+                           ("Q2 2026", "Q2 2026"), ("Nov-27", "Nov-27"),
+                           ("Titled", "Titled"), ("Registered", "Registered"),
+                           ("TBC", "TBC")):
+        m = TITLE_RE.search(text)
+        assert m and m.group(1) == expected, f"{text!r} -> {m.group(1) if m else None}"
+
+
+def test_title_status_populated_on_real_rows():
+    assert parse_fields(VIC_REGIONAL)["title_status"] == "Sep-26"
+    assert parse_fields(QLD_DUAL)["title_status"] is not None
+
+
+def test_mixed_money_rows_are_flagged_low_confidence():
+    """A row where rent, yield and price are jumbled must not look authoritative."""
+    f = parse_fields("Lot 9 $1,500 pw $78,000 pa 7.78% $960,000")
+    assert f.get("price_confidence", 1.0) <= 0.6, f.get("price_confidence")
+
+
+def run_all():
+    tests = [
+        ("rent/yield excluded from prices", test_rent_and_yield_are_not_treated_as_package_prices),
+        ("QLD land/build split correct", test_qld_row_splits_land_and_build_correctly),
+        ("VIC split still correct", test_vic_row_still_splits_correctly),
+        ("price with internal space", test_price_with_space_inside_the_number),
+        ("title dates now match", test_title_dates_that_previously_never_matched),
+        ("title_status on real rows", test_title_status_populated_on_real_rows),
+        ("mixed-money rows flagged", test_mixed_money_rows_are_flagged_low_confidence),
+    ]
+    failed = 0
+    for name, fn in tests:
+        try:
+            fn()
+            print(f" [PASS] prices: {name}")
+        except AssertionError as e:
+            failed += 1
+            print(f" [FAIL] prices: {name}: {e}")
+    return failed
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(1 if run_all() else 0)
