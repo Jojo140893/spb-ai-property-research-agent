@@ -54,9 +54,13 @@ def harvest(eagent=True, portals=True):
             print(f"[+] E-Agent: logging in as {ea.username} and pulling all stock...")
             # E-Agent is state-agnostic here; pull everything the account can see.
             listings = ea.search({**ALL_STOCK_FILTERS, "state": ""})
-            new = sum(1 for L in listings if db.record_building({**L, "source_channel": "E-Agent"}))
+            # record_building returns "new" | "updated" | "unchanged" — all truthy,
+            # so count by value, never by truthiness.
+            outcomes = [db.record_building({**L, "source_channel": "E-Agent"}) for L in listings]
+            new = outcomes.count("new")
+            updated = outcomes.count("updated")
             total_new += new
-            print(f"    E-Agent: {len(listings)} listing(s) scraped, {new} new stored.")
+            print(f"    E-Agent: {len(listings)} listing(s) scraped, {new} new, {updated} updated.")
 
     if portals:
         bp = BuilderPortalSource(registry)
@@ -70,7 +74,7 @@ def harvest(eagent=True, portals=True):
                 if tag in seen_portals:
                     continue
                 seen_portals.add(tag)
-                if db.record_building({**L, "source_channel": L.get("source_channel", "Direct Portal")}):
+                if db.record_building({**L, "source_channel": L.get("source_channel", "Direct Portal")}) == "new":
                     total_new += 1
         print(f"    Direct portals: {len(seen_portals)} unique listing(s) seen.")
 

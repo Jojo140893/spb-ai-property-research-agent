@@ -259,31 +259,118 @@ class ResearchDatabase:
             conn.commit()
 
     # ---------- Building stock ----------
-    def record_building(self, b: Dict[str, Any]) -> bool:
-        """Insert a harvested building; returns False if an identical listing already exists."""
+    def record_building(self, b: Dict[str, Any]) -> str:
+        """Upsert a harvested building. Returns "new" | "updated" | "unchanged".
+
+        Identity is `content_hash` over the listing's stable fields, so a re-harvest
+        of the same lot UPDATES its price/availability in place rather than adding a
+        second row — and a failed source never deletes anything. Rows not seen in a
+        run simply keep an older `last_seen`.
+
+        NOTE: callers that count "new" rows must compare against the string, not
+        truthiness — every return value here is truthy.
+        """
+        now_date = b.get("date_checked") or datetime.now().strftime("%d/%m/%Y")
+        h = b.get("content_hash") or building_content_hash(b)
+        price = float(b.get("advertised_package_price") or b.get("price") or 0)
+        status = b.get("availability_status")
+
+        # legacy key, kept while the old UNIQUE column still exists
         key = "||".join(str(b.get(k, "")).strip().lower() for k in
                         ("builder_name", "lot_address", "suburb", "price"))
+
+        cols = {
+            "builder_name": b.get("builder_name", ""),
+            "source_channel": b.get("source_channel", ""),
+            "lot_address": b.get("lot_address", ""),
+            "suburb": b.get("suburb", ""),
+            "state": b.get("state", ""),
+            "price": price,
+            "bedrooms": b.get("bedrooms"),
+            "bathrooms": b.get("bathrooms"),
+            "car_spaces": b.get("car_spaces"),
+            "land_sqm": b.get("land_size_sqm") or b.get("land_sqm"),
+            "house_sqm": b.get("house_size_sqm") or b.get("house_sqm"),
+            "title_status": b.get("title_status", ""),
+            "source_url": b.get("source_url_or_ref") or b.get("source_url", ""),
+            "dedup_key": key,
+            "date_checked": now_date,
+            "land_price": b.get("land_price"),
+            "build_price": b.get("build_price"),
+            "extraction_confidence": b.get("extraction_confidence"),
+            "availability_status": status,
+            "storey": b.get("storey"),
+            "estate_name": b.get("estate_name"),
+            "lot_number": b.get("lot_number"),
+            "postcode": b.get("postcode"),
+            "frontage_m": b.get("frontage_m"),
+            "listing_url": b.get("listing_url"),
+            "floorplan_url": b.get("floorplan_url"),
+            "brochure_url": b.get("brochure_url"),
+            "incentive_text": b.get("incentive_text"),
+            "incentive_amount": b.get("incentive_amount"),
+            "builder_source": b.get("builder_source"),
+            "attribution_scope": b.get("attribution_scope"),
+            "product_type": b.get("product_type"),
+            "source_state_hint": b.get("source_state_hint"),
+            "stocklist_file": b.get("stocklist_file"),
+            "storey_source": b.get("storey_source"),
+            "incentive_source": b.get("incentive_source"),
+            "content_hash": h,
+            "first_seen": now_date,
+            "last_seen": now_date,
+        }
+
         with self._get_connection() as conn:
-            try:
-                conn.execute("""
-                    INSERT INTO buildings
-                    (builder_name, source_channel, lot_address, suburb, state, price, bedrooms,
-                     bathrooms, car_spaces, land_sqm, house_sqm, title_status, source_url, dedup_key, date_checked,
-                     land_price, build_price, extraction_confidence)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    b.get("builder_name", ""), b.get("source_channel", ""), b.get("lot_address", ""),
-                    b.get("suburb", ""), b.get("state", ""), float(b.get("advertised_package_price") or b.get("price") or 0),
-                    b.get("bedrooms"), b.get("bathrooms"), b.get("car_spaces"),
-                    b.get("land_size_sqm"), b.get("house_size_sqm"), b.get("title_status", ""),
-                    b.get("source_url_or_ref") or b.get("source_url", ""), key,
-                    b.get("date_checked") or datetime.now().strftime("%d/%m/%Y"),
-                    b.get("land_price"), b.get("build_price"), b.get("extraction_confidence"),
-                ))
-                conn.commit()
-                return True
-            except sqlite3.IntegrityError:
-                return False
+            existing = conn.execute(
+                "SELECT id, price, availability_status FROM buildings WHERE content_hash=?", (h,)
+            ).fetchone()
+
+            if existing is None:
+                names = ", ".join(cols)
+                marks = ", ".join("?" for _ in cols)
+                try:
+                    conn.execute(f"INSERT INTO buildings ({names}) VALUES ({marks})",
+                                 tuple(cols.values()))
+                    conn.commit()
+                    return "new"
+                except sqlite3.IntegrityError:
+                    # legacy dedup_key collision on an otherwise-new identity
+                    return "unchanged"
+
+            rid, old_price, old_status = existing
+            changed = (old_price or 0) != price or (old_status or None) != (status or None)
+
+            # Update the volatile fields in place; leave enrichment-owned columns
+            # (state, builder_matched, benchmark_*) alone unless this run supplied one.
+            upd = {
+                "price": price, "availability_status": status,
+                "title_status": cols["title_status"], "date_checked": now_date,
+                "last_seen": now_date, "source_url": cols["source_url"],
+                "extraction_confidence": cols["extraction_confidence"],
+                "land_price": cols["land_price"], "build_price": cols["build_price"],
+            }
+            if changed:
+                upd["price_previous"] = old_price
+                upd["status_previous"] = old_status
+            # fill any detail field that is currently empty
+            for c in ("builder_name", "suburb", "storey", "estate_name", "lot_number",
+                      "postcode", "frontage_m", "listing_url", "floorplan_url",
+                      "brochure_url", "incentive_text", "incentive_amount", "bedrooms",
+                      "bathrooms", "car_spaces", "land_sqm", "house_sqm", "state"):
+                if cols.get(c) not in (None, ""):
+                    upd[c] = f"COALESCE(NULLIF(buildings.{c},''), ?)"
+            sets, params = [], []
+            for c, v in upd.items():
+                if isinstance(v, str) and v.startswith("COALESCE("):
+                    sets.append(f"{c}={v}")
+                    params.append(cols[c])
+                else:
+                    sets.append(f"{c}=?")
+                    params.append(v)
+            conn.execute(f"UPDATE buildings SET {', '.join(sets)} WHERE id=?", (*params, rid))
+            conn.commit()
+            return "updated" if changed else "unchanged"
 
     def get_buildings(self, builder_name: Optional[str] = None) -> List[Dict[str, Any]]:
         with self._get_connection() as conn:
