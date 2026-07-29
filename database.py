@@ -4,12 +4,88 @@ Stores persisted research records, evaluated candidate properties, rejection log
 and Kommo CRM payload audit trails.
 """
 
+import hashlib
+import re
 import sqlite3
 import json
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import config
+
+# Columns added to `buildings` after its original CREATE TABLE, with their types.
+# Declared here (not inline) so a new field is one line and the type is explicit.
+BUILDINGS_EXTRA_COLUMNS = (
+    # price breakdown (SOP Step 6)
+    ("land_price", "REAL"), ("build_price", "REAL"), ("extraction_confidence", "REAL"),
+    # fields Coleen asked for on 28/29 July
+    ("availability_status", "TEXT"),     # Available / On Hold / Under Offer / Sold
+    ("storey", "TEXT"),                  # SINGLE / DOUBLE
+    ("estate_name", "TEXT"),
+    ("lot_number", "TEXT"),              # TEXT: also holds stock codes like "CC-0122"
+    ("postcode", "TEXT"),                # TEXT: NT postcodes have a leading zero (0800)
+    ("frontage_m", "REAL"),
+    ("listing_url", "TEXT"),             # human-openable page for this lot
+    ("floorplan_url", "TEXT"),
+    ("brochure_url", "TEXT"),
+    ("incentive_text", "TEXT"),
+    ("incentive_amount", "REAL"),
+    # provenance / attribution
+    ("builder_matched", "TEXT"),         # registry match, kept apart from the display name
+    ("builder_source", "TEXT"),          # heading | filename | portal | registry_text
+    ("attribution_scope", "TEXT"),       # builder | state_pooled
+    ("product_type", "TEXT"),
+    ("source_state_hint", "TEXT"),
+    ("stocklist_file", "TEXT"),
+    ("storey_source", "TEXT"),
+    ("incentive_source", "TEXT"),
+    # benchmarking (Coleen's 22 July ask)
+    ("benchmark_median", "REAL"), ("benchmark_variance_pct", "REAL"),
+    ("benchmark_classification", "TEXT"), ("benchmark_basis", "TEXT"),
+    # identity + change tracking
+    ("content_hash", "TEXT"),
+    ("first_seen", "TEXT"), ("last_seen", "TEXT"),
+    ("price_previous", "REAL"), ("status_previous", "TEXT"),
+)
+
+# Bump when the recipe changes, so old hashes are recognisably stale.
+HASH_RECIPE_VERSION = "v1"
+
+# Fields that identify a listing. Deliberately EXCLUDES price, availability,
+# title_status and date_checked — those are the values that should update in place
+# rather than create a second row. Also excludes state/builder_matched, which the
+# enrichment pass writes: hashing them would make enrichment duplicate the table.
+_HASH_FIELDS = ("source_channel", "attribution_scope", "builder_key", "suburb_norm",
+                "lot_number", "house_design", "land_sqm")
+
+
+def _norm(v: Any) -> str:
+    return re.sub(r"\s+", " ", str(v or "")).strip().lower()
+
+
+def building_content_hash(b: Dict[str, Any]) -> str:
+    """Stable identity for a listing, computed from the extractor's output.
+
+    MUST be computed at insert time from the upstream dict, never recomputed from a
+    DB row — enrichment writes non-hashed columns only, so the next harvest derives
+    the same hash from the same source file and updates in place.
+    """
+    parts = {
+        "source_channel": _norm(b.get("source_channel")),
+        "attribution_scope": _norm(b.get("attribution_scope")),
+        "builder_key": _norm(b.get("builder_name")),
+        "suburb_norm": _norm(b.get("suburb")),
+        "lot_number": _norm(b.get("lot_number")),
+        "house_design": _norm(b.get("house_design")),
+        "land_sqm": _norm(b.get("land_size_sqm") or b.get("land_sqm")),
+    }
+    basis = "|".join(f"{k}={parts[k]}" for k in _HASH_FIELDS)
+    # Degenerate rows (no lot number, no design) would otherwise all collide or go
+    # NULL — SQLite treats NULLs as distinct in a unique index, so fall back to the
+    # raw row text to guarantee every row gets a value.
+    if not (parts["lot_number"] or parts["house_design"]):
+        basis += "|raw=" + _norm(b.get("lot_address"))[:200]
+    return f"{HASH_RECIPE_VERSION}:{hashlib.sha256(basis.encode('utf-8')).hexdigest()}"
 
 
 class ResearchDatabase:
@@ -129,12 +205,36 @@ class ResearchDatabase:
                     date_checked TEXT
                 )
             """)
-            # land/build price split (SOP Step 6) — added for pre-existing DBs too
+            # Additive columns, declared with their type. The previous version of this
+            # loop hard-coded REAL, which silently made every TEXT field numeric.
             bcols = [r[1] for r in cursor.execute("PRAGMA table_info(buildings)").fetchall()]
-            for col in ("land_price", "build_price", "extraction_confidence"):
+            for col, coltype in BUILDINGS_EXTRA_COLUMNS:
+                if coltype not in ("TEXT", "REAL", "INTEGER"):
+                    raise ValueError(f"unsupported column type {coltype!r} for {col!r}")
                 if col not in bcols:
-                    cursor.execute(f"ALTER TABLE buildings ADD COLUMN {col} REAL")
+                    cursor.execute(f"ALTER TABLE buildings ADD COLUMN {col} {coltype}")
 
+            # Records whether a data backfill has run — PRAGMA tells us a column
+            # exists, but nothing about whether its values were populated.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS schema_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            """)
+
+            conn.commit()
+
+    # ---------- identity ----------
+    def get_meta(self, key: str) -> Optional[str]:
+        with self._get_connection() as conn:
+            row = conn.execute("SELECT value FROM schema_meta WHERE key=?", (key,)).fetchone()
+            return row[0] if row else None
+
+    def set_meta(self, key: str, value: str):
+        with self._get_connection() as conn:
+            conn.execute("INSERT INTO schema_meta(key,value) VALUES(?,?) "
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, str(value)))
             conn.commit()
 
     # ---------- Building stock ----------
