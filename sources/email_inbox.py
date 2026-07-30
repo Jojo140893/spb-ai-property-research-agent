@@ -73,6 +73,9 @@ def _sender_domain(from_hdr: str) -> str:
 class EmailStocklistSource(PropertySource):
     def __init__(self, registry=None, days_back: int = 60):
         self.days_back = days_back
+        # Brochures found alongside the stocklists — an attachment that yields no rows.
+        # Collected during search() and read by the caller afterwards.
+        self.brochures: List[Dict[str, Any]] = []
         # Fallback: the shared inbox login is stored against the email-only builders
         # in the vendor sheet (portal link "Login to Smart Property Buying outlook").
         csv_user = csv_pass = ""
@@ -99,7 +102,9 @@ class EmailStocklistSource(PropertySource):
 
     @property
     def channel_name(self) -> str:
-        return "Builder email stocklist"
+        # Coleen asked for this wording specifically, so the source column in his sheet
+        # reads the way he refers to the account.
+        return "digital email"
 
     # ---------- connection ----------
     def _connect(self) -> Optional[imaplib.IMAP4_SSL]:
@@ -137,8 +142,52 @@ class EmailStocklistSource(PropertySource):
                 if stem and stem in d:
                     guess = name
                     break
+            if not guess:
+                guess = self._builder_in_text(f"{subject or ''} {attachment_names}")
             return True, guess
         return False, ""
+
+    def _builder_in_text(self, text: str) -> str:
+        """A builder named in the subject line or an attachment's file name.
+
+        Needed because most of this inbox is FORWARDED mail: 16 of the 28 messages in the
+        last 120 days were sent from smartpropertybuying.com.au itself, so the sender's
+        domain is SPB and Coleen's "identify the builder from the sender" cannot work. The
+        builder is inside the message instead — "McMullan Bird - Printable Stocklist.pdf"
+        names it outright.
+
+        Matched against the builders we ACTUALLY HOLD STOCK FOR, not a hand-written list,
+        so a name only counts when it is one the app already knows. Longest first, so
+        "Creation Homes" is preferred over a bare "Creation".
+        """
+        low = f" {re.sub(r'[^a-z0-9 ]+', ' ', (text or '').lower())} "
+        for name in self._known_builders():
+            token = re.sub(r"[^a-z0-9 ]+", " ", name.lower()).strip()
+            if len(token) < 4:
+                continue
+            if re.search(rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])", low):
+                return name
+        return ""
+
+    def _known_builders(self) -> List[str]:
+        """Builder names already in the stock table, plus the approved registry, longest
+        first. Cached: this is called once per message."""
+        if getattr(self, "_known_cache", None) is not None:
+            return self._known_cache
+        names = set(self.domain_map.values())
+        try:
+            import sqlite3
+
+            import config
+            conn = sqlite3.connect(f"file:{config.DATABASE_PATH}?mode=ro", uri=True)
+            names |= {r[0].strip() for r in conn.execute(
+                "SELECT DISTINCT builder_name FROM buildings "
+                "WHERE TRIM(COALESCE(builder_name,'')) <> ''") if r[0]}
+            conn.close()
+        except Exception as e:                                   # pragma: no cover
+            logger.debug("email: could not read known builders: %s", e)
+        self._known_cache = sorted(names, key=len, reverse=True)
+        return self._known_cache
 
     # ---------- extraction ----------
     def _from_message(self, msg, builder: str, subject: str, when: str) -> List[Dict[str, Any]]:
@@ -161,6 +210,15 @@ class EmailStocklistSource(PropertySource):
                 g["email_date"] = when
                 g["attachment"] = fname[:80]
             listings.extend(got)
+            if not got:
+                # No rows in it, so it is not a stocklist — it is a BROCHURE, which is
+                # exactly what Coleen asked for on 30 July: "identify the builder from the
+                # email sender, then attach the brochure to the correct building". Kept
+                # aside rather than discarded; the harvest files and links it.
+                self.brochures.append({
+                    "builder_name": builder, "filename": fname[:120], "data": payload,
+                    "email_subject": subject[:120], "email_date": when,
+                })
 
         # 2) body text — some builders paste stock inline
         if not listings:

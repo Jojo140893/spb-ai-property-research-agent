@@ -216,11 +216,49 @@ def test_a_wall_of_prices_is_not_a_listing():
                 "$335,220 $540,220 Available")
 
 
+def test_a_price_broken_out_of_a_listing_is_not_a_listing():
+    """Emailed PDFs print a property's figures on their own lines, so "$1,266,900*",
+    "Land $714,900" and "Build $552,000" were stored as three separate properties — each
+    inheriting the suburb from the heading above, each landing in Coleen's sheet with a
+    price in the address column.
+
+    The KEEP cases are why this gate is narrow. A first version tested "has no words" and
+    deleted 112 rows, most of them real: an apartment pricelist row is almost entirely
+    numeric, so "501 2 1 1 70 27 97 SE $913,000" — unit 501, 2 bed, 1 bath, 1 car, 97 m²,
+    south-east — was thrown away. A unit number and a room count are identity even with no
+    letters attached."""
+    from sources.spreadsheet_extract import _is_price_fragment
+    from sources.adaptive_extract import parse_fields
+    from sources.feature_extract import parse_listing_features
+
+    def fields(t):
+        d = parse_fields(t)
+        d.update({k: v for k, v in parse_listing_features(
+            t, "", d.get("advertised_package_price")).items() if v is not None})
+        return d
+
+    for text in ("$1,266,900*", "Land $714,900", "Build $552,000", "$729,000",
+                 "A$744,951", "A$744,951 A$744,951", "Price $1,435,000",
+                 "Total $1,120,900 inc GST"):
+        assert _is_price_fragment(text, fields(text)), f"kept a fragment: {text!r}"
+
+    for text in ("501 2 1 1 70 27 97 SE $913,000",
+                 "104 3 2 2 124 64 188 $2,665,000",
+                 "110 1 1 51.1 9.8 60.9 $460,000 S-B4 $2,702",
+                 "1404+05 4 4 3 180 18 198 NE $3,200,000",
+                 "West 210 Sunrise Deanside Available Paris 22 Elite $412,500 $402,070 "
+                 "$814,570",
+                 "Lot 82 Aberdeen 282 142.8 12.0 Sep-26 Empley 15 3x2x2 $205,000 $335,220 "
+                 "$540,220 Available"):
+        assert not _is_price_fragment(text, fields(text)), f"deleted a real listing: {text[:50]!r}"
+
+
 def run_all():
     tests = [
         ("address column is a label", test_address_column_is_a_label_not_the_whole_row),
         ("column headers are not context", test_column_header_rows_never_become_estate_context),
         ("csv stocklist parsed", test_csv_stocklist_is_parsed),
+        ("price fragments are not listings", test_a_price_broken_out_of_a_listing_is_not_a_listing),
         ("wall of prices is not a listing", test_a_wall_of_prices_is_not_a_listing),
         ("xlsx cell hyperlink survives", test_cell_hyperlink_reaches_the_listing),
         ("=HYPERLINK() target recovered", test_hyperlink_formula_target_is_recovered),

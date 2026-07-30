@@ -443,6 +443,38 @@ _PDF_STRATEGIES = (("tables", _pdf_rows_from_tables), ("lines", _pdf_rows_from_l
 
 # ------------------------------------------------------------------- extraction
 
+# Words that carry no identity — they label a figure rather than name a property.
+_MONEY_LABEL = re.compile(
+    r"\b(land|build|building|house|package|total|price|prices|from|inc|incl|gst|"
+    r"deposit|balance|rrp|est|approx|only|now|was|save|saving|plus)\b", re.I)
+
+
+def _is_price_fragment(text: str, fields: Dict[str, Any]) -> bool:
+    """True when a row is a PRICE BROKEN OUT OF a listing, not a listing.
+
+    Some emailed PDFs print a property's figures on their own lines, so the extractor saw
+    "$1,266,900*", "Land $714,900" and "Build $552,000" as three separate properties —
+    each inheriting the suburb from the heading above, so each looked complete enough to
+    store, and each landed in Coleen's sheet with a price in the address column.
+
+    Deliberately narrow, because a first attempt at this deleted 112 rows and most were
+    real: an APARTMENT pricelist row is almost entirely numeric —
+    "501 2 1 1 70 27 97 SE $913,000" is unit 501, 2 bed, 1 bath, 1 car, 97 m², south-east
+    aspect. Judging on "has no words" threw those away. So a row only counts as a fragment
+    when it carries no other FIGURES either: a unit number and a room count are identity,
+    even with no letters attached to them.
+    """
+    if fields.get("lot_number") or fields.get("bedrooms") or fields.get("land_size_sqm"):
+        return False
+    if STREET_RE.search(text or ""):
+        return False
+    stripped = _PRICE_ANY.sub(" ", text or "")
+    if len(re.sub(r"[^A-Za-z]", "", _MONEY_LABEL.sub(" ", stripped))) >= 4:
+        return False                      # it has words of its own
+    # ...and no numbers of its own beyond the prices themselves
+    return len(re.findall(r"\d+(?:\.\d+)?", stripped)) <= 1
+
+
 def _listing_from_row(text: str, links: LinkList, context: str, source_label: str,
                       builder_hint: str) -> Optional[Dict[str, Any]]:
     """A parsed listing, or None if the row is not one."""
@@ -452,6 +484,8 @@ def _listing_from_row(text: str, links: LinkList, context: str, source_label: st
         text, context, fields.get("advertised_package_price")).items()
         if v is not None})
     if not fields.get("advertised_package_price"):
+        return None
+    if _is_price_fragment(text, fields):
         return None
     # A row that is nothing but a wall of prices is a summary or a transposed layout, not a
     # listing — seen live on the commercial pages ("$1,300,000 $1,250,000 $1,250,000 ...").
