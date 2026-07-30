@@ -290,8 +290,14 @@ def build_packages(brief_dict, rows, today=None):
 
         storeys = _storeys(row)
         if storeys is None and storey_is_binding:
+            # Counted, but no longer dropped. This exclusion existed because
+            # CandidateProperty.storeys was a plain int that defaulted to 1, so an
+            # unrecorded storey silently satisfied a "single storey only" brief. storeys is
+            # Optional now and the scorer flags None instead of assuming it, so the row can
+            # be scored honestly — and it has to be, because storey is stated on 149 of
+            # 4,192 rows and dropping the rest made a single-storey brief return NOTHING:
+            # all 33 lots that met every other requirement were thrown away here.
             counts["storey_unknown_and_binding"] += 1
-            continue
 
         verified, seen_at, seen_on = _fresh(row, today)
         if not verified:
@@ -330,9 +336,11 @@ def build_packages(brief_dict, rows, today=None):
             "bedrooms": facts["bedrooms"],
             "bathrooms": facts["bathrooms"],
             "car_spaces": facts["car_spaces"],
-            # 0, not the pipeline's 1: a max-storeys filter must not be satisfied by a
-            # number nobody recorded, and 0 shows on the card as the blank it is.
-            "storeys": storeys if storeys is not None else 0,
+            # None, not 0 and not the pipeline's 1. A max-storeys filter must not be
+            # satisfied by a number nobody recorded — but 0 satisfied it silently just as 1
+            # would have, so the "confirm the storey count" flag never appeared on the card.
+            # CandidateProperty.storeys is Optional now and the scorer names the gap.
+            "storeys": storeys,
             # 0 costs land points; the pipeline's 400 m² default would invent them.
             "land_size_sqm": _num(row.get("land_sqm")) or 0.0,
             "house_size_sqm": facts["house_sqm"],

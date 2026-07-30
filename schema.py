@@ -129,7 +129,12 @@ class CandidateProperty:
     bedrooms: int
     bathrooms: int
     car_spaces: int
-    storeys: int
+    # Optional because most stocklists do not record it: storey is stated on 149 of 4,192
+    # harvested rows. As a plain int it defaulted to 1, which silently satisfied a
+    # "single storey only" brief for every row that never said — so the candidate feed had
+    # to drop those rows instead, and a single-storey brief returned nothing at all.
+    # None means "not stated", and the scorer flags it rather than assuming either way.
+    storeys: Optional[int]
     land_size_sqm: float
     house_size_sqm: float
     title_status: str

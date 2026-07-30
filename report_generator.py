@@ -31,7 +31,7 @@ class ReportGenerator:
 | Parameter | Value |
 | :--- | :--- |
 | **Bedrooms / Bathrooms / Cars** | {prop.bedrooms} Bed | {prop.bathrooms} Bath | {prop.car_spaces} Car |
-| **Storeys** | {prop.storeys} |
+| **Storeys** | {prop.storeys if prop.storeys is not None else "Not stated in the builder's stocklist"} |
 | **Land Size** | {prop.land_size_sqm:,.0f} m² |
 | **House Size** | {prop.house_size_sqm:,.0f} m² |
 | **Builder / Design** | {prop.builder_name} ({prop.house_design}) |

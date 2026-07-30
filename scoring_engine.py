@@ -78,7 +78,19 @@ class ScoringEngine:
             rejection_reasons.append(f"Car spaces ({prop.car_spaces}) below minimum mandatory requirement ({brief.car_spaces_min})")
             req_pts -= 5.0
 
-        if prop.storeys > brief.storeys_max:
+        if prop.storeys is None:
+            # Not stated in the source — true of all but 149 of 4,192 harvested rows.
+            # Neither rejected nor waved through. Rejecting meant a "single storey only"
+            # brief returned NOTHING: every lot that satisfied it on every other count
+            # failed to record its storeys. Assuming single storey would put a two-storey
+            # house in front of a buyer who asked not to see one. So it is shortlisted with
+            # the gap named and two points off, ranking below any lot that does state it.
+            if brief.storeys_max is not None and brief.storeys_max < 2:
+                rejection_reasons.append(
+                    "Storeys not stated in the builder's stocklist — confirm with the "
+                    "builder before presenting to the client")
+                req_pts -= 2.0
+        elif prop.storeys > brief.storeys_max:
             hard_rejection = True
             rejection_reasons.append(f"Storeys ({prop.storeys}) exceeds maximum allowed ({brief.storeys_max})")
 

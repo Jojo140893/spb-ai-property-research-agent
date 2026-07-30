@@ -145,7 +145,11 @@ class KommoPropertyResearchAgent:
                 bedrooms=int(raw_pkg.get('bedrooms', 4)),
                 bathrooms=int(raw_pkg.get('bathrooms', 2)),
                 car_spaces=int(raw_pkg.get('car_spaces', 2)),
-                storeys=int(raw_pkg.get('storeys', 1)),
+                # None survives: this used to default to 1, so a lot whose stocklist never
+                # recorded its storeys silently satisfied a "single storey only" brief. The
+                # scorer flags None instead of assuming it either way.
+                storeys=(int(raw_pkg['storeys'])
+                         if raw_pkg.get('storeys') is not None else None),
                 land_size_sqm=float(raw_pkg.get('land_size_sqm', 400)),
                 house_size_sqm=float(raw_pkg.get('house_size_sqm', 180)),
                 title_status=raw_pkg.get('title_status', 'Expected Q4 2026'),
