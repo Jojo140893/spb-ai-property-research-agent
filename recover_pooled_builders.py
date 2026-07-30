@@ -838,12 +838,14 @@ def report_proposals(c: Corpus, accept: list[dict], conflict: list[dict],
             print(f"    {k:>4}  {b}: pooled rows say "
                   f"{sorted({(r['row']['state'] or '?') for r in clashes if r['builder'] == b})}"
                   f", named rows say {sorted(states[cb])}")
-        print("    Read this the other way round. The pooled rows carry real NSW")
-        print("    addresses and postcodes (Wadalba 2259, Bellbird 2325, Denman 2328);")
-        print("    the named rows' state came from a file-level source_state_hint, not")
-        print("    from the listing. The match is what EXPOSES the wrong state on the")
-        print("    named side - it is not evidence against the match. Worth a separate")
-        print("    look at state_source='stocklist file name' rows.")
+        print("    Read this the other way round: a clash here is evidence about the")
+        print("    STATE, not against the match. It read 23 the first time this ran, all")
+        print("    Hudson Homes - the pooled rows carried real NSW addresses (Wadalba")
+        print("    2259, Bellbird 2325, Denman 2328) while the named rows had been given")
+        print("    QLD by a file-level source_state_hint off the E-Agent page. The file")
+        print("    turned out to be national. state_resolver now drops a hint for any")
+        print("    file whose own rows prove two states, which took this to 0. Check any")
+        print("    new clash the same way: compare state_source on both sides first.")
 
     for label, bucket in (("CHANNELS DISAGREED", conflict), ("KEY HIT >1 BUILDER", clash)):
         if bucket:

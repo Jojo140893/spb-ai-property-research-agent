@@ -7,6 +7,13 @@ its suburb and the E-Agent page it came from against each other and records whic
 decided it (see that module for why agreement beats a fixed ranking). The stocklist
 filename (…?dn=NSW%20Dual%20Jul.xlsx -> NSW) is a last resort.
 
+Both of those are hints about a WHOLE FILE, so the state pass runs twice over the rows:
+once to ask each row what it proves about itself, and again to resolve it. A file whose
+own rows prove two different states is national, and its hint is then void for every row
+in it — the fix for Hudson Homes' 149 lots, which sit on E-Agent's Queensland page and
+were exported as Queensland while naming Wadalba, Warnervale, Bellbird and Denman NSW.
+A row of a national file that proves nothing itself is left BLANK, not guessed.
+
 BUILDER is resolved in order:
   1. whatever the scrape already attributed (portal scrapes name their builder)
   2. an approved-builder name appearing in the row text / estate context
@@ -20,15 +27,23 @@ Idempotent: safe to re-run after every harvest.
 
 import re
 import sqlite3
+from typing import Dict
 from urllib.parse import unquote
 
 import config
 from builder_registry import BuilderRegistry
 from database import ResearchDatabase
 from geo import SuburbGeoIndex
-from state_resolver import disagreement, resolve_state
+from state_resolver import (disagreement, file_is_national, own_state, resolve_state)
 
 STATE_RE = re.compile(r"\b(VIC|NSW|QLD|SA|WA|NT|ACT|TAS)\b", re.I)
+
+# Signals that are only ever a claim about the file a row arrived in. A state resting on
+# one of these is re-resolved on every run, not left alone like a blank field: the whole
+# Hudson error was already written to the column, so a pass that only filled blanks would
+# never have corrected it — and would not correct it after the next harvest either.
+HINT_ONLY_SIGNALS = ("e-agent page", "e-agent page (conflicting signals)",
+                     "stocklist file name")
 STATE_WORDS = {
     "victoria": "VIC", "new south wales": "NSW", "queensland": "QLD",
     "south australia": "SA", "western australia": "WA", "tasmania": "TAS",
@@ -54,6 +69,19 @@ def builder_from_filename(url: str, names: dict) -> str:
     for key, proper in names.items():
         if key and key in low:
             return proper
+    return ""
+
+
+def file_of(row) -> str:
+    """The stocklist a row came out of — the unit a state hint is actually a claim about.
+
+    `stocklist_file` where the harvest recorded one; `source_url` otherwise, which is the
+    same string for E-Agent's own PDFs and is all a portal scrape has.
+    """
+    keys = row.keys()
+    for k in ("stocklist_file", "source_url"):
+        if k in keys and (row[k] or "").strip():
+            return (row[k] or "").strip()
     return ""
 
 
@@ -91,43 +119,89 @@ def main():
 
     fixed_state = fixed_builder = fixed_suburb = 0
     by_signal, clashes = {}, []
-    cleared_postcodes = 0
+    cleared_postcodes = cleared_states = corrected_states = retraced_states = 0
     still_no_state = still_no_builder = 0
 
+    # --- pass 1: suburb, and what each row proves about its own state ---------
+    # A hint has to be judged against the rows it was stamped on, so the rows have to be
+    # read before any of them is resolved.
+    proven: Dict[int, tuple] = {}
+    per_file: Dict[str, set] = {}
     for r in rows:
         rid = r["id"]
-        state = (r["state"] or "").strip().upper()
         suburb = (r["suburb"] or "").strip()
-        builder = (r["builder_name"] or "").strip()
-        addr = r["lot_address"] or ""
-        url = r["source_url"] or ""
-
-        # --- suburb (needed before state can be inferred) ---
         if not suburb:
-            found = geo.find_suburb_in_text(addr, state)
+            found = geo.find_suburb_in_text(r["lot_address"] or "",
+                                            (r["state"] or "").strip().upper())
             if found:
                 suburb = found
                 conn.execute("UPDATE buildings SET suburb=? WHERE id=?", (suburb, rid))
                 fixed_suburb += 1
+        state, why = own_state(postcode=r["postcode"], suburb=suburb,
+                               estate=r["estate_name"], address=r["lot_address"], geo=geo)
+        proven[rid] = (suburb, state, why)
+        per_file.setdefault(file_of(r), set()).add(state)
+
+    national = {f for f, states in per_file.items() if file_is_national(states)}
+
+    # --- pass 2: resolve ------------------------------------------------------
+    for r in rows:
+        rid = r["id"]
+        suburb, mine, why = proven[rid]
+        state = (r["state"] or "").strip().upper()
+        builder = (r["builder_name"] or "").strip()
+        addr = r["lot_address"] or ""
+        url = r["source_url"] or ""
 
         # --- state ---
-        # The previous version walked a hard-coded tuple of states and took the first one
-        # that had the suburb, so every shared locality name answered VIC: "Springfield"
-        # exists in six states and always came back Victoria. resolve_state weighs the
-        # postcode, the suburb and the E-Agent page against each other instead, and
-        # records which of them decided it.
-        if not state or not STATE_RE.fullmatch(state or ""):
+        # The first version walked a hard-coded tuple of states and took the first one that
+        # had the suburb, so every shared locality name answered VIC: "Springfield" exists
+        # in six states and always came back Victoria. resolve_state weighs the postcode,
+        # the suburb, what the row says about itself and the E-Agent page against each other
+        # instead, and records which of them decided it.
+        #
+        # A state already resting on a file-level hint is reconsidered rather than left
+        # alone. That is the only way the Hudson rows get corrected: their state was
+        # already written, so a fill-the-blanks pass would skip all 149 of them.
+        settled = bool(state) and bool(STATE_RE.fullmatch(state or "")) \
+            and (r["state_source"] or "") not in HINT_ONLY_SIGNALS
+        if not settled:
             page = r["source_state_hint"] if "source_state_hint" in r.keys() else ""
-            new_state, signal = resolve_state(postcode=r["postcode"], suburb=suburb,
-                                              page_state=page, geo=geo)
-            if not new_state:                      # last resort: the file's own name
-                new_state = state_from_filename(url)
-                signal = "stocklist file name" if new_state else ""
-            if new_state:
+            if file_of(r) in national:
+                # The file covers more than one state, so nothing said ABOUT the file is a
+                # claim about this row: not the page it hangs on, not its own name, and not
+                # a lone gazetteer hit on a suburb column that the file has already been
+                # caught mislabelling. Only what the row proves counts, or nothing.
+                new_state, signal = mine, why
+            else:
+                new_state, signal = resolve_state(postcode=r["postcode"], suburb=suburb,
+                                                  page_state=page, geo=geo,
+                                                  listing_state=mine)
+                if not new_state:                  # last resort: the file's own name
+                    from_file = state_from_filename(url)
+                    if from_file:
+                        new_state, signal = from_file, "stocklist file name"
+            # Written when the SIGNAL moves as well as when the state does. A row that now
+            # answers out of its own text but happens to land on the state the page claimed
+            # would otherwise keep 'e-agent page' in the column, and the point of recording
+            # the signal is that a state in front of a buyer can be traced to what decided it.
+            if new_state != state or (signal or None) != r["state_source"]:
+                # NULL, never '': an empty string would sort and group as a second kind of
+                # blank beside the rows that never had a state at all.
                 conn.execute("UPDATE buildings SET state=?, state_source=? WHERE id=?",
-                             (new_state, signal, rid))
+                             (new_state or None, signal or None, rid))
+                if new_state == state:
+                    retraced_states += 1
+                elif not new_state:
+                    # Held a hint-derived state that the file has now disproved, and proves
+                    # nothing itself. Blank beats a coin flip between two states.
+                    cleared_states += 1
+                elif state:
+                    corrected_states += 1
+                else:
+                    fixed_state += 1
                 state = new_state
-                fixed_state += 1
+            if new_state:
                 by_signal[signal] = by_signal.get(signal, 0) + 1
             clash = disagreement(r["postcode"], suburb, page, geo)
             if clash:
@@ -161,8 +235,51 @@ def main():
     print("=" * 66)
     print(f"  suburb  backfilled: {fixed_suburb}")
     print(f"  state   backfilled: {fixed_state}   still blank: {still_no_state}")
+    print(f"  state   corrected : {corrected_states}   cleared: {cleared_states}"
+          f"   same state, better signal: {retraced_states}")
     for sig, n in sorted(by_signal.items(), key=lambda kv: -kv[1]):
         print(f"            via {sig:<34} {n:>5}")
+    if national:
+        # The file, not the row, is what was wrong. Printed in full because each one is a
+        # decision to stop trusting a whole file, and a human should be able to check it.
+        print()
+        print(f"  [!] {len(national)} stocklist(s) are NATIONAL — their own rows prove more")
+        print(f"      than one state, so the page/filename hint was dropped for every row:")
+        for f in sorted(national):
+            its = [r for r in rows if file_of(r) == f]
+            says = {}
+            for r in its:
+                sub, st, why = proven[r["id"]]
+                if st:
+                    says.setdefault(st, (why, sub))
+            hints = sorted({(r["source_state_hint"] or "-") for r in its})
+            blank = sum(1 for r in its if not proven[r["id"]][1])
+            print(f"        {len(its):>4} row(s), hint said {'/'.join(hints)}, the rows say "
+                  f"{'/'.join(sorted(says))}   {f[-58:]}")
+            for st, (why, sub) in sorted(says.items()):
+                print(f"               {st:<4} {why} — {sub!r}")
+            print(f"               {blank} row(s) prove nothing themselves and stay blank")
+
+    # What is still taken on trust, and how much of it could be checked at all. A hint in a
+    # file where no row names a place anywhere is the shape the Hudson error had, and the
+    # only reason it is kept is that E-Agent's navigation is the sole signal those rows have
+    # — apartment schedules read "1 101 2 BED + 2 BATH" and name nothing. Printed so the
+    # number is visible rather than implied, and so it can be watched.
+    speaks = {f for f, states in per_file.items() if states - {""}}
+    on_hint = corroborated = unfalsifiable = 0
+    for r in conn.execute("SELECT state_source, stocklist_file, source_url FROM buildings"):
+        if (r["state_source"] or "") not in HINT_ONLY_SIGNALS:
+            continue
+        on_hint += 1
+        if file_of(r) in speaks:
+            corroborated += 1
+        else:
+            unfalsifiable += 1
+    print()
+    print(f"  {on_hint} row(s) still rest on a page/filename hint alone:")
+    print(f"      {corroborated} in a file where another row proves that state")
+    print(f"      {unfalsifiable} in a file where no row names any place — the hint cannot be "
+          f"checked")
     if clashes:
         # A row whose own postcode contradicts the page it came from is either a builder
         # listing interstate stock or a misparsed postcode. Both are worth a human's eye.

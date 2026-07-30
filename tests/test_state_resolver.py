@@ -11,7 +11,9 @@ other on the live data showed each one can be wrong alone.
 """
 
 from geo import SuburbGeoIndex
-from state_resolver import (normalise_state, resolve_state, state_from_postcode)
+from state_resolver import (file_is_national, locality_in_listing, normalise_state,
+                            own_state, resolve_state, state_from_postcode,
+                            state_named_in_listing)
 
 _GEO = SuburbGeoIndex()
 
@@ -124,6 +126,98 @@ def test_a_real_postcode_carries_a_row_with_no_other_signal():
     assert resolve_state(postcode="0810", geo=_GEO) == ("NT", "postcode")
 
 
+def test_a_listing_that_names_its_own_state_is_read():
+    """Real cells. Thomas Paul's file writes "<ESTATE> / <SUBURB> / <STATE>", Hudson's
+    writes "<estate> <SUBURB> <STATE>, <suburb>". 167 stored rows name their state this way
+    and the resolver read none of them, because a state was only ever taken from the page."""
+    for cell, want in (("STAGE 2 / DORA CREEK / NSW", "NSW"),
+                       ("KEARNEYS SPRING / QLD", "QLD"),
+                       ("TOOWOOMBA / QLD", "QLD"),
+                       ("NSW / WOONGARRAH / NSW", "NSW"),
+                       ("Bethania QLD, Bethania", "QLD"),
+                       ("Buchanan NSW, Buchanan", "NSW"),
+                       ("Truganina VIC", "VIC"),
+                       ("Evergreen Estate Bellbird Park QLD, Bellbird Park", "QLD")):
+        got, _ = state_named_in_listing(cell)
+        assert got == want, f"{cell!r} -> {got!r}, want {want}"
+
+
+def test_a_listing_that_names_no_state_says_nothing():
+    """Every one of these is a real stored cell. None of them may produce a state: a
+    two-letter code appears inside ordinary words, and a lower-case one is not a label."""
+    for cell in ("Street # Type", "7 Star Energy Rating", "Titled Packages",
+                 "m²", "Residence", "DUPLEX", "Car Space * * *",
+                 "LOT STREET DESIGN BEDS BATH TYPE LAND SLAB LAND PACKAGE RENT YIELD",
+                 "Warnervale Display Homes 2026, Warnervale",   # locality, no state
+                 "Highfields Estate, Denman",
+                 "116 Neale Road", "122 Atlas Crescent", "N/A", "Wa", "Sanctuary",
+                 "321 Cunningham Street", "Price $1,630,000 $4,700,000"):
+        got, ev = state_named_in_listing(cell)
+        assert got == "", f"{cell!r} -> {got!r} via {ev!r}"
+
+
+def test_the_locality_is_taken_only_when_the_cell_has_a_separator():
+    """The separator is the extractor's own record of "<context><sep><locality>". Without
+    it the cell is one blob, and matching 17,500 locality names against a blob is how
+    "122 Atlas Crescent" became Crescent SA and estate "Mandalay" became Mandalay QLD."""
+    for cell, want in (("Highfields Estate, Denman", "Denman"),
+                       ("Bethania QLD, Bethania", "Bethania"),
+                       ("STAGE 9 / TOOWOOMBA", "TOOWOOMBA"),
+                       ("KEARNEYS SPRING / QLD", "KEARNEYS SPRING"),
+                       ("Leppington HomeWorld Display Homes, Leppington", "Leppington"),
+                       ("Display Homes, Morayfield", "Morayfield")):
+        assert locality_in_listing(cell) == want, f"{cell!r} -> {locality_in_listing(cell)!r}"
+    # separator-less cells: the ones that produced every false positive
+    for cell in ("Crescent", "Mandalay", "Jubilee", "Price", "Highlands", "Springs",
+                 "The Grove", "Neale", "Lyra", "Hobart"):
+        assert locality_in_listing(cell) == "", f"{cell!r} -> {locality_in_listing(cell)!r}"
+
+
+def test_own_state_refuses_a_bare_postcode_and_a_bare_suburb_word():
+    """own_state is the standard of proof for throwing away a whole file's hint, and the
+    only signal left once a file is known to be national, so it holds out for more than a
+    four-digit number or a lone word in the suburb column. Both are documented liars:
+    "Warnervale 2026" is a titling date, and "118 Hobart Street" leaves Hobart in the
+    suburb column of a NSW Central Coast builder's file."""
+    assert own_state(postcode="2259", geo=_GEO) == ("", "")
+    assert own_state(suburb="Hobart", address="118 Hobart Street", geo=_GEO) == ("", "")
+    assert own_state(suburb="Greenway", address="54 Greenway Street", geo=_GEO) == ("", "")
+    state, why = own_state(postcode="2259", suburb="Wadalba", geo=_GEO)
+    assert (state, why) == ("NSW", "suburb + postcode"), (state, why)
+    # Warnervale is NSW-only, so the separator-delimited locality answers on its own and
+    # the 2026 sitting beside it takes no part.
+    state2, why2 = own_state(postcode="2026", suburb="Warnervale Display Homes, Warnervale",
+                             geo=_GEO)
+    assert (state2, why2) == ("NSW", "listing locality"), (state2, why2)
+
+
+def test_a_named_state_outranks_the_page_it_came_from():
+    """Rows 2529 and 2536: a Toowoomba lot on E-Agent's New South Wales page. The row says
+    QLD in its own cell, so it is QLD, and the signal records what it beat."""
+    state, signal = resolve_state(page_state="NSW", listing_state="QLD", geo=_GEO)
+    assert state == "QLD", (state, signal)
+    assert "listing text" in signal and "NSW" in signal, signal
+    # ...and where nothing disagrees, the signal is not dressed up as a conflict
+    state2, signal2 = resolve_state(page_state="NSW", listing_state="NSW", geo=_GEO)
+    assert (state2, signal2) == ("NSW", "listing text"), (state2, signal2)
+
+
+def test_a_national_file_is_recognised_from_its_own_rows():
+    """Hudson Homes' PDF, 149 rows, hangs on E-Agent's Queensland page. Its own rows name
+    Wadalba, Warnervale, Bellbird and Denman NSW next to Yarrabilba and Flagstone QLD, so
+    the page's claim is not true of the file, let alone of any row in it."""
+    hudson = [own_state(suburb=s, geo=_GEO)[0] for s in
+              ("Wadalba, Wadalba", "Warnervale, Warnervale", "Bellbird, Bellbird",
+               "Yarrabilba, Yarrabilba", "Bethania QLD, Bethania")]
+    assert set(hudson) == {"NSW", "QLD"}, hudson
+    assert file_is_national(hudson)
+    # a genuinely single-state file keeps its hint, blank rows and all
+    vic = [own_state(suburb=s, geo=_GEO)[0] for s in
+           ("Kilmore Estate, Kilmore", "Creekstone North, Tarneit", "Street # Type", "")]
+    assert set(vic) == {"VIC", ""}, vic
+    assert not file_is_national(vic)
+
+
 def run_all():
     tests = [
         ("postcode ranges cover every state", test_postcode_ranges_cover_every_state),
@@ -136,6 +230,12 @@ def run_all():
         ("page alone used but labelled", test_the_page_alone_is_used_but_labelled_as_such),
         ("nothing reliable stays blank", test_nothing_reliable_leaves_it_blank),
         ("real postcode carries a lone row", test_a_real_postcode_carries_a_row_with_no_other_signal),
+        ("a listing's own state is read", test_a_listing_that_names_its_own_state_is_read),
+        ("no state means no state", test_a_listing_that_names_no_state_says_nothing),
+        ("locality needs a separator", test_the_locality_is_taken_only_when_the_cell_has_a_separator),
+        ("own_state refuses a bare postcode or suburb word", test_own_state_refuses_a_bare_postcode_and_a_bare_suburb_word),
+        ("named state outranks the page", test_a_named_state_outranks_the_page_it_came_from),
+        ("a national file is recognised", test_a_national_file_is_recognised_from_its_own_rows),
     ]
     failed = 0
     for name, fn in tests:
