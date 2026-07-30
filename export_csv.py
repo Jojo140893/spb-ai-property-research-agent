@@ -20,24 +20,45 @@ from database import ResearchDatabase
 
 STAMP = datetime.now().strftime("%Y%m%d")
 
+# Coleen's read order, taken from how he went down the sheet on 29 July: builder, address,
+# suburb, state, availability, storey, price, land size, house price, bathrooms, incentives,
+# benchmark, then the links, then the provenance columns at the far right where they do not
+# get in the way of reading the stock.
 BUILDING_COLS = [
-    ("builder_name", "Builder"),
-    ("lot_address", "Lot / Address"),
+    ("builder_name", "Builder / Development"),
+    ("lot_address", "Address"),
     ("suburb", "Suburb"),
     ("state", "State"),
+    ("availability_status", "Availability"),
+    ("storey", "Storey"),
     ("price", "Package Price"),
+    ("land_sqm", "Land Size m2"),
     ("land_price", "Land Price"),
-    ("build_price", "Build Price"),
+    ("house_sqm", "House Size m2"),
+    ("build_price", "House Price"),
     ("bedrooms", "Beds"),
     ("bathrooms", "Baths"),
     ("car_spaces", "Cars"),
-    ("land_sqm", "Land m2"),
-    ("house_sqm", "House m2"),
+    ("frontage_m", "Frontage m"),
+    ("estate_name", "Estate"),
     ("title_status", "Title / Registration"),
-    ("source_channel", "Source"),
-    ("extraction_confidence", "Confidence"),
+    ("incentive_amount", "Incentive $"),
+    ("incentive_text", "Incentive"),
+    ("benchmark_median", "Market Median"),
+    ("benchmark_variance_pct", "Variance vs Market %"),
+    ("benchmark_classification", "Vs Market"),
+    ("listing_url", "PDF / Listing"),
+    ("floorplan_url", "Floor Plan"),
+    ("brochure_url", "Brochure"),
     ("date_checked", "Date Checked"),
-    ("source_url", "Source URL"),
+    ("source_channel", "Source"),
+    # provenance, so any cell in front of a buyer can be traced back
+    ("attribution_scope", "Attribution"),
+    ("state_source", "State From"),
+    ("builder_source", "Builder From"),
+    ("product_type", "Product"),
+    ("extraction_confidence", "Confidence"),
+    ("source_url", "Source File"),
 ]
 
 BROCHURE_COLS = [
@@ -85,7 +106,16 @@ def _write(path, cols, rows):
 
 def export_buildings(db):
     rows = db.get_buildings()
-    rows.sort(key=lambda r: (r.get("builder_name") or "", r.get("price") or 0))
+    # State, then builder, then suburb, then price. Rows whose builder could not be
+    # established sort LAST rather than first — an empty string sorts before every name, so
+    # the old order opened the sheet on the one thing Coleen complained about.
+    rows.sort(key=lambda r: (
+        r.get("state") or "zz",
+        not (r.get("builder_name") or "").strip(),
+        (r.get("builder_name") or "").lower(),
+        (r.get("suburb") or "").lower(),
+        r.get("price") or 0,
+    ))
     return _write(config.OUTPUT_DIR / f"buildings_{STAMP}.csv", BUILDING_COLS, rows)
 
 
