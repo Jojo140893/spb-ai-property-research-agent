@@ -13,7 +13,7 @@ import logging
 import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
 
 import config
 from sources.base import PropertySource
@@ -90,6 +90,135 @@ def _project_from_label(label: str) -> str:
     return name.title()
 
 
+"""Words that make a name a COMPANY rather than a place.
+
+`_project_from_label` may return an estate ("Eastbury Wheelers Hill") because its caller
+only wants the development. A banner is read for the opposite purpose — to put a name in
+builder_name — so a much stricter test applies: it has to look like a business. Covers 31
+of the 36 builders currently in the database; the five it misses (Bathla, Ausbuild, APLACE
+by Glenville, Met Invest by Metricon, Proxima) return "" and stay blank, which is the
+intended failure. Guessing an estate into builder_name is the bug this file is fixing.
+"""
+_COMPANY_WORDS = re.compile(
+    r"\b(homes?|construction|constructions|constructs?|developments?|developers?|"
+    r"projects?|group|builders?|living|residential|building|build|properties|property|"
+    r"corporation|holdings|investments?|pty|ltd)\b", re.I)
+# State names and codes sit inside a banner ("CREATION HOMES NSW STOCK LIST") but are not
+# part of the company's name.
+_STATE_WORDS = re.compile(
+    r"\b(new\s+south\s+wales|victoria|queensland|south\s+australia|western\s+australia|"
+    r"tasmania|northern\s+territory|australian\s+capital\s+territory|"
+    r"nsw|vic|qld|sa|wa|nt|act|tas|australia)\b", re.I)
+
+
+# Where a banner-derived name is recorded, so a reader can tell it from a heading.
+_BANNER_SOURCE = "e-agent stocklist banner"
+
+# Headings that are page furniture, not builders. Without this filter the crawl
+# would attribute stock to "Live Packages" — a wrong builder is worse than a blank.
+# Module level because a stocklist file's own title row is held to the same test.
+_NOT_A_BUILDER = re.compile(
+    r"^(live\s*packages?|builder\s*info|request\s*(a\s*)?marketing\s*flyer|"
+    r"package\s*request|marketing\s*flyer|price\s*list|stock\s*list|available\s*stock|"
+    r"house\s*&?\s*land|townhouses?|apartments?|commercial(\s*propert\w*)?|"
+    r"dual\s*(key|occupancy)|projects?|our\s*builders?|new\s*(homes?|stock)|"
+    r"home|about|contact|log\s*in|login|sign\s*up|access\s*projects|"
+    # the site-wide page title; it is what the heading walk returns when a link has
+    # no section heading of its own, so it must never be taken for a builder
+    r"wholesale\s*agent\s*platform|e-?agent|"
+    r"victoria|new\s*south\s*wales|queensland|south\s*australia|"
+    r"vic|nsw|qld|sa|wa|nt|act|tas)$", re.I)
+
+# Google hands out several spellings of ONE Sheets tab: the account picker adds `pli=1`,
+# a copied link keeps `usp=sharing`, and the tab is named by both `?gid=` and `#gid=`.
+# Eight of the ten sections on the NSW page link the same workbook and two spellings of
+# it got past the seen-set, which is why the same 107 listings are in the database twice.
+# Only parameters that cannot change WHICH file is served are dropped.
+_DROP_QUERY_KEYS = frozenset((
+    "pli", "authuser", "usp", "urp", "hl", "rtpof", "sd", "ts", "utm_source",
+    "utm_medium", "utm_campaign", "utm_content", "utm_term", "_hsmi", "_hsenc"))
+_VIEW_SUFFIX = re.compile(r"/(edit|export|view|preview|htmlview|pub)$", re.I)
+
+
+def stocklist_file_key(href: str) -> str:
+    """Identity of a stocklist FILE. Two spellings of one tab give one key.
+
+    `#gid=` is folded into the query rather than dropped: two estates really can share a
+    workbook and differ only by tab, so the gid IS part of the file's identity — but
+    `?gid=0#gid=0` and `?pli=1&gid=0#gid=0` are the same tab and must not count twice.
+    """
+    href = (href or "").strip()
+    if not href:
+        return ""
+    try:
+        u = urlparse(href)
+    except Exception:
+        return href.lower()
+    if not u.netloc:
+        return href.lower()
+    keep = [(k, v) for k, v in parse_qsl(u.query, keep_blank_values=True)
+            if k.lower() not in _DROP_QUERY_KEYS]
+    if u.fragment.startswith("gid=") and not any(k.lower() == "gid" for k, _ in keep):
+        keep.append(("gid", u.fragment[4:]))
+    path = _VIEW_SUFFIX.sub("", u.path.rstrip("/"))     # /edit and /export are one doc
+    query = urlencode(sorted(keep))
+    return f"{u.scheme.lower()}://{u.netloc.lower()}{path}" + (f"?{query}" if query else "")
+
+
+def _builder_from_banner(banner: str) -> str:
+    """Name the builder from the stocklist file's OWN title row.
+
+    A builder who publishes one workbook covering eleven of its estates names itself in
+    cell A1 and nowhere else: 'CREATION HOMES NSW STOCK LIST' -> 'Creation Homes'. That
+    row is the only builder-level fact in the file, and the E-Agent page above it says
+    only which ESTATE the link belongs to.
+
+    Held to the same high bar as `_project_from_label`, plus a company-shape test: a
+    banner that does not reduce to a business name returns "" rather than a guess. The
+    Leppington Rise file's banner ('Agent Stock List 167 Ingleburn Road, Leppington') is
+    a street address and correctly yields nothing.
+    """
+    raw = (banner or "").strip(" -–—:|")
+    name = _clean_banner(banner)
+    if not name:
+        return ""
+    # Tested on the raw banner as well as the cleaned one: "New Homes" is furniture, but
+    # cleaning strips "new" and leaves "Homes", which would sail past both tests below.
+    if _NOT_A_BUILDER.match(name) or _NOT_A_BUILDER.match(raw):
+        return ""
+    if not _COMPANY_WORDS.search(name):
+        return ""
+    # A company word alone is not a company: "Homes" and "Group" name nobody. Something
+    # has to be left once the generic part is removed — one letter is enough, because
+    # "G-Developments" is a real builder on the NSW page.
+    if not re.search(r"[A-Za-z]", _COMPANY_WORDS.sub(" ", name)):
+        return ""
+    return name.title()
+
+
+def _clean_banner(banner: str) -> str:
+    """Strip a banner down to the name it carries, or "" if nothing survives."""
+    name = (banner or "").strip()
+    # A banner is one row of a file; a row of lot data is not a banner. Cheap guard so a
+    # mis-detected group header can never be read as a company.
+    if "$" in name or len(name) > 90:
+        return ""
+    name = re.sub(r"\d{1,2}[-./ ]\d{1,2}[-./ ]\d{2,4}", " ", name)   # dates, whole
+    name = re.sub(r"[_|/]+", " ", name)
+    name = re.sub(r"\[.*?\]|\(.*?\)", " ", name)
+    name = re.sub(r"(?<=[A-Za-z])(?=\d)", " ", name)                 # "Pricelist2026"
+    name = _FILENAME_NOISE.sub(" ", name)
+    name = _STATE_WORDS.sub(" ", name)
+    name = re.sub(r"[\d.]{2,}", " ", name)
+    name = re.sub(r"\s*[-–—]\s*", " ", name)
+    name = re.sub(r"\s+", " ", name).strip(" -–—.,&:")
+    if not (2 < len(name) <= 44) or not re.search(r"[A-Za-z]{4}", name):
+        return ""
+    if _structural_only(name):
+        return ""
+    return name
+
+
 class EAgentSource(PropertySource):
     def __init__(self, registry=None):
         self.cfg = EAGENT_CONFIG
@@ -162,47 +291,72 @@ class EAgentSource(PropertySource):
 
     # JS, not Python: the builder name is only recoverable from the DOM position of
     # the link relative to its section heading, which Playwright cannot express as a
-    # selector. Climbs from each stocklist link to the nearest heading ABOVE it —
-    # previous siblings first at each level, then up a level.
+    # selector. Climbs from each stocklist link collecting EVERY heading above it —
+    # previous siblings first at each level, then up a level, nearest first.
+    #
+    # The whole chain, not just the nearest heading: the NSW House & Land page divides
+    # itself into a "Builders" half and a "Projects" half, and the divider is an ancestor
+    # of the per-section headings. Reading only the nearest heading cannot see it, which
+    # is how 229 rows came to be filed under an ESTATE name in builder_name.
     _LINKS_WITH_HEADINGS_JS = """() => {
         const HEAD = 'h1,h2,h3,h4,h5,h6,[role="heading"]';
         const txt = e => ((e.innerText || e.textContent || '').replace(/\\s+/g, ' ')).trim();
-        const nearest = (el) => {
+        const chain = (el) => {
+            const out = [];
             let node = el;
             while (node && node !== document.body) {
                 let sib = node.previousElementSibling;
                 while (sib) {
-                    if (sib.matches && sib.matches(HEAD)) { const t = txt(sib); if (t) return t; }
+                    if (sib.matches && sib.matches(HEAD)) { const t = txt(sib); if (t) out.push(t.slice(0, 80)); }
                     const inner = sib.querySelectorAll ? [...sib.querySelectorAll(HEAD)] : [];
                     for (let i = inner.length - 1; i >= 0; i--) {
-                        const t = txt(inner[i]); if (t) return t;
+                        const t = txt(inner[i]); if (t) out.push(t.slice(0, 80));
                     }
                     sib = sib.previousElementSibling;
                 }
                 node = node.parentElement;
             }
-            return '';
+            return out;
         };
-        return [...document.querySelectorAll('a[href]')].map(a => ({
-            href: a.href,
-            label: txt(a).slice(0, 60),
-            heading: nearest(a).slice(0, 80),
-        }));
+        return [...document.querySelectorAll('a[href]')].map(a => {
+            const c = chain(a).slice(0, 40);
+            return {
+                href: a.href,
+                label: txt(a).slice(0, 60),
+                heading: c.length ? c[0] : '',
+                chain: c,
+            };
+        });
     }"""
 
-    # Headings that are page furniture, not builders. Without this filter the crawl
-    # would attribute stock to "Live Packages" — a wrong builder is worse than a blank.
-    _NOT_A_BUILDER = re.compile(
-        r"^(live\s*packages?|builder\s*info|request\s*(a\s*)?marketing\s*flyer|"
-        r"package\s*request|marketing\s*flyer|price\s*list|stock\s*list|available\s*stock|"
-        r"house\s*&?\s*land|townhouses?|apartments?|commercial(\s*propert\w*)?|"
-        r"dual\s*(key|occupancy)|projects?|our\s*builders?|new\s*(homes?|stock)|"
-        r"home|about|contact|log\s*in|login|sign\s*up|access\s*projects|"
-        # the site-wide page title; it is what the heading walk returns when a link has
-        # no section heading of its own, so it must never be taken for a builder
-        r"wholesale\s*agent\s*platform|e-?agent|"
-        r"victoria|new\s*south\s*wales|queensland|south\s*australia|"
-        r"vic|nsw|qld|sa|wa|nt|act|tas)$", re.I)
+    # The page's own division of itself. E-Agent's NSW House & Land page carries an
+    # H1 "Builders" above five builder sections and an H1 "Projects" above ten ESTATE
+    # sections; both halves look identical one heading up, so the divider is the only
+    # thing that distinguishes "Bramwell Homes" (a builder) from "Kemps Estate - Austral"
+    # (an estate). Matched whole, so a builder called "Project Homes" is unaffected.
+    _SECTION_BUILDERS = re.compile(r"^(our\s+)?builders?$", re.I)
+    _SECTION_PROJECTS = re.compile(r"^(projects?|developments?|estates?)$", re.I)
+
+    @classmethod
+    def _section_kind(cls, chain) -> str:
+        """'builder', 'project', or '' — how the page says this section is grouped.
+
+        The chain is nearest-first, so the FIRST divider found is the one that governs
+        this link; a link in the Projects half sees "Projects" before it ever reaches the
+        "Builders" heading further up the page.
+        """
+        for h in chain or ():
+            h = (h or "").strip(" -–—:|")
+            if cls._SECTION_BUILDERS.match(h):
+                return "builder"
+            if cls._SECTION_PROJECTS.match(h):
+                return "project"
+        return ""
+
+    # Shared with `_builder_from_banner`: a file whose title row is "Available Stock" or
+    # "Projects" must not name a builder either, and "Projects" would otherwise pass the
+    # company-word test.
+    _NOT_A_BUILDER = _NOT_A_BUILDER
 
     # Not every file under a builder's heading is stock. Goldstate Homes publishes a
     # "Builder Info" company document beside its "Live Packages" stocklist; parsing it
@@ -242,11 +396,13 @@ class EAgentSource(PropertySource):
                 continue
             if self._NOT_STOCK_LABEL.search(label):
                 continue
-            # Two estates can share one workbook and differ only by #gid=, so the
-            # fragment is part of the identity of a Google Sheets tab.
-            if href in seen:
+            # Two estates can share one workbook and differ only by #gid=, so the tab is
+            # part of a Google Sheets file's identity — but `pli=1` and `usp=` are not,
+            # and taking the raw href as the key read one workbook twice.
+            key = stocklist_file_key(href)
+            if key in seen:
                 continue
-            seen.add(href)
+            seen.add(key)
             out.append(l)
         return out
 
@@ -267,8 +423,27 @@ class EAgentSource(PropertySource):
                            "probably been rotated.", url)
         return rows
 
+    @staticmethod
+    def _name_from_banner(rows: List[Dict[str, Any]], builder_hint: str,
+                          allow_banner: bool) -> str:
+        """Fill builder_name from the file's OWN title row, in place.
+
+        Only when the page did not already name the builder. One batch of rows is one
+        file, so one banner governs all of them. Returns the name used, or "".
+        """
+        if builder_hint or not allow_banner or not rows:
+            return ""
+        name = _builder_from_banner(rows[0].get("source_banner") or "")
+        if not name:
+            return ""
+        for r in rows:
+            r["builder_name"] = name
+            r["builder_source"] = _BANNER_SOURCE
+        return name
+
     def _fetch_pieces(self, scraper: PlaywrightScraper, href: str, label: str,
-                      builder_hint: str, state_hint: str) -> List[Dict[str, Any]]:
+                      builder_hint: str, state_hint: str,
+                      allow_banner: bool = False) -> List[Dict[str, Any]]:
         """Everything parseable behind one stock link, wherever it is hosted."""
         if not remote.is_offsite(href):
             try:
@@ -277,7 +452,9 @@ class EAgentSource(PropertySource):
             except Exception as e:
                 logger.warning("E-Agent: could not download stocklist %s: %s", label, e)
                 return []
-            return extract_stocklist(data, source_label=href, builder_hint=builder_hint)
+            got = extract_stocklist(data, source_label=href, builder_hint=builder_hint)
+            self._name_from_banner(got, builder_hint, allow_banner)
+            return got
 
         out: List[Dict[str, Any]] = []
         for piece in remote.fetch_stocklist(href, builder_hint or label, self._http):
@@ -295,22 +472,32 @@ class EAgentSource(PropertySource):
                 g["stocklist"] = piece.label        # more use than a bare "Access Portal"
                 if derived:
                     g["builder_source"] = "e-agent stocklist file name"
+            # Per PIECE, not per link: one folder can hold several builders' files, so the
+            # banner is resolved against the rows of the file it came from. A company name
+            # inside the file beats a development name guessed off the file name.
+            self._name_from_banner(got, builder_hint, allow_banner)
             out.extend(got)
         return out
 
     def _parse_stocklist(self, scraper: PlaywrightScraper, link: Dict[str, str],
                          builder_hint: str, scope: str, state_hint: str = "",
-                         product_type: str = "") -> List[Dict[str, Any]]:
+                         product_type: str = "",
+                         allow_banner: bool = False) -> List[Dict[str, Any]]:
         href = link.get("href", "")
         got = self._fetch_pieces(scraper, href, link.get("label", ""), builder_hint,
-                                 state_hint)
+                                 state_hint, allow_banner)
         for g in got:
             g["source_channel"] = self.channel_name
             g["date_checked"] = datetime.now().strftime("%d/%m/%Y")
             g["verified"] = True
             g.setdefault("stocklist", link.get("label", ""))
             g["stocklist_file"] = href
-            g["attribution_scope"] = scope
+            # A link the PAGE grouped by project is still builder-attributed when the FILE
+            # named its builder. `project` scope means "this name is a development, not a
+            # builder" — the API blanks builder_name on those rows — so leaving a row the
+            # file did name at project scope would throw the name away.
+            g["attribution_scope"] = ("builder" if g.get("builder_source") == _BANNER_SOURCE
+                                      else scope)
             if builder_hint:
                 g.setdefault("builder_source", "e-agent category heading")
             if state_hint:
@@ -383,7 +570,7 @@ class EAgentSource(PropertySource):
             except Exception:
                 pass
             links = self._stocklist_links(scraper)
-            fresh = [l for l in links if l["href"] not in seen_files]
+            fresh = [l for l in links if stocklist_file_key(l["href"]) not in seen_files]
             logger.info("E-Agent: %s (%s) -> %d stocklist file(s), %d new",
                         cat.url.rsplit("/", 1)[-1], cat.state or "-", len(links), len(fresh))
             for l in fresh:
@@ -396,8 +583,16 @@ class EAgentSource(PropertySource):
                 # by builder — that is how E-Agent presents them, and the heading is the
                 # project. Tagged `project` so they never mix with builder-attributed
                 # rows; where no heading exists the development is read off the file name.
-                is_builder = self._is_builder_heading(heading)
-                project_page = cat.product_type not in ("House & Land", "")
+                #
+                # A page can also say so about PART of itself. The NSW House & Land page
+                # runs a "Builders" half and a "Projects" half, and the ten headings in the
+                # Projects half are estates ("Kemps Estate - Austral"). They look exactly
+                # like builder headings one level up, so before this the page's own divider
+                # was ignored and 229 rows were filed under an estate name.
+                section = self._section_kind(l.get("chain"))
+                is_builder = self._is_builder_heading(heading) and section != "project"
+                project_page = (cat.product_type not in ("House & Land", "")
+                                or section == "project")
                 if not is_builder and not project_page:
                     unattributed += 1
                     logger.debug("E-Agent: no builder heading for %s (saw %r)",
@@ -405,9 +600,14 @@ class EAgentSource(PropertySource):
                     continue
                 scope = "builder" if (is_builder and not project_page) else "project"
                 hint = heading if is_builder else ""
-                seen_files.add(l["href"])
-                got = self._parse_stocklist(scraper, l, hint, scope,
-                                            cat.state, cat.product_type)
+                # Only house-and-land pages may promote a name read out of the FILE to
+                # builder scope. On the apartment, townhouse, land and commercial pages the
+                # thing being sold really is a development, and re-scoping those 1,479 rows
+                # would change their identity for no gain.
+                allow_banner = cat.product_type in ("House & Land", "")
+                seen_files.add(stocklist_file_key(l["href"]))
+                got = self._parse_stocklist(scraper, l, hint, scope, cat.state,
+                                            cat.product_type, allow_banner)
                 if got:
                     named = hint or (got[0].get("builder_name") or "").strip() or "(unnamed)"
                     builders[named] = builders.get(named, 0) + len(got)
