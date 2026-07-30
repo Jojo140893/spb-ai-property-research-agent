@@ -484,11 +484,17 @@ def _listing_from_row(text: str, links: LinkList, context: str, source_label: st
 
 
 def _rows_to_listings(rows: List[Tuple[str, LinkList]], context: str, source_label: str,
-                      builder_hint: str) -> Tuple[List[Dict[str, Any]], str]:
+                      builder_hint: str,
+                      banner: str = "") -> Tuple[List[Dict[str, Any]], str, str]:
     """Parse a batch of rows, carrying the estate/group header context through them.
 
-    Returns (listings, context) rather than mutating, so two competing PDF strategies
-    can each be tried on a page without one polluting the other's header context.
+    Returns (listings, context, banner) rather than mutating, so two competing PDF
+    strategies can each be tried on a page without one polluting the other's state.
+
+    `banner` is the FIRST group header in the file — the document's own title row, which
+    the estate banners beneath it overwrite in `context`. It is the one place a builder
+    who publishes a multi-estate workbook names itself ("CREATION HOMES NSW STOCK LIST"),
+    so it is kept and stamped on every listing for the caller to attribute from.
     """
     out: List[Dict[str, Any]] = []
     for text, links in rows:
@@ -500,9 +506,11 @@ def _rows_to_listings(rows: List[Tuple[str, LinkList]], context: str, source_lab
         if listing is None:
             if _is_group_header(text, {}):   # no price: _listing_from_row already told us
                 context = text
+                banner = banner or text
             continue
+        listing["source_banner"] = banner
         out.append(listing)
-    return out, context
+    return out, context, banner
 
 
 def _assign_variant_ordinals(rows: List[Dict[str, Any]]) -> int:
@@ -559,6 +567,7 @@ def extract_from_xlsx(data: bytes, source_label: str = "", builder_hint: str = "
 
     out: List[Dict[str, Any]] = []
     context, sheet, money = "", -1, _MoneyColumns()
+    banner = ""
     for si, cells, links in rows:
         if si != sheet:
             context, sheet, money = "", si, _MoneyColumns()   # headers are per sheet
@@ -569,8 +578,8 @@ def extract_from_xlsx(data: bytes, source_label: str = "", builder_hint: str = "
         money.feed_header(cells, is_header)
         if is_header:
             continue
-        listings, context = _rows_to_listings([(money.render(cells), links)], context,
-                                              source_label, builder_hint)
+        listings, context, banner = _rows_to_listings(
+            [(money.render(cells), links)], context, source_label, builder_hint, banner)
         out.extend(listings)
     _log_yield("xlsx", source_label, out)
     return out
@@ -584,17 +593,17 @@ def extract_from_pdf(data: bytes, source_label: str = "", builder_hint: str = ""
     used = {}
     try:
         with pdfplumber.open(io.BytesIO(data)) as pdf:
-            context = ""
+            context, banner = "", ""
             for page in pdf.pages[:25]:
                 annots = _annot_links(page)
-                best, best_ctx, best_name = [], context, ""
+                best, best_ctx, best_banner, best_name = [], context, banner, ""
                 for name, strategy in _PDF_STRATEGIES:
-                    listings, ctx = _rows_to_listings(strategy(page, annots), context,
-                                                      source_label, builder_hint)
+                    listings, ctx, ban = _rows_to_listings(
+                        strategy(page, annots), context, source_label, builder_hint, banner)
                     if len(listings) > len(best):
-                        best, best_ctx, best_name = listings, ctx, name
+                        best, best_ctx, best_banner, best_name = listings, ctx, ban, name
                 out.extend(best)
-                context = best_ctx
+                context, banner = best_ctx, best_banner
                 if best_name:
                     used[best_name] = used.get(best_name, 0) + len(best)
     except Exception as e:
@@ -630,7 +639,7 @@ def extract_from_csv(data: bytes, source_label: str = "", builder_hint: str = ""
         money.feed_header(cells, is_header)
         if not is_header:
             rows.append((money.render(cells), []))
-    out, _ = _rows_to_listings(rows, "", source_label, builder_hint)
+    out, _, _ = _rows_to_listings(rows, "", source_label, builder_hint)
     _log_yield("csv", source_label, out)
     return out
 
