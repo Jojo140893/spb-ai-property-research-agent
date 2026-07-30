@@ -4,7 +4,7 @@ WHY THIS EXISTS
     255 rows carry attribution_scope='state_pooled' and an empty builder_name. They
     came from E-Agent's pooled files (VIC Regional.xlsx, NSW Dual.xlsx, DUAL QLD.xlsx
     and 3 PDFs), which list several builders' stock without saying, per row, whose it
-    is. 2,574 rows carry attribution_scope='builder' and DO name the builder.
+    is. 2,452 rows carry attribution_scope='builder' and DO name the builder.
 
 THE RULE THIS RESPECTS
     Never guess a builder. A wrong attribution is worse than a blank, because a blank
@@ -34,7 +34,7 @@ THREE CHANNELS SURVIVED, ONE WAS CAUGHT LYING
      A sticky header bleeds down the sheet. 75% wrong. See --rejected.
 
 HOW PRECISION IS MEASURED (channel 1)
-    Two holdouts over the 2,395 named rows that carry source_text:
+    Two holdouts over the 2,273 named rows that carry source_text:
 
       HOLDOUT A - "can it recover a builder that IS in the pool?"
           Blank one row's builder in memory; the pool is every other named row. A
@@ -302,22 +302,28 @@ class Corpus:
         self.relabel = self._detect_relabels()
         self.prefix_owner, self.prefix_support = self._code_prefix_owners()
 
-    # ---- the one data artefact that has to be named, or every figure below lies
+    # ---- a data artefact that has to be named, or every figure below lies
     def _detect_relabels(self) -> dict[str, set[str]]:
         """'Builders' that are really the same stock filed under several labels.
 
-        Found from the data, not hardcoded. Three values in builder_name are ESTATES,
-        not builders - 'Kemps Estate - Austral', 'Emerald Grove - Jordan Springs' and
-        'Bingara Gorge - Wilton' - and they hold the same listings two or three times
-        over (the same 121/125/126/140 Bingara Drive lots appear under all three). Any
-        key that works will "confuse" them, and counting that as a precision failure
-        would misrepresent every figure in this report, so they are folded into one
-        equivalence class and the fold is printed.
+        Returns {} against a clean database, and did so as of 2026-07-30. It was built
+        for a specific artefact: three values in builder_name were ESTATES rather than
+        builders - 'Kemps Estate - Austral', 'Emerald Grove - Jordan Springs' and
+        'Bingara Gorge - Wilton' - holding the same listings two or three times over,
+        because E-Agent's NSW page groups part of itself by estate and two spellings of
+        one Google Sheets URL were read as two files. Both faults are fixed in
+        `sources/e_agent.py`, and `fix_estate_builder_labels.py` relabelled the 229 rows
+        to Creation Homes (or to a blank at project scope, where no file names a builder).
+
+        Kept, because it is found from the DATA and nothing here is hardcoded: any future
+        source that files one builder's stock under two labels would otherwise make every
+        key in this report look imprecise when it is not. When it fires, the fold is
+        printed, so a reader can see it happened rather than having it applied silently.
 
         Two labels are the same stock when they share the same lot - identical
         normalised text, OR the same price plus NUMFP_MIN_SHARED other numbers - on at
         least 3 rows AND on at least 40% of the smaller label's rows. A couple of
-        coincidences is not a relabel; 94% of 107 rows is.
+        coincidences is not a relabel; 94% of 107 rows was.
         """
         rows_per: Counter = Counter(canon_builder(r["builder_name"])
                                     for r in self.named_text)
