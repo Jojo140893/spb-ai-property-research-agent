@@ -33,6 +33,7 @@ from tests.test_row_links import run_all as _links_suite
 from tests.test_remote_stocklist import run_all as _remote_suite
 from tests.test_builder_attribution import run_all as _attribution_suite
 from tests.test_state_resolver import run_all as _state_suite
+from tests.test_bed_bath_car import run_all as _specs_suite
 from tests.test_adaptive_extract import test_adaptive_extracts_from_unknown_layouts
 
 
@@ -67,6 +68,7 @@ def run_all_tests():
         ("Remote: off-site stocklist hosts", lambda: (_ for _ in ()).throw(AssertionError("remote suite failed")) if _remote_suite() else None),
         ("Attribution: builder vs estate, one tab one file", lambda: (_ for _ in ()).throw(AssertionError("attribution suite failed")) if _attribution_suite() else None),
         ("State: postcode / suburb / page resolution", lambda: (_ for _ in ()).throw(AssertionError("state suite failed")) if _state_suite() else None),
+        ("Specs: bed / bath / car notations", lambda: (_ for _ in ()).throw(AssertionError("specs suite failed")) if _specs_suite() else None),
     ]
 
     passed = 0
