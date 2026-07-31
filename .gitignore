@@ -50,3 +50,4 @@ output/
 *.xlsx
 spb_research_audit.db
 spb_research_audit.db.bak-*
+_daily.log
