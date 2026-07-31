@@ -29,3 +29,24 @@ vercel_site/
 .vercel/
 _server.log
 vercel_site/assets/
+
+# --- never commit: credentials -----------------------------------------------
+# The vendor sheet carries live builder portal passwords. It is READ at runtime by
+# BuilderRegistry and at build time by api/_export_builders.py (which strips the
+# credential columns before anything is deployed), so the file stays on disk — it just
+# must never be in the repo. It WAS committed from the initial commit and is already
+# public on GitHub; removing it here stops further exposure but does not undo that, so
+# those passwords need rotating.
+Book1(Builders) List.csv
+*Builders* List.csv
+drive_input/
+.sessions/
+.env
+credentials.json
+
+# --- never commit: the client's data ----------------------------------------
+# Coleen's stock is her commercial asset and this repo is public.
+output/
+*.xlsx
+spb_research_audit.db
+spb_research_audit.db.bak-*
