@@ -1,10 +1,15 @@
 """
 Tests for the Proxima harvest (sources/proxima.py).
 
-Every fixture is a real value taken from the live portal on 2026-08-01. The parsing
-here is deliberately thin — Proxima hands over typed data-* attributes rather than
-prose — so these tests guard the places where a wrong answer would be silent:
-a lot filed under the wrong project, a "0" read as a real measurement, or a
+Every fixture reproduces the SHAPE of a real portal record — the address grammar, the
+zero-padded lot codes, the "00"-means-unrecorded convention, the same-lot-under-two-
+projects case — but the lots, streets and prices are invented. This repo is public and
+the client's stock is her commercial asset, so no live listing goes in here; the shape
+is what the parsing turns on, and the shape is faithful.
+
+The parsing itself is deliberately thin, because Proxima hands over typed data-*
+attributes rather than prose. These tests guard the places where a wrong answer would
+be silent: a lot filed under the wrong project, a "0" read as a real measurement, or a
 cross-listed lot counted twice.
 """
 
@@ -15,13 +20,19 @@ from sources.proxima import (ProximaSource, parse_property_name, _num, _int,
 # ------------------------------------------------------------------ address
 
 def test_the_address_forms_proxima_actually_uses():
+    """The three grammars seen on the portal, with invented specifics.
+
+    The middle one matters most: a lot label can carry a PRODUCT name after the
+    number ("Lot 12 Riverstone Unit 12 Riverstone"), so the label is not simply
+    "Lot <digits>" and the tail has to be read from the right.
+    """
     cases = {
-        "Lot 106 Unit 106, 9 Turffontein Avenue, BOX HILL, NSW, 2765":
-            ("Box Hill", "NSW", "2765"),
-        "Lot 1218 Pinnacle Unit 1218 Pinnacle, Invicta Drive, SMYTHES CREEK, VIC, 3351":
-            ("Smythes Creek", "VIC", "3351"),
-        "Lot 405 Dream Unit 405 Dream, Tait Street, SEBASTOPOL, VIC, 3356":
-            ("Sebastopol", "VIC", "3356"),
+        "Lot 14 Unit 14, 7 Example Avenue, SAMPLETON, NSW, 2765":
+            ("Sampleton", "NSW", "2765"),
+        "Lot 12 Riverstone Unit 12 Riverstone, Specimen Drive, TESTVALE, VIC, 3351":
+            ("Testvale", "VIC", "3351"),
+        "Lot 9 Fixture Unit 9 Fixture, Placeholder Street, MOCKBURY, VIC, 3356":
+            ("Mockbury", "VIC", "3356"),
     }
     for raw, (sub, st, pc) in cases.items():
         a = parse_property_name(raw)
@@ -64,7 +75,7 @@ def test_price_strings_parse():
 
 
 def test_lot_number_loses_the_padding_but_not_the_lot():
-    assert _lot_number("00000106/00000106") == "106"
+    assert _lot_number("00000014/00000014") == "14"
     assert _lot_number("000000103") == "103"
     assert _lot_number("") == ""
     # A lot that is genuinely all zeros must not become "0"
@@ -74,15 +85,15 @@ def test_lot_number_loses_the_padding_but_not_the_lot():
 # --------------------------------------------------------------- row building
 
 _HEADER = {
-    "project": "124 Old Pitt Town Road Box Hill Land Only (10/27)",
+    "project": "1 Example Road Sampleton Land Only (10/27)",
     "status": "For Sale",
     "location": "NSW",
-    "developer": "Bathla Development",
+    "developer": "Placeholder Developments",
 }
 
 _LOT = {
-    "name": "Lot 106 Unit 106, 9 Turffontein Avenue, BOX HILL, NSW, 2765",
-    "lot": "00000106/00000106", "room": "00", "bathroom": "", "carspace": "",
+    "name": "Lot 14 Unit 14, 7 Example Avenue, SAMPLETON, NSW, 2765",
+    "lot": "00000014/00000014", "room": "00", "bathroom": "", "carspace": "",
     "propertywidth": "10.200000", "propertylength": "", "landsize": "318.00",
     "rop": "829990", "packageprice": "0",
     "_titled": "Land Registered", "_status": "For Sale",
@@ -92,9 +103,9 @@ _LOT = {
 def test_a_lot_maps_onto_the_schema():
     r = ProximaSource()._row(dict(_LOT), dict(_HEADER))
     assert r["state"] == "NSW"
-    assert r["suburb"] == "Box Hill"
+    assert r["suburb"] == "Sampleton"
     assert r["postcode"] == "2765"
-    assert r["lot_number"] == "106"
+    assert r["lot_number"] == "14"
     assert r["advertised_package_price"] == 829990.0
     assert r["land_size_sqm"] == 318.0
     assert r["frontage_m"] == 10.2
@@ -107,7 +118,7 @@ def test_a_lot_maps_onto_the_schema():
 
 def test_the_builder_is_read_from_the_header_never_invented():
     r = ProximaSource()._row(dict(_LOT), dict(_HEADER))
-    assert r["builder_name"] == "Bathla Development"
+    assert r["builder_name"] == "Placeholder Developments"
     assert r["builder_source"] == "proxima project header"
     assert r["attribution_scope"] == "builder"
 
@@ -151,26 +162,26 @@ def test_the_state_falls_back_to_the_project_location():
 # ------------------------------------------------------------- cross-listing
 
 def test_a_cross_listed_lot_is_stored_once_and_counted():
-    """Ascenta Living publishes the same lots under Coliving AND Traditional.
+    """One vendor publishes the same lots under two programme names.
 
     One physical lot, two programmes. Both would collide on content_hash and the
     upsert would silently keep the last, so the collapse happens here where it can
     be counted instead of vanishing.
     """
     src = ProximaSource()
-    a = src._row(dict(_LOT), {**_HEADER, "project": "Ascenta Living Coliving (9/11)"})
-    b = src._row(dict(_LOT), {**_HEADER, "project": "Ascenta Living Traditional (56/86)"})
+    a = src._row(dict(_LOT), {**_HEADER, "project": "Sample Estate Programme A (9/11)"})
+    b = src._row(dict(_LOT), {**_HEADER, "project": "Sample Estate Programme B (56/86)"})
     out = src._collapse_cross_listed([a, b])
     assert len(out) == 1, out
     assert len(src.cross_listed) == 1
-    assert out[0]["estate_name"] == "Ascenta Living Coliving (9/11)", "first wins, deterministically"
+    assert out[0]["estate_name"] == "Sample Estate Programme A (9/11)", "first wins, deterministically"
 
 
 def test_genuinely_different_lots_both_survive():
     src = ProximaSource()
     a = src._row(dict(_LOT), dict(_HEADER))
-    b = src._row({**_LOT, "lot": "00000107/00000107",
-                  "name": "Lot 107 Unit 107, 11 Turffontein Avenue, BOX HILL, NSW, 2765"},
+    b = src._row({**_LOT, "lot": "00000015/00000015",
+                  "name": "Lot 15 Unit 15, 9 Example Avenue, SAMPLETON, NSW, 2765"},
                  dict(_HEADER))
     assert len(src._collapse_cross_listed([a, b])) == 2
 

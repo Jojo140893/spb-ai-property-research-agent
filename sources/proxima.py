@@ -14,18 +14,22 @@ now handled rather than worked around:
     accordions. Expanding one reveals its lots — and each lot carries the whole
     record in data-* attributes, already typed:
 
-        data-name  "Lot 106 Unit 106, 9 Turffontein Avenue, BOX HILL, NSW, 2765"
-        data-lot   "00000106/00000106"      data-landsize   "318.00"
+        data-name  "Lot 14 Unit 14, 7 Example Avenue, SAMPLETON, NSW, 2765"
+        data-lot   "00000014/00000014"      data-landsize   "318.00"
         data-rop   "829990"                 data-propertywidth "10.200000"
         data-room / data-bathroom / data-carspace / data-aspect
+
+    (Invented specifics above, real grammar — this repo is public.)
 
     So there is no text parsing here at all, which is why this source can populate
     postcode and frontage that the stocklist-derived sources mostly cannot.
 
-There is also a JSON API (`/rest/V1/properties/list`, reached through each project's
-AVAILABILITY VIEW iframe). It returns the same records, but only 9 of the 40 projects
-publish an availability view, so the DOM path is the one with full coverage. The API
-is documented in the worklog as the better route if Proxima ever widens it.
+  * THE ACCORDION UNDERSTATES THE STOCK, twice over: it renders at most
+    `data-propertylimit` (80) lots, and it only ever shows lots still for sale. So
+    wherever a project offers an AVAILABILITY VIEW (9 of 40), `_read_via_api` is used
+    instead — the same REST call the availability app makes, issued same-origin from
+    the portal page. That returns the whole inventory with a per-lot reservation
+    status: 305 lots for one project where the accordion showed 2.
 
 Nothing is inferred. A builder is used only where the project header states one, a
 missing bed/bath/car stays None rather than becoming 0, and a lot with no price is
@@ -138,7 +142,7 @@ async (pid) => {
 
 
 def _lot_number(raw: str) -> str:
-    """'00000106/00000106' -> '106'. Returns '' when there is nothing real."""
+    """'00000014/00000014' -> '14'. Returns '' when there is nothing real."""
     if not raw:
         return ""
     first = str(raw).split("/")[0].strip()
@@ -147,7 +151,9 @@ def _lot_number(raw: str) -> str:
 
 
 def parse_property_name(name: str) -> Dict[str, str]:
-    """'Lot 106 Unit 106, 9 Turffontein Avenue, BOX HILL, NSW, 2765' -> parts.
+    """'Lot 14 Unit 14, 7 Example Avenue, SAMPLETON, NSW, 2765' -> parts.
+
+    (Invented specifics, real grammar — this repo is public.)
 
     Read from the END, because the leading part varies (a lot label, a unit label,
     both, or neither) while the tail is consistently ... suburb, STATE, postcode.
