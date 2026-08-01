@@ -88,6 +88,35 @@ class PropertyAgentRequestHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed_url = urllib.parse.urlparse(self.path)
 
+        if parsed_url.path == "/api/select":
+            # Best-deals selection (Colin, 30 Jul). The dashboard keeps the working
+            # selection in the browser so it also works on the static deployment,
+            # where there is no database to write to; this endpoint is what makes a
+            # selection durable when the app is run locally, so it survives the next
+            # harvest and reaches the next published snapshot.
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body.decode('utf-8')) if body else {}
+                keys = data.get('keys') or []
+                if data.get('replace'):
+                    # Publish this exact set: clear what was marked, then mark these.
+                    cleared = agent.db.clear_promo_selection()
+                    changed = agent.db.set_promo_selection(keys, True)
+                    payload = {'status': 'success', 'cleared': cleared, 'selected': changed}
+                else:
+                    changed = agent.db.set_promo_selection(keys, bool(data.get('selected', True)))
+                    payload = {'status': 'success', 'changed': changed}
+                payload['total_selected'] = len(agent.db.get_promo_selected())
+                self.send_response(200)
+            except Exception as e:
+                payload = {'status': 'error', 'message': str(e)}
+                self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(payload).encode('utf-8'))
+            return
+
         if parsed_url.path == "/api/research":
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length)

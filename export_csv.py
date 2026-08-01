@@ -125,6 +125,25 @@ def export_buildings(db):
     return _write(config.OUTPUT_DIR / f"buildings_{STAMP}.csv", BUILDING_COLS, rows)
 
 
+def export_best_deals(db):
+    """Just the listings marked for the weekly promotion (Colin, 30 Jul).
+
+    Same columns and same read order as the full sheet, so the file he sends out is
+    the sheet he already knows with everything else taken away. Always written, even
+    empty — a missing file looks like the export broke, whereas a header-only file
+    says plainly that nothing is marked this week.
+    """
+    rows = db.get_promo_selected()
+    rows.sort(key=lambda r: (
+        r.get("state") or "zz",
+        not (r.get("builder_name") or "").strip(),
+        (r.get("builder_name") or "").lower(),
+        (r.get("suburb") or "").lower(),
+        r.get("price") or 0,
+    ))
+    return _write(config.OUTPUT_DIR / f"best_deals_{STAMP}.csv", BUILDING_COLS, rows)
+
+
 def export_brochures(db):
     rows = db.get_assets()
     return _write(config.OUTPUT_DIR / f"brochures_{STAMP}.csv", BROCHURE_COLS, rows)
@@ -139,7 +158,8 @@ def main(which: str = ""):
     db = ResearchDatabase()
     config.OUTPUT_DIR.mkdir(exist_ok=True)
     print(f"Exporting to {config.OUTPUT_DIR}")
-    jobs = {"buildings": export_buildings, "brochures": export_brochures, "vendors": export_vendors}
+    jobs = {"buildings": export_buildings, "best_deals": export_best_deals,
+            "brochures": export_brochures, "vendors": export_vendors}
     todo = {which: jobs[which]} if which in jobs else jobs
     written = [fn(db) for fn in todo.values()]
     print(f"\n{len(written)} file(s) written.")

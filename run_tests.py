@@ -36,6 +36,7 @@ from tests.test_state_resolver import run_all as _state_suite
 from tests.test_bed_bath_car import run_all as _specs_suite
 from tests.test_proxima_channel import run_all as _proxima_suite
 from tests.test_proxima_source import run_all as _proxima_src_suite
+from tests.test_best_deals import run_all as _best_deals_suite
 from tests.test_adaptive_extract import test_adaptive_extracts_from_unknown_layouts
 
 
@@ -73,6 +74,7 @@ def run_all_tests():
         ("Specs: bed / bath / car notations", lambda: (_ for _ in ()).throw(AssertionError("specs suite failed")) if _specs_suite() else None),
         ("Proxima: user agent + source channel", lambda: (_ for _ in ()).throw(AssertionError("proxima suite failed")) if _proxima_suite() else None),
         ("Proxima: stock harvest + attribution", lambda: (_ for _ in ()).throw(AssertionError("proxima source suite failed")) if _proxima_src_suite() else None),
+        ("Best deals: selection survives a re-harvest", lambda: (_ for _ in ()).throw(AssertionError("best deals suite failed")) if _best_deals_suite() else None),
     ]
 
     passed = 0

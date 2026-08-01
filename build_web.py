@@ -50,6 +50,16 @@ BUILDING_FIELDS = [
     "attribution_scope", "date_checked", "listing_url", "floorplan_url",
     "brochure_url", "benchmark_median", "benchmark_variance_pct",
     "benchmark_classification",
+    # Best-deals selection (Colin, 30 Jul).
+    #
+    # `row_key` is content_hash, and it is the one deliberate exception to "no
+    # dedup keys, no content hashes" above. The selection has to survive a
+    # re-harvest, which means it needs the one field that identifies the SAME
+    # listing before and after — that is precisely what content_hash is. Building a
+    # key out of visible fields instead would break the moment a price moved, which
+    # is the most common thing to change between harvests. It leaks nothing: it is a
+    # digest of listing attributes already published in the row beside it.
+    "content_hash", "promo_selected",
 ]
 # builders: NOTE the deliberate omission of portal_login_email / portal_login_password.
 BUILDER_FIELDS = [
@@ -61,16 +71,42 @@ BUILDER_FIELDS = [
 ASSET_FIELDS = ["builder_name", "asset_type", "title", "source_url", "file_size",
                 "downloaded_at"]
 
-FORBIDDEN = ("password", "passwd", "pwd", "secret", "token", "login_email",
-             "content_hash", "dedup", "sha256", "local_path", "session")
+# This guard was catching two different things under one name. Splitting them, because
+# the difference matters: one class must never ship at any price, the other is a
+# tidiness rule that a feature can have a reviewed exception to.
+#
+# Secrets. No exception, ever, for any reason.
+FORBIDDEN_SECRETS = ("password", "passwd", "pwd", "secret", "token", "login_email",
+                     "session")
+# Internal plumbing. Not sensitive — it just has no business on a public page unless
+# something genuinely needs it, so it stays out by default and an exception is named.
+FORBIDDEN_INTERNAL = ("content_hash", "dedup", "sha256", "local_path")
+
+# Reviewed exceptions to FORBIDDEN_INTERNAL, and why.
+#
+#   content_hash — the best-deals selection (Colin, 30 Jul) has to survive a
+#   re-harvest, so the browser needs the one identifier that names the SAME listing
+#   before and after one. A key built from visible fields would break the first time
+#   a price moved, which is the most common thing to change between harvests. The
+#   value is a digest of listing attributes that are published in the row beside it,
+#   so it discloses nothing new and grants no access.
+ALLOWED_INTERNAL = {"content_hash"}
+
+FORBIDDEN = FORBIDDEN_SECRETS + FORBIDDEN_INTERNAL   # kept for anything reading it
 
 
 def _check(name: str, fields) -> None:
-    """A field whose name looks like a credential must never be in an allow-list."""
+    """No credential ever ships; internal fields ship only by named exception."""
     for f in fields:
         low = f.lower()
-        if any(bad in low for bad in FORBIDDEN):
-            raise SystemExit(f"[ABORT] {name}: refusing to export field {f!r}")
+        if any(bad in low for bad in FORBIDDEN_SECRETS):
+            raise SystemExit(f"[ABORT] {name}: refusing to export credential field {f!r}")
+        if f in ALLOWED_INTERNAL:
+            continue
+        if any(bad in low for bad in FORBIDDEN_INTERNAL):
+            raise SystemExit(
+                f"[ABORT] {name}: refusing to export internal field {f!r}. "
+                f"If it is genuinely needed, add it to ALLOWED_INTERNAL with a reason.")
 
 
 def _slug(name: str) -> str:

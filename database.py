@@ -48,6 +48,17 @@ BUILDINGS_EXTRA_COLUMNS = (
     # the client's sheet; this keeps everything the parser needs (and an audit
     # trail). Truncating to 110 chars used to cut prices in half mid-number.
     ("source_text", "TEXT"),
+    # Best-deals selection — Colin's 30 July ask: filter the database, mark the
+    # listings going into the weekly customer promotion, export those.
+    #
+    # These MUST stay out of building_content_hash and out of record_building's
+    # column dict, or a re-harvest would either re-identify every marked row or
+    # overwrite the mark. Both exclude by allow-list rather than by denylist, so
+    # a new column is excluded automatically — test_best_deals.py pins that,
+    # because the failure is silent and only shows up a week later when Colin's
+    # selection has quietly emptied itself.
+    ("promo_selected", "INTEGER"),        # 1 = in the weekly promotion
+    ("promo_selected_at", "TEXT"),        # when it was marked, for "what changed this week"
     # benchmarking (Coleen's 22 July ask)
     ("benchmark_median", "REAL"), ("benchmark_variance_pct", "REAL"),
     ("benchmark_classification", "TEXT"), ("benchmark_basis", "TEXT"),
@@ -468,6 +479,47 @@ class ResearchDatabase:
                 rows = conn.execute("SELECT * FROM buildings WHERE builder_name=? ORDER BY price", (builder_name,)).fetchall()
             else:
                 rows = conn.execute("SELECT * FROM buildings ORDER BY builder_name, price").fetchall()
+            return [dict(r) for r in rows]
+
+    # ---------- Best-deals selection (Colin, 30 Jul) ----------
+    def set_promo_selection(self, content_hashes: List[str], selected: bool) -> int:
+        """Mark or unmark listings for the weekly promotion. Returns rows changed.
+
+        Keyed by content_hash, not by id: id is a local autoincrement that means
+        nothing to the deployed snapshot, whereas content_hash is the same listing's
+        identity before and after a re-harvest. That is the whole point — a selection
+        made on Monday has to still point at the same lots on Friday.
+        """
+        keys = [k for k in (content_hashes or []) if k]
+        if not keys:
+            return 0
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S") if selected else None
+        with self._get_connection() as conn:
+            changed = 0
+            for chunk in (keys[i:i + 400] for i in range(0, len(keys), 400)):
+                marks = ",".join("?" * len(chunk))
+                cur = conn.execute(
+                    f"UPDATE buildings SET promo_selected=?, promo_selected_at=? "
+                    f"WHERE content_hash IN ({marks})",
+                    [1 if selected else 0, stamp, *chunk])
+                changed += cur.rowcount
+            conn.commit()
+            return changed
+
+    def clear_promo_selection(self) -> int:
+        with self._get_connection() as conn:
+            cur = conn.execute(
+                "UPDATE buildings SET promo_selected=0, promo_selected_at=NULL "
+                "WHERE promo_selected=1")
+            conn.commit()
+            return cur.rowcount
+
+    def get_promo_selected(self) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM buildings WHERE promo_selected=1 "
+                "ORDER BY state, suburb, price").fetchall()
             return [dict(r) for r in rows]
 
     def building_counts_by_channel(self) -> List[Dict[str, Any]]:

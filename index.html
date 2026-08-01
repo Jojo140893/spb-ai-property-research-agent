@@ -386,6 +386,25 @@
             align-items: center;
             margin-bottom: 0.9rem;
         }
+        /* Best-deals selection bar — visually separated from the filters above it,
+           because filtering and marking are two different actions on the same rows. */
+        .pick-bar {
+            background: var(--blue-light);
+            border: 1px solid var(--border-strong);
+            border-radius: 8px;
+            padding: 0.55rem 0.7rem;
+            margin-top: -0.3rem;
+        }
+        .pick-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            font-size: 0.82rem;
+            cursor: pointer;
+        }
+        .pick-col { width: 2.2rem; text-align: center; }
+        .pick-col input { cursor: pointer; }
+        tr.picked { background: var(--blue-light); }
         .filter-bar input[type=search], .filter-bar select {
             background: var(--surface-white);
             border: 1px solid var(--border-strong);
@@ -685,6 +704,18 @@
             <span class="filter-count" id="bCount"></span>
         </div>
 
+        <!-- Best deals: filter above, tick below, export what is ticked. -->
+        <div class="filter-bar pick-bar">
+            <strong style="font-size:0.85rem;">Weekly promotion</strong>
+            <label class="pick-toggle"><input type="checkbox" id="bPickedOnly"> Marked only</label>
+            <span class="filter-count" id="pickCount">none marked</span>
+            <button type="button" class="btn-ghost" id="pickAll">Mark all filtered</button>
+            <button type="button" class="btn-ghost" id="pickNone">Unmark all filtered</button>
+            <button type="button" class="btn-ghost" id="pickExport">Export marked (CSV)</button>
+            <button type="button" class="btn-ghost" id="pickSave">Save to database</button>
+            <button type="button" class="btn-ghost" id="pickReset" title="Discard this browser's changes and go back to the last published selection">Reset to published</button>
+        </div>
+
         <div id="buildingsContent" style="font-size:0.9rem; overflow-x:auto;">Loading building stock…</div>
         <button type="button" class="btn-ghost btn-more" id="bMore" hidden></button>
     </div>
@@ -842,6 +873,118 @@
     const STOCK_PAGE = 150;
     let STOCK = [], stockView = [], stockShown = 0, stockSort = null, stockDir = 1;
 
+    /* ------------------------------------------- best-deals selection (Colin, 30 Jul)
+     * Filter the database, tick the listings going into the weekly promotion, export
+     * those as CSV.
+     *
+     * The working selection lives in localStorage, because the deployed site is a
+     * static snapshot with nothing to write to — this has to work on the link Colin
+     * was given, not only when someone runs the app locally. `promo_selected` in the
+     * snapshot is what was last PUBLISHED from the database; it seeds the selection
+     * the first time this browser opens the page, and after that the browser's own
+     * copy is the working set (Reset re-seeds from what was published).
+     *
+     * Rows are keyed by content_hash. It is the only identifier that survives a
+     * re-harvest, so a selection made on Monday still points at the same lots after
+     * Wednesday's harvest — a key built from price or address would not.
+     */
+    const PICK_STORE = 'spb.bestdeals.v1';
+    let PICKED = new Set();
+
+    const rowKey = b => b.content_hash || '';
+
+    function loadPicked() {
+        let saved = null;
+        try { saved = JSON.parse(localStorage.getItem(PICK_STORE) || 'null'); } catch (e) { saved = null; }
+        if (Array.isArray(saved)) { PICKED = new Set(saved); return; }
+        // First visit in this browser: start from whatever was last published.
+        PICKED = new Set(STOCK.filter(b => Number(b.promo_selected) === 1).map(rowKey).filter(Boolean));
+    }
+    function savePicked() {
+        try { localStorage.setItem(PICK_STORE, JSON.stringify([...PICKED])); } catch (e) {}
+    }
+    function setPicked(key, on) {
+        if (!key) return;
+        if (on) PICKED.add(key); else PICKED.delete(key);
+        savePicked();
+    }
+    function resetPicked() {
+        try { localStorage.removeItem(PICK_STORE); } catch (e) {}
+        loadPicked();
+        renderStock();
+    }
+
+    /* CSV in Coleen's read order — the same sheet, with everything unmarked removed. */
+    const PICK_CSV_COLUMNS = [
+        ['builder_name', 'Builder / Development'], ['lot_address', 'Address'],
+        ['lot_number', 'Lot'], ['suburb', 'Suburb'], ['state', 'State'],
+        ['postcode', 'Postcode'], ['availability_status', 'Availability'],
+        ['storey', 'Storey'], ['price', 'Package Price'], ['land_sqm', 'Land Size m2'],
+        ['land_price', 'Land Price'], ['house_sqm', 'House Size m2'],
+        ['build_price', 'House Price'], ['bedrooms', 'Beds'], ['bathrooms', 'Baths'],
+        ['car_spaces', 'Cars'], ['frontage_m', 'Frontage m'], ['estate_name', 'Estate'],
+        ['title_status', 'Title / Registration'], ['incentive_amount', 'Incentive $'],
+        ['incentive_text', 'Incentive'], ['benchmark_median', 'Market Median'],
+        ['benchmark_variance_pct', 'Variance vs Market %'],
+        ['benchmark_classification', 'Vs Market'], ['listing_url', 'PDF / Listing'],
+        ['floorplan_url', 'Floor Plan'], ['brochure_url', 'Brochure'],
+        ['date_checked', 'Date Checked'], ['source_channel', 'Source'],
+    ];
+
+    function exportPickedCsv() {
+        const rows = STOCK.filter(b => PICKED.has(rowKey(b)));
+        if (!rows.length) { alert('Nothing is marked yet. Tick the listings you want, then export.'); return; }
+        rows.sort((x, y) => (x.state || 'zz').localeCompare(y.state || 'zz')
+            || (x.builder_name || '').localeCompare(y.builder_name || '')
+            || (x.suburb || '').localeCompare(y.suburb || '')
+            || (Number(x.price) || 0) - (Number(y.price) || 0));
+        const cell = v => {
+            const s = v === null || v === undefined ? '' : String(v).replace(/\s+/g, ' ').trim();
+            return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+        };
+        const csv = [PICK_CSV_COLUMNS.map(c => cell(c[1])).join(',')]
+            .concat(rows.map(r => PICK_CSV_COLUMNS.map(c => cell(r[c[0]])).join(',')))
+            .join('\r\n');
+        // BOM so Excel opens it as UTF-8 rather than mangling the m² and $ columns.
+        const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+        const d = new Date(), p = n => String(n).padStart(2, '0');
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `best_deals_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}.csv`;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    }
+
+    /* Make the selection durable. Only possible where the Python app is running —
+     * the static deployment has no database, so the button says so rather than
+     * failing silently. */
+    async function publishPicked(btn) {
+        const label = btn.textContent;
+        btn.disabled = true; btn.textContent = 'Saving…';
+        try {
+            const res = await fetch('/api/select', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ keys: [...PICKED], replace: true })
+            });
+            if (!res.ok || !(res.headers.get('Content-Type') || '').includes('json')) throw new Error('no api');
+            const d = await res.json();
+            btn.textContent = `Saved ${d.total_selected} to the database`;
+        } catch (e) {
+            btn.textContent = 'Needs the local app';
+            btn.title = 'Saving to the database needs `python server.py`. The selection and the '
+                      + 'CSV export work here without it — they live in this browser.';
+        }
+        setTimeout(() => { btn.disabled = false; btn.textContent = label; }, 3200);
+    }
+
+    function paintPickBar() {
+        const n = PICKED.size;
+        const el = document.getElementById('pickCount');
+        if (el) el.textContent = n ? `${n.toLocaleString()} marked` : 'none marked';
+        const only = document.getElementById('bPickedOnly');
+        if (only && only.checked) renderStock();
+    }
+
     const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
         ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
     const money = v => (v === null || v === undefined || v === '' || Number(v) === 0)
@@ -947,6 +1090,13 @@
         document.getElementById('bReset').onclick = () => {
             ['bSearch', 'bBuilder', 'bState', 'bAvail', 'bProduct', 'bSource']
                 .forEach(id => document.getElementById(id).value = '');
+            // "Marked only" is a filter too, and leaving it on made Reset look broken:
+            // an empty selection plus a still-ticked box shows zero rows and no clue why.
+            // Reset does NOT clear the selection itself — that is what "Reset to
+            // published" is for, and losing a week's picks to the wrong button would be
+            // a bad afternoon.
+            const only = document.getElementById('bPickedOnly');
+            if (only) only.checked = false;
             stockSort = null;
             renderStock();
         };
@@ -954,6 +1104,24 @@
             stockShown += STOCK_PAGE;
             paintStock();
         };
+
+        // Best-deals controls. "filtered" means everything the filters currently
+        // match, not just the 150 rows painted — marking only what happens to be on
+        // screen would be a quiet way to send Colin half a promotion.
+        loadPicked();
+        document.getElementById('bPickedOnly').onchange = () => renderStock();
+        document.getElementById('pickAll').onclick = () => {
+            stockView.forEach(b => { const k = rowKey(b); if (k) PICKED.add(k); });
+            savePicked(); renderStock();
+        };
+        document.getElementById('pickNone').onclick = () => {
+            stockView.forEach(b => PICKED.delete(rowKey(b)));
+            savePicked(); renderStock();
+        };
+        document.getElementById('pickExport').onclick = exportPickedCsv;
+        document.getElementById('pickSave').onclick = (e) => publishPicked(e.currentTarget);
+        document.getElementById('pickReset').onclick = resetPicked;
+
         renderStock();
     }
 
@@ -964,6 +1132,7 @@
         const fa = document.getElementById('bAvail').value;
         const fp = document.getElementById('bProduct').value;
         const fc = document.getElementById('bSource').value;
+        const pickedOnly = (document.getElementById('bPickedOnly') || {}).checked;
         const fields = ['builder_name', 'lot_address', 'suburb', 'estate_name', 'state', 'availability_status'];
 
         stockView = STOCK.filter(b => {
@@ -972,6 +1141,7 @@
             if (fa && (b.availability_status || '') !== fa) return false;
             if (fp && (b.product_type || '') !== fp) return false;
             if (fc && (b.source_channel || '') !== fc) return false;
+            if (pickedOnly && !PICKED.has(rowKey(b))) return false;
             if (!q) return true;
             return fields.some(f => String(b[f] ?? '').toLowerCase().includes(q));
         });
@@ -990,10 +1160,16 @@
     }
 
     function paintStock() {
-        const head = STOCK_COLUMNS.map(c =>
+        const head = '<th class="pick-col" title="Mark for the weekly promotion">✓</th>' +
+            STOCK_COLUMNS.map(c =>
             `<th class="sortable" data-k="${c.k}"${stockSort === c.k
                 ? ` data-dir="${stockDir === 1 ? 'asc' : 'desc'}"` : ''}>${c.t}</th>`).join('');
-        const body = stockView.slice(0, stockShown).map(b => '<tr>' + STOCK_COLUMNS.map(c => {
+        const body = stockView.slice(0, stockShown).map(b => {
+          const key = rowKey(b);
+          return `<tr${PICKED.has(key) ? ' class="picked"' : ''}>` +
+            `<td class="pick-col"><input type="checkbox" class="pick" data-key="${esc(key)}"` +
+            `${PICKED.has(key) ? ' checked' : ''} aria-label="Mark this listing"></td>` +
+            STOCK_COLUMNS.map(c => {
             const v = b[c.k];
             if (c.link) return `<td>${v ? `<a href="${esc(v)}" target="_blank" rel="noopener noreferrer"
                 style="color:var(--accent-blue);">${c.link}</a>` : ''}</td>`;
@@ -1002,11 +1178,20 @@
             if (c.strong) return `<td>${v ? `<strong>${esc(v)}</strong>`
                 : unnamedPill(b)}</td>`;
             return `<td class="${c.cls || ''}">${esc(v ?? '')}</td>`;
-        }).join('') + '</tr>').join('');
+        }).join('') + '</tr>';
+        }).join('');
 
         document.getElementById('buildingsContent').innerHTML = snapshotNote('Building stock') +
             `<div class="stock-table-wrap"><table class="builder-table">
                 <thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+
+        document.querySelectorAll('#buildingsContent input.pick').forEach(cb => {
+            cb.onchange = () => {
+                setPicked(cb.dataset.key, cb.checked);
+                cb.closest('tr').classList.toggle('picked', cb.checked);
+                paintPickBar();
+            };
+        });
 
         document.querySelectorAll('#buildingsContent th.sortable').forEach(th => {
             th.onclick = () => {
@@ -1019,6 +1204,8 @@
         document.getElementById('bCount').textContent =
             `${stockView.length.toLocaleString()} of ${STOCK.length.toLocaleString()} shown`
             + (stockView.length > stockShown ? ` · first ${stockShown.toLocaleString()}` : '');
+        const pc = document.getElementById('pickCount');
+        if (pc) pc.textContent = PICKED.size ? `${PICKED.size.toLocaleString()} marked` : 'none marked';
         const more = document.getElementById('bMore');
         more.hidden = stockView.length <= stockShown;
         more.textContent = `Show ${Math.min(STOCK_PAGE, stockView.length - stockShown).toLocaleString()} more`;
