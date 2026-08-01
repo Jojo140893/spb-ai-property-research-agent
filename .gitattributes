@@ -1,0 +1,10 @@
+# Windows batch files MUST have CRLF line endings. With bare LF, cmd.exe mis-parses
+# labels and goto blocks — it starts executing REM lines as commands and the whole
+# file falls apart. run_daily.cmd is what Task Scheduler runs at 3am, so a checkout
+# that silently converted it to LF would break the nightly harvest in a way nobody
+# would notice until the dashboard went stale.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# PowerShell is more forgiving, but deploy.ps1 is in the same nightly path.
+*.ps1 text eol=crlf
