@@ -80,6 +80,8 @@ class BuilderPortalSource(PropertySource):
             return []
         if not cfg.verified:
             logger.warning("[%s] portal selectors are UNVERIFIED — confirm against live DOM in portal_config.py.", cfg.name)
+        # Per-portal channel where one is configured (Proxima), else the generic one.
+        channel = cfg.source_channel or self.channel_name
         session_name = "portal_" + re.sub(r"[^a-z0-9]+", "_", builder["builder_name"].lower()).strip("_")
         # Credentials at RUN TIME: OS vault -> env/.env -> vendor CSV.
         email, password, cred_source = get_credentials(
@@ -140,7 +142,7 @@ class BuilderPortalSource(PropertySource):
                         "bedrooms": parse_int(scraper.text_or_none(card, fs.get("beds", ".beds"))),
                         "bathrooms": parse_int(scraper.text_or_none(card, fs.get("baths", ".baths"))),
                         "car_spaces": parse_int(scraper.text_or_none(card, fs.get("cars", ".cars"))),
-                        "source_channel": self.channel_name,
+                        "source_channel": channel,
                         "source_url_or_ref": href,
                         "date_checked": datetime.now().strftime("%d/%m/%Y"),
                         "verified": True,
@@ -160,7 +162,7 @@ class BuilderPortalSource(PropertySource):
                 # Whichever path read more real listings wins.
                 if len(adaptive) > len(results):
                     for a in adaptive:
-                        a["source_channel"] = self.channel_name
+                        a["source_channel"] = channel
                         a["date_checked"] = datetime.now().strftime("%d/%m/%Y")
                         a["verified"] = True
                     logger.info("[%s] captured %d live listing(s) (adaptive).", cfg.name, len(adaptive))
@@ -184,9 +186,16 @@ class BuilderPortalSource(PropertySource):
         # Full coverage: every state-eligible builder with a real direct portal.
         # Skip E-Agent (handled by EAgentSource), email-only pseudo-links
         # ("Login to ... outlook"), Google Drive links, and blank/junk entries.
+        # "proxima" is excluded because sources/proxima.py owns it now: its stock is
+        # not on a scrapable stock page (it lives in data-* attributes inside project
+        # accordions) and it needs the persistent browser profile. Left in this loop,
+        # the generic scraper logs a failed login against the same portal and emits
+        # rows under the SAME "Proxima" source_channel, which would collide with the
+        # real harvest's identities.
         def _real_portal(u: str) -> bool:
             u = (u or "").strip().lower()
-            return ("." in u) and not any(x in u for x in ("outlook", "e-agent", "drive.google", "----"))
+            return ("." in u) and not any(x in u for x in ("outlook", "e-agent", "drive.google",
+                                                           "proxima", "----"))
         # A real non-E-Agent portal URL is its own stock source, so scrape it even if
         # the builder is also listed on E-Agent (E-Agent is handled separately).
         targets = [

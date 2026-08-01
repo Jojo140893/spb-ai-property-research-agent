@@ -55,6 +55,17 @@ class PortalConfig:
     field_selectors: Dict[str, str] = field(default_factory=dict)  # package field -> selector within a card
     link_selector: str = "a"                # link to the full listing within a card
     verified: bool = False                  # True once confirmed against live DOM
+    # Overrides the generic "Direct Builder Portal (live)" channel for portals the
+    # client wants to filter on by name. Colin asked (30 Jul) for "Proxima" to be its
+    # own option in the dashboard's by-source filter, and that list is built from the
+    # distinct source_channel values, so the channel IS the filter entry.
+    #
+    # Set this BEFORE a portal's first harvest: source_channel is part of the identity
+    # hash (database._HASH_FIELDS), so changing it later re-identifies every row that
+    # portal ever stored and the next harvest inserts them all a second time.
+    # Left blank for Hermitage/Torsion/Bathla precisely so their 361 stored rows keep
+    # the hashes they already have.
+    source_channel: str = ""
 
 
 # --- E-Agent (Wix members site; confirmed structure 2026-07-23) -------------
@@ -186,10 +197,23 @@ BUILDER_PORTAL_CONFIGS: Dict[str, PortalConfig] = {
         # complete this; sign in once via portal_login.py (entering the 2FA code)
         # and the saved session is reused thereafter.
         logged_in_selector="text=Sign Out, text=Log Out, text=Logout, text=My Account",
-        listings_url="https://portal.proxima.com.au/",
+        # CONFIRMED 2026-08-01 from the signed-in portal: the stock route is
+        # /agent/projects/index/ ("PROJECTS"), with FILTER / RESET / SPECIAL OFFERS
+        # controls and "Filter By Property Status, Price Range".
+        #
+        # NOTE this page is a PROJECT list, not a lot list. Its columns are Project
+        # Name / Status / Location / Multiple Contract / Sunset Date / Deposit For
+        # Exchange — e.g. "124 Old Pitt Town Road Box Hill Land Only (10/27) | For
+        # Sale | NSW | No | 10.00%". There is no price and no lot on this level.
+        # Per-project LOT stock sits behind each row's "AVAILABILITY VIEW" button,
+        # which is the availabilityview.proxima.com.au app the portal's CSP
+        # references. So a Proxima harvest is two-level: projects here, lots there.
+        listings_url="https://portal.proxima.com.au/agent/projects/index/",
         listing_card_selector=".property-card, .listing, .stock-item, article",
         field_selectors={"title": ".title, h2, h3", "price": ".price"},
         verified=False,
+        # Colin's 30 Jul ask: Proxima as its own entry in the by-source filter.
+        source_channel="Proxima",
     ),
 }
 

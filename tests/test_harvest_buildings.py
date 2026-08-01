@@ -55,7 +55,11 @@ def test_harvest_stores_and_dedupes(monkeypatch):
     monkeypatch.setattr(hb, "BuilderRegistry", FakeRegistry)
     monkeypatch.setattr(hb, "ResearchDatabase", lambda *a, **k: ResearchDatabase(db_path=tmp / "harvest_test.db"))
 
-    hb.harvest(eagent=True, portals=True)
+    # Only EAgentSource and BuilderPortalSource are faked below, so the other two
+    # channels are switched OFF explicitly. Without this the runner reaches the real
+    # Proxima portal over the network and the row count becomes whatever the client's
+    # live stock happens to be that day.
+    hb.harvest(eagent=True, portals=True, email=False, proxima=False)
 
     db = ResearchDatabase(db_path=tmp / "harvest_test.db")
     rows = db.get_buildings()
@@ -67,7 +71,11 @@ def test_harvest_stores_and_dedupes(monkeypatch):
     assert len([r for r in rows if r["builder_name"] == "Paramount Living"]) == 1
 
     # re-run must not duplicate
-    hb.harvest(eagent=True, portals=True)
+    # Only EAgentSource and BuilderPortalSource are faked below, so the other two
+    # channels are switched OFF explicitly. Without this the runner reaches the real
+    # Proxima portal over the network and the row count becomes whatever the client's
+    # live stock happens to be that day.
+    hb.harvest(eagent=True, portals=True, email=False, proxima=False)
     assert len(ResearchDatabase(db_path=tmp / "harvest_test.db").get_buildings()) == 3
 
 

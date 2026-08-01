@@ -16,7 +16,7 @@ nothing. Results go to the `buildings` table, deduped by builder+lot+suburb+pric
 
 Usage:
     python harvest_buildings.py [--eagent-only] [--portals-only] [--email-only]
-                                [--email-days N]
+                                [--proxima-only] [--email-days N]
 
 NOTE: this performs live authenticated logins to third-party portals using the
 credentials in your CSV, so run it in your own environment. On the first run,
@@ -32,13 +32,14 @@ from builder_registry import BuilderRegistry
 from sources.e_agent import EAgentSource
 from sources.builder_portals import BuilderPortalSource
 from sources.email_inbox import EmailStocklistSource
+from sources.proxima import ProximaSource
 from database import ResearchDatabase
 
 # Permissive filters => return the full stock list, not a client-filtered subset.
 ALL_STOCK_FILTERS = {"budget_max": 100_000_000, "primary_suburbs": []}
 
 
-def harvest(eagent=True, portals=True, email=True, email_days=90):
+def harvest(eagent=True, portals=True, email=True, proxima=True, email_days=90):
     logging.basicConfig(level=logging.INFO, format='    %(levelname)s %(message)s')
     registry = BuilderRegistry()
     db = ResearchDatabase()
@@ -81,6 +82,27 @@ def harvest(eagent=True, portals=True, email=True, email_days=90):
                     total_new += 1
         print(f"    Direct portals: {len(seen_portals)} unique listing(s) seen.")
 
+    if proxima:
+        # Colin's #1 ask from 30 July. Not part of the BuilderPortalSource loop: the
+        # stock is not on a page there — it is in data-* attributes inside 40 project
+        # accordions — and it needs the persistent browser profile, because Proxima
+        # re-challenges 2FA for every new browser context.
+        px = ProximaSource(registry=registry)
+        print("[+] Proxima: reading the agent portal's project stock...")
+        listings = px.search(ALL_STOCK_FILTERS)
+        if not listings:
+            print("    Proxima: nothing read. If this says the sign-in expired, run: "
+                  "python portal_login.py portal_proxima --profile")
+        else:
+            outcomes = [db.record_building(L) for L in listings]
+            new, updated = outcomes.count("new"), outcomes.count("updated")
+            total_new += new
+            print(f"    Proxima: {len(listings)} lot(s) from {px.projects_with_stock}"
+                  f"/{px.projects_seen} project(s), {new} new, {updated} updated.")
+            if px.cross_listed:
+                print(f"    ({len(px.cross_listed)} lot(s) cross-listed under a second "
+                      f"project, stored once)")
+
     if email:
         # The nine approved builders with no portal email their stock to
         # digital@smartpropertybuying.com.au, and Coleen asked on 30 July for the agent to
@@ -117,11 +139,14 @@ if __name__ == "__main__":
     ap.add_argument("--eagent-only", action="store_true")
     ap.add_argument("--portals-only", action="store_true")
     ap.add_argument("--email-only", action="store_true")
+    ap.add_argument("--proxima-only", action="store_true")
     ap.add_argument("--email-days", type=int, default=90,
                     help="how far back to sweep the inbox (default 90)")
     args = ap.parse_args()
-    only = args.eagent_only or args.portals_only or args.email_only
+    only = (args.eagent_only or args.portals_only or args.email_only
+            or args.proxima_only)
     harvest(eagent=args.eagent_only or not only,
             portals=args.portals_only or not only,
             email=args.email_only or not only,
+            proxima=args.proxima_only or not only,
             email_days=args.email_days)

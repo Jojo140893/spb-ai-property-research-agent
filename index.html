@@ -680,6 +680,7 @@
             <select id="bState"><option value="">All states</option></select>
             <select id="bAvail"><option value="">Any availability</option></select>
             <select id="bProduct"><option value="">All products</option></select>
+            <select id="bSource"><option value="">All sources</option></select>
             <button type="button" class="btn-ghost" id="bReset">Reset</button>
             <span class="filter-count" id="bCount"></span>
         </div>
@@ -811,8 +812,10 @@
     const STOCK_COLUMNS = [
         { k: 'builder_name',        t: 'Builder / development', cls: '', strong: true },
         { k: 'lot_address',         t: 'Address',        cls: 'addr' },
+        { k: 'lot_number',          t: 'Lot' },
         { k: 'suburb',              t: 'Suburb' },
         { k: 'state',               t: 'State' },
+        { k: 'postcode',            t: 'Postcode' },
         { k: 'state_source',        t: 'State from' },
         { k: 'availability_status', t: 'Availability',   pill: true },
         { k: 'price',               t: 'Package',        cls: 'num', money: true },
@@ -823,6 +826,7 @@
         { k: 'car_spaces',          t: 'Car',            cls: 'num' },
         { k: 'land_sqm',            t: 'Land m²',        cls: 'num' },
         { k: 'house_sqm',           t: 'House m²',       cls: 'num' },
+        { k: 'frontage_m',          t: 'Frontage m',     cls: 'num' },
         { k: 'storey',              t: 'Storey' },
         { k: 'title_status',        t: 'Title' },
         { k: 'estate_name',         t: 'Estate' },
@@ -932,13 +936,16 @@
         fill('bState', uniq('state'));
         fill('bAvail', uniq('availability_status'));
         fill('bProduct', uniq('product_type'));
+        // Colin, 30 Jul: filter the stock by where it came from — "Proxima" appears
+        // here on its own the moment Proxima rows carry that source_channel.
+        fill('bSource', uniq('source_channel'));
 
-        ['bSearch', 'bBuilder', 'bState', 'bAvail', 'bProduct'].forEach(id => {
+        ['bSearch', 'bBuilder', 'bState', 'bAvail', 'bProduct', 'bSource'].forEach(id => {
             const e2 = document.getElementById(id);
             e2.oninput = e2.onchange = () => renderStock();
         });
         document.getElementById('bReset').onclick = () => {
-            ['bSearch', 'bBuilder', 'bState', 'bAvail', 'bProduct']
+            ['bSearch', 'bBuilder', 'bState', 'bAvail', 'bProduct', 'bSource']
                 .forEach(id => document.getElementById(id).value = '');
             stockSort = null;
             renderStock();
@@ -956,6 +963,7 @@
         const fs = document.getElementById('bState').value;
         const fa = document.getElementById('bAvail').value;
         const fp = document.getElementById('bProduct').value;
+        const fc = document.getElementById('bSource').value;
         const fields = ['builder_name', 'lot_address', 'suburb', 'estate_name', 'state', 'availability_status'];
 
         stockView = STOCK.filter(b => {
@@ -963,6 +971,7 @@
             if (fs && (b.state || '') !== fs) return false;
             if (fa && (b.availability_status || '') !== fa) return false;
             if (fp && (b.product_type || '') !== fp) return false;
+            if (fc && (b.source_channel || '') !== fc) return false;
             if (!q) return true;
             return fields.some(f => String(b[f] ?? '').toLowerCase().includes(q));
         });

@@ -27,8 +27,14 @@ STAMP = datetime.now().strftime("%Y%m%d")
 BUILDING_COLS = [
     ("builder_name", "Builder / Development"),
     ("lot_address", "Address"),
+    # Lot and postcode sit next to the address because that is how a lot gets quoted
+    # back to a builder. Both were stored and never exported; Proxima put a postcode on
+    # 1,212 more rows (336 -> 1,548 across the database) and it is the field that
+    # settles an ambiguous suburb — "LOGAN" is a locality in two states.
+    ("lot_number", "Lot"),
     ("suburb", "Suburb"),
     ("state", "State"),
+    ("postcode", "Postcode"),
     ("availability_status", "Availability"),
     ("storey", "Storey"),
     ("price", "Package Price"),

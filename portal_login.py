@@ -24,7 +24,8 @@ from pathlib import Path
 
 import config
 from builder_registry import BuilderRegistry
-from sources.scraper_base import SESSION_DIR, PLAYWRIGHT_AVAILABLE
+from sources.scraper_base import (SESSION_DIR, PLAYWRIGHT_AVAILABLE, browser_user_agent,
+                                  LOGGED_IN_JS)
 
 try:
     from playwright.sync_api import sync_playwright
@@ -38,6 +39,7 @@ def _slug(name: str) -> str:
 
 def _targets():
     """(session_name, label, login_url) for E-Agent + each real direct portal."""
+    from sources.portal_config import config_for_url
     reg = BuilderRegistry()
     out, seen = [], set()
 
@@ -58,7 +60,17 @@ def _targets():
         if name in seen:
             continue
         seen.add(name)
-        out.append((name, b["builder_name"], url if "://" in url else "https://" + url))
+        url = url if "://" in url else "https://" + url
+        # The registry holds whatever URL the vendor sheet listed, which for three
+        # portals is not the page you can actually sign in on — Proxima's is the
+        # MARKETING SITE (www.proxima.com.au) while the real login is a Magento app
+        # on a different host entirely, and Hermitage/Bathla point at the root
+        # rather than /login. portal_config already carries the confirmed page, so
+        # prefer it whenever it has been checked against the live site.
+        cfg = config_for_url(url)
+        if cfg and cfg.login_verified and cfg.login_url:
+            url = cfg.login_url
+        out.append((name, b["builder_name"], url))
     return out
 
 
@@ -99,16 +111,10 @@ def status(verify: bool = False):
 
 
 # JS heuristic: are we in an authenticated state? Looks for logout/account markers.
-_LOGGED_IN_JS = r"""
-() => {
-  const t = (document.body ? document.body.innerText : '').toLowerCase();
-  const links = [...document.querySelectorAll('a,button')].map(e => (e.innerText||'').toLowerCase());
-  const markers = ['log out','logout','sign out','signout','my account','my profile','dashboard'];
-  const hasMarker = links.some(l => markers.some(m => l.includes(m))) || markers.some(m => t.includes(m));
-  const loginish = /sign in|log in|login|password/.test(t) && !hasMarker;
-  return hasMarker && !loginish;
-}
-"""
+# Shared with the scrapers — see the note on LOGGED_IN_JS in sources/scraper_base.py.
+# This file used to carry its own copy, which treated Magento's 2FA page as "signed
+# in" and closed the browser before the OTP could be entered.
+_LOGGED_IN_JS = LOGGED_IN_JS
 
 
 def _open_login_form(page, name: str):
@@ -167,8 +173,13 @@ def capture_profile(only: str = "", wait_minutes: int = 45):
             print(f"  {label}\n  {url}")
             print(f"  Persistent profile: {prof}")
             print(f"  Sign in in the window. Tick 'remember me' if offered. Waiting up to {wait_minutes} min.")
+            # Same UA the harvest will present. Without this the sign-in happens as
+            # the real Chrome/<current> and the harvest as whatever scraper_base sent,
+            # so a portal that ties "remember this device" to the UA re-challenges for
+            # 2FA on every run and this one-time sign-in never stays done.
             ctx = pw.chromium.launch_persistent_context(
-                str(prof), headless=False, no_viewport=True, args=["--start-maximized"])
+                str(prof), headless=False, no_viewport=True, args=["--start-maximized"],
+                user_agent=browser_user_agent(pw=pw))
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=60000)
@@ -178,16 +189,32 @@ def capture_profile(only: str = "", wait_minutes: int = 45):
                 print(f"  (slow load: {e})")
             saved = False
             deadline = time.time() + wait_minutes * 60
+            # The signed-in state must HOLD, not just occur once. A single positive
+            # reading is what closed the browser on Coleen mid-2FA: the detector fired
+            # on a transient post-password page and the window vanished before the OTP
+            # could be typed. Requiring three consecutive reads ~3s apart costs about
+            # six seconds and makes a momentary state impossible to mistake for done.
+            CONFIRMATIONS = 3
+            streak, announced = 0, False
             while time.time() < deadline:
                 try:
                     if page.is_closed():
                         break
                     if page.evaluate(_LOGGED_IN_JS):
-                        # keep BOTH: the profile (durable) and a storage_state export
-                        ctx.storage_state(path=str(SESSION_DIR / f"{name}.json"))
-                        print(f"  [SAVED] signed in — profile kept and session exported to {name}.json")
-                        saved = True
-                        break
+                        streak += 1
+                        if streak == 1 and not announced:
+                            print("  signed-in state detected — confirming (leave the window open)...")
+                            announced = True
+                        if streak >= CONFIRMATIONS:
+                            # keep BOTH: the profile (durable) and a storage_state export
+                            ctx.storage_state(path=str(SESSION_DIR / f"{name}.json"))
+                            print(f"  [SAVED] signed in — profile kept and session exported to {name}.json")
+                            saved = True
+                            break
+                    elif streak:
+                        # Went back to a login/challenge page: not in after all.
+                        print("  still authenticating (a 2FA or login step is on screen) — waiting...")
+                        streak, announced = 0, False
                 except Exception:
                     pass
                 time.sleep(3)

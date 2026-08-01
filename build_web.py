@@ -36,9 +36,16 @@ import config
 # --- allow-lists -------------------------------------------------------------------
 # buildings: listing facts only. No dedup keys, no content hashes, no internal ids.
 BUILDING_FIELDS = [
-    "builder_name", "lot_address", "suburb", "state", "availability_status",
+    # postcode / lot_number / frontage_m were stored but never exported, so they were
+    # queryable in the database and invisible in the app. Adding Proxima made that
+    # worth fixing rather than noting: it carries a postcode on 100% of its 1,212 rows
+    # and took the database from 336 to 1,548: postcode is the field that makes a
+    # suburb match unambiguous ("LOGAN" is a locality in two states), and lot_number is
+    # how Coleen refers to a listing when she talks to a builder.
+    "builder_name", "lot_address", "lot_number", "suburb", "state", "postcode",
+    "availability_status",
     "state_source", "price", "land_price", "build_price", "bedrooms", "bathrooms", "car_spaces",
-    "land_sqm", "house_sqm", "storey", "title_status", "estate_name",
+    "land_sqm", "house_sqm", "frontage_m", "storey", "title_status", "estate_name",
     "incentive_amount", "incentive_text", "product_type", "source_channel",
     "attribution_scope", "date_checked", "listing_url", "floorplan_url",
     "brochure_url", "benchmark_median", "benchmark_variance_pct",
