@@ -49,7 +49,10 @@ BUILDING_FIELDS = [
     "incentive_amount", "incentive_text", "product_type", "source_channel",
     "attribution_scope", "date_checked", "listing_url", "floorplan_url",
     "brochure_url", "benchmark_median", "benchmark_variance_pct",
-    "benchmark_classification",
+    # benchmark_basis states what each median was computed against — internal peer
+    # stock or a real CoreLogic/REA comparable set. Without it on the row, a reader
+    # cannot tell which, and the two mean very different things.
+    "benchmark_classification", "benchmark_basis",
     # Best-deals selection (Colin, 30 Jul).
     #
     # `row_key` is content_hash, and it is the one deliberate exception to "no

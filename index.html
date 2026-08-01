@@ -866,6 +866,14 @@
         { k: 'source_channel',      t: 'Source' },
         { k: 'attribution_scope',   t: 'Attribution' },
         { k: 'date_checked',        t: 'Checked' },
+        // Benchmark, sortable — this is how a listing priced under its comparables
+        // gets found. "Comparable", not "Market": until a CoreLogic/REA export is
+        // supplied these are computed against other stock we hold, and Basis says so
+        // per row. Blank where the row has no defensible peer group.
+        { k: 'benchmark_variance_pct', t: 'Vs comps %',  cls: 'num' },
+        { k: 'benchmark_median',    t: 'Comp median',    cls: 'num', money: true },
+        { k: 'benchmark_classification', t: 'Vs comps' },
+        { k: 'benchmark_basis',     t: 'Benchmark basis' },
         { k: 'listing_url',         t: 'PDF',            link: 'open' },
         { k: 'floorplan_url',       t: 'Floorplan',      link: 'plan' },
         { k: 'brochure_url',        t: 'Brochure',       link: 'file' },
@@ -924,9 +932,10 @@
         ['build_price', 'House Price'], ['bedrooms', 'Beds'], ['bathrooms', 'Baths'],
         ['car_spaces', 'Cars'], ['frontage_m', 'Frontage m'], ['estate_name', 'Estate'],
         ['title_status', 'Title / Registration'], ['incentive_amount', 'Incentive $'],
-        ['incentive_text', 'Incentive'], ['benchmark_median', 'Market Median'],
-        ['benchmark_variance_pct', 'Variance vs Market %'],
-        ['benchmark_classification', 'Vs Market'], ['listing_url', 'PDF / Listing'],
+        ['incentive_text', 'Incentive'], ['benchmark_median', 'Comparable Median'],
+        ['benchmark_variance_pct', 'Variance vs Comparables %'],
+        ['benchmark_classification', 'Vs Comparables'],
+        ['benchmark_basis', 'Benchmark Basis'], ['listing_url', 'PDF / Listing'],
         ['floorplan_url', 'Floor Plan'], ['brochure_url', 'Brochure'],
         ['date_checked', 'Date Checked'], ['source_channel', 'Source'],
     ];

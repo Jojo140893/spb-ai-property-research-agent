@@ -1,0 +1,181 @@
+"""
+Tests for benchmark_buildings.py — step 4 of the daily run.
+
+Every guard here exists because the live data broke it. A benchmark is a number
+that ends up in front of a buyer, so the failures worth testing are the ones that
+produce a confident-looking percentage with nothing behind it.
+"""
+
+import benchmark_buildings as bb
+
+
+class _FakeCheck:
+    """Stands in for the AU suburb index. Anything in `real` is a locality."""
+
+    def __init__(self, real):
+        self.real = {s.lower() for s in real}
+        self.available = True
+
+    def is_real(self, suburb, state):
+        return str(suburb or "").lower() in self.real
+
+
+def _row(i, price, suburb="Sampleton", state="NSW", product="House & Land", beds=4):
+    return {"id": i, "price": price, "suburb": suburb, "state": state,
+            "product_type": product, "bedrooms": beds}
+
+
+def _group(prices, **kw):
+    return [_row(i, p, **kw) for i, p in enumerate(prices, start=1)]
+
+
+# ------------------------------------------------------------------ the median
+
+def test_a_row_is_excluded_from_its_own_median():
+    """Including the row drags the median toward it and flattens every variance.
+
+    Prices chosen so the answer differs either way AND the group stays inside the
+    dispersion guard: whole group median is 150, but a 100-priced row sees peers
+    [100,100,200,200,200] -> 200, and a 200-priced row sees [100,100,100,200,200]
+    -> 100. If self were included both would read 150 and both variances would
+    shrink toward zero.
+    """
+    rows = _group([100.0, 100.0, 100.0, 200.0, 200.0, 200.0])
+    res, _ = bb.benchmark_internal(rows, _FakeCheck(["Sampleton"]))
+    assert len(res) == 6, res
+
+    cheap = res[1]                       # priced 100
+    assert cheap["benchmark_median"] == 200.0, cheap
+    assert cheap["benchmark_variance_pct"] == -50.0, cheap
+
+    dear = res[6]                        # priced 200
+    assert dear["benchmark_median"] == 100.0, dear
+    assert dear["benchmark_variance_pct"] == 100.0, dear
+
+
+def test_variance_is_signed_the_way_a_reader_expects():
+    rows = _group([100.0] * 6 + [50.0])
+    res, _ = bb.benchmark_internal(rows, _FakeCheck(["Sampleton"]))
+    cheap = res[7]
+    assert cheap["benchmark_variance_pct"] < 0, "a cheaper listing must read negative"
+    assert "Below" in cheap["benchmark_classification"], cheap
+
+
+def test_a_group_below_the_floor_is_refused():
+    """Four listings do not establish a typical price."""
+    res, skipped = bb.benchmark_internal(_group([1.0, 2.0, 3.0, 4.0]),
+                                         _FakeCheck(["Sampleton"]))
+    assert res == {}
+    assert sum(skipped.values()) == 4
+
+
+# ------------------------------------------------- the guards the data forced
+
+def test_a_junk_suburb_never_forms_a_peer_group():
+    """59% of suburb values are not localities — header fragments, states, regions.
+
+    Filtering has to happen BEFORE grouping. If a junk value can form a group, the
+    real listings that happen to share it get benchmarked against nonsense, and the
+    worst of those sort straight to the top of a best-deals list.
+    """
+    rows = _group([100.0] * 6, suburb="Rooms Rooms m2 m2 m2")
+    res, skipped = bb.benchmark_internal(rows, _FakeCheck(["Sampleton"]))
+    assert res == {}, "a parsing accident was used as a peer group"
+    assert skipped["suburb is not a recognised locality"] == 6
+
+
+def test_a_real_suburb_still_benchmarks_alongside_junk_ones():
+    rows = _group([100.0] * 6) + _group([900.0] * 6, suburb="Street # Type")
+    for i, r in enumerate(rows):
+        r["id"] = i + 1
+    res, _ = bb.benchmark_internal(rows, _FakeCheck(["Sampleton"]))
+    assert len(res) == 6, "the valid suburb should still be benchmarked"
+    assert all(v["benchmark_median"] == 100.0 for v in res.values())
+
+
+def test_a_group_that_is_too_spread_out_is_refused():
+    """A penthouse and a studio in one building are not comparables.
+
+    The price gap is floor area, and calling the penthouse "well above comparable
+    stock" would say something false about a lot that is simply bigger.
+    """
+    rows = _group([100.0, 110.0, 120.0, 130.0, 140.0, 150.0, 5000.0],
+                  product="Apartment", beds=None)
+    res, skipped = bb.benchmark_internal(rows, _FakeCheck(["Sampleton"]))
+    assert res == {}, "a x50 spread was treated as a comparable set"
+    assert skipped["peer group too spread out to be comparable"] == 7
+
+
+def test_a_tight_group_is_not_refused():
+    rows = _group([500.0, 520.0, 540.0, 560.0, 580.0, 600.0])
+    res, _ = bb.benchmark_internal(rows, _FakeCheck(["Sampleton"]))
+    assert len(res) == 6, "a tight group should benchmark"
+
+
+def test_dispersion_uses_percentiles_not_extremes():
+    """One oddly cheap listing must not disqualify an otherwise tight group."""
+    tight = [500.0] * 20
+    assert bb.dispersion(tight) == 1.0
+    assert bb.dispersion(tight + [1.0]) < bb.MAX_DISPERSION
+
+
+# ------------------------------------------------------- honesty of the label
+
+def test_the_internal_wording_never_claims_the_market():
+    """benchmark.py's SOP bands mean a real market comparison. These must not
+    borrow that wording, or a client card could claim "Below Market Value" off the
+    back of a comparison against our own stock."""
+    for _edge, label in bb.INTERNAL_BANDS:
+        assert "market" not in label.lower(), label
+    assert "market" not in bb.INTERNAL_TOP.lower()
+
+
+def test_every_result_records_what_it_was_compared_against():
+    rows = _group([500.0, 520.0, 540.0, 560.0, 580.0, 600.0])
+    res, _ = bb.benchmark_internal(rows, _FakeCheck(["Sampleton"]))
+    for v in res.values():
+        basis = v["benchmark_basis"]
+        assert basis.startswith("internal peer median"), basis
+        assert "peers)" in basis, "the peer count has to be on the row"
+
+
+def test_the_tightest_available_tier_wins():
+    """suburb + product + bedrooms beats suburb + product where both qualify."""
+    rows = _group([500.0] * 6, beds=4) + _group([900.0] * 6, beds=3)
+    for i, r in enumerate(rows):
+        r["id"] = i + 1
+    res, _ = bb.benchmark_internal(rows, _FakeCheck(["Sampleton"]))
+    assert all("bedrooms" in v["benchmark_basis"] for v in res.values()), \
+        "a coarser tier was used where a tighter one qualified"
+    assert res[1]["benchmark_median"] == 500.0
+    assert res[7]["benchmark_median"] == 900.0
+
+
+def run_all():
+    tests = [
+        ("row excluded from its own median", test_a_row_is_excluded_from_its_own_median),
+        ("variance signed as expected", test_variance_is_signed_the_way_a_reader_expects),
+        ("group below the floor refused", test_a_group_below_the_floor_is_refused),
+        ("junk suburb forms no group", test_a_junk_suburb_never_forms_a_peer_group),
+        ("real suburb unaffected by junk", test_a_real_suburb_still_benchmarks_alongside_junk_ones),
+        ("over-spread group refused", test_a_group_that_is_too_spread_out_is_refused),
+        ("tight group accepted", test_a_tight_group_is_not_refused),
+        ("dispersion uses percentiles", test_dispersion_uses_percentiles_not_extremes),
+        ("internal wording avoids 'market'", test_the_internal_wording_never_claims_the_market),
+        ("basis recorded on every row", test_every_result_records_what_it_was_compared_against),
+        ("tightest tier wins", test_the_tightest_available_tier_wins),
+    ]
+    failed = 0
+    for name, fn in tests:
+        try:
+            fn()
+            print(f" [PASS] benchmark: {name}")
+        except AssertionError as e:
+            failed += 1
+            print(f" [FAIL] benchmark: {name}: {e}")
+    return failed
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(1 if run_all() else 0)

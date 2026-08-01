@@ -50,9 +50,14 @@ BUILDING_COLS = [
     ("title_status", "Title / Registration"),
     ("incentive_amount", "Incentive $"),
     ("incentive_text", "Incentive"),
-    ("benchmark_median", "Market Median"),
-    ("benchmark_variance_pct", "Variance vs Market %"),
-    ("benchmark_classification", "Vs Market"),
+    # NOT "Market Median". Until Colin supplies a CoreLogic / REA export these are
+    # computed against other stock we hold, not against the market, and a column
+    # headed "Market" in a sheet that reaches a buyer would be a false claim.
+    # "Benchmark Basis" states which of the two it was, per row.
+    ("benchmark_median", "Comparable Median"),
+    ("benchmark_variance_pct", "Variance vs Comparables %"),
+    ("benchmark_classification", "Vs Comparables"),
+    ("benchmark_basis", "Benchmark Basis"),
     ("listing_url", "PDF / Listing"),
     ("floorplan_url", "Floor Plan"),
     ("brochure_url", "Brochure"),

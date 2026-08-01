@@ -48,8 +48,9 @@ SESSION_MAX_AGE_DAYS = 14
 def _run(label: str, args: list, optional: bool = False) -> bool:
     print(f"\n{'=' * 70}\n  {label}\n{'=' * 70}", flush=True)
     if not (APP / args[0]).is_file():
-        # Named in the chain but not written yet — benchmark_buildings.py is the live
-        # example. Say so, rather than let Python's "No such file" look like a crash.
+        # Named in the chain but not written yet. Say so, rather than let Python's
+        # "No such file" look like a crash. (benchmark_buildings.py was the live
+        # example until 2026-08-01; nothing in the chain is missing now.)
         print(f"  -> NOT BUILT YET ({args[0]} does not exist) — step skipped", flush=True)
         return optional
     started = time.time()
