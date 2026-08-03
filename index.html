@@ -1301,17 +1301,44 @@
         resultsDiv.innerHTML = '<div style="text-align:center; padding:3rem; color:var(--accent-blue); font-weight:600;">Processing Property Evaluation & Benchmarking...</div>';
 
         try {
-            const res = await fetch('/api/research', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ client_brief: brief })
-            });
-            if (!res.ok || !(res.headers.get('Content-Type') || '').includes('json')) {
-                // Scoring runs Python: it cannot work on a static deployment.
-                resultsDiv.innerHTML = `<div class="offline-note"><strong>Needs the local app.</strong>
-                    Research &amp; scoring runs the Python pipeline, so it only works with
-                    <code>python server.py</code> running. The Building Stock, Builder Directory and
-                    Brochure tabs work here from the exported snapshot.</div>`;
+            // Retried once. /api/research is a serverless function, so a cold start or
+            // a dropped connection can fail a call that succeeds a second later — and
+            // the old code turned any such blip into "Needs the local app", which on
+            // the deployed site is simply untrue: the endpoint IS there. Coleen hit
+            // exactly that, with a populated shortlist badge from the automatic
+            // load-time run sitting above a message telling her the feature was local-only.
+            let res = null, lastErr = null;
+            for (let attempt = 1; attempt <= 2; attempt++) {
+                if (attempt === 2) {
+                    resultsDiv.innerHTML = '<div style="text-align:center; padding:3rem; color:var(--accent-blue); font-weight:600;">Still working — retrying…</div>';
+                    await new Promise(r => setTimeout(r, 1200));
+                }
+                try {
+                    res = await fetch('/api/research', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ client_brief: brief })
+                    });
+                    if (res.ok && (res.headers.get('Content-Type') || '').includes('json')) break;
+                    lastErr = `the server answered ${res.status}`;
+                    res = null;
+                } catch (e) {
+                    lastErr = e.message || 'the connection dropped';
+                    res = null;
+                }
+            }
+            if (!res) {
+                // 404 is the only status that really means "no pipeline here".
+                const noApi = /404/.test(lastErr || '');
+                resultsDiv.innerHTML = noApi
+                    ? `<div class="offline-note"><strong>Needs the local app.</strong>
+                        Research &amp; scoring runs the Python pipeline, so it needs
+                        <code>python server.py</code> running. The Building Stock, Builder Directory
+                        and Brochure tabs work here from the exported snapshot.</div>`
+                    : `<div class="offline-note"><strong>That search didn't complete.</strong>
+                        ${esc(lastErr || 'the request failed')} — this is usually temporary.
+                        Press <em>Execute Property Research &amp; Benchmarking</em> to try again;
+                        your brief above has been kept.</div>`;
                 return;
             }
 
@@ -1488,7 +1515,12 @@
                 document.getElementById('jsonPayloadView').textContent = JSON.stringify(data.kommo_payload, null, 2);
             }
         } catch (e) {
-            resultsDiv.innerHTML = `<div style="color:var(--rose-red); padding:2rem;">Error executing system: ${e.message}</div>`;
+            // Reached only if rendering the results throws — the fetch itself is
+            // handled above with a retry. "Error executing system" tells a
+            // non-technical reader nothing they can act on.
+            resultsDiv.innerHTML = `<div class="offline-note"><strong>The results could not be
+                displayed.</strong> ${esc(e.message || 'unexpected error')} — press
+                <em>Execute Property Research &amp; Benchmarking</em> to try again.</div>`;
         }
     }
 
