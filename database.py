@@ -361,6 +361,18 @@ class ResearchDatabase:
         truthiness — every return value here is truthy.
         """
         now_date = b.get("date_checked") or datetime.now().strftime("%d/%m/%Y")
+
+        # One builder, one name — BEFORE the hash, never after. builder_name feeds
+        # builder_key in content_hash, so rewriting it over stored rows would change
+        # their identity and make the next harvest insert them all again. That is the
+        # mechanism that produced 777 duplicate captures. Resolving it here means
+        # "hattan.com.au" and "Hattan Homes" hash to the same listing every run.
+        canon = self._builder_canonicaliser()
+        if canon is not None and b.get("builder_name"):
+            fixed = canon.canonical(b["builder_name"])
+            if fixed and fixed != b["builder_name"]:
+                b = {**b, "builder_name": fixed}
+
         h = b.get("content_hash") or building_content_hash(b)
         price = float(b.get("advertised_package_price") or b.get("price") or 0)
         status = b.get("availability_status")
@@ -493,6 +505,26 @@ class ResearchDatabase:
             else:
                 rows = conn.execute("SELECT * FROM buildings ORDER BY builder_name, price").fetchall()
             return [dict(r) for r in rows]
+
+    def _builder_canonicaliser(self):
+        """Built once per connection from the names already stored.
+
+        Learned from the data rather than a hand-written list, so a builder the app
+        has never seen simply passes through unchanged instead of being bent toward
+        the nearest name someone once typed.
+        """
+        if getattr(self, "_canon", None) is None:
+            try:
+                from builder_names import BuilderNameCanonicaliser
+                with self._get_connection() as conn:
+                    names = [r[0] for r in conn.execute(
+                        "SELECT DISTINCT builder_name FROM buildings "
+                        "WHERE TRIM(COALESCE(builder_name,'')) <> ''") if r[0]]
+                self._canon = BuilderNameCanonicaliser(names)
+            except Exception as e:  # pragma: no cover - never block a harvest
+                logger.debug("builder canonicaliser unavailable: %s", e)
+                self._canon = False
+        return self._canon or None
 
     # ---------- Best-deals selection (Colin, 30 Jul) ----------
     def set_promo_selection(self, content_hashes: List[str], selected: bool) -> int:

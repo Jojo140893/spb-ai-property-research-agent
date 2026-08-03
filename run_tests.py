@@ -39,6 +39,7 @@ from tests.test_proxima_source import run_all as _proxima_src_suite
 from tests.test_best_deals import run_all as _best_deals_suite
 from tests.test_benchmark_buildings import run_all as _benchmark_suite
 from tests.test_supersede import run_all as _supersede_suite
+from tests.test_builder_names import run_all as _builder_names_suite
 from tests.test_adaptive_extract import test_adaptive_extracts_from_unknown_layouts
 
 
@@ -79,6 +80,7 @@ def run_all_tests():
         ("Best deals: selection survives a re-harvest", lambda: (_ for _ in ()).throw(AssertionError("best deals suite failed")) if _best_deals_suite() else None),
         ("Benchmark: peer medians, guarded", lambda: (_ for _ in ()).throw(AssertionError("benchmark suite failed")) if _benchmark_suite() else None),
         ("Supersede: keep the freshest capture", lambda: (_ for _ in ()).throw(AssertionError("supersede suite failed")) if _supersede_suite() else None),
+        ("Builder names: one builder, one name", lambda: (_ for _ in ()).throw(AssertionError("builder names suite failed")) if _builder_names_suite() else None),
     ]
 
     passed = 0

@@ -144,8 +144,47 @@ class EmailStocklistSource(PropertySource):
                     break
             if not guess:
                 guess = self._builder_in_text(f"{subject or ''} {attachment_names}")
+            if not guess:
+                guess = self._builder_from_sender_domain(dom)
             return True, guess
         return False, ""
+
+    # Domains that are never a builder. The client's own domain is the important one:
+    # most of this inbox is FORWARDED mail, so the sender is smartpropertybuying.com.au
+    # and naming Coleen's own company as the builder of her suppliers' stock would be
+    # worse than the blank it replaces. Free providers say nothing about who sent it.
+    NON_BUILDER_DOMAINS = (
+        "smartpropertybuying.com.au", "gmail.com", "googlemail.com", "outlook.com",
+        "hotmail.com", "live.com", "yahoo.com", "yahoo.com.au", "bigpond.com",
+        "icloud.com", "me.com", "msn.com", "aol.com", "protonmail.com",
+    )
+
+    def _builder_from_sender_domain(self, dom: str) -> str:
+        """Last resort: name the builder after the domain the stock arrived from.
+
+        Coleen's ask (3 Aug): where nothing else names the builder, use the sender's
+        domain rather than leaving it blank. Two conditions on that, because a wrong
+        name is worse than none:
+
+          * Never the client's own domain or a free provider. Forwarded mail is the
+            majority of this inbox, so the naive version would file supplier stock
+            under "Smartpropertybuying".
+          * Resolved through the builder canonicaliser first, so a domain that belongs
+            to a builder we already know becomes that builder's real name. Without
+            this, "hattan.com.au" is stored as a SECOND builder alongside "Hattan
+            Homes" — which is exactly how 105 listings ended up split from 64.
+        """
+        d = (dom or "").strip().lower().lstrip("www.")
+        if not d or "." not in d:
+            return ""
+        if any(d == bad or d.endswith("." + bad) for bad in self.NON_BUILDER_DOMAINS):
+            return ""
+        try:
+            from builder_names import BuilderNameCanonicaliser
+            canon = BuilderNameCanonicaliser(self._known_builders())
+            return canon.canonical(d)
+        except Exception:                                        # pragma: no cover
+            return d
 
     def _builder_in_text(self, text: str) -> str:
         """A builder named in the subject line or an attachment's file name.
