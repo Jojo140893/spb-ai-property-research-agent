@@ -1308,6 +1308,15 @@
     // seven fields was enough to break the search — Coleen hit it. Send the fallback
     // instead of NaN; the API is hardened against null as well, deliberately, because
     // a brief is user input over HTTP and should not be able to crash the pipeline.
+    // A spec the stocklist never recorded arrives as null, and template interpolation
+    // printed it verbatim — a client-facing card read "0m² / nullm²". Say "not stated";
+    // the shortlist card also carries a "Confirm before presenting" advisory for it.
+    const NOT_STATED = 'not stated';
+    const sqm = v => (v === null || v === undefined || v === '' || Number(v) === 0)
+        ? NOT_STATED : `${Number(v).toLocaleString()}m²`;
+    const spec = (v, unit) => (v === null || v === undefined || v === '')
+        ? `${unit}: ${NOT_STATED}` : `${v} ${unit}`;
+
     const numField = (id, fallback) => {
         const el = document.getElementById(id);
         const n = parseFloat((el && el.value || '').toString().replace(/[, $]/g, ''));
@@ -1393,7 +1402,7 @@
                         <div class="card-top-row">
                             <div>
                                 <div class="prop-title-text">Rank #${idx+1}: ${prop.lot_address}</div>
-                                <div class="prop-subtitle-text">${prop.suburb}, ${prop.state} | Builder: <strong>${prop.builder_name}</strong> (${prop.house_design})</div>
+                                <div class="prop-subtitle-text">${prop.suburb}, ${prop.state} | Builder: <strong>${prop.builder_name || NOT_STATED}</strong>${prop.house_design ? ` (${prop.house_design})` : ''}</div>
                             </div>
                             <div class="score-badge">
                                 <div class="score-number">${prop.score} <span style="font-size:0.85rem; color:var(--text-muted);">/ 100</span></div>
@@ -1402,8 +1411,8 @@
                         </div>
 
                         <div class="metrics-grid">
-                            <div class="metric-item"><span>Bed / Bath / Car</span><strong>${prop.bedrooms} Bed | ${prop.bathrooms} Bath | ${prop.car_spaces} Car</strong></div>
-                            <div class="metric-item"><span>Land / House SQM</span><strong>${prop.land_size_sqm}m² / ${prop.house_size_sqm}m²</strong></div>
+                            <div class="metric-item"><span>Bed / Bath / Car</span><strong>${spec(prop.bedrooms, 'Bed')} | ${spec(prop.bathrooms, 'Bath')} | ${spec(prop.car_spaces, 'Car')}</strong></div>
+                            <div class="metric-item"><span>Land / House SQM</span><strong>${sqm(prop.land_size_sqm)} / ${sqm(prop.house_size_sqm)}</strong></div>
                             <div class="metric-item"><span>Advertised Price</span><strong>$${prop.advertised_package_price.toLocaleString()}</strong></div>
                             <div class="metric-item"><span>Realistic Cost</span><strong style="color:var(--accent-blue);">$${prop.realistic_total_price.toLocaleString()}</strong></div>
                         </div>

@@ -191,6 +191,11 @@ def run_all():
         ("locality recovered from real stocklist shapes",
          test_a_locality_is_recovered_from_the_shapes_stocklists_actually_use),
         ("junk in the suburb column still refused", test_junk_in_the_suburb_column_is_still_refused),
+        ("address label drops prices/dates/specs", test_the_address_label_drops_prices_dates_and_specs),
+        ("address label leaves bed/bath alone", test_the_address_label_leaves_bed_and_bath_counts_alone),
+        ("address label strips title dates", test_the_address_label_strips_title_dates_and_quarters),
+        ("address label keeps a plain address", test_the_address_label_keeps_an_ordinary_address_untouched),
+        ("address label never returns empty", test_the_address_label_never_returns_empty),
     ]
     failed = 0
     for name, fn in tests:
@@ -231,6 +236,56 @@ def test_junk_in_the_suburb_column_is_still_refused():
                 "Double Story", "North", "WEST", "SOUTH EAST", "STAGE 3", "2026"):
         got = idx.resolve_locality(raw, "VIC")
         assert got == "", f"{raw!r} is not a locality but resolved to {got!r}"
+
+
+# ------------------------------------------------------- address labels
+
+def test_the_address_label_drops_prices_dates_and_specs():
+    from address_label import clean_display_address
+    got = clean_display_address(
+        "DUPLEX PR8735 106 Redbank Plains Sienna Eden Estate 2026-09-01 00:00:00 505 "
+        "$595,000 $732,285 732285")
+    for gone in ("$595,000", "$732,285", "732285", "2026-09-01", "00:00:00"):
+        assert gone not in got, f"{gone!r} should have been removed, got {got!r}"
+    assert "Redbank Plains" in got and "Sienna Eden Estate" in got
+    assert "505" in got, "a small number may be part of the address and must survive"
+
+
+def test_the_address_label_leaves_bed_and_bath_counts_alone():
+    """Matching against sibling columns turned '2 Bed 2 Bath' into 'Bed Bath'."""
+    from address_label import clean_display_address
+    row = {"bedrooms": 2, "bathrooms": 2, "car_spaces": 1, "land_size_sqm": 2}
+    got = clean_display_address(
+        "Available V1509 2 Bed 2 Bath 1 in stage 2 South West Sky Garden $ 671,000", row)
+    assert "2 Bed 2 Bath" in got, got
+    assert "in stage 2" in got, got
+    assert "$" not in got
+
+
+def test_the_address_label_strips_title_dates_and_quarters():
+    from address_label import clean_display_address
+    got = clean_display_address("2-Part Townhome North 25 Havenwood Mernda Q4 2026 $307,000")
+    assert "Q4 2026" not in got and "$307,000" not in got
+    assert "Havenwood Mernda" in got
+    got2 = clean_display_address("SS West 2103 Seventh Bend Weir Views Sep-26 4 / 2 / 2")
+    assert "Sep-26" not in got2 and "4 / 2 / 2" not in got2
+    assert "Seventh Bend" in got2
+
+
+def test_the_address_label_keeps_an_ordinary_address_untouched():
+    from address_label import clean_display_address
+    for plain in ("Lot 1408, Regent Quarter", "12 Coledale Drive, Melton",
+                  "Lot 97 Sunnyvue Estate", "Unit 3/45 May Street"):
+        assert clean_display_address(plain) == plain, plain
+
+
+def test_the_address_label_never_returns_empty():
+    """A cluttered address beats a blank one on a client-facing card."""
+    from address_label import clean_display_address
+    for hopeless in ("$595,000 2026-09-01 00:00:00 732285", "4 / 2 / 2", "$1,000"):
+        assert clean_display_address(hopeless) == hopeless.strip(), hopeless
+    assert clean_display_address("") == ""
+    assert clean_display_address(None) == ""
 
 if __name__ == "__main__":
     sys.exit(1 if run_all() else 0)

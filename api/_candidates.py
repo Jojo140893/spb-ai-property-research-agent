@@ -39,6 +39,7 @@ if _HERE not in sys.path:                       # api/ on sys.path: sibling impo
     sys.path.insert(0, _HERE)
 
 from _bootstrap import HERE, ROOT
+from address_label import clean_display_address
 
 # Exactly the fields build_web.py exports to stock.json, so both readers agree and
 # neither can reach an internal column (content_hash, dedup_key, source_text).
@@ -438,7 +439,11 @@ def build_packages(brief_dict, rows, today=None):
                        or str(row.get("brochure_url") or "").strip())
         entries.append((seen_at, {
             "builder_name": builder,
-            "lot_address": str(row.get("lot_address") or "").strip() or "(no address in source row)",
+            # The label a client reads, with the price/date/spec columns the extractor
+            # concatenated into it removed. Never invents and never empties — see
+            # address_label.py. The stored row keeps whatever the source gave us.
+            "lot_address": (clean_display_address(row.get("lot_address"), row)
+                            or "(no address in source row)"),
             "suburb": suburb,
             "state": row_state,
             # The development keeps its name here, where it is true, instead of standing in
