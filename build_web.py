@@ -26,6 +26,7 @@ answer a direct request with HTML rather than the file.
 import json
 import re
 import shutil
+import subprocess
 import sqlite3
 import sys
 from datetime import datetime
@@ -256,11 +257,15 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
 
 # The transitive import closure of kommo_agent — nothing else is needed, and nothing
 # else should be shipped.
+# Every module the deployed function imports, directly or transitively. A module missing
+# from this list is not a build warning — it is an ImportError inside the serverless
+# function, so EVERY request 500s while the page and the tests look perfectly healthy.
+# _verify_function_imports below fails the build rather than shipping that again.
 _FUNCTION_ROOT_MODULES = (
-    "benchmark.py", "brief_parser.py", "builder_registry.py", "client_report.py",
-    "config.py", "database.py", "drive_ingest.py", "geo.py", "kommo_agent.py",
-    "kommo_client.py", "qa_checker.py", "report_generator.py", "schema.py",
-    "scoring_engine.py", "secrets_store.py", "state_resolver.py",
+    "address_label.py", "benchmark.py", "brief_parser.py", "builder_registry.py",
+    "client_report.py", "config.py", "database.py", "drive_ingest.py", "geo.py",
+    "kommo_agent.py", "kommo_client.py", "qa_checker.py", "report_generator.py",
+    "schema.py", "scoring_engine.py", "secrets_store.py", "state_resolver.py",
     "turnkey_calculator.py",
 )
 _FUNCTION_SOURCES = (
@@ -319,7 +324,32 @@ def _bundle_research_function(app: Path, out_dir: Path) -> int:
         return 0
     for junk in dest_api.rglob("__pycache__"):
         shutil.rmtree(junk, ignore_errors=True)
+    _verify_function_imports(dest_api)
     return n
+
+
+def _verify_function_imports(dest_api: Path) -> None:
+    """Import the built endpoint the way Vercel will, in a clean interpreter.
+
+    A module added to api/ but not to _FUNCTION_ROOT_MODULES copies nothing, imports
+    fine locally — the app directory is on sys.path here — and then raises ImportError
+    inside the function, 500ing every request. That shipped once: address_label.py was
+    imported by _candidates.py and never bundled, so the whole research endpoint was
+    dead while the page, the tests and the deploy all reported success.
+
+    Raising here means a bundle that cannot import never reaches the alias.
+    """
+    probe = ("import sys; sys.path[:0] = [r'%s', r'%s'];"
+             " import research, _candidates, _export_builders;"
+             " print('imports-ok')" % (dest_api, dest_api / "_lib"))
+    done = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
+                          cwd=str(dest_api))
+    if done.returncode != 0 or "imports-ok" not in done.stdout:
+        raise RuntimeError(
+            "the built function cannot import itself — nothing was deployed.\n"
+            "Add the missing module to _FUNCTION_ROOT_MODULES (or _FUNCTION_SOURCES).\n"
+            + (done.stderr or done.stdout).strip()[-900:])
+    print("[+] function bundle imports cleanly")
 
 
 if __name__ == "__main__":
