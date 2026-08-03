@@ -53,6 +53,11 @@ class BenchmarkEngine:
     def find_comparables(self, suburb: str, state: str, bedrooms: int,
                          radius_km: float = 15.0, max_results: int = 5) -> List[Dict[str, Any]]:
         """Comparables in the same suburb first, then within radius_km, similar bedrooms (+/-1)."""
+        # Peers are matched on bedroom count, so a listing that never stated one has no
+        # peers to match — not a crash, and not a comparison against an assumed 4-bed.
+        # The caller already handles an empty result as "Unbenchmarked", scored neutrally.
+        if bedrooms is None:
+            return []
         hits = []
         for c in self.comparables:
             if c['state'] != state.upper() or abs(c['bedrooms'] - bedrooms) > 1:

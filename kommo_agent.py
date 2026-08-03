@@ -142,7 +142,11 @@ class KommoPropertyResearchAgent:
             pkg_suburb = pkg_suburb or suburb_name
             bm_res = self.benchmark_engine.benchmark_package(
                 pkg_suburb, brief.state,
-                int(raw_pkg.get('bedrooms', 4)),
+                # None, not 4: a get() default cannot fire on a key that is present and
+                # null, so this int() crashed the whole request once listings with an
+                # unstated bedroom count were allowed through. Guessing 4 would also
+                # have benchmarked the lot against the wrong cohort.
+                _opt_int(raw_pkg.get('bedrooms')),
                 price_breakdown.realistic_total_price
             )
             # No CoreLogic/REA export has been supplied, so the market engine returns
