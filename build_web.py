@@ -206,7 +206,25 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     conn.close()
 
     # the app's own frontend, unmodified
-    shutil.copyfile(app / "index.html", out_dir / "index.html")
+    # Stamp the copy as the static build.
+    #
+    # getJSON races /api/... against the static JSON and takes whichever answers
+    # first — deliberately, because waiting on the API cost 10 seconds of dead time
+    # on every load. On the DEPLOYED site those three endpoints can never exist
+    # (server.py is not published, and for good reason), so the race guarantees three
+    # 404s in the console on every visit. The page works, but anyone who opens devtools
+    # sees a healthy site reporting errors, and it spends three round-trips finding out
+    # something the build already knows.
+    #
+    # A marker rather than a separate deployed index.html: one frontend still serves
+    # both, and locally the flag is simply absent so the live API is used as before.
+    html = (app / "index.html").read_text(encoding="utf-8")
+    marker = "<script>window.SPB_STATIC_BUILD = true;</script>\n"
+    if "</head>" in html:
+        html = html.replace("</head>", marker + "</head>", 1)
+    else:                                    # no head: put it before the first script
+        html = marker + html
+    (out_dir / "index.html").write_text(html, encoding="utf-8")
     fn = _bundle_research_function(app, out_dir)
     meta["function_files"] = fn
 

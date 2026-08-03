@@ -799,12 +799,18 @@
         // API first and waiting cost 10 seconds of dead time on every load of the static
         // deployment, because Vercel takes that long to return the 404 — the page just
         // read as broken for the whole time.
-        const live = fetch(apiPath, { cache: 'no-store' }).then(async res => {
-            if (!res.ok) throw new Error(`api ${res.status}`);
-            if (!(res.headers.get('Content-Type') || '').includes('json'))
-                throw new Error('api did not return json');
-            return { mode: 'live', data: await res.json() };
-        });
+        // On the static build these endpoints cannot exist — server.py is deliberately
+        // not deployed — so asking is three guaranteed 404s per load and three console
+        // errors on a site that is working correctly. build_web.py stamps the copy it
+        // publishes; locally the flag is absent and the live API is raced as before.
+        const live = window.SPB_STATIC_BUILD
+            ? Promise.reject(new Error('static build: no local API'))
+            : fetch(apiPath, { cache: 'no-store' }).then(async res => {
+                if (!res.ok) throw new Error(`api ${res.status}`);
+                if (!(res.headers.get('Content-Type') || '').includes('json'))
+                    throw new Error('api did not return json');
+                return { mode: 'live', data: await res.json() };
+            });
         const snap = fetch(staticPath, { cache: 'no-store' }).then(async res => {
             if (!res.ok) throw new Error(`snapshot ${res.status}`);
             return { mode: 'snapshot', data: await res.json() };
