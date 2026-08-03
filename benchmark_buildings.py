@@ -117,12 +117,26 @@ class SuburbCheck:
         return bool(self.geo.loaded)
 
     def is_real(self, suburb, state):
+        return bool(self.resolve(suburb, state))
+
+    def resolve(self, suburb, state):
+        """The locality to group on, or '' if the value is not one.
+
+        Uses the SAME resolver the scoring pipeline uses. They used to differ: this
+        checked the raw value while _candidates.py unglued composites, so a lot in
+        "Stage 5A, Greenbank" was shortlisted with no benchmark and never grouped
+        with the other Greenbank stock. Peer groups are only as good as the key, and
+        two components disagreeing about the key is the worst version of that.
+        """
         if not self.available:
-            return True          # no index: do not silently drop everything
+            return str(suburb or "").strip()    # no index: behave as before
         key = (_norm(suburb), _norm(state))
         if key not in self._cache:
-            self._cache[key] = bool(suburb) and bool(
-                self.geo.locate(str(suburb), str(state or "")))
+            try:
+                self._cache[key] = self.geo.resolve_locality(
+                    str(suburb or ""), str(state or ""))
+            except Exception:
+                self._cache[key] = str(suburb or "").strip()
         return self._cache[key]
 
 
@@ -187,8 +201,11 @@ def benchmark_internal(rows, suburb_check=None):
     # or real listings that happen to share it get benchmarked against nonsense.
     usable = []
     for r in rows:
-        if check.is_real(r["suburb"], r["state"]):
-            usable.append(r)
+        locality = check.resolve(r["suburb"], r["state"])
+        if locality:
+            # Group on the RESOLVED locality, so every "Stage N, Greenbank" lot is a
+            # peer of every other Greenbank lot instead of forming its own island.
+            usable.append({**r, "suburb": locality})
         else:
             skipped["suburb is not a recognised locality"] += 1
     rows = usable

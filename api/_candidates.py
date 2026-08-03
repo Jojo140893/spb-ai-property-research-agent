@@ -49,7 +49,7 @@ SNAPSHOT_FIELDS = [
     "incentive_amount", "incentive_text", "product_type", "source_channel",
     "attribution_scope", "date_checked", "listing_url", "floorplan_url",
     "brochure_url", "benchmark_median", "benchmark_variance_pct",
-    "benchmark_classification",
+    "benchmark_classification", "benchmark_basis",
 ]
 
 # Not purchasable, so not a candidate. Absent/blank is NOT in this set: most stocklists
@@ -205,27 +205,22 @@ def _is_real_locality(suburb, state):
 def clean_locality(suburb, state):
     """The real locality inside a suburb value, or '' if there is not one.
 
-    Many values are an estate and a locality stuck together — "Waler Heights, Mango
-    Hill" (38 rows), "Stage 2, Parkinson", "Walloon (Owner Occupiers Only), Walloon".
-    The locality is the LAST comma-separated part, which is a structural fact about
-    how an address is written rather than a guess about which word looks like a
-    suburb. Taking it both saves the row and fixes what a client is shown: "Stage 2,
-    Ripley" becomes "Ripley".
-
-    Anything with no recognisable locality in it returns '' and the row is dropped.
+    Delegates to SuburbGeoIndex.resolve_locality so the scoring pipeline and
+    benchmark_buildings.py cannot drift apart on what counts as a place — they did,
+    and a lot in "Stage 5A, Greenbank" was shortlisted with no benchmark because one
+    unglued the composite and the other did not.
     """
     raw = str(suburb or "").strip()
     if not raw:
         return ""
-    if _is_real_locality(raw, state):
+    if _GEO is None:
+        _is_real_locality(raw, state)          # force the index to load
+    if _GEO is False:
+        return raw                              # no index: behave as before
+    try:
+        return _GEO.resolve_locality(raw, str(state or ""))
+    except Exception:
         return raw
-    parts = [p.strip(" ()") for p in raw.split(",") if p.strip(" ()")]
-    for part in reversed(parts):
-        # Strip a parenthesised aside: "Walloon (Owner Occupiers Only)".
-        part = re.sub(r"\s*\([^)]*\)\s*", " ", part).strip()
-        if part and part.lower() != raw.lower() and _is_real_locality(part, state):
-            return part
-    return ""
 
 
 def _storeys(row):
@@ -451,6 +446,17 @@ def build_packages(brief_dict, rows, today=None):
             "verified": verified,
             "consultant_approved": False,
             "risks": [],
+            # The benchmark already computed over the whole table by
+            # benchmark_buildings.py. Passed through so the client card can fall back
+            # to it: BenchmarkEngine needs a CoreLogic/REA export Colin has not
+            # supplied, so without this EVERY card reads "Unbenchmarked - Pending
+            # Market Data" in red even though 957 listings do have a defensible
+            # comparison against stock we hold.
+            "stored_benchmark_median": _num(row.get("benchmark_median")),
+            "stored_benchmark_variance_pct": _num(row.get("benchmark_variance_pct")),
+            "stored_benchmark_classification": str(
+                row.get("benchmark_classification") or "").strip(),
+            "stored_benchmark_basis": str(row.get("benchmark_basis") or "").strip(),
         }))
 
     packages, counts["same_listing_collapsed"] = _collapse_same_listing(entries)

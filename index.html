@@ -1352,12 +1352,13 @@
                         </div>
 
                         <div style="font-size:0.86rem; margin-bottom:1rem;">
-                            <strong>Market Benchmark (SOP Step 7):</strong>
+                            <strong>${prop.benchmark && prop.benchmark.basis === 'internal'
+                                ? 'Price vs comparable stock' : 'Market Benchmark (SOP Step 7)'}:</strong>
                             ${prop.benchmark && prop.benchmark.benchmarked
                                 ? `<span style="font-weight:600; color:${prop.benchmark.variance_pct <= 5 ? 'var(--emerald-green)' : 'var(--amber-yellow)'};">${prop.benchmark.classification}</span>
-                                   &mdash; avg market $${Number(prop.benchmark.avg_market_price).toLocaleString()} (${prop.benchmark.variance_pct > 0 ? '+' : ''}${prop.benchmark.variance_pct}% vs market)`
+                                   &mdash; ${prop.benchmark.basis === 'internal' ? 'median of comparable listings' : 'avg market'} $${Number(prop.benchmark.avg_market_price).toLocaleString()} (${prop.benchmark.variance_pct > 0 ? '+' : ''}${prop.benchmark.variance_pct}%)`
                                 : `<span style="color:var(--amber-yellow); font-weight:600;">${prop.benchmark ? prop.benchmark.classification : 'Unbenchmarked'}</span>`}
-                            ${prop.benchmark && prop.benchmark.needs_manual_benchmark ? `<div style="color:var(--amber-yellow); font-size:0.78rem; margin-top:0.2rem;">${prop.benchmark.data_note}</div>` : ''}
+                            ${prop.benchmark && prop.benchmark.needs_manual_benchmark ? `<div style="color:${prop.benchmark.basis === 'internal' ? 'var(--text-muted, #64748b)' : 'var(--amber-yellow)'}; font-size:0.78rem; margin-top:0.2rem;">${esc(prop.benchmark.data_note || '')}</div>` : ''}
                             ${prop.distance_km_from_target ? `<div style="font-size:0.8rem; margin-top:0.2rem;"><strong>Distance:</strong> ${prop.distance_km_from_target} km from target suburb</div>` : ''}
                         </div>
 
@@ -1374,6 +1375,31 @@
                             <div class="bar-item">
                                 <div class="bar-info"><span>Location & Amenities (Max 15)</span><span>${prop.scoring_details.location_amenity} / 15</span></div>
                                 <div class="bar-bg"><div class="bar-fill" style="width:${(prop.scoring_details.location_amenity/15)*100}%"></div></div>
+                            </div>
+                            <!-- The breakdown used to stop here, showing 55 of the 100
+                                 points next to a headline out of 100: three bars adding
+                                 to 51.3 beside a score of 87.8. The four missing
+                                 categories were being scored all along, just never
+                                 shown, so the matrix looked wrong to anyone who added
+                                 it up. -->
+                            <div class="bar-item">
+                                <div class="bar-info"><span>Value Competitiveness (Max 15)</span><span>${prop.scoring_details.value_competitiveness} / 15</span></div>
+                                <div class="bar-bg"><div class="bar-fill" style="width:${(prop.scoring_details.value_competitiveness/15)*100}%"></div></div>
+                            </div>
+                            <div class="bar-item">
+                                <div class="bar-info"><span>Builder Confidence (Max 10)</span><span>${prop.scoring_details.builder_confidence} / 10</span></div>
+                                <div class="bar-bg"><div class="bar-fill" style="width:${(prop.scoring_details.builder_confidence/10)*100}%"></div></div>
+                            </div>
+                            <div class="bar-item">
+                                <div class="bar-info"><span>Suitability (Max 10)</span><span>${prop.scoring_details.suitability_score} / 10</span></div>
+                                <div class="bar-bg"><div class="bar-fill" style="width:${(prop.scoring_details.suitability_score/10)*100}%"></div></div>
+                            </div>
+                            <div class="bar-item">
+                                <div class="bar-info"><span>Risk (Max 10)</span><span>${prop.scoring_details.risk_score} / 10</span></div>
+                                <div class="bar-bg"><div class="bar-fill" style="width:${(prop.scoring_details.risk_score/10)*100}%"></div></div>
+                            </div>
+                            <div class="bar-info" style="margin-top:0.4rem; font-weight:700; border-top:1px solid var(--border-strong); padding-top:0.4rem;">
+                                <span>Total</span><span>${prop.score} / 100</span>
                             </div>
                         </div>
 

@@ -20,6 +20,30 @@ from report_generator import ReportGenerator
 from kommo_client import KommoClient
 from database import ResearchDatabase
 from qa_checker import Section9QAChecker
+
+
+def _internal_value_points(variance_pct):
+    """Value-competitiveness points from an INTERNAL peer comparison (max 15).
+
+    The same bands benchmark.py uses for a real market comparison, but capped at
+    12.5 rather than 15: a lot priced under other stock we happen to hold is good
+    evidence, and it is not the same evidence as beating the market. The full 15
+    stays reserved for a genuine CoreLogic/REA benchmark, so supplying that export
+    can only ever improve a score, never silently change one that was already full.
+    """
+    if variance_pct is None:
+        return 7.5                      # neutral — never rewards or punishes a gap
+    try:
+        v = float(variance_pct)
+    except (TypeError, ValueError):
+        return 7.5
+    if v < -5.0:
+        return 12.5
+    if v <= 5.0:
+        return 11.0
+    if v <= 12.0:
+        return 9.0
+    return 5.0
 from sources.e_agent import EAgentSource
 from sources.builder_portals import BuilderPortalSource
 from sources.drive_pdf import DrivePdfSource
@@ -115,6 +139,28 @@ class KommoPropertyResearchAgent:
                 int(raw_pkg.get('bedrooms', 4)),
                 price_breakdown.realistic_total_price
             )
+            # No CoreLogic/REA export has been supplied, so the market engine returns
+            # "Unbenchmarked - Pending Market Data" for everything — which printed in
+            # red on EVERY card, on a shortlist where most listings do in fact have a
+            # defensible comparison. benchmark_buildings.py already computed one for
+            # 957 of them against other stock we hold. Use it when, and only when, the
+            # market engine has nothing, and keep the two clearly distinguishable: the
+            # basis string travels with the number and never claims the market.
+            if not bm_res.get('benchmarked') and raw_pkg.get('stored_benchmark_median'):
+                bm_res = {
+                    'benchmarked': True,
+                    'basis': 'internal',
+                    'classification': raw_pkg.get('stored_benchmark_classification')
+                                      or 'Compared with comparable stock',
+                    'value_score_contribution': _internal_value_points(
+                        raw_pkg.get('stored_benchmark_variance_pct')),
+                    'comparables': [],
+                    'avg_market_price': raw_pkg.get('stored_benchmark_median'),
+                    'variance_pct': raw_pkg.get('stored_benchmark_variance_pct'),
+                    'needs_manual_benchmark': True,
+                    'data_note': raw_pkg.get('stored_benchmark_basis') or
+                                 'Compared against other stock we hold, not the market.',
+                }
 
             # Distance from the nearest primary suburb (0.0 = in a primary suburb)
             if pkg_suburb.lower() in distance_lookup:

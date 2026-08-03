@@ -68,6 +68,35 @@ class SuburbGeoIndex:
     def locate(self, suburb: str, state: str) -> Optional[Tuple[float, float]]:
         return self._index.get((suburb.strip().lower(), state.strip().upper()))
 
+    def resolve_locality(self, suburb: str, state: str = "") -> str:
+        """The real locality inside a suburb value, or '' if there is not one.
+
+        The suburb column collects whatever landed in that position of a stocklist.
+        Some of it is a locality, some is an estate glued to one — "Stage 5A,
+        Greenbank", "Waler Heights, Mango Hill", "Walloon (Owner Occupiers Only),
+        Walloon" — and 59% is neither: postcodes ("2026"), stray words ("offer"),
+        header fragments ("IN TERNAL BALCONY TOTAL"), councils and regions.
+
+        The locality is the LAST comma-separated part. That is a fact about how an
+        address is written, not a guess about which word looks like a suburb — which
+        matters, because guessing picks the street out of "COLEDALE DRIVE, MELTON".
+
+        Lives here so the scoring pipeline and the benchmark agree. They did not:
+        _candidates.py ungluedthe composite and benchmark_buildings.py did not, so a
+        lot in "Stage 5A, Greenbank" was shortlisted with no benchmark and its peers
+        were never grouped with the other Greenbank stock.
+        """
+        raw = str(suburb or "").strip()
+        if not raw:
+            return ""
+        if self.locate(raw, state or ""):
+            return raw
+        for part in reversed([p.strip(" ()") for p in raw.split(",") if p.strip(" ()")]):
+            part = re.sub(r"\s*\([^)]*\)\s*", " ", part).strip()
+            if part and part.lower() != raw.lower() and self.locate(part, state or ""):
+                return part
+        return ""
+
     def find_suburb_in_text(self, text: str, state: str = "") -> Optional[str]:
         """Recover a suburb from a free-text address.
 

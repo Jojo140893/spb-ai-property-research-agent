@@ -17,7 +17,21 @@ class _FakeCheck:
         self.available = True
 
     def is_real(self, suburb, state):
-        return str(suburb or "").lower() in self.real
+        return bool(self.resolve(suburb, state))
+
+    def resolve(self, suburb, state):
+        """Mirrors SuburbGeoIndex.resolve_locality: the locality, or '' if none.
+
+        Includes the unglue step, because that is what the real resolver does and a
+        stub that skipped it would let a regression through unnoticed.
+        """
+        raw = str(suburb or "").strip()
+        if raw.lower() in self.real:
+            return raw
+        for part in reversed([p.strip(" ()") for p in raw.split(",") if p.strip(" ()")]):
+            if part.lower() in self.real:
+                return part
+        return ""
 
 
 def _row(i, price, suburb="Sampleton", state="NSW", product="House & Land", beds=4):
