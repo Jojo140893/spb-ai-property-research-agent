@@ -112,6 +112,10 @@ def run_all():
         ("shared first word not confused", test_two_builders_sharing_a_first_word_are_not_confused),
         ("domain helpers", test_domain_detection),
         ("client's own domain never a builder", test_the_client_own_domain_is_never_used_as_a_builder),
+        ("postcode/stray word is not a location", test_a_postcode_or_stray_word_is_not_a_location),
+        ("a real locality passes", test_a_real_locality_passes_through),
+        ("estate unglued from locality", test_an_estate_glued_to_a_locality_is_unglued),
+        ("missing index does not empty results", test_a_missing_index_does_not_empty_every_shortlist),
     ]
     failed = 0
     for name, fn in tests:
@@ -127,3 +131,59 @@ def run_all():
 if __name__ == "__main__":
     import sys
     sys.exit(1 if run_all() else 0)
+
+
+# --------------------------------------------- the locality gate on the shortlist
+
+def test_a_postcode_or_stray_word_is_not_a_location():
+    """What made the research tab look broken.
+
+    A QLD search returned "Lot 507, 2026 in 2026, QLD" and "Lot 507, offer in offer,
+    QLD" as four of its five recommendations. The filtering was fine — 77 rows scored
+    — but the results were unusable, because a value being PRESENT in the suburb
+    column is not the same as it being a place.
+    """
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "api"))
+    from _candidates import clean_locality
+    for junk in ("2026", "offer", "IN TERNAL BALCONY TOTAL", "Logan City Council",
+                 "BRISBANE WEST", "Ausbuild Stock List.", "EOI Form"):
+        assert clean_locality(junk, "QLD") == "", junk
+
+
+def test_a_real_locality_passes_through():
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "api"))
+    from _candidates import clean_locality
+    for good in ("Ripley", "Morayfield", "Toowoomba"):
+        assert clean_locality(good, "QLD").lower() == good.lower(), good
+
+
+def test_an_estate_glued_to_a_locality_is_unglued():
+    """"Waler Heights, Mango Hill" is 38 rows. The locality is the LAST part — a fact
+    about how addresses are written, not a guess about which word looks like a suburb.
+    Recovering it saves the row AND fixes what the client is shown."""
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "api"))
+    from _candidates import clean_locality
+    assert clean_locality("Stage 2, Ripley", "QLD") == "Ripley"
+    assert clean_locality("Waler Heights, Mango Hill", "QLD") == "Mango Hill"
+    assert clean_locality("Walloon (Owner Occupiers Only), Walloon", "QLD") == "Walloon"
+
+
+def test_a_missing_index_does_not_empty_every_shortlist():
+    """Degrading to "accept everything" keeps the pipeline exactly as it was; a
+    missing data file must not be able to silently return no results."""
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "api"))
+    import _candidates as C
+    saved_geo, saved_cache = C._GEO, dict(C._LOCALITY_CACHE)
+    try:
+        C._GEO, C._LOCALITY_CACHE = False, {}
+        assert C._is_real_locality("anything at all", "QLD") is True
+    finally:
+        C._GEO, C._LOCALITY_CACHE = saved_geo, saved_cache

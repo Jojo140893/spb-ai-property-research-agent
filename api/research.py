@@ -145,7 +145,8 @@ def run_research(payload):
     # for other states are out of scope, not "filtered", so they are excluded here
     # (they are still named in the coverage note).
     pre_filtered = (counts['not_available'] + counts['no_price'] + counts['over_budget']
-                    + counts['no_suburb'] + counts['incomplete_facts']
+                    + counts['no_suburb'] + counts.get('suburb_not_a_locality', 0)
+                    + counts['incomplete_facts']
                     + counts['storey_unknown_and_binding'] + counts['truncated'])
 
     # kind='coverage' so the UI stops drawing this as a rejected property under a

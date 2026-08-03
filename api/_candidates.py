@@ -28,6 +28,7 @@ blank rather than left to the default. A blank is visibly a blank.
 
 import json
 import os
+import re
 import sqlite3
 import sys
 from datetime import datetime
@@ -154,6 +155,79 @@ def _int(value):
     return int(n) if n is not None else None
 
 
+_GEO = None
+_LOCALITY_CACHE = {}
+
+
+def _is_real_locality(suburb, state):
+    """Is this value actually an Australian locality?
+
+    Checked against the 17,537-suburb index the app already ships for distance
+    search — the same one that made the benchmark trustworthy. Not a guess and not
+    a repair: a value that fails is simply not treated as a location.
+
+    If the index cannot be loaded the answer is True. Degrading to "accept
+    everything" keeps the pipeline working exactly as it did before this gate
+    existed; degrading to "reject everything" would empty every shortlist, and a
+    missing data file should not be able to do that.
+    """
+    global _GEO
+    key = (str(suburb or "").strip().lower(), str(state or "").strip().upper())
+    if key in _LOCALITY_CACHE:
+        return _LOCALITY_CACHE[key]
+    if _GEO is None:
+        try:
+            from geo import SuburbGeoIndex
+        except ImportError:                              # deployed layout: api/_lib
+            try:
+                from _lib.geo import SuburbGeoIndex      # type: ignore
+            except Exception:
+                _GEO = False
+                return True
+        except Exception:
+            _GEO = False
+            return True
+        try:
+            idx = SuburbGeoIndex()
+            _GEO = idx if getattr(idx, "loaded", False) else False
+        except Exception:
+            _GEO = False
+    if _GEO is False:
+        return True
+    try:
+        ok = bool(_GEO.locate(str(suburb), str(state or "")))
+    except Exception:
+        ok = True
+    _LOCALITY_CACHE[key] = ok
+    return ok
+
+
+def clean_locality(suburb, state):
+    """The real locality inside a suburb value, or '' if there is not one.
+
+    Many values are an estate and a locality stuck together — "Waler Heights, Mango
+    Hill" (38 rows), "Stage 2, Parkinson", "Walloon (Owner Occupiers Only), Walloon".
+    The locality is the LAST comma-separated part, which is a structural fact about
+    how an address is written rather than a guess about which word looks like a
+    suburb. Taking it both saves the row and fixes what a client is shown: "Stage 2,
+    Ripley" becomes "Ripley".
+
+    Anything with no recognisable locality in it returns '' and the row is dropped.
+    """
+    raw = str(suburb or "").strip()
+    if not raw:
+        return ""
+    if _is_real_locality(raw, state):
+        return raw
+    parts = [p.strip(" ()") for p in raw.split(",") if p.strip(" ()")]
+    for part in reversed(parts):
+        # Strip a parenthesised aside: "Walloon (Owner Occupiers Only)".
+        part = re.sub(r"\s*\([^)]*\)\s*", " ", part).strip()
+        if part and part.lower() != raw.lower() and _is_real_locality(part, state):
+            return part
+    return ""
+
+
 def _storeys(row):
     """1 / 2 from the stored storey text, else None. 'SINGLE'/'DOUBLE' or a digit."""
     raw = str(row.get("storey") or "").strip().lower()
@@ -241,6 +315,7 @@ def build_packages(brief_dict, rows, today=None):
         "not_available": 0, "no_price": 0, "over_budget": 0, "no_suburb": 0,
         "incomplete_facts": 0, "storey_unknown_and_binding": 0, "scored": 0,
         "truncated": 0, "stale_unverified": 0, "same_listing_collapsed": 0,
+        "suburb_not_a_locality": 0,
     }
     missing_field_counts = {}
     entries = []
@@ -273,6 +348,24 @@ def build_packages(brief_dict, rows, today=None):
             # benchmark can be established for it. kommo_agent tries to recover one
             # from the address text; if that is all there is, it is not scoreable.
             counts["no_suburb"] += 1
+            continue
+        cleaned = clean_locality(suburb, row.get("state"))
+        if cleaned:
+            # Use the locality itself, not the estate glued to the front of it.
+            suburb = cleaned
+        else:
+            # PRESENT is not the same as REAL. The suburb column collects whatever
+            # landed in that position of a stocklist, and 59% of it is not a locality:
+            # postcodes ("2026"), stray words ("offer"), header fragments
+            # ("Street # Type"), states and regions.
+            #
+            # This gate exists because those rows were not merely stored — they were
+            # RECOMMENDED. A QLD search returned "Lot 507, 2026 in 2026, QLD" and
+            # "Lot 507, offer in offer, QLD" as four of its five results, which is
+            # what made the research tab look broken. A listing whose location cannot
+            # be confirmed must not reach a client, and it cannot be geocoded,
+            # distance-filtered or benchmarked either.
+            counts["suburb_not_a_locality"] += 1
             continue
 
         facts = {}
@@ -380,11 +473,12 @@ def coverage_sentence(counts, source_path, state):
         % (counts["scored"], counts["snapshot_rows"], os.path.basename(source_path)),
         "Not scored: %d outside %s, %d with no state recorded, %d not available "
         "(sold/on hold/under offer), %d with no price, %d over the budget ceiling, "
-        "%d with no suburb, %d without the facts the brief's minimums are checked "
-        "against (%s)."
+        "%d with no suburb, %d whose suburb is not a recognised locality, "
+        "%d without the facts the brief's minimums are checked against (%s)."
         % (counts["other_state"], state or "the requested state", counts["state_unknown"],
            counts["not_available"], counts["no_price"], counts["over_budget"],
-           counts["no_suburb"], counts["incomplete_facts"], missing_txt),
+           counts["no_suburb"], counts.get("suburb_not_a_locality", 0),
+           counts["incomplete_facts"], missing_txt),
         "Those rows are NOT guessed into the shortlist: the pipeline would otherwise "
         "default a missing bedroom count to 4 and a missing house size to 180 m².",
     ]
