@@ -1046,8 +1046,13 @@
             return;
         }
         STOCK = asBuildings(data);
+        // The headline figures describe CURRENT stock, so they count the same rows the
+        // table shows by default — superseded captures excluded. Counting all 6,480 while
+        // the table listed 5,703 made the summary and the grid disagree on screen.
+        const LIVE = STOCK.filter(b => !b.superseded_by);
+        const stale = STOCK.length - LIVE.length;
         document.getElementById('buildingsBadge').textContent =
-            `${STOCK.length.toLocaleString()} buildings`;
+            `${LIVE.length.toLocaleString()} buildings`;
         if (!STOCK.length) {
             el.innerHTML = `<p style="color:var(--text-muted);">No building stock harvested yet. Run
                 <code>python harvest_buildings.py</code>.</p>`;
@@ -1056,25 +1061,27 @@
 
         const uniq = key => {
             const m = new Map();
-            STOCK.forEach(b => {
+            LIVE.forEach(b => {
                 const v = (b[key] ?? '').toString().trim();
                 if (v) m.set(v, (m.get(v) || 0) + 1);
             });
             return [...m.entries()].sort((a, b) => b[1] - a[1]);
         };
-        const named = STOCK.filter(b => (b.builder_name || '').trim()).length;
-        const withLinks = STOCK.filter(b => b.listing_url || b.floorplan_url || b.brochure_url).length;
-        const withAvail = STOCK.filter(b => b.availability_status).length;
-        const withState = STOCK.filter(b => (b.state || '').trim()).length;
+        const named = LIVE.filter(b => (b.builder_name || '').trim()).length;
+        const withLinks = LIVE.filter(b => b.listing_url || b.floorplan_url || b.brochure_url).length;
+        const withAvail = LIVE.filter(b => b.availability_status).length;
+        const withState = LIVE.filter(b => (b.state || '').trim()).length;
 
         document.getElementById('buildingsStats').innerHTML = [
-            [STOCK.length.toLocaleString(), 'listings'],
+            [LIVE.length.toLocaleString(), 'current listings'],
             [uniq('builder_name').length, 'builders / developments'],
             [named.toLocaleString(), 'with a named builder'],
             [withAvail.toLocaleString(), 'with availability'],
             [withLinks.toLocaleString(), 'with a PDF or plan'],
             [withState.toLocaleString(), 'with a state'],
-        ].map(([n, k]) => `<div class="sc"><div class="sc-n">${n}</div><div class="sc-k">${k}</div></div>`).join('');
+        ].map(([n, k]) => `<div class="sc"><div class="sc-n">${n}</div><div class="sc-k">${k}</div></div>`).join('')
+        + (stale ? `<div class="sc"><div class="sc-n" style="color:var(--text-muted);">${stale.toLocaleString()}</div>`
+            + `<div class="sc-k">superseded, not counted above</div></div>` : '');
 
         const mp = (title, pairs, limit) => `<div class="mp"><h4>${title}</h4>` +
             pairs.slice(0, limit || 8).map(([v, n]) =>
