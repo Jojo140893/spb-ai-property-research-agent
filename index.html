@@ -757,7 +757,7 @@
     <div class="panel-card">
         <div class="panel-header">
             <span>CRM Integration Payload Data</span>
-            <button class="btn-submit" style="width:auto; padding:0.4rem 0.9rem; font-size:0.8rem; margin:0;" onclick="copyPayloadJSON()">Copy JSON Payload</button>
+            <button id="copyPayloadBtn" class="btn-submit" style="width:auto; padding:0.4rem 0.9rem; font-size:0.8rem; margin:0;" onclick="copyPayloadJSON()">Copy JSON Payload</button>
         </div>
         <div class="json-code" id="jsonPayloadView">
             Execute search to generate CRM payload...
@@ -1569,9 +1569,23 @@
     }
 
     function copyPayloadJSON() {
-        if (!currentPayload) return;
-        navigator.clipboard.writeText(JSON.stringify(currentPayload, null, 2));
-        alert("CRM Payload copied to clipboard.");
+        // Was: return silently with no payload, then alert success unconditionally.
+        // Pressing it before running a search did nothing at all, and the alert claimed
+        // the copy had worked even when clipboard access was refused.
+        const btn = document.getElementById('copyPayloadBtn');
+        const say = msg => {
+            if (!btn) return;
+            const original = 'Copy JSON Payload';
+            btn.textContent = msg;
+            setTimeout(() => { btn.textContent = original; }, 2600);
+        };
+        if (!currentPayload) {
+            say('Run a search first');
+            return;
+        }
+        navigator.clipboard.writeText(JSON.stringify(currentPayload, null, 2))
+            .then(() => say('Copied ✓'))
+            .catch(() => say('Copy blocked — select the text instead'));
     }
 
     document.getElementById('propertyForm').addEventListener('submit', function(e) {
