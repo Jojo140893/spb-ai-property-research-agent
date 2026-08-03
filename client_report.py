@@ -32,12 +32,20 @@ class ClientReportGenerator:
             rent_mid = (p.estimated_rent_weekly_min + p.estimated_rent_weekly_max) / 2.0
             gross_yield = (rent_mid * 52 / pb.realistic_total_price * 100.0) if pb.realistic_total_price else 0
 
+            # An internal comparison is against other stock we hold, NOT the market,
+            # and this document goes to a buyer — so it is never called a market
+            # price. Saying "comparable listings" is both true and still useful.
+            internal = bm.get('basis') == 'internal'
+            what = "comparable listings" if internal else "average market price"
             if saving is not None and saving > 0:
-                value_line = f"<span class='good'>{_money(pb.realistic_total_price)}</span> vs average market price {_money(avg_market)} &mdash; a saving of <strong>{_money(saving)}</strong>"
+                value_line = (f"<span class='good'>{_money(pb.realistic_total_price)}</span> vs "
+                              f"{what} {_money(avg_market)} &mdash; a saving of "
+                              f"<strong>{_money(saving)}</strong>")
             elif avg_market:
-                value_line = f"{_money(pb.realistic_total_price)} vs average market price {_money(avg_market)} ({bm.get('classification', '')})"
+                value_line = (f"{_money(pb.realistic_total_price)} vs {what} "
+                              f"{_money(avg_market)} ({bm.get('classification', '')})")
             else:
-                value_line = f"{_money(pb.realistic_total_price)} &mdash; market benchmark pending"
+                value_line = f"{_money(pb.realistic_total_price)}"
 
             comp_rows = "".join(
                 f"<tr><td>{c['suburb']}, {c['state']}</td><td>{c['bedrooms']} bed</td><td>{_money(c['price'])}</td><td>{c['source']}</td></tr>"
@@ -45,8 +53,37 @@ class ClientReportGenerator:
             )
             comp_table = (
                 f"<table class='comps'><tr><th>Comparable</th><th>Beds</th><th>Price</th><th>Source</th></tr>{comp_rows}</table>"
-                if comp_rows else "<p class='pending'>Market comparables to be confirmed.</p>"
+                if comp_rows else (
+                    f"<p class='pending'>{bm.get('data_note') or ''}</p>" if internal
+                    else "<p class='pending'>Market comparables to be confirmed.</p>")
             )
+
+            # A row with nothing in it is worse than no row. Stored stock carries no
+            # rent figure, so this document was telling an INVESTOR "Estimated rent
+            # $0-$0 / week" and "Estimated gross yield 0.00%" — which does not read as
+            # "not captured", it reads as "this earns nothing". Omit instead.
+            rent_row = ""
+            if p.estimated_rent_weekly_min or p.estimated_rent_weekly_max:
+                rent_row = ('<div class="row"><span class="label">Estimated rent</span>'
+                            f'<span>{_money(p.estimated_rent_weekly_min)}&ndash;'
+                            f'{_money(p.estimated_rent_weekly_max)} / week</span></div>')
+            yield_row = ""
+            if gross_yield:
+                yield_row = ('<div class="row"><span class="label">Estimated gross yield</span>'
+                             f'<span>{gross_yield:.2f}%</span></div>')
+
+            # "August 2026 ()" — an empty bracket where no date was captured.
+            title_text = str(p.title_status or "Not stated in source").strip()
+            if str(p.expected_title_date or "").strip():
+                title_text += f" ({p.expected_title_date})"
+
+            # Only print the location note when it says something. "No amenity
+            # assessment captured for this listing." under a heading called Location
+            # reads, to a buyer, as though the area is a problem.
+            amenity = str(p.amenities_summary or "").strip()
+            amenity_line = (f"<p><em>Location:</em> {amenity}</p>"
+                            if amenity and not amenity.lower().startswith("no amenity")
+                            else "")
 
             dist = getattr(p, 'distance_km_from_target', None)
             dist_line = f" &middot; {dist} km from {brief.primary_suburbs[0]}" if dist not in (None, 0.0) and brief.primary_suburbs else ""
@@ -60,14 +97,14 @@ class ClientReportGenerator:
       <h2>{p.lot_address}, {p.suburb} {p.state}</h2>
       <p class="sub">{p.bedrooms} bed &middot; {p.bathrooms} bath &middot; {p.car_spaces} car &middot; {p.land_size_sqm:,.0f} m&sup2; land &middot; {p.house_size_sqm:,.0f} m&sup2; house &middot; {p.builder_name}{dist_line}</p>
       <div class="row"><span class="label">Your price</span><span>{value_line}</span></div>
-      <div class="row"><span class="label">Estimated rent</span><span>{_money(p.estimated_rent_weekly_min)}&ndash;{_money(p.estimated_rent_weekly_max)} / week</span></div>
-      <div class="row"><span class="label">Estimated gross yield</span><span>{gross_yield:.2f}%</span></div>
+      {rent_row}
+      {yield_row}
       <div class="row"><span class="label">Turnkey status</span><span>{pb.turnkey_status.value}{' &mdash; allow ' + _money(pb.estimated_additional_costs) + ' additional costs' if pb.estimated_additional_costs else ''}</span></div>
-      <div class="row"><span class="label">Title</span><span>{p.title_status} ({p.expected_title_date})</span></div>
+      <div class="row"><span class="label">Title</span><span>{title_text}</span></div>
       <h3>Why we recommend it</h3>
       <p>{p.recommendation_reason}</p>
-      <p><em>Location:</em> {p.amenities_summary}</p>
-      <h3>Market comparison</h3>
+      {amenity_line}
+      <h3>{'Price comparison' if internal else 'Market comparison'}</h3>
       {comp_table}
       <h3>Things to be aware of</h3>
       {risk_block}
@@ -98,12 +135,14 @@ class ClientReportGenerator:
 </header>
 <p>Based on your requirements ({brief.bedrooms_min}+ bedrooms, {brief.bathrooms_min}+ bathrooms,
 {brief.car_spaces_min}+ car spaces{', ' + ', '.join(brief.primary_suburbs) if brief.primary_suburbs else ''}),
-we reviewed the market and shortlisted the following {len(top3)} option(s) for you.</p>
+we reviewed available stock and shortlisted the following {len(top3)} option(s) for you.</p>
 {''.join(cards)}
 <footer>
+  <strong>Disclaimer.</strong>
   Information checked on {date_str} and subject to availability and independent verification.
-  Rental estimates and market comparisons are indicative only. This report does not constitute
-  legal, financial, building, tax or valuation advice; grants and finance outcomes are subject to
-  eligibility and professional advice.
+  Rental estimates and price comparisons are indicative only. Where a comparison is shown
+  against comparable listings it is drawn from stock we currently hold, not from a market
+  valuation. This report does not constitute legal, financial, building, tax or valuation
+  advice; grants and finance outcomes are subject to eligibility and professional advice.
 </footer>
 """
