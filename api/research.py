@@ -82,6 +82,10 @@ def _shortlist_entry(p):
             'suitability_score': p.scoring.suitability_score,
             'risk_score': p.scoring.risk_score,
         } if p.scoring else {},
+        # Things to confirm before this reaches a client. They cost points but reject
+        # nothing, and a SHORTLISTED lot is exactly where they matter — "storeys not
+        # stated, confirm with the builder" is advice a consultant has to act on.
+        'advisories': p.scoring.advisories if p.scoring else '',
         'recommendation': p.recommendation.value,
         'recommendation_reason': p.recommendation_reason,
         'risks': [{'name': r.risk_name, 'rating': r.rating.value,
@@ -144,7 +148,12 @@ def run_research(payload):
                     + counts['no_suburb'] + counts['incomplete_facts']
                     + counts['storey_unknown_and_binding'] + counts['truncated'])
 
+    # kind='coverage' so the UI stops drawing this as a rejected property under a
+    # "Hard Rejection" pill. It is the pipeline accounting for what it did and did
+    # not score — the opposite of a rejection, and the single most useful line in the
+    # response for understanding a thin shortlist.
     coverage_entry = {'property_id': 'SNAPSHOT-COVERAGE',
+                      'kind': 'coverage',
                       'address': 'Snapshot coverage (deployed build, no live scrape)',
                       'reason': coverage}
 

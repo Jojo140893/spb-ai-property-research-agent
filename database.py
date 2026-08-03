@@ -59,6 +59,19 @@ BUILDINGS_EXTRA_COLUMNS = (
     # selection has quietly emptied itself.
     ("promo_selected", "INTEGER"),        # 1 = in the weekly promotion
     ("promo_selected_at", "TEXT"),        # when it was marked, for "what changed this week"
+    # Superseded rows — an OLDER capture of a lot that is also stored fresher.
+    #
+    # content_hash includes lot_number and a key derived from the source row's text,
+    # so when the extractor's output for a lot changes between harvests the identity
+    # changes with it and the next run INSERTS instead of updating. One lot was found
+    # stored three times: 27 Jul with lot_number '9' and no source text at $962,351,
+    # then 3 Aug through the same channel with lot_number NULL and the text populated
+    # at $1,058,877. 777 rows — 12% of the table — are surplus copies like that.
+    #
+    # Marked rather than deleted, per the standing rule: the older capture is real
+    # history and its price is what was advertised at the time.
+    ("superseded_by", "TEXT"),            # content_hash of the surviving row
+    ("superseded_at", "TEXT"),
     # benchmarking (Coleen's 22 July ask)
     ("benchmark_median", "REAL"), ("benchmark_variance_pct", "REAL"),
     ("benchmark_classification", "TEXT"), ("benchmark_basis", "TEXT"),

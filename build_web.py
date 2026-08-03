@@ -63,6 +63,10 @@ BUILDING_FIELDS = [
     # is the most common thing to change between harvests. It leaks nothing: it is a
     # digest of listing attributes already published in the row beside it.
     "content_hash", "promo_selected",
+    # An older capture of a lot that is also stored fresher. Exported rather than
+    # dropped so the dashboard can hide them by default AND say how many it hid —
+    # silently serving 5,703 rows from a 6,480-row table would be its own small lie.
+    "superseded_by",
 ]
 # builders: NOTE the deliberate omission of portal_login_email / portal_login_password.
 BUILDER_FIELDS = [

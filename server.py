@@ -174,6 +174,10 @@ class PropertyAgentRequestHandler(http.server.SimpleHTTPRequestHandler):
                                 'suitability_score': p.scoring.suitability_score,
                                 'risk_score': p.scoring.risk_score,
                             } if p.scoring else {},
+                            # Mirrors api/research.py's _shortlist_entry — the two
+                            # serialisations have to stay identical or the local app
+                            # and the deployed one show different cards.
+                            'advisories': p.scoring.advisories if p.scoring else '',
                             'recommendation': p.recommendation.value,
                             'recommendation_reason': p.recommendation_reason,
                             'risks': [{'name': r.risk_name, 'rating': r.rating.value, 'description': r.description, 'mitigation': r.proposed_mitigation} for r in p.risks]

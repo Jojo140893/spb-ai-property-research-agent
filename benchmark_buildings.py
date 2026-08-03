@@ -277,11 +277,19 @@ def main(argv=None):
 
     conn = sqlite3.connect(str(config.DATABASE_PATH))
     conn.row_factory = sqlite3.Row
+    # Superseded rows are older captures of a lot that is also stored fresher. They
+    # carry the price that was advertised at the time, so leaving them in the peer
+    # pool drags medians toward stale numbers AND lets a stale row be benchmarked as
+    # though it were on the market. 777 of them, 199 cheaper than the row that
+    # replaced them. Excluded from both sides.
     rows = [dict(r) for r in conn.execute(
         "SELECT id, state, suburb, product_type, bedrooms, price FROM buildings "
-        "WHERE price IS NOT NULL AND price > 0")]
+        "WHERE price IS NOT NULL AND price > 0 AND superseded_by IS NULL")]
     total = conn.execute("SELECT COUNT(*) FROM buildings").fetchone()[0]
-    print(f"    {total} listing(s), {len(rows)} with a usable price")
+    stale = conn.execute(
+        "SELECT COUNT(*) FROM buildings WHERE superseded_by IS NOT NULL").fetchone()[0]
+    print(f"    {total} listing(s), {len(rows)} live with a usable price "
+          f"({stale} superseded, excluded)")
 
     if comparables:
         from benchmark import BenchmarkEngine

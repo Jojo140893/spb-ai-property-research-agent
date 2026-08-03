@@ -179,7 +179,10 @@ class KommoPropertyResearchAgent:
                 rejected_candidates.append({
                     'property_id': cand.property_id,
                     'address': cand.lot_address,
-                    'reason': cand.scoring.rejection_reason
+                    'reason': cand.scoring.rejection_reason,
+                    # Shown separately: these did not cause the rejection.
+                    'advisories': cand.scoring.advisories,
+                    'kind': 'rejection',
                 })
             else:
                 processed_candidates.append(cand)

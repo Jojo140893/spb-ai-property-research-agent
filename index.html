@@ -700,6 +700,9 @@
             <select id="bAvail"><option value="">Any availability</option></select>
             <select id="bProduct"><option value="">All products</option></select>
             <select id="bSource"><option value="">All sources</option></select>
+            <label class="pick-toggle" title="An older capture of a lot that is also stored fresher — same address, same spec, earlier date. Hidden by default because its price may have moved since.">
+                <input type="checkbox" id="bShowSuperseded"> Show superseded
+            </label>
             <button type="button" class="btn-ghost" id="bReset">Reset</button>
             <span class="filter-count" id="bCount"></span>
         </div>
@@ -1092,7 +1095,7 @@
         // here on its own the moment Proxima rows carry that source_channel.
         fill('bSource', uniq('source_channel'));
 
-        ['bSearch', 'bBuilder', 'bState', 'bAvail', 'bProduct', 'bSource'].forEach(id => {
+        ['bSearch', 'bBuilder', 'bState', 'bAvail', 'bProduct', 'bSource', 'bShowSuperseded'].forEach(id => {
             const e2 = document.getElementById(id);
             e2.oninput = e2.onchange = () => renderStock();
         });
@@ -1106,6 +1109,8 @@
             // a bad afternoon.
             const only = document.getElementById('bPickedOnly');
             if (only) only.checked = false;
+            const sup = document.getElementById('bShowSuperseded');
+            if (sup) sup.checked = false;
             stockSort = null;
             renderStock();
         };
@@ -1142,9 +1147,13 @@
         const fp = document.getElementById('bProduct').value;
         const fc = document.getElementById('bSource').value;
         const pickedOnly = (document.getElementById('bPickedOnly') || {}).checked;
+        const showSuperseded = (document.getElementById('bShowSuperseded') || {}).checked;
         const fields = ['builder_name', 'lot_address', 'suburb', 'estate_name', 'state', 'availability_status'];
 
         stockView = STOCK.filter(b => {
+            // Superseded rows are hidden unless asked for: they are an earlier capture
+            // of a lot that is also stored fresher, so their price may have moved.
+            if (!showSuperseded && b.superseded_by) return false;
             if (fb && (b.builder_name || '') !== fb) return false;
             if (fs && (b.state || '') !== fs) return false;
             if (fa && (b.availability_status || '') !== fa) return false;
@@ -1210,8 +1219,13 @@
             };
         });
 
+        // Say how many were hidden. Serving 5,703 rows out of a 6,480-row table
+        // without mentioning it would be its own small lie.
+        const hiddenStale = (document.getElementById('bShowSuperseded') || {}).checked
+            ? 0 : STOCK.filter(b => b.superseded_by).length;
         document.getElementById('bCount').textContent =
-            `${stockView.length.toLocaleString()} of ${STOCK.length.toLocaleString()} shown`
+            `${stockView.length.toLocaleString()} of ${(STOCK.length - hiddenStale).toLocaleString()} shown`
+            + (hiddenStale ? ` · ${hiddenStale.toLocaleString()} superseded hidden` : '')
             + (stockView.length > stockShown ? ` · first ${stockShown.toLocaleString()}` : '');
         const pc = document.getElementById('pickCount');
         if (pc) pc.textContent = PICKED.size ? `${PICKED.size.toLocaleString()} marked` : 'none marked';
@@ -1360,6 +1374,10 @@
                         <div style="font-size:0.85rem; margin-top:1rem; color:var(--text-body);">
                             <strong>Executive Reasoning:</strong> ${prop.recommendation_reason}
                         </div>
+                        ${(prop.advisories || '').trim() ? `
+                        <div style="font-size:0.82rem; margin-top:0.5rem; color:var(--amber-yellow);">
+                            <strong>Confirm before presenting:</strong> ${esc(prop.advisories)}
+                        </div>` : ''}
                     `;
 
                     resultsDiv.appendChild(card);
@@ -1391,17 +1409,44 @@
                 if (data.rejected_log && data.rejected_log.length > 0) {
                     data.rejected_log.forEach(rej => {
                         const card = document.createElement('div');
+
+                        // The coverage note is the pipeline accounting for what it
+                        // scored and what it could not — not a rejected property. It
+                        // was being drawn in red under "Hard Rejection", which made
+                        // the most useful line in the response read like a failure.
+                        if (rej.kind === 'coverage' || rej.property_id === 'SNAPSHOT-COVERAGE') {
+                            card.className = 'prop-card';
+                            card.style.borderLeft = '5px solid var(--accent-blue)';
+                            card.innerHTML = `
+                                <div class="card-top-row">
+                                    <div>
+                                        <div class="prop-title-text">What was searched</div>
+                                        <div class="prop-subtitle-text">${esc(rej.address)}</div>
+                                    </div>
+                                    <span class="pill" style="background:var(--blue-light); color:var(--accent-blue);">Coverage</span>
+                                </div>
+                                <div style="font-size:0.86rem; color:var(--text-body);">${esc(rej.reason)}</div>
+                            `;
+                            resultsDiv.appendChild(card);
+                            return;
+                        }
+
                         card.className = 'prop-card rejected';
                         card.style.borderLeft = '5px solid var(--rose-red)';
+                        // Advisories cost points but reject nothing, so they are shown
+                        // apart from the causes and not in the rejection colour.
+                        const advice = (rej.advisories || '').trim();
                         card.innerHTML = `
                             <div class="card-top-row">
                                 <div>
-                                    <div class="prop-title-text" style="color:var(--rose-red);">Rejected: ${rej.address}</div>
-                                    <div class="prop-subtitle-text">Filtered by Mandatory Rejection Criteria</div>
+                                    <div class="prop-title-text" style="color:var(--rose-red);">Rejected: ${esc(rej.address)}</div>
+                                    <div class="prop-subtitle-text">Did not meet a mandatory requirement</div>
                                 </div>
                                 <span class="pill pill-reject">Hard Rejection</span>
                             </div>
-                            <div style="font-size:0.86rem; color:var(--rose-red); font-weight:600;">Reason: ${rej.reason}</div>
+                            <div style="font-size:0.86rem; color:var(--rose-red); font-weight:600;">Why: ${esc(rej.reason)}</div>
+                            ${advice ? `<div style="font-size:0.8rem; color:var(--amber-yellow); margin-top:0.3rem;">
+                                Also worth checking (did not cause the rejection): ${esc(advice)}</div>` : ''}
                         `;
                         resultsDiv.appendChild(card);
                     });

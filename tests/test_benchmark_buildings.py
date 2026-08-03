@@ -164,6 +164,102 @@ def run_all():
         ("internal wording avoids 'market'", test_the_internal_wording_never_claims_the_market),
         ("basis recorded on every row", test_every_result_records_what_it_was_compared_against),
         ("tightest tier wins", test_the_tightest_available_tier_wins),
+        ("advisory is not a rejection cause", test_a_non_rejecting_advisory_is_not_reported_as_a_rejection_cause),
+        ("unstated storey never rejects", test_an_unstated_storey_alone_never_rejects),
+    ]
+    failed = 0
+    for name, fn in tests:
+        try:
+            fn()
+            print(f" [PASS] benchmark: {name}")
+        except AssertionError as e:
+            failed += 1
+            print(f" [FAIL] benchmark: {name}: {e}")
+    return failed
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(1 if run_all() else 0)
+
+def _brief(**over):
+    """A ClientBrief with every mandatory field, so a test states only what it varies."""
+    from schema import ClientBrief, BuyerType
+    kw = dict(client_name="t", budget_max=900_000.0, preferred_spending_cap=850_000.0,
+              deposit_amount=100_000.0, finance_status="Pre-approved",
+              buyer_type=BuyerType.INVESTOR, state="QLD", primary_suburbs=[],
+              bedrooms_min=4, bathrooms_min=2, car_spaces_min=1, storeys_max=1,
+              land_size_min_sqm=0.0, house_size_min_sqm=175.0)
+    kw.update(over)
+    return ClientBrief(**kw)
+
+
+def _candidate(**over):
+    from schema import CandidateProperty, PriceBreakdown, TurnkeyStatus
+    price = over.pop("price", 700_000.0)
+    kw = dict(property_id="P1", lot_address="Lot 1", suburb="Sampleton", state="QLD",
+              builder_name="Placeholder", developer_name="", house_design="",
+              bedrooms=3, bathrooms=2, car_spaces=1, storeys=None,
+              land_size_sqm=300.0, house_size_sqm=133.0, title_status="Registered",
+              expected_title_date="", estimated_rent_weekly_min=0.0,
+              estimated_rent_weekly_max=0.0, amenities_summary="",
+              builder_confidence_rating="MEDIUM", source_channel="test",
+              source_url_or_ref="", date_checked="01/08/2026",
+              price_breakdown=PriceBreakdown(
+                  advertised_package_price=price, land_price=0.0, build_price=price,
+                  fixed_site_costs=0.0, driveway_cost=0.0, fencing_cost=0.0,
+                  landscaping_cost=0.0, flooring_cost=0.0, blinds_cost=0.0,
+                  hvac_cost=0.0, estimated_additional_costs=0.0,
+                  realistic_total_price=price,
+                  turnkey_status=TurnkeyStatus.FULL_TURNKEY))
+    kw.update(over)
+    return CandidateProperty(**kw)
+
+
+# ------------------------------------------- advisories are not rejection causes
+
+def test_a_non_rejecting_advisory_is_not_reported_as_a_rejection_cause():
+    """An unrecorded storey count flags, it does not reject.
+
+    Both used to be pooled into one string, so "Storeys not stated ... confirm with
+    the builder" printed on every rejection card under a "Hard Rejection" heading as
+    though it had caused the rejection. It reads as an extra failure on a lot that
+    failed for one reason, and it made a deliberate decision — flag, never fail,
+    because rejecting on it made a single-storey brief return nothing — look like
+    its opposite.
+    """
+    from scoring_engine import ScoringEngine
+    s = ScoringEngine.evaluate_property(_brief(), _candidate())
+    assert s.hard_rejection is True, "3 beds against a 4-bed minimum must still reject"
+    assert "Storeys not stated" not in s.rejection_reason,         "a non-rejecting advisory is being reported as a cause of rejection"
+    assert "Bedrooms" in s.rejection_reason, s.rejection_reason
+    assert "Storeys not stated" in s.advisories,         "the advisory must still be surfaced, just not as a cause"
+
+
+def test_an_unstated_storey_alone_never_rejects():
+    from scoring_engine import ScoringEngine
+    s = ScoringEngine.evaluate_property(
+        _brief(bedrooms_min=1, bathrooms_min=1, car_spaces_min=0, house_size_min_sqm=0.0),
+        _candidate(bedrooms=4, bathrooms=2, car_spaces=2, house_size_sqm=200.0))
+    assert s.hard_rejection is False, "an unrecorded storey count must never reject"
+    assert "Storeys not stated" in s.advisories
+
+
+def run_all():
+    tests = [
+        ("row excluded from its own median", test_a_row_is_excluded_from_its_own_median),
+        ("variance signed as expected", test_variance_is_signed_the_way_a_reader_expects),
+        ("group below the floor refused", test_a_group_below_the_floor_is_refused),
+        ("junk suburb forms no group", test_a_junk_suburb_never_forms_a_peer_group),
+        ("real suburb unaffected by junk", test_a_real_suburb_still_benchmarks_alongside_junk_ones),
+        ("over-spread group refused", test_a_group_that_is_too_spread_out_is_refused),
+        ("tight group accepted", test_a_tight_group_is_not_refused),
+        ("dispersion uses percentiles", test_dispersion_uses_percentiles_not_extremes),
+        ("internal wording avoids 'market'", test_the_internal_wording_never_claims_the_market),
+        ("basis recorded on every row", test_every_result_records_what_it_was_compared_against),
+        ("tightest tier wins", test_the_tightest_available_tier_wins),
+        ("advisory is not a rejection cause", test_a_non_rejecting_advisory_is_not_reported_as_a_rejection_cause),
+        ("unstated storey never rejects", test_an_unstated_storey_alone_never_rejects),
     ]
     failed = 0
     for name, fn in tests:

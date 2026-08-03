@@ -18,9 +18,12 @@ ORDER MATTERS, and each dependency below is a bug that was actually hit:
                     all present. Re-resolves hint-based states rather than only filling
                     blanks, which is the only way a wrong one gets corrected.
   3. specs        — bed/bath/car out of each row's own text
-  4. benchmark    — needs the whole set present to compute a median to compare against
-  5. export       — CSV + Excel for Coleen
-  6. build+deploy — the snapshot the deployed app reads
+  4. supersede    — mark older captures of a lot that is also stored fresher. Runs
+                    before the benchmark because a superseded row holds the price
+                    advertised at its capture date, and those drag medians.
+  5. benchmark    — needs the whole set present to compute a median to compare against
+  6. export       — CSV + Excel for Coleen
+  7. build+deploy — the snapshot the deployed app reads
 
 WHAT THIS CANNOT DO UNATTENDED, stated plainly rather than left to fail at 3am:
 Paramount's login carries an invisible reCAPTCHA and Proxima enforces 2FA. Neither can be
@@ -90,13 +93,17 @@ def main() -> int:
     if args.email_only:
         harvest.append("--email-only")
     steps = [
-        ("1/6  Harvest stock (E-Agent + portals + digital email)", harvest, False),
-        ("2/6  Enrich: state, suburb, builder", ["enrich_buildings.py"], False),
-        ("3/6  Recover bed / bath / car", ["recover_specs.py", "--apply"], False),
-        ("4/6  Benchmark against comparable stock", ["benchmark_buildings.py"], True),
-        ("5/6  Export CSV + Excel", ["export_csv.py"], False),
-        ("5/6  Export Excel workbook", ["export_excel.py"], False),
-        ("6/6  Build the deployed snapshot", ["build_web.py"], False),
+        ("1/7  Harvest stock (E-Agent + portals + digital email)", harvest, False),
+        ("2/7  Enrich: state, suburb, builder", ["enrich_buildings.py"], False),
+        ("3/7  Recover bed / bath / car", ["recover_specs.py", "--apply"], False),
+        # BEFORE the benchmark, not after: a superseded row carries the price that was
+        # advertised at its capture date, and leaving those in the peer pool drags every
+        # median toward stale numbers.
+        ("4/7  Supersede older captures of the same lot", ["supersede_duplicates.py"], False),
+        ("5/7  Benchmark against comparable stock", ["benchmark_buildings.py"], True),
+        ("6/7  Export CSV + Excel", ["export_csv.py"], False),
+        ("6/7  Export Excel workbook", ["export_excel.py"], False),
+        ("7/7  Build the deployed snapshot", ["build_web.py"], False),
     ]
 
     print(f"SPB daily run — {datetime.now():%a %d %b %Y %H:%M}")

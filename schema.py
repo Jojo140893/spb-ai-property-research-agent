@@ -114,7 +114,15 @@ class ScoringBreakdown:
     risk_score: float  # max 10
     total_score: float  # max 100
     hard_rejection: bool = False
+    # Only reasons that actually caused the rejection. An advisory that costs points
+    # but does NOT reject belongs in `advisories`, not here — the two were pooled in
+    # one string, so "Storeys not stated ... confirm with the builder" was printed on
+    # every rejection card under a "Hard Rejection" heading as though it were a cause.
+    # It never rejects anything: an unrecorded storey count was deliberately made a
+    # flag rather than a failure, because rejecting on it made a single-storey brief
+    # return nothing at all.
     rejection_reason: str = ""
+    advisories: str = ""
 
 
 @dataclass

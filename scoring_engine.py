@@ -45,7 +45,11 @@ class BuilderConfidenceModel:
 class ScoringEngine:
     @classmethod
     def evaluate_property(cls, brief: ClientBrief, prop: CandidateProperty) -> ScoringBreakdown:
+        # Kept apart on purpose. `rejection_reasons` is why a lot CANNOT be shown;
+        # `advisories` is what a consultant should check before showing it. Pooling
+        # them printed advisories on the rejection card as if they were causes.
         rejection_reasons: List[str] = []
+        advisories: List[str] = []
         hard_rejection = False
 
         # --- 1. Budget Fit (Max 20 pts) ---
@@ -86,7 +90,7 @@ class ScoringEngine:
             # house in front of a buyer who asked not to see one. So it is shortlisted with
             # the gap named and two points off, ranking below any lot that does state it.
             if brief.storeys_max is not None and brief.storeys_max < 2:
-                rejection_reasons.append(
+                advisories.append(
                     "Storeys not stated in the builder's stocklist — confirm with the "
                     "builder before presenting to the client")
                 req_pts -= 2.0
@@ -190,7 +194,8 @@ class ScoringEngine:
             risk_score=round(risk_pts, 1),
             total_score=round(total, 1),
             hard_rejection=hard_rejection,
-            rejection_reason="; ".join(rejection_reasons)
+            rejection_reason="; ".join(rejection_reasons),
+            advisories="; ".join(advisories),
         )
 
     @classmethod
