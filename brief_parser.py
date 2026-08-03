@@ -19,14 +19,20 @@ from schema import ClientBrief, BuyerType
 # Coleen hit exactly that. Fixed at BOTH ends: the page no longer sends NaN, and this
 # parser no longer trusts it not to. A brief is user input arriving over HTTP; it has
 # to survive anything, not just what our own form happens to send.
-def _num(raw: Dict[str, Any], key: str, default):
-    if key not in raw:
-        return default
-    value = raw[key]
+def coerce_number(value: Any, default=None):
+    """Best-effort number out of anything a form or an API caller might send.
+
+    Public because the raw brief dict is read in more than one place — the parser here
+    and the research record written in database.py — and each one that reimplemented
+    `float(...)` became its own HTTP 500. "abc" and "750,000" both crashed the request
+    at database.py even after this module learned to handle them.
+    """
     if value is None:
         return default
+    if isinstance(value, bool):          # bool is an int subclass; not a quantity
+        return default
     if isinstance(value, str):
-        value = value.strip().replace(",", "").replace("$", "")
+        value = value.strip().replace(",", "").replace("$", "").replace(" ", "")
         if not value:
             return default
     try:
@@ -37,6 +43,12 @@ def _num(raw: Dict[str, Any], key: str, default):
     if out != out or out in (float("inf"), float("-inf")):
         return default
     return out
+
+
+def _num(raw: Dict[str, Any], key: str, default):
+    if key not in raw:
+        return default
+    return coerce_number(raw[key], default)
 
 
 def _f(raw: Dict[str, Any], key: str, default) -> Optional[float]:
@@ -89,8 +101,13 @@ class ClientBriefParser:
             bathrooms_min=_i(raw_data, 'bathrooms_min', 2),
             car_spaces_min=_i(raw_data, 'car_spaces_min', 1),
             storeys_max=_i(raw_data, 'storeys_max', 2),
-            land_size_min_sqm=_f(raw_data, 'land_size_min_sqm', 300.0),
-            house_size_min_sqm=_f(raw_data, 'house_size_min_sqm', 150.0),
+            # No minimum unless the client states one. These used to default to 300 and
+            # 150, which invented a requirement nobody asked for — and house size is a
+            # HARD rejection, recorded on only 18% of stock, so the invented 150 m² wiped
+            # out every VIC result at every budget and every radius. A brief that is
+            # silent about house size means "no preference", not "at least 150 m²".
+            land_size_min_sqm=_f(raw_data, 'land_size_min_sqm', 0.0),
+            house_size_min_sqm=_f(raw_data, 'house_size_min_sqm', 0.0),
             target_rent_weekly=_f(raw_data, 'target_rent_weekly', None),
             target_gross_yield_pct=_f(raw_data, 'target_gross_yield_pct', None),
             build_timeframe_months=_i(raw_data, 'build_timeframe_months', None),

@@ -42,6 +42,10 @@ import _candidates
 MAX_REJECTED_LOG = int(os.environ.get("SPB_MAX_REJECTED_LOG", "30"))
 
 
+class BadRequest(ValueError):
+    """The request itself was malformed — answered 400, not 500."""
+
+
 def _shortlist_entry(p):
     """Identical field-for-field to server.py's shortlist serialisation."""
     return {
@@ -122,7 +126,15 @@ def _empty_kommo_payload(brief_dict, record_id, coverage_reason):
 
 def run_research(payload):
     """The whole endpoint as a plain function, so it is testable without a socket."""
+    # Anything can arrive over HTTP. A payload that is not an object, or a client_brief
+    # sent as a string or a list, used to reach .get() and raise — answering a malformed
+    # request with a 500 ("we broke") instead of telling the caller what was wrong.
+    if not isinstance(payload, dict):
+        raise BadRequest("the request body must be a JSON object")
     brief_dict = payload.get('client_brief') or {}
+    if not isinstance(brief_dict, dict):
+        raise BadRequest("'client_brief' must be a JSON object, got %s"
+                         % type(brief_dict).__name__)
 
     agent = _bootstrap.get_agent()
 
@@ -243,8 +255,15 @@ class handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get('Content-Length') or 0)
             raw = self.rfile.read(length) if length else b''
-            payload = json.loads(raw.decode('utf-8')) if raw else {}
+            try:
+                payload = json.loads(raw.decode('utf-8')) if raw else {}
+            except (UnicodeDecodeError, ValueError) as exc:
+                raise BadRequest("body is not valid JSON: %s" % exc)
             self._send(200, run_research(payload))
+        except BadRequest as exc:
+            # The caller's request was wrong, not ours. 400 says so; a 500 would send
+            # them looking for a fault on this side.
+            self._send(400, {'status': 'error', 'message': str(exc)})
         except Exception as exc:                                  # noqa: BLE001
             traceback.print_exc(file=sys.stderr)
             self._send(500, {'status': 'error', 'message': str(exc)})

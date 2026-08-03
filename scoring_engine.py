@@ -67,17 +67,29 @@ class ScoringEngine:
 
         # --- 2. Requirement Match (Max 20 pts) ---
         req_pts = 20.0
-        if prop.bedrooms < brief.bedrooms_min:
+        # A None here means the stocklist never stated it AND the brief set no minimum
+        # that needs it — a row whose missing fact the client's own requirement turns on
+        # never reaches the scorer (_candidates drops and names it). So "not stated" is
+        # recorded as a gap to confirm, not treated as a pass or a failure.
+        for value, minimum, label in ((prop.bedrooms, brief.bedrooms_min, "Bedroom count"),
+                                      (prop.bathrooms, brief.bathrooms_min, "Bathroom count"),
+                                      (prop.car_spaces, brief.car_spaces_min, "Car space count")):
+            if value is None:
+                advisories.append(f"{label} not stated in the builder's stocklist — "
+                                  "confirm with the builder before presenting to the client")
+                req_pts -= 1.0
+
+        if prop.bedrooms is not None and prop.bedrooms < brief.bedrooms_min:
             hard_rejection = True
             rejection_reasons.append(f"Bedrooms ({prop.bedrooms}) below minimum mandatory requirement ({brief.bedrooms_min})")
             req_pts -= 10.0
 
-        if prop.bathrooms < brief.bathrooms_min:
+        if prop.bathrooms is not None and prop.bathrooms < brief.bathrooms_min:
             hard_rejection = True
             rejection_reasons.append(f"Bathrooms ({prop.bathrooms}) below minimum mandatory requirement ({brief.bathrooms_min})")
             req_pts -= 5.0
 
-        if prop.car_spaces < brief.car_spaces_min:
+        if prop.car_spaces is not None and prop.car_spaces < brief.car_spaces_min:
             hard_rejection = True
             rejection_reasons.append(f"Car spaces ({prop.car_spaces}) below minimum mandatory requirement ({brief.car_spaces_min})")
             req_pts -= 5.0
@@ -117,12 +129,16 @@ class ScoringEngine:
                     f"exceeds the {brief.search_radius_km:.0f} km search radius")
 
         # Defect #4 Fix: Mandatory House Size Minimum Check
-        if prop.house_size_sqm < brief.house_size_min_sqm:
+        if prop.house_size_sqm is None:
+            advisories.append("House size not stated in the builder's stocklist — "
+                              "confirm with the builder before presenting to the client")
+            req_pts -= 1.0
+        elif prop.house_size_sqm < brief.house_size_min_sqm:
             hard_rejection = True
             rejection_reasons.append(f"House size ({prop.house_size_sqm:,.0f} m²) below minimum mandatory requirement ({brief.house_size_min_sqm:,.0f} m²)")
             req_pts -= 5.0
 
-        if prop.land_size_sqm < brief.land_size_min_sqm:
+        if brief.land_size_min_sqm and prop.land_size_sqm < brief.land_size_min_sqm:
             deficit = brief.land_size_min_sqm - prop.land_size_sqm
             req_pts -= min(5.0, (deficit / brief.land_size_min_sqm) * 10.0)
 

@@ -91,10 +91,27 @@ class SuburbGeoIndex:
             return ""
         if self.locate(raw, state or ""):
             return raw
-        for part in reversed([p.strip(" ()") for p in raw.split(",") if p.strip(" ()")]):
+        # Colon is used the same way as a comma by several stocklists — "Estate : Dream
+        # Sebastopol" — and a trailing postcode blocks the match on the part that holds
+        # the locality: "Wyndham Gardens, Wyndham Vale 3024". Between them these two
+        # shapes cost 43 real VIC lots, each of which was dropped from every search.
+        for part in reversed([p.strip(" ()") for p in re.split(r"[,:]", raw) if p.strip(" ()")]):
             part = re.sub(r"\s*\([^)]*\)\s*", " ", part).strip()
             if part and part.lower() != raw.lower() and self.locate(part, state or ""):
                 return part
+            # Only ever a trailing postcode, and only when what remains resolves in the
+            # index. Nothing is inferred: an unmatched remainder is still rejected.
+            trimmed = re.sub(r"\s+\d{4}$", "", part).strip()
+            if trimmed and trimmed != part and self.locate(trimmed, state or ""):
+                return trimmed
+            # "Dream Sebastopol" / "Pinnacle Smythes Creek" — an estate name prepended to
+            # the locality. Walk the words from the right and keep the longest tail that
+            # is a real locality, so "Smythes Creek" wins over "Creek".
+            words = part.split()
+            for start in range(1, len(words)):
+                tail = " ".join(words[start:])
+                if self.locate(tail, state or ""):
+                    return tail
         return ""
 
     def find_suburb_in_text(self, text: str, state: str = "") -> Optional[str]:

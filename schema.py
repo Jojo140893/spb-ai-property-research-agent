@@ -134,9 +134,14 @@ class CandidateProperty:
     builder_name: str
     developer_name: str
     house_design: str
-    bedrooms: int
-    bathrooms: int
-    car_spaces: int
+    # None means "the stocklist does not say", for the same reason as storeys below: a
+    # brief that sets no minimum for a field should not lose good stock just because the
+    # field is blank, and it must not be back-filled with a plausible number either.
+    # A row IS still excluded upstream when the brief states a minimum this would be
+    # checked against — see _candidates.BRIEF_MINIMUM_FOR.
+    bedrooms: Optional[int]
+    bathrooms: Optional[int]
+    car_spaces: Optional[int]
     # Optional because most stocklists do not record it: storey is stated on 149 of 4,192
     # harvested rows. As a plain int it defaulted to 1, which silently satisfied a
     # "single storey only" brief for every row that never said — so the candidate feed had
@@ -144,7 +149,7 @@ class CandidateProperty:
     # None means "not stated", and the scorer flags it rather than assuming either way.
     storeys: Optional[int]
     land_size_sqm: float
-    house_size_sqm: float
+    house_size_sqm: Optional[float]
     title_status: str
     expected_title_date: str
     price_breakdown: PriceBreakdown

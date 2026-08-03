@@ -41,6 +41,7 @@ from tests.test_benchmark_buildings import run_all as _benchmark_suite
 from tests.test_supersede import run_all as _supersede_suite
 from tests.test_builder_names import run_all as _builder_names_suite
 from tests.test_brief_robustness import run_all as _brief_suite
+from tests.test_unstated_facts import run_all as _unstated_suite
 from tests.test_adaptive_extract import test_adaptive_extracts_from_unknown_layouts
 
 
@@ -83,6 +84,7 @@ def run_all_tests():
         ("Supersede: keep the freshest capture", lambda: (_ for _ in ()).throw(AssertionError("supersede suite failed")) if _supersede_suite() else None),
         ("Builder names: one builder, one name", lambda: (_ for _ in ()).throw(AssertionError("builder names suite failed")) if _builder_names_suite() else None),
         ("Brief: survives null / junk input", lambda: (_ for _ in ()).throw(AssertionError("brief suite failed")) if _brief_suite() else None),
+        ("Unstated facts: no minimum, no exclusion", lambda: (_ for _ in ()).throw(AssertionError("unstated facts suite failed")) if _unstated_suite() else None),
     ]
 
     passed = 0

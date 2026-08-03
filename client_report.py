@@ -91,11 +91,23 @@ class ClientReportGenerator:
             risk_items = "".join(f"<li>{r.risk_name} ({r.rating.value}): {r.proposed_mitigation}</li>" for r in p.risks)
             risk_block = f"<ul class='risks'>{risk_items}</ul>" if risk_items else "<p>No medium or high risks identified at time of checking.</p>"
 
+            # A spec the stocklist never stated is omitted from this line, not printed as
+            # "None bed" and not formatted at all — f"{None:,.0f}" raises. The client sees
+            # the facts that were verified; the gaps are named in the advisories instead.
+            spec = " &middot; ".join(bit for bit in (
+                f"{p.bedrooms} bed" if p.bedrooms is not None else "",
+                f"{p.bathrooms} bath" if p.bathrooms is not None else "",
+                f"{p.car_spaces} car" if p.car_spaces is not None else "",
+                f"{p.land_size_sqm:,.0f} m&sup2; land" if p.land_size_sqm else "",
+                f"{p.house_size_sqm:,.0f} m&sup2; house" if p.house_size_sqm else "",
+                p.builder_name or "",
+            ) if bit)
+
             cards.append(f"""
     <div class="card">
       <div class="rank">Option {rank}</div>
       <h2>{p.lot_address}, {p.suburb} {p.state}</h2>
-      <p class="sub">{p.bedrooms} bed &middot; {p.bathrooms} bath &middot; {p.car_spaces} car &middot; {p.land_size_sqm:,.0f} m&sup2; land &middot; {p.house_size_sqm:,.0f} m&sup2; house &middot; {p.builder_name}{dist_line}</p>
+      <p class="sub">{spec}{dist_line}</p>
       <div class="row"><span class="label">Your price</span><span>{value_line}</span></div>
       {rent_row}
       {yield_row}

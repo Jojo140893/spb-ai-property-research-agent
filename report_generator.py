@@ -6,6 +6,19 @@ Implements SOP Step 12 & Section 7 (Property Summary Template).
 from schema import CandidateProperty, ClientBrief
 from datetime import datetime
 
+# The specs are Optional: a stocklist that never recorded a bedroom count or a house size
+# leaves None, and "{None:,.0f}" raises rather than printing anything. Say what is not
+# stated instead of substituting a number nobody verified.
+_NOT_STATED = "Not stated in the builder's stocklist"
+
+
+def _stated(value):
+    return _NOT_STATED if value is None else value
+
+
+def _sqm(value):
+    return _NOT_STATED if not value else f"{value:,.0f} m²"
+
 
 class ReportGenerator:
     @staticmethod
@@ -30,10 +43,10 @@ class ReportGenerator:
 ### Key Specifications
 | Parameter | Value |
 | :--- | :--- |
-| **Bedrooms / Bathrooms / Cars** | {prop.bedrooms} Bed | {prop.bathrooms} Bath | {prop.car_spaces} Car |
+| **Bedrooms / Bathrooms / Cars** | {_stated(prop.bedrooms)} Bed | {_stated(prop.bathrooms)} Bath | {_stated(prop.car_spaces)} Car |
 | **Storeys** | {prop.storeys if prop.storeys is not None else "Not stated in the builder's stocklist"} |
-| **Land Size** | {prop.land_size_sqm:,.0f} m² |
-| **House Size** | {prop.house_size_sqm:,.0f} m² |
+| **Land Size** | {_sqm(prop.land_size_sqm)} |
+| **House Size** | {_sqm(prop.house_size_sqm)} |
 | **Builder / Design** | {prop.builder_name} ({prop.house_design}) |
 | **Builder Confidence** | {prop.builder_confidence_rating} |
 

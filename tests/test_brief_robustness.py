@@ -60,6 +60,11 @@ def test_a_completely_empty_brief_still_parses():
     assert b is not None
     assert b.bedrooms_min == 3, "the documented default should apply"
     assert b.budget_max == 0.0
+    # A size the client never mentioned must not become a requirement they are held to.
+    # House size is a hard rejection and is recorded on 18% of stock, so a default of
+    # 150 m² silently emptied whole states.
+    assert b.house_size_min_sqm == 0.0, "an unstated house size must impose no minimum"
+    assert b.land_size_min_sqm == 0.0, "an unstated land size must impose no minimum"
 
 
 def test_numbers_sent_as_strings_are_accepted():

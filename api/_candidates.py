@@ -79,6 +79,15 @@ REQUIRED_FACTS = (
     ("house_sqm", "house size"),
 )
 
+# Which of the client's own minimums each fact is checked against. A fact is only
+# REQUIRED when the brief states the minimum that needs it — see _binding_facts.
+BRIEF_MINIMUM_FOR = {
+    "bedrooms": "bedrooms_min",
+    "bathrooms": "bathrooms_min",
+    "car_spaces": "car_spaces_min",
+    "house_sqm": "house_size_min_sqm",
+}
+
 
 # --------------------------------------------------------------------------- readers
 
@@ -304,6 +313,14 @@ def build_packages(brief_dict, rows, today=None):
     # because any real house-and-land storey value (1 or 2) satisfies a max of 2.
     storeys_max = _int(brief_dict.get("storeys_max"))
     storey_is_binding = storeys_max is not None and storeys_max < 2
+    # Only demand a fact the client's brief actually depends on. This gate used to
+    # require all four of REQUIRED_FACTS from every row regardless of the brief, and
+    # house size is recorded on 18% of stock — so 675 of VIC's 2,690 listings were
+    # discarded for a missing house size even when the brief set NO house-size minimum.
+    # Together with the other gates that left every VIC brief, at every budget and every
+    # radius, returning exactly zero results. Same reasoning as storey_is_binding.
+    binding_facts = {field for field, _ in REQUIRED_FACTS
+                     if (_num(brief_dict.get(BRIEF_MINIMUM_FOR[field])) or 0) > 0}
 
     counts = {
         "snapshot_rows": len(rows), "other_state": 0, "state_unknown": 0,
@@ -313,6 +330,7 @@ def build_packages(brief_dict, rows, today=None):
         "suburb_not_a_locality": 0,
     }
     missing_field_counts = {}
+    unstated_but_scored = {}
     entries = []
 
     for row in rows:
@@ -364,17 +382,24 @@ def build_packages(brief_dict, rows, today=None):
             continue
 
         facts = {}
-        missing = []
+        blocking, unstated = [], []
         for field, label in REQUIRED_FACTS:
             value = _int(row.get(field)) if field != "house_sqm" else _num(row.get(field))
-            if value is None:
-                missing.append(label)
             facts[field] = value
-        if missing:
+            if value is not None:
+                continue
+            (blocking if field in binding_facts else unstated).append(label)
+        if blocking:
+            # The client set a minimum for this and the listing does not say — it cannot
+            # be judged against their requirement, so it is excluded and named.
             counts["incomplete_facts"] += 1
-            for label in missing:
+            for label in blocking:
                 missing_field_counts[label] = missing_field_counts.get(label, 0) + 1
             continue
+        for label in unstated:
+            # Nothing in the brief turns on this one. Scored, with the gap on the record
+            # so the report can say "not stated" instead of implying a figure.
+            unstated_but_scored[label] = unstated_but_scored.get(label, 0) + 1
 
         storeys = _storeys(row)
         if storeys is None and storey_is_binding:
@@ -466,6 +491,7 @@ def build_packages(brief_dict, rows, today=None):
         packages = packages[:MAX_CANDIDATES]
     counts["scored"] = len(packages)
     counts["missing_fields"] = missing_field_counts
+    counts["unstated_but_scored"] = unstated_but_scored
     return packages, counts
 
 
@@ -488,6 +514,13 @@ def coverage_sentence(counts, source_path, state):
         "Those rows are NOT guessed into the shortlist: the pipeline would otherwise "
         "default a missing bedroom count to 4 and a missing house size to 180 m².",
     ]
+    unstated = counts.get("unstated_but_scored") or {}
+    if unstated:
+        parts.append(
+            "Scored with a gap the brief does not turn on (%s) — shown as not stated, "
+            "never filled in with an assumed figure."
+            % ", ".join("%s unknown on %d" % (k, v) for k, v in
+                        sorted(unstated.items(), key=lambda kv: -kv[1])))
     if counts.get("storey_unknown_and_binding"):
         parts.append("%d single-storey-only candidate(s) skipped because the source "
                      "row does not record the storey count."

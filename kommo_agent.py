@@ -12,7 +12,7 @@ from schema import (
     ClientBrief, CandidateProperty, RecommendationStatus,
     RiskItem, RiskRating, BuyerType, VerificationStatus
 )
-from brief_parser import ClientBriefParser
+from brief_parser import ClientBriefParser, coerce_number
 from builder_registry import BuilderRegistry
 from turnkey_calculator import TurnkeyCalculator
 from scoring_engine import ScoringEngine, BuilderConfidenceModel
@@ -52,6 +52,12 @@ from geo import SuburbGeoIndex
 from benchmark import BenchmarkEngine
 from client_report import ClientReportGenerator
 import config
+
+
+def _opt_int(value):
+    """An int, or None when the source never recorded one. Never a stand-in figure."""
+    number = coerce_number(value, None)
+    return None if number is None else int(number)
 
 
 class KommoPropertyResearchAgent:
@@ -188,16 +194,20 @@ class KommoPropertyResearchAgent:
                 builder_name=builder_name,
                 developer_name=raw_pkg.get('developer_name', 'Developer'),
                 house_design=raw_pkg.get('house_design', 'Standard Design'),
-                bedrooms=int(raw_pkg.get('bedrooms', 4)),
-                bathrooms=int(raw_pkg.get('bathrooms', 2)),
-                car_spaces=int(raw_pkg.get('car_spaces', 2)),
+                # None survives for all of these, for the reason spelled out on storeys:
+                # a get() default cannot fire on a key that is PRESENT and null, so
+                # int(None)/float(None) raised here and took the whole request with it.
+                # Passing the gap through is also the honest answer — these defaults would
+                # have invented "4 bed, 180 m²" for a listing that stated neither.
+                bedrooms=_opt_int(raw_pkg.get('bedrooms')),
+                bathrooms=_opt_int(raw_pkg.get('bathrooms')),
+                car_spaces=_opt_int(raw_pkg.get('car_spaces')),
                 # None survives: this used to default to 1, so a lot whose stocklist never
                 # recorded its storeys silently satisfied a "single storey only" brief. The
                 # scorer flags None instead of assuming it either way.
-                storeys=(int(raw_pkg['storeys'])
-                         if raw_pkg.get('storeys') is not None else None),
-                land_size_sqm=float(raw_pkg.get('land_size_sqm', 400)),
-                house_size_sqm=float(raw_pkg.get('house_size_sqm', 180)),
+                storeys=_opt_int(raw_pkg.get('storeys')),
+                land_size_sqm=coerce_number(raw_pkg.get('land_size_sqm'), 0.0) or 0.0,
+                house_size_sqm=coerce_number(raw_pkg.get('house_size_sqm'), None),
                 title_status=raw_pkg.get('title_status', 'Expected Q4 2026'),
                 expected_title_date=raw_pkg.get('expected_title_date', 'Q4 2026'),
                 price_breakdown=price_breakdown,
@@ -273,7 +283,13 @@ class KommoPropertyResearchAgent:
         client_report_html = ClientReportGenerator.generate_html(brief, shortlist) if shortlist else ""
         client_report_path = ""
         if client_report_html:
-            safe_name = "".join(ch for ch in brief.client_name if ch.isalnum() or ch in " -_").strip().replace(" ", "_")
+            # Sanitised AND bounded. Stripping unsafe characters was not enough: a long
+            # name (a company, or a pasted line of text) built a path past the filesystem
+            # limit and the whole search died with "File name too long" — after the work
+            # was already done. An unnamed client still needs a file, hence the fallback.
+            safe_name = "".join(ch for ch in (brief.client_name or "")
+                                if ch.isalnum() or ch in " -_").strip().replace(" ", "_")
+            safe_name = safe_name[:60].strip("_") or "client"
             report_file = config.OUTPUT_DIR / f"client_report_{safe_name}_{datetime.now().strftime('%Y%m%d')}.html"
             with open(report_file, 'w', encoding='utf-8') as f:
                 f.write("<!DOCTYPE html><html><head><meta charset='utf-8'><title>SPB Property Recommendations</title></head><body>"

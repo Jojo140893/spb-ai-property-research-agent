@@ -13,8 +13,26 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import config
+from brief_parser import coerce_number
 
 logger = logging.getLogger("spb.db")
+
+
+def _first_suburb(brief_dict: Dict[str, Any]) -> str:
+    """The first suburb named in the brief, or 'General'.
+
+    `primary_suburbs[0]` alone was wrong for a caller that sends the field as a plain
+    string — "Tarneit, Truganina" indexed to "T" and that single letter was written to
+    the audit trail as the suburb searched.
+    """
+    raw = brief_dict.get('primary_suburbs')
+    if isinstance(raw, str):
+        parts = [s.strip() for s in raw.split(',') if s.strip()]
+    elif isinstance(raw, (list, tuple)):
+        parts = [str(s).strip() for s in raw if str(s).strip()]
+    else:
+        parts = []
+    return parts[0][:120] if parts else 'General'
 
 # Columns added to `buildings` after its original CREATE TABLE, with their types.
 # Declared here (not inline) so a new field is one line and the type is explicit.
@@ -662,15 +680,15 @@ class ResearchDatabase:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 record_id,
-                brief_dict.get('client_name', 'Client'),
+                str(brief_dict.get('client_name') or 'Client')[:200],
                 brief_dict.get('state', 'QLD'),
-                brief_dict.get('primary_suburbs', ['General'])[0] if brief_dict.get('primary_suburbs') else 'General',
-                # `or 0.0`, not a get() default: the browser sends an explicit null for
-                # an empty number field, so the key is PRESENT and the default never
-                # fires. This line was the second half of the same 500 — the brief
-                # parser was hardened first, and the crash simply moved here, to the
-                # audit write that happens after a successful search.
-                float(brief_dict.get('budget_max') or 0.0),
+                _first_suburb(brief_dict),
+                # The browser sends an explicit null for an empty number field, so the key
+                # is PRESENT and a get() default never fires — that was the second half of
+                # the original 500, which moved here once the parser was hardened. A bare
+                # float() then failed again on "abc" and on "750,000", so this shares the
+                # parser's coercion rather than inventing a third rule.
+                coerce_number(brief_dict.get('budget_max'), 0.0) or 0.0,
                 now_str,
                 "v3.4-prod",
                 len(shortlist),
