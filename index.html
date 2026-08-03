@@ -1280,21 +1280,34 @@
         }
     }
 
+    // An empty number input gives parseInt('') === NaN, and JSON.stringify writes NaN
+    // as null. The API then received a key that EXISTS and is null, so its own
+    // `.get(key, default)` never fired and the request 500'd. Clearing any one of these
+    // seven fields was enough to break the search — Coleen hit it. Send the fallback
+    // instead of NaN; the API is hardened against null as well, deliberately, because
+    // a brief is user input over HTTP and should not be able to crash the pipeline.
+    const numField = (id, fallback) => {
+        const el = document.getElementById(id);
+        const n = parseFloat((el && el.value || '').toString().replace(/[, $]/g, ''));
+        return Number.isFinite(n) ? n : fallback;
+    };
+
     async function runResearchAgent() {
         const brief = {
-            client_name: document.getElementById('clientName').value,
-            budget_max: parseFloat(document.getElementById('budgetMax').value),
-            preferred_spending_cap: parseFloat(document.getElementById('budgetPref').value),
+            client_name: document.getElementById('clientName').value || 'Unnamed Client',
+            budget_max: numField('budgetMax', 0),
+            preferred_spending_cap: numField('budgetPref', numField('budgetMax', 0)),
             buyer_type: document.getElementById('buyerType').value,
             state: document.getElementById('stateSelect').value,
-            primary_suburbs: document.getElementById('suburbs').value.split(',').map(s => s.trim()),
-            bedrooms_min: parseInt(document.getElementById('bedrooms').value),
-            bathrooms_min: parseInt(document.getElementById('bathrooms').value),
-            car_spaces_min: parseInt(document.getElementById('carSpaces').value),
-            storeys_max: parseInt(document.getElementById('storeys').value),
-            land_size_min_sqm: parseFloat(document.getElementById('landSize').value),
-            house_size_min_sqm: parseFloat(document.getElementById('houseSize').value),
-            search_radius_km: parseFloat(document.getElementById('searchRadius').value) || 0
+            primary_suburbs: document.getElementById('suburbs').value
+                .split(',').map(s => s.trim()).filter(Boolean),
+            bedrooms_min: numField('bedrooms', 0),
+            bathrooms_min: numField('bathrooms', 0),
+            car_spaces_min: numField('carSpaces', 0),
+            storeys_max: numField('storeys', 3),
+            land_size_min_sqm: numField('landSize', 0),
+            house_size_min_sqm: numField('houseSize', 0),
+            search_radius_km: numField('searchRadius', 0)
         };
 
         const resultsDiv = document.getElementById('resultsContent');

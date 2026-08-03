@@ -665,7 +665,12 @@ class ResearchDatabase:
                 brief_dict.get('client_name', 'Client'),
                 brief_dict.get('state', 'QLD'),
                 brief_dict.get('primary_suburbs', ['General'])[0] if brief_dict.get('primary_suburbs') else 'General',
-                float(brief_dict.get('budget_max', 0.0)),
+                # `or 0.0`, not a get() default: the browser sends an explicit null for
+                # an empty number field, so the key is PRESENT and the default never
+                # fires. This line was the second half of the same 500 — the brief
+                # parser was hardened first, and the crash simply moved here, to the
+                # audit write that happens after a successful search.
+                float(brief_dict.get('budget_max') or 0.0),
                 now_str,
                 "v3.4-prod",
                 len(shortlist),
