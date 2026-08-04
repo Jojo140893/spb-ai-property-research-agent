@@ -935,7 +935,11 @@
         { k: 'suburb',              t: 'Suburb' },
         { k: 'state',               t: 'State' },
         { k: 'postcode',            t: 'Postcode' },
-        { k: 'state_source',        t: 'State from' },
+        // Blank when there is no state to explain. This column held the provenance note
+        // left by a repair — "withdrawn: postcode was the lot number" — on rows whose
+        // state had been retracted, so an internal audit trail was printing as though it
+        // were a data value. The note is still on the row for anyone reading the table.
+        { k: 'state_source', t: 'State from', onlyWith: 'state' },
         { k: 'availability_status', t: 'Availability',   pill: true },
         { k: 'price',               t: 'Package',        cls: 'num', money: true },
         { k: 'land_price',          t: 'Land',           cls: 'num', money: true },
@@ -1287,6 +1291,7 @@
             `<td class="pick-col"><input type="checkbox" class="pick" data-key="${esc(key)}"` +
             `${PICKED.has(key) ? ' checked' : ''} aria-label="Mark this listing"></td>` +
             STOCK_COLUMNS.map(c => {
+            if (c.onlyWith && !b[c.onlyWith]) return `<td class="${c.cls || ''}"></td>`;
             const v = (b[c.k] ?? '') !== '' ? b[c.k] : (c.fallback ? b[c.fallback] : b[c.k]);
             if (c.titleFrom && b[c.titleFrom] && b[c.titleFrom] !== v)
                 return `<td class="${c.cls || ''}" title="${esc(b[c.titleFrom])}">${esc(v ?? '')}</td>`;

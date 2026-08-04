@@ -10,7 +10,7 @@ own stored source_text, or it clears a value that can no longer be justified.
     python repair_rows.py            # report only, changes nothing
     python repair_rows.py --apply    # write the corrections
 
-Two repairs:
+Three repairs:
 
 1. POSTCODES FABRICATED FROM A LOT NUMBER.
    "2226 Whiterock White Rock White Rock 156 - Facade A ..." opens with the lot number.
@@ -20,7 +20,14 @@ Two repairs:
    was derived from that postcode alone goes with it: an unknown state is the honest
    answer, and the standing rule is that a blank beats a plausible guess.
 
-2. THE SAME LISTING STORED SEVERAL TIMES.
+2. PRICES TOO SMALL TO BE A PROPERTY.
+   $7 taken from a marketing paragraph, $149 from an internal-area table. Twelve rows,
+   and the stock table sorts by price ascending, so they were the first four listings a
+   client ever saw. Cleared rather than adjusted: we know the number is not the price
+   and we do not know what the price is. A priceless row is excluded from every
+   shortlist and visibly blank in the table, which is the honest outcome.
+
+3. THE SAME LISTING STORED SEVERAL TIMES.
    395 groups of rows share a byte-identical source_text — the same row reached us
    through more than one channel (an e-agent portal and the emailed price list). They
    are not variants: they are one listing. The copies disagree, and the weaker copy is
@@ -38,6 +45,7 @@ from datetime import datetime
 
 import config
 from sources.feature_extract import parse_postcode
+from sources.scraper_base import MIN_PLAUSIBLE_PRICE
 
 # A state that rests on nothing but the postcode cannot survive the postcode being
 # withdrawn. A state read off the page or the suburb stands on its own and is left alone.
@@ -158,6 +166,13 @@ def main(apply_changes):
               f"{'-> state cleared' if drop else '-> state kept, has another source'}")
         print(f"       {str(r['source_text'])[:88]}")
 
+    cheap = [r for r in live
+             if r["price"] and 0 < float(r["price"]) < MIN_PLAUSIBLE_PRICE]
+    print(f"\n2. prices too small to be a property: {len(cheap)}")
+    for r in cheap[:5]:
+        print(f"     ${float(r['price']):>10,.0f}  {(r['builder_name'] or '?')[:24]:24} "
+              f"{str(r['source_text'])[:56]}")
+
     groups = find_duplicate_groups(live)
     losers = [r for _, rest in groups for r in rest]
     print(f"\n2. identical-source_text groups: {len(groups)}, "
@@ -181,6 +196,11 @@ def main(apply_changes):
 
     now = datetime.now().isoformat(timespec="seconds")
     cur = conn.cursor()
+    for r in cheap:
+        # Cleared, not adjusted. We know the stored number is not the price; we do not
+        # know what the price is, and the "no price" gate already keeps a priceless row
+        # out of every shortlist while leaving it visible in the table.
+        cur.execute("UPDATE buildings SET price=NULL WHERE id=?", (r["id"],))
     for r, drop_state in fabricated:
         if drop_state:
             cur.execute("UPDATE buildings SET postcode=NULL, state=NULL, "
@@ -194,7 +214,8 @@ def main(apply_changes):
                         (keep["content_hash"] or str(keep["id"]), now, r["id"]))
     conn.commit()
     print(f"\napplied: {len(fabricated)} postcode(s) withdrawn "
-          f"({states_dropped} state(s) cleared), {len(losers)} duplicate row(s) superseded")
+          f"({states_dropped} state(s) cleared), {len(cheap)} implausible price(s) cleared, "
+          f"{len(losers)} duplicate row(s) superseded")
     after = len([r for r in _rows(conn) if not r["superseded_by"]])
     print(f"live rows: {len(live)} -> {after}")
     return 0

@@ -110,8 +110,21 @@ def browser_user_agent(browser=None, pw=None) -> str:
     return _UA_CACHE
 
 
+# No Australian property package sells for less than this. A "price" below it is the
+# parser having picked up something that is not a price at all — the stored examples are
+# $7 from a marketing paragraph ("OUR PROMISE At Strike Developments...") and $149 from
+# an internal-area table ("Total 149 149 58 30 77 77"). Only 13 rows, but the stock table
+# sorts by price ascending, so they were the FIRST four listings a client ever saw.
+MIN_PLAUSIBLE_PRICE = 50_000.0
+
+
 def parse_price(text: Optional[str]) -> Optional[float]:
-    """'$725,000' / 'From $725k' / '725000' -> 725000.0 ; None if not parseable."""
+    """'$725,000' / 'From $725k' / '725000' -> 725000.0 ; None if not parseable.
+
+    Returns None rather than an implausibly small number: a wrong price is worse than
+    no price, because no price is visibly missing and excluded from every shortlist,
+    while $149 looks like the bargain of the century and sorts straight to the top.
+    """
     if not text:
         return None
     t = text.replace(",", "").strip().lower()
@@ -123,7 +136,7 @@ def parse_price(text: Optional[str]) -> Optional[float]:
         val *= 1_000
     elif m.group(2) == "m":
         val *= 1_000_000
-    return val if val > 0 else None
+    return val if val >= MIN_PLAUSIBLE_PRICE else None
 
 
 def parse_int(text: Optional[str]) -> Optional[int]:
