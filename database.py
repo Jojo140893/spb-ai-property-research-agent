@@ -18,6 +18,22 @@ from brief_parser import coerce_number
 logger = logging.getLogger("spb.db")
 
 
+def _reparse_recover(building: Dict[str, Any]) -> Dict[str, Any]:
+    """Facts recovered from the row's own source_text, or {} if the module is absent.
+
+    Imported lazily and failure-tolerant on purpose: the recovery rules are generated
+    data, and a harvest must never stop because a regenerated rule file has a problem.
+    A harvest that stores slightly less is recoverable; a harvest that does not run is
+    a day of stale prices.
+    """
+    try:
+        import stocklist_reparse
+        return stocklist_reparse.recover(building)
+    except Exception as exc:                                        # noqa: BLE001
+        logger.warning("row re-parse unavailable (%s) — storing the row as captured", exc)
+        return {}
+
+
 def _first_suburb(brief_dict: Dict[str, Any]) -> str:
     """The first suburb named in the brief, or 'General'.
 
@@ -46,6 +62,11 @@ BUILDINGS_EXTRA_COLUMNS = (
     ("lot_number", "TEXT"),              # TEXT: also holds stock codes like "CC-0122"
     ("postcode", "TEXT"),                # TEXT: NT postcodes have a leading zero (0800)
     ("frontage_m", "REAL"),
+    # The street part on its own, recovered from source_text by stocklist_reparse.
+    # lot_address on 47% of rows is the whole flattened spreadsheet row, and it is what
+    # a client reads as the headline of every shortlist card. This is the clean version
+    # where the source stated one; lot_address is left exactly as captured.
+    ("street_address", "TEXT"),
     ("listing_url", "TEXT"),             # human-openable page for this lot
     ("floorplan_url", "TEXT"),
     ("brochure_url", "TEXT"),
@@ -390,6 +411,16 @@ class ResearchDatabase:
             fixed = canon.canonical(b["builder_name"])
             if fixed and fixed != b["builder_name"]:
                 b = {**b, "builder_name": fixed}
+
+        # Recover, from the row's own text, the facts its columns lack. Applied on the
+        # way in so a re-harvest lands clean rather than needing a backfill afterwards —
+        # and BEFORE the hash for the same reason the builder name is: these values feed
+        # the identity, so filling them later would change it and re-insert every row.
+        # It only ever fills a field that is empty (see stocklist_reparse.recover), so it
+        # cannot overwrite anything a source actually stated.
+        recovered = _reparse_recover(b)
+        if recovered:
+            b = {**b, **recovered}
 
         h = b.get("content_hash") or building_content_hash(b)
         price = float(b.get("advertised_package_price") or b.get("price") or 0)

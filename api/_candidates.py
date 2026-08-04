@@ -44,7 +44,8 @@ from address_label import clean_display_address
 # Exactly the fields build_web.py exports to stock.json, so both readers agree and
 # neither can reach an internal column (content_hash, dedup_key, source_text).
 SNAPSHOT_FIELDS = [
-    "builder_name", "lot_address", "suburb", "state", "availability_status",
+    "builder_name", "lot_address", "street_address", "lot_number",
+    "suburb", "state", "availability_status",
     "state_source", "price", "land_price", "build_price", "bedrooms", "bathrooms",
     "car_spaces", "land_sqm", "house_sqm", "storey", "title_status", "estate_name",
     "incentive_amount", "incentive_text", "product_type", "source_channel",
@@ -167,6 +168,27 @@ def _num(value):
 def _int(value):
     n = _num(value)
     return int(n) if n is not None else None
+
+
+def _display_address(row):
+    """The address a client should read, best available.
+
+    Order matters. street_address is the street on its own, recovered from the row's
+    own source text, and is the only version that is reliably an address rather than a
+    price list. The lot number is put back in front of it because that is how Coleen
+    refers to a listing when she calls a builder — but only when the street does not
+    already carry it.
+    """
+    street = str(row.get("street_address") or "").strip()
+    if street:
+        lot = str(row.get("lot_number") or "").strip()
+        # Only skip when the street already NAMES a lot or unit. A leading digit is the
+        # street number — "12 Coledale Drive" — and suppressing the prefix for those
+        # dropped the lot number from most addresses, which is the part Coleen quotes.
+        if lot and not re.match(r"^\s*(?:lot|unit)\b", street, re.I):
+            return "Lot %s, %s" % (lot, street)
+        return street
+    return clean_display_address(row.get("lot_address"), row)
 
 
 _GEO = None
@@ -450,11 +472,12 @@ def build_packages(brief_dict, rows, today=None):
                        or str(row.get("brochure_url") or "").strip())
         entries.append((seen_at, {
             "builder_name": builder,
-            # The label a client reads, with the price/date/spec columns the extractor
-            # concatenated into it removed. Never invents and never empties — see
-            # address_label.py. The stored row keeps whatever the source gave us.
-            "lot_address": (clean_display_address(row.get("lot_address"), row)
-                            or "(no address in source row)"),
+            # The label a client reads. Prefer the street address recovered from the
+            # row's own text (stocklist_reparse), because on 47% of stock lot_address is
+            # the entire flattened spreadsheet row and stripping the prices out of it
+            # still leaves a jumble. Falls back to the cleaned lot_address where no
+            # street was stated. Never invents and never empties.
+            "lot_address": (_display_address(row) or "(no address in source row)"),
             "suburb": suburb,
             "state": row_state,
             # The development keeps its name here, where it is true, instead of standing in

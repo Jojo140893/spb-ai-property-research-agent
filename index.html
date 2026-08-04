@@ -925,7 +925,12 @@
     /* ---------------------------------------------------------------- building stock */
     const STOCK_COLUMNS = [
         { k: 'builder_name',        t: 'Builder / development', cls: '', strong: true },
-        { k: 'lot_address',         t: 'Address',        cls: 'addr' },
+        // street_address is the street recovered from the row's own source text; on 47%
+        // of stock lot_address is the whole flattened spreadsheet row. Show the clean
+        // one where we have it, and keep the raw as the cell's tooltip so nothing is
+        // hidden from whoever needs to check it.
+        { k: 'street_address', t: 'Address', cls: 'addr',
+          fallback: 'lot_address', titleFrom: 'lot_address' },
         { k: 'lot_number',          t: 'Lot' },
         { k: 'suburb',              t: 'Suburb' },
         { k: 'state',               t: 'State' },
@@ -1007,7 +1012,8 @@
 
     /* CSV in Coleen's read order — the same sheet, with everything unmarked removed. */
     const PICK_CSV_COLUMNS = [
-        ['builder_name', 'Builder / Development'], ['lot_address', 'Address'],
+        ['builder_name', 'Builder / Development'], ['street_address', 'Address'],
+        ['lot_address', 'Address as captured'],
         ['lot_number', 'Lot'], ['suburb', 'Suburb'], ['state', 'State'],
         ['postcode', 'Postcode'], ['availability_status', 'Availability'],
         ['storey', 'Storey'], ['price', 'Package Price'], ['land_sqm', 'Land Size m2'],
@@ -1240,7 +1246,8 @@
         const fc = document.getElementById('bSource').value;
         const pickedOnly = (document.getElementById('bPickedOnly') || {}).checked;
         const showSuperseded = (document.getElementById('bShowSuperseded') || {}).checked;
-        const fields = ['builder_name', 'lot_address', 'suburb', 'estate_name', 'state', 'availability_status'];
+        const fields = ['builder_name', 'lot_address', 'street_address', 'suburb',
+                        'estate_name', 'state', 'availability_status'];
 
         stockView = STOCK.filter(b => {
             // Superseded rows are hidden unless asked for: they are an earlier capture
@@ -1280,7 +1287,9 @@
             `<td class="pick-col"><input type="checkbox" class="pick" data-key="${esc(key)}"` +
             `${PICKED.has(key) ? ' checked' : ''} aria-label="Mark this listing"></td>` +
             STOCK_COLUMNS.map(c => {
-            const v = b[c.k];
+            const v = (b[c.k] ?? '') !== '' ? b[c.k] : (c.fallback ? b[c.fallback] : b[c.k]);
+            if (c.titleFrom && b[c.titleFrom] && b[c.titleFrom] !== v)
+                return `<td class="${c.cls || ''}" title="${esc(b[c.titleFrom])}">${esc(v ?? '')}</td>`;
             if (c.link) return `<td>${v ? `<a href="${esc(v)}" target="_blank" rel="noopener noreferrer"
                 style="color:var(--accent-blue);">${c.link}</a>` : ''}</td>`;
             if (c.pill) return `<td>${availPill(v)}</td>`;

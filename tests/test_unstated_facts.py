@@ -196,6 +196,11 @@ def run_all():
         ("address label strips title dates", test_the_address_label_strips_title_dates_and_quarters),
         ("address label keeps a plain address", test_the_address_label_keeps_an_ordinary_address_untouched),
         ("address label never returns empty", test_the_address_label_never_returns_empty),
+        ("recovery only fills an empty field", test_recovery_only_ever_fills_an_empty_field),
+        ("recovery drops implausible values", test_recovery_drops_a_value_outside_the_plausible_range),
+        ("recovery survives a row with no text", test_recovery_survives_a_row_with_no_source_text),
+        ("every shipped rule compiles", test_every_shipped_rule_compiles_and_captures_a_named_group),
+        ("display address prefers the street", test_the_display_address_prefers_the_recovered_street),
     ]
     failed = 0
     for name, fn in tests:
@@ -286,6 +291,73 @@ def test_the_address_label_never_returns_empty():
         assert clean_display_address(hopeless) == hopeless.strip(), hopeless
     assert clean_display_address("") == ""
     assert clean_display_address(None) == ""
+
+
+# ------------------------------------------------------- recovered stocklist facts
+
+def test_recovery_only_ever_fills_an_empty_field():
+    """Strictly additive. A rule that is wrong can turn a blank into a wrong value; it
+    must never turn a right value into a wrong one."""
+    import stocklist_reparse
+    cohort = stocklist_reparse.RULES[0]["cohort"]
+    channel, builder = cohort.split("|", 1)
+    row = {"source_channel": channel, "builder_name": None if builder == "?" else builder,
+           "source_text": "Lot 82 Aberdeen 282 142.8 12.0 Sep-26 Empley 15 3x2x2 "
+                          "$205,000 $335,220 $540,220 Available",
+           "house_sqm": 999.0, "land_sqm": 111.0, "bedrooms": 9}
+    got = stocklist_reparse.recover(row)
+    for field in ("house_sqm", "land_sqm", "bedrooms"):
+        assert field not in got, f"{field} was already stored and must not be recovered"
+
+
+def test_recovery_drops_a_value_outside_the_plausible_range():
+    """A parse error wearing a number is still a parse error."""
+    import stocklist_reparse
+    assert stocklist_reparse.in_range("house_sqm", 180) is True
+    assert stocklist_reparse.in_range("house_sqm", 3) is False
+    assert stocklist_reparse.in_range("house_sqm", 5000) is False
+    assert stocklist_reparse.in_range("bedrooms", 4) is True
+    assert stocklist_reparse.in_range("bedrooms", 44) is False
+    assert stocklist_reparse.in_range("land_sqm", 400) is True
+    assert stocklist_reparse.in_range("land_sqm", 12) is False
+
+
+def test_recovery_survives_a_row_with_no_source_text():
+    import stocklist_reparse
+    assert stocklist_reparse.recover({"source_channel": "E-Agent",
+                                      "builder_name": "Hudson Homes"}) == {}
+    assert stocklist_reparse.recover({}) == {}
+
+
+def test_every_shipped_rule_compiles_and_captures_a_named_group():
+    """A rule that cannot compile is silently skipped at runtime, so catch it here."""
+    import re
+    import stocklist_reparse
+    for rule in stocklist_reparse.RULES:
+        pattern = re.compile(rule["pattern"], re.IGNORECASE)   # raises if malformed
+        assert "v" in pattern.groupindex, f"{rule['cohort']}/{rule['field']} has no (?P<v>)"
+        assert rule["transform"] in stocklist_reparse._TRANSFORMS
+
+
+def test_the_display_address_prefers_the_recovered_street():
+    import os, sys
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for path in (here, os.path.join(here, "api")):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+    import _candidates
+    jumbled = ("DUPLEX PR8735 106 Redbank Plains Sienna Eden Estate 2026-09-01 00:00:00 "
+               "505 $595,000 $732,285 732285")
+    assert _candidates._display_address(
+        {"street_address": "12 Coledale Drive", "lot_number": "97",
+         "lot_address": jumbled}) == "Lot 97, 12 Coledale Drive"
+    # already carries its own number — do not prepend a second one
+    assert _candidates._display_address(
+        {"street_address": "Lot 5, 12 Coledale Drive", "lot_number": "5",
+         "lot_address": jumbled}) == "Lot 5, 12 Coledale Drive"
+    # nothing recovered: fall back to the cleaned raw address, never to nothing
+    fallback = _candidates._display_address({"lot_address": jumbled})
+    assert "$595,000" not in fallback and "Redbank Plains" in fallback
 
 if __name__ == "__main__":
     sys.exit(1 if run_all() else 0)

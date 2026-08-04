@@ -44,7 +44,8 @@ BUILDING_FIELDS = [
     # and took the database from 336 to 1,548: postcode is the field that makes a
     # suburb match unambiguous ("LOGAN" is a locality in two states), and lot_number is
     # how Coleen refers to a listing when she talks to a builder.
-    "builder_name", "lot_address", "lot_number", "suburb", "state", "postcode",
+    "builder_name", "lot_address", "street_address", "lot_number", "suburb",
+    "state", "postcode",
     "availability_status",
     "state_source", "price", "land_price", "build_price", "bedrooms", "bathrooms", "car_spaces",
     "land_sqm", "house_sqm", "frontage_m", "storey", "title_status", "estate_name",
