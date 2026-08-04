@@ -51,6 +51,10 @@ SNAPSHOT_FIELDS = [
     "attribution_scope", "date_checked", "listing_url", "floorplan_url",
     "brochure_url", "benchmark_median", "benchmark_variance_pct",
     "benchmark_classification", "benchmark_basis",
+    # Required, not optional: build_packages skips superseded captures, and without
+    # this column the SQLite reader would hand over rows with the flag missing and
+    # silently score stale prices while the JSON reader filtered them.
+    "superseded_by",
 ]
 
 # Not purchasable, so not a candidate. Absent/blank is NOT in this set: most stocklists
@@ -328,13 +332,20 @@ def build_packages(brief_dict, rows, today=None):
         "not_available": 0, "no_price": 0, "over_budget": 0, "no_suburb": 0,
         "incomplete_facts": 0, "storey_unknown_and_binding": 0, "scored": 0,
         "truncated": 0, "stale_unverified": 0, "same_listing_collapsed": 0,
-        "suburb_not_a_locality": 0,
+        "suburb_not_a_locality": 0, "superseded": 0,
     }
     missing_field_counts = {}
     unstated_but_scored = {}
     entries = []
 
     for row in rows:
+        # An older capture of a lot we also hold fresher. The dashboard has hidden these
+        # by default since they were identified, but the recommendation engine was still
+        # scoring all 979 of them — so the one place where a stale price actually reaches
+        # a client, the shortlist, was the one place that ignored the flag.
+        if row.get("superseded_by"):
+            counts["superseded"] += 1
+            continue
         row_state = str(row.get("state") or "").strip().upper()
         if not row_state:
             counts["state_unknown"] += 1
@@ -508,11 +519,13 @@ def coverage_sentence(counts, source_path, state):
     parts = [
         "Scored %d of %d stored listing(s) from the deployed snapshot (%s)."
         % (counts["scored"], counts["snapshot_rows"], os.path.basename(source_path)),
-        "Not scored: %d outside %s, %d with no state recorded, %d not available "
-        "(sold/on hold/under offer), %d with no price, %d over the budget ceiling, "
-        "%d with no suburb, %d whose suburb is not a recognised locality, "
+        "Not scored: %d superseded by a fresher capture of the same lot, %d outside %s, "
+        "%d with no state recorded, %d not available (sold/on hold/under offer), "
+        "%d with no price, %d over the budget ceiling, %d with no suburb, "
+        "%d whose suburb is not a recognised locality, "
         "%d without the facts the brief's minimums are checked against (%s)."
-        % (counts["other_state"], state or "the requested state", counts["state_unknown"],
+        % (counts.get("superseded", 0),
+           counts["other_state"], state or "the requested state", counts["state_unknown"],
            counts["not_available"], counts["no_price"], counts["over_budget"],
            counts["no_suburb"], counts.get("suburb_not_a_locality", 0),
            counts["incomplete_facts"], missing_txt),

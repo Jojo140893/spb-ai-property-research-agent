@@ -122,6 +122,79 @@ def _slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", (name or "builder").lower()).strip("_") or "builder"
 
 
+# contact_name / contact_email / contact_phone are deliberately absent from
+# BUILDER_FIELDS: a builder rep's direct line has no business on a public URL. But the
+# free-text `notes` column carries the same details in prose — "Email comes from
+# Neha@dreamscopehomes.com.au" — and shipped them anyway, which the allow-list cannot
+# catch because it filters field names, not values.
+_EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]{2,}")
+# Conventional Australian formats only, with separators where people actually put them.
+# A looser pattern flagged "04-15-03-55-18" and "03 4 3 3 230 24" in the stock export —
+# lot codes, not numbers — and a guard that cries wolf gets switched off.
+# The digit after the leading 0 must be a real AU area or mobile prefix (2,3,4,7,8).
+# Without that, ten-digit internal codes in the stock export — 0011091284, 0092469904 —
+# read as phone numbers and blocked a publish that was perfectly safe.
+_PHONE = re.compile(
+    r"(?<![\d-])(?:\+?61[ -]?)?(?:\(0[2-478]\)[ -]?|0[2-478][ -]?)\d{4}[ -]?\d{4}(?![\d-])"
+    r"|(?<![\d-])04\d{2}[ -]?\d{3}[ -]?\d{3}(?![\d-])")
+
+
+def _redact_contacts(text) -> str:
+    """Strip direct contact details out of free text bound for the public build."""
+    out = _EMAIL.sub("[email withheld]", str(text or ""))
+    out = _PHONE.sub("[phone withheld]", out)
+    return re.sub(r"\s{2,}", " ", out).strip()
+
+
+def _assert_no_contact_details(path: Path) -> None:
+    """Refuse to publish a payload containing a direct email address or phone number.
+
+    The field allow-list checks NAMES; this checks VALUES. `notes` is free text and was
+    carrying what the allow-list had deliberately excluded — "Email comes from
+    Neha@dreamscopehomes.com.au" — so a rep's address reached a public URL through a
+    field nobody thought of as a contact field.
+    """
+    found = set()
+    for field, value in _walk_strings(json.loads(path.read_text(encoding="utf-8"))):
+        # Only free text can carry a contact detail. Digests and URLs cannot, and
+        # scanning them matched digit runs inside content_hash hex and inside the
+        # base64 token of a Hudson Homes listing URL — blocking a clean publish, which
+        # is how a guard gets disabled.
+        if field in _NOT_FREE_TEXT or field.endswith("_url") or value.startswith("http"):
+            continue
+        found.update(_EMAIL.findall(value))
+        found.update(m.group(0) for m in _PHONE.finditer(value))
+    if found:
+        raise SystemExit(
+            f"[ABORT] {path.name} contains direct contact details and was not published: "
+            f"{sorted(found)[:8]}. Redact them at the export (see _redact_contacts) — "
+            f"they cannot go on a public URL.")
+
+
+_NOT_FREE_TEXT = {"content_hash", "sha256", "dedup_key", "row_key", "superseded_by"}
+
+
+def _walk_strings(node, field=""):
+    """(field_name, string) for every string in a payload, columnar shape included."""
+    if isinstance(node, dict):
+        if isinstance(node.get("keys"), list) and isinstance(node.get("rows"), list):
+            cols = node["keys"]
+            for row in node["rows"]:
+                for name, cell in zip(cols, row):
+                    if isinstance(cell, str):
+                        yield name, cell
+            rest = {k: v for k, v in node.items() if k not in ("keys", "rows")}
+            yield from _walk_strings(rest, field)
+            return
+        for key, value in node.items():
+            yield from _walk_strings(value, key)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _walk_strings(item, field)
+    elif isinstance(node, str):
+        yield field, node
+
+
 def _pick(row, fields):
     d = dict(row) if not isinstance(row, dict) else row
     return {f: d.get(f) for f in fields}
@@ -159,6 +232,8 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     try:
         from builder_registry import BuilderRegistry
         regs = [_pick(b, BUILDER_FIELDS) for b in BuilderRegistry().get_all_builders()]
+        for reg in regs:
+            reg["notes"] = _redact_contacts(reg.get("notes"))
     except Exception as e:                                   # pragma: no cover
         print(f"[!] builder registry unavailable ({e}) — builders.json will be empty")
         regs = []
@@ -370,5 +445,6 @@ if __name__ == "__main__":
     print(f"    {m['registry']} registry builders (credentials excluded) · "
           f"{m['assets']} assets, {m['copied']} PDF(s) bundled so they actually open")
     for f in ("stock.json", "builders.json", "vendor-assets.json"):
+        _assert_no_contact_details(where / f)
         print(f"    {f:<20} {(where / f).stat().st_size:>10,} bytes")
     print("    X-Robots-Tag: noindex set (a Vercel URL is public by default)")

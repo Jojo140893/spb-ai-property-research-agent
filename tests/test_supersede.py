@@ -95,6 +95,54 @@ def test_an_unparseable_date_does_not_win_by_accident():
     assert winner["id"] == 2, "a dated capture should beat an undated one"
 
 
+def test_a_superseded_capture_is_never_shortlisted():
+    """The one place a stale price actually reaches a client is the shortlist.
+
+    Superseded rows were hidden in the dashboard from the day they were identified, but
+    the recommendation engine kept scoring all 979 of them — so the flag was honoured
+    everywhere it was cosmetic and ignored in the one place it mattered.
+    """
+    import os, sys
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for path in (here, os.path.join(here, "api")):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+    import _candidates
+
+    def row(**over):
+        base = {"builder_name": "Testco Homes", "lot_address": "Lot 9", "suburb": "Tarneit",
+                "state": "VIC", "availability_status": "Available", "price": 700000.0,
+                "bedrooms": 4, "bathrooms": 2, "car_spaces": 2, "house_sqm": 180.0,
+                "land_size_sqm": 400.0, "source_channel": "Test",
+                "source_url_or_ref": "https://example.test/9", "superseded_by": None}
+        base.update(over)
+        return base
+
+    brief = {"state": "VIC", "budget_max": 800000, "preferred_spending_cap": 780000,
+             "bedrooms_min": 4, "bathrooms_min": 2, "car_spaces_min": 2}
+
+    fresh, stale = row(price=700000.0), row(price=640000.0, superseded_by="v2:whatever")
+    packages, counts = _candidates.build_packages(brief, [fresh, stale])
+    assert counts["superseded"] == 1, "the stale capture must be counted as skipped"
+    assert len(packages) == 1, f"only the fresh capture may be scored, got {len(packages)}"
+    assert packages[0]["advertised_package_price"] == 700000.0, (
+        "the cheaper price came from the stale capture and must not win the shortlist")
+    text = _candidates.coverage_sentence(counts, "stock.json", "VIC")
+    assert "1 superseded by a fresher capture" in text, text
+
+
+def test_the_superseded_flag_is_read_from_both_snapshot_readers():
+    """SNAPSHOT_FIELDS drives the SQLite reader; omitting the flag there would mean the
+    JSON reader filtered stale rows and the database reader silently did not."""
+    import os, sys
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for path in (here, os.path.join(here, "api")):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+    import _candidates
+    assert "superseded_by" in _candidates.SNAPSHOT_FIELDS
+
+
 def run_all():
     tests = [
         ("freshest capture wins", test_the_freshest_capture_wins),
@@ -106,6 +154,8 @@ def run_all():
         ("no locality means no supersede", test_a_row_with_no_locality_is_never_superseded),
         ("winner is deterministic", test_the_winner_is_deterministic_when_dates_tie),
         ("unparseable date does not win", test_an_unparseable_date_does_not_win_by_accident),
+        ("a superseded capture is never shortlisted", test_a_superseded_capture_is_never_shortlisted),
+        ("both readers see the flag", test_the_superseded_flag_is_read_from_both_snapshot_readers),
     ]
     failed = 0
     for name, fn in tests:
