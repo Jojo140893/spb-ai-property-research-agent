@@ -1,4 +1,10 @@
 """
+Display labels: a readable address for a listing, and a readable title for a document.
+
+Both solve the same shape of problem — what the scraper captured is not what a client
+should be shown — and both obey the same rule: derive from what the source actually
+said, never invent.
+
 A readable address for a listing whose address column swallowed the whole spreadsheet row.
 
 47% of live stock (2,670 of 5,703) arrives looking like
@@ -82,3 +88,56 @@ def clean_display_address(raw: Any, row: Optional[Dict[str, Any]] = None) -> str
     if not text or not re.search(r"[A-Za-z]", text):
         return original
     return text
+
+
+# --------------------------------------------------------------------------- documents
+
+# Anchor text on a builder's download button, which is the same on every document they
+# publish. Sixteen brochures shared the title "Icon to represent a home design brochure
+# Download Brochure", so the vendor tab listed sixteen indistinguishable links and a
+# consultant could not tell which one to send.
+_GENERIC_TITLES = {
+    "download brochure", "download floorplan", "download", "brochure", "floorplan",
+    "floorplans", "specification", "specifications", "download specification",
+    "view brochure", "view floorplan", "download pdf", "pdf", "more info",
+    "view full terms and conditions", "terms and conditions", "download flyer", "flyer",
+}
+# The alt text of the little image inside the button, captured along with the anchor
+# text. It appears both before the label ("Icon to represent a home design brochure
+# Download Brochure") and after it ("Floorplans icon Floorplan"), so rather than trying
+# to locate it, treat any title mentioning an icon as describing a picture, not a
+# document. A real document title does not contain the word.
+_MENTIONS_ICON = re.compile(r"\bicons?\b", re.I)
+# The call to action tacked onto the end of an otherwise useful title.
+_TRAILING_CTA = re.compile(
+    r"[\s\-–—:|]*\b(?:download|view)?\s*(?:brochure|floorplans?|specifications?|flyer|pdf)\s*$",
+    re.I)
+_FILE_JUNK = re.compile(r"^\d{6,8}[-_]?|[-_](?:v?\d+|final|web|lr|hr|copy|updated)$", re.I)
+
+
+def clean_asset_title(title: Any, source_url: Any = "") -> str:
+    """A title that tells one document apart from another.
+
+    Prefers the scraped title when it says something, and falls back to the file's own
+    name in the URL — "Denmark-185-Scullery-Brochure.pdf" becomes "Denmark 185 Scullery
+    Brochure". That is the vendor's own name for the file, not a guess about it.
+    """
+    text = _MULTISPACE.sub(" ", str(title or "").replace("\n", " ")).strip()
+    if _MENTIONS_ICON.search(text):
+        text = ""
+    if text and text.lower() not in _GENERIC_TITLES:
+        trimmed = _TRAILING_CTA.sub("", text).strip(" -–—:|")
+        # Only accept the trim if it left something meaningful behind.
+        if trimmed and len(trimmed) > 3 and trimmed.lower() not in _GENERIC_TITLES:
+            return trimmed
+        return text
+
+    name = str(source_url or "").split("?")[0].rstrip("/").rsplit("/", 1)[-1]
+    name = re.sub(r"\.(pdf|docx?|xlsx?|jpe?g|png)$", "", name, flags=re.I)
+    name = _FILE_JUNK.sub("", name)
+    name = _MULTISPACE.sub(" ", name.replace("-", " ").replace("_", " ")).strip()
+    if name and re.search(r"[A-Za-z]{3}", name):
+        # Leave existing capitalisation alone where the vendor used it; only title-case
+        # a name that is entirely lower case, so "SQ-Brochure" does not become "Sq".
+        return name.title() if name.islower() else name
+    return text or "Untitled document"

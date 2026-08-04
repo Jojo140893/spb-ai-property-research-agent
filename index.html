@@ -146,6 +146,34 @@
             color: var(--text-heading);
             margin-bottom: 0.3rem;
         }
+        /* The rejection log, folded. Thirty red cards below five results made a working
+           page look like a failed one; the reasoning is still one click away. */
+        .reject-log {
+            border: 1px solid var(--border-soft, #e3e8ef);
+            border-radius: 10px;
+            background: var(--panel-bg, #fff);
+            margin-top: 1rem;
+            padding: 0.2rem 0.2rem 0.2rem 0;
+        }
+        .reject-log > summary {
+            cursor: pointer;
+            list-style: none;
+            padding: 0.85rem 1.1rem;
+            font-size: 0.87rem;
+            color: var(--text-body);
+            user-select: none;
+        }
+        .reject-log > summary::-webkit-details-marker { display: none; }
+        .reject-log > summary::before {
+            content: '▸';
+            display: inline-block;
+            width: 1.1em;
+            color: var(--text-muted);
+        }
+        .reject-log[open] > summary::before { content: '▾'; }
+        .reject-log > summary:hover { color: var(--accent-blue); }
+        .reject-log > .prop-card { margin: 0.5rem 0.7rem 0.7rem 0.9rem; }
+
         /* Marks a field that imposes nothing when left blank, so nobody types a number
            just because the box looked like it wanted one. */
         .hint-opt {
@@ -672,16 +700,12 @@
             <span style="font-size:0.82rem; color:var(--text-muted); font-weight:600;" id="builderTotalCount">124 Builders Loaded</span>
         </div>
         <div style="overflow-x:auto;">
-            <table class="builder-table">
+            <table class="builder-table" id="builderTable">
+                <!-- The header is rebuilt from whichever columns the loaded feed
+                     actually populates; see loadBuilders(). -->
                 <thead>
                     <tr>
                         <th>Builder Name</th>
-                        <th>State Coverage</th>
-                        <th>Contact Name</th>
-                        <th>Phone</th>
-                        <th>Email</th>
-                        <th>E-Agent Status</th>
-                        <th>Web Portal Link / Notes</th>
                     </tr>
                 </thead>
                 <tbody id="builderTableBody">
@@ -783,17 +807,52 @@
                 tbody.innerHTML = '';
                 document.getElementById('builderTotalCount').textContent = `${data.count} Approved Builders Indexed`;
 
+                // The columns are chosen from the data rather than hard-coded, because
+                // the same page serves two different feeds. The deployed build
+                // deliberately withholds the builders' contact details — reps' phone
+                // numbers and emails have no business on a public URL — so Contact
+                // Name, Phone and Email were three columns of "-" on every one of the
+                // 33 rows, taking half the table's width to say nothing.
+                //
+                // The portal link was worse: it read b.portal_link and b.portal_notes
+                // while the export ships portal_url and notes, so "Web Portal Link"
+                // showed "-" for all 33 builders even though 32 of them have a portal
+                // URL recorded. The link a consultant needs was there the whole time.
+                const link = (url, text) => url
+                    ? `<a href="${esc(url)}" target="_blank" rel="noopener"
+                         style="color:var(--accent-blue); font-weight:600;">${esc(text)}</a>`
+                    : '';
+                const pill = v => {
+                    const yes = String(v || '').toUpperCase().includes('YES');
+                    return `<span class="pill ${yes ? 'pill-recommend' : 'pill-conditions'}">`
+                         + `${esc(v || 'No')}</span>`;
+                };
+                const COLUMNS = [
+                    ['Builder Name', b => `<strong>${esc(b.builder_name || '')}</strong>`,
+                                     b => b.builder_name],
+                    ['State Coverage', b => esc((b.states || []).join(', ') || 'NATIONAL'),
+                                       b => (b.states || []).length],
+                    ['Contact Name', b => esc(b.contact_name || ''), b => b.contact_name],
+                    ['Phone', b => esc(b.contact_phone || ''), b => b.contact_phone],
+                    ['Email', b => esc(b.contact_email || ''), b => b.contact_email],
+                    ['E-Agent Status', b => pill(b.e_agent_available), b => b.e_agent_available],
+                    ['Stock Channel', b => esc(b.stock_channel || ''), b => b.stock_channel],
+                    ['Contract', b => esc(b.contract_available || ''), b => b.contract_available],
+                    ['Web Portal', b => link(b.portal_url || b.portal_link, 'Open Portal'),
+                                   b => b.portal_url || b.portal_link],
+                    ['Notes', b => esc(b.notes || b.portal_notes || ''),
+                              b => b.notes || b.portal_notes],
+                ];
+                const shown = COLUMNS.filter(([, , has], i) =>
+                    i === 0 || data.builders.some(b => {
+                        const v = has(b);
+                        return v !== null && v !== undefined && String(v).trim() !== '';
+                    }));
+                const head = document.querySelector('#builderTable thead tr');
+                if (head) head.innerHTML = shown.map(([t]) => `<th>${t}</th>`).join('');
                 data.builders.forEach(b => {
                     const tr = document.createElement('tr');
-                    tr.innerHTML = `
-                        <td><strong>${b.builder_name}</strong></td>
-                        <td>${b.states.join(', ') || 'NATIONAL'}</td>
-                        <td>${b.contact_name || '-'}</td>
-                        <td>${b.contact_phone || '-'}</td>
-                        <td>${b.contact_email || '-'}</td>
-                        <td><span class="pill ${b.e_agent_available.toUpperCase().includes('YES') ? 'pill-recommend' : 'pill-conditions'}">${b.e_agent_available || 'No'}</span></td>
-                        <td>${b.portal_link ? `<a href="${b.portal_link}" target="_blank" style="color:var(--accent-blue); font-weight:600;">Open Portal</a>` : (b.portal_notes || '-')}</td>
-                    `;
+                    tr.innerHTML = shown.map(([, render]) => `<td>${render(b) || '-'}</td>`).join('');
                     tbody.appendChild(tr);
                 });
             }
@@ -995,6 +1054,11 @@
         const label = btn.textContent;
         btn.disabled = true; btn.textContent = 'Saving…';
         try {
+            // getJSON already refuses to call the API on the published build for this
+            // reason; this one call did not, so pressing the button logged a 404 in the
+            // console of a site that was behaving correctly. The endpoint cannot exist
+            // here — server.py is deliberately not deployed — so say so without asking.
+            if (window.SPB_STATIC_BUILD) throw new Error('static build: no local API');
             const res = await fetch('/api/select', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ keys: [...PICKED], replace: true })
@@ -1508,7 +1572,28 @@
                     };
                 }
 
-                // Filtered Rejection Log
+                // Filtered Rejection Log.
+                //
+                // Folded away by default. Every rejection is a correct, well-reasoned
+                // decision, but thirty of them drawn in red under "Hard Rejection"
+                // filled about 70% of the page and buried the five results the client
+                // actually came for — the page read as broken to anyone who did not
+                // stop to read it. The working is kept in full, one click away, because
+                // being able to show a client why a lot was ruled out is the point.
+                let rejectBox = null;
+                const rejections = (data.rejected_log || []).filter(
+                    r => !(r.kind === 'coverage' || r.property_id === 'SNAPSHOT-COVERAGE'));
+                if (rejections.length) {
+                    const wrap = document.createElement('details');
+                    wrap.className = 'reject-log';
+                    const sum = document.createElement('summary');
+                    sum.innerHTML = `<strong>${rejections.length.toLocaleString()}</strong> `
+                        + `listing${rejections.length === 1 ? '' : 's'} ruled out — show why`;
+                    wrap.appendChild(sum);
+                    resultsDiv.appendChild(wrap);
+                    rejectBox = wrap;
+                }
+
                 if (data.rejected_log && data.rejected_log.length > 0) {
                     data.rejected_log.forEach(rej => {
                         const card = document.createElement('div');
@@ -1551,7 +1636,7 @@
                             ${advice ? `<div style="font-size:0.8rem; color:var(--amber-yellow); margin-top:0.3rem;">
                                 Also worth checking (did not cause the rejection): ${esc(advice)}</div>` : ''}
                         `;
-                        resultsDiv.appendChild(card);
+                        (rejectBox || resultsDiv).appendChild(card);
                     });
                 }
 

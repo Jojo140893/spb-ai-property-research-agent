@@ -33,6 +33,7 @@ from datetime import datetime
 from pathlib import Path
 
 import config
+from address_label import clean_asset_title
 
 # --- allow-lists -------------------------------------------------------------------
 # buildings: listing facts only. No dedup keys, no content hashes, no internal ids.
@@ -173,6 +174,13 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
             "ORDER BY builder_name, asset_type").fetchall()
         for r in arows:
             a = _pick(r, ASSET_FIELDS)
+            # The scraped title is the text of the builder's download button, identical
+            # on every document they publish: 26 of these 56 files shared a title with
+            # another, 16 of them reading "Icon to represent a home design brochure
+            # Download Brochure". A consultant could not tell which file to send. The
+            # file's own name in the URL distinguishes them and is the vendor's own
+            # wording, not a guess.
+            a["title"] = clean_asset_title(a.get("title"), a.get("source_url"))
             # Ship the PDF itself. Linking to the builder's own source_url is not
             # reliable — 3 of 5 sampled builder sites answer a direct request with HTML
             # rather than the file — and before this every brochure title on the

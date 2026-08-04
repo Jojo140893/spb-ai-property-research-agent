@@ -455,6 +455,15 @@ def parse_postcode(text: str) -> Optional[str]:
         if re.fullmatch(r"(?:north|south|east|west|northeast|northwest|southeast|"
                         r"southwest|ne|nw|se|sw)\s+", before, re.I):
             continue
+        # A four-digit number that OPENS the row is the lot or stock number, not a
+        # postcode: an Australian postcode follows the suburb, it never leads. Several
+        # price lists print the lot bare, with no "Lot" prefix for _LOT_NUM to catch —
+        #   "2226 Whiterock White Rock White Rock 156 - Facade A Available 3 2 2 252 ..."
+        # which read as NSW 2226 (Oyster Bay) and put a NSW state on a QLD property in
+        # White Rock. The same listing arrived from another channel correctly marked QLD,
+        # so the dashboard showed one lot in two states.
+        if not before.strip():
+            continue
         if _is_dwelling_postcode(val):
             candidates.append(m.group(1))
     # The LAST one, not the first. An Australian postcode follows the suburb at the end of
