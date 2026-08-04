@@ -116,6 +116,10 @@ def run_all():
         ("a real locality passes", test_a_real_locality_passes_through),
         ("estate unglued from locality", test_an_estate_glued_to_a_locality_is_unglued),
         ("missing index does not empty results", test_a_missing_index_does_not_empty_every_shortlist),
+        ("export merges spellings, not judgement calls",
+         test_the_export_canonicaliser_merges_spellings_but_not_judgement_calls),
+        ("a domain never becomes the canonical name",
+         test_the_export_canonicaliser_never_makes_a_domain_the_canonical_name),
     ]
     failed = 0
     for name, fn in tests:
@@ -187,3 +191,48 @@ def test_a_missing_index_does_not_empty_every_shortlist():
         assert C._is_real_locality("anything at all", "QLD") is True
     finally:
         C._GEO, C._LOCALITY_CACHE = saved_geo, saved_cache
+
+
+def test_the_export_canonicaliser_merges_spellings_but_not_judgement_calls():
+    """One builder, one name in the exported copy — without merging distinct entities.
+
+    builder_names runs at WRITE time only, because builder_name feeds content_hash and
+    rewriting stored rows changes their identity. So rows harvested before a spelling was
+    known kept it, and the live dashboard still showed 89 listings whose builder was the
+    bare domain "hattan.com.au". The export canonicalises for display instead.
+    """
+    import os, sys
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from build_web import _display_name_canonicaliser
+
+    stock = (["Avia Homes"] * 5 + ["AVIA Homes"] * 3 + ["hattan.com.au"] * 4
+             + ["Hattan Homes"] * 6 + ["G Developments"] * 5 + ["G DEVELOPMENTS"] * 2
+             + ["G-Developments"] + ["Strike Developments"] * 4 + ["Strike Development"]
+             + ["Bathla Development"] * 5 + ["Bathla Group"] * 3 + ["Bathla"] * 2)
+    canon = _display_name_canonicaliser(stock)
+    out = {n: canon.canonical(n) for n in set(stock)}
+
+    # case, punctuation, a bare domain and a trailing plural are spelling, so they merge
+    assert out["AVIA Homes"] == out["Avia Homes"]
+    assert out["hattan.com.au"] == out["Hattan Homes"] == "Hattan Homes"
+    assert out["G DEVELOPMENTS"] == out["G-Developments"] == out["G Developments"]
+    assert out["Strike Developments"] == out["Strike Development"], (
+        "singular/plural is the module's own documented example and must merge")
+    # a development arm and a group may be different companies; that is the client's call
+    assert len({out["Bathla"], out["Bathla Development"], out["Bathla Group"]}) == 3, (
+        "Bathla variants must NOT be merged — see builder_names.py")
+    # nothing is invented: every output is a spelling that appeared in the input
+    assert set(out.values()) <= set(stock)
+
+
+def test_the_export_canonicaliser_never_makes_a_domain_the_canonical_name():
+    import os, sys
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from build_web import _display_name_canonicaliser
+    # the domain is far more common than the real name, and still must not win
+    canon = _display_name_canonicaliser(["hattan.com.au"] * 50 + ["Hattan Homes"])
+    assert canon.canonical("hattan.com.au") == "Hattan Homes"

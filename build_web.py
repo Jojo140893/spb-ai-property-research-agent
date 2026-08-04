@@ -23,6 +23,7 @@ faster but leaves the brochure links pointing at the builders' own sites, where 
 answer a direct request with HTML rather than the file.
 """
 
+import collections
 import json
 import re
 import shutil
@@ -140,6 +141,41 @@ _PHONE = re.compile(
     r"|(?<![\d-])04\d{2}[ -]?\d{3}[ -]?\d{3}(?![\d-])")
 
 
+def _display_name_canonicaliser(builder_names):
+    """One builder, one name — for the exported copy only.
+
+    builder_names.py already does this at WRITE time and deliberately never as an UPDATE
+    over stored rows: builder_name feeds content_hash, so rewriting it changes the
+    identity of every row it touches and the next harvest re-inserts them all. That is
+    the mechanism that produced 777 duplicate captures.
+
+    The consequence is that rows harvested before a spelling was known keep it, and the
+    dashboard still listed one company several times: 89 rows displayed the bare domain
+    "hattan.com.au" as their builder, 103 said "AVIA Homes" against the registry's "Avia
+    Homes", and "G Developments" appeared three ways. Canonicalising the EXPORT fixes the
+    builder filter, the directory and the count with no identity risk at all, and a
+    re-harvest converges on the same answer by itself.
+
+    Seeding order is what makes it work: the registry spelling is authoritative, then the
+    most common spelling in stock. A name that already resolves to a known one is NOT
+    registered as a target of its own — without that, both "Strike Development" and
+    "Strike Developments" got learned and neither resolved to the other.
+    """
+    from builder_names import BuilderNameCanonicaliser
+    canon = BuilderNameCanonicaliser()
+    try:
+        from builder_registry import BuilderRegistry
+        for b in BuilderRegistry().get_all_builders():
+            canon.learn(b.get("builder_name", ""))
+    except Exception as exc:                                      # pragma: no cover
+        print(f"[!] registry unavailable for name canonicalisation ({exc})")
+    for name, _ in collections.Counter(
+            n for n in builder_names if str(n or "").strip()).most_common():
+        if canon.canonical(name) == name:
+            canon.learn(name)
+    return canon
+
+
 def _redact_contacts(text) -> str:
     """Strip direct contact details out of free text bound for the public build."""
     out = _EMAIL.sub("[email withheld]", str(text or ""))
@@ -215,6 +251,15 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         f"SELECT {', '.join(BUILDING_FIELDS)} FROM buildings "
         "ORDER BY builder_name, price").fetchall()
     buildings = [_pick(r, BUILDING_FIELDS) for r in rows]
+    # One builder, one name, in the copy that reaches the browser. See
+    # _display_name_canonicaliser for why this happens here and not in the database.
+    _canon = _display_name_canonicaliser(b.get("builder_name") for b in buildings)
+    _relabelled = 0
+    for b in buildings:
+        fixed = _canon.canonical(b.get("builder_name") or "")
+        if fixed and fixed != b.get("builder_name"):
+            b["builder_name"] = fixed
+            _relabelled += 1
     by_channel = [{"source_channel": r[0], "n": r[1]} for r in conn.execute(
         "SELECT source_channel, COUNT(*) FROM buildings GROUP BY 1 ORDER BY 2 DESC")]
     stamp = datetime.now().strftime("%d %b %Y, %H:%M")
@@ -287,6 +332,7 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
                          if (b.get("builder_name") or "").strip()}),
         "with_state": sum(1 for b in buildings if (b.get("state") or "").strip()),
         "assets": len(assets), "registry": len(regs), "copied": copied,
+        "relabelled": _relabelled,
     }
     conn.close()
 
@@ -445,6 +491,9 @@ if __name__ == "__main__":
           f"{m['named']:,} named · {m['with_state']:,} with a state")
     print(f"    {m['registry']} registry builders (credentials excluded) · "
           f"{m['assets']} assets, {m['copied']} PDF(s) bundled so they actually open")
+    if m.get("relabelled"):
+        print(f"    {m['relabelled']} row(s) re-labelled to one name per builder "
+              f"(the database keeps its spellings — see _display_name_canonicaliser)")
     for f in ("stock.json", "builders.json", "vendor-assets.json"):
         _assert_no_contact_details(where / f)
         print(f"    {f:<20} {(where / f).stat().st_size:>10,} bytes")

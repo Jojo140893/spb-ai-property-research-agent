@@ -1108,15 +1108,37 @@
 
     /* A blank builder is deliberate — the project never guesses one — but "not named" on its
        own looks like a bug. Say which kind of blank it is, so the gap is legible. */
+    // Values that turn up in the estate column but are not the name of anywhere.
+    const NOT_A_PLACE = new Set(['stocklist', 'stock list', 'estate', 'packages',
+        'titled packages', 'untitled packages', 'available', 'north', 'south', 'east',
+        'west', 'price list', 'n/a', 'tbc', 'multiple selections']);
+
+    /* The builder is blank on 518 listings and it stays blank: the pooled stocklists
+       carry several builders in one file without saying which lot is whose, and the
+       filenames say only "NSW Dual AUG.xlsx". Measured rather than assumed — every
+       signal that could name them either abstains or fills 7 rows, and the standing rule
+       is that a blank with a stated reason beats a plausible guess.
+
+       What the row CAN say is where the lot is, which is what makes the blank actionable:
+       "pooled file · Aberdeen" tells Coleen which estate to ring, where a bare "pooled
+       file" told her only that we do not know. That is data we already hold, not an
+       inference about who built it. */
     function unnamedPill(b) {
         const scope = b.attribution_scope || '';
+        const place = (b.estate_name || '').toString().trim();
+        const usable = place && place.length > 2 && !NOT_A_PLACE.has(place.toLowerCase())
+            && /[A-Za-z]{3}/.test(place);
+        const where = usable ? ` &middot; ${esc(place)}` : '';
         if (scope === 'state_pooled') return '<span class="pill pill-muted" title="This lot came '
             + 'from one of E-Agent\'s pooled state stocklists, which list several builders\' '
-            + 'stock in one file without saying which lot belongs to which.">pooled file</span>';
+            + 'stock in one file without saying which lot belongs to which. The estate is '
+            + 'shown so the builder can be confirmed with the developer.">pooled file'
+            + where + '</span>';
         if (scope === 'project') return '<span class="pill pill-muted" title="An apartment or '
             + 'townhouse development. E-Agent lists these by development rather than builder, '
-            + 'and this one is not named on the page or in its price list.">development</span>';
-        return '<span class="pill pill-muted">not named</span>';
+            + 'and this one is not named on the page or in its price list.">development'
+            + where + '</span>';
+        return `<span class="pill pill-muted" title="No builder named in the source row.">not named${where}</span>`;
     }
 
     async function loadBuildings() {
