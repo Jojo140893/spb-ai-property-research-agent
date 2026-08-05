@@ -1,0 +1,308 @@
+[
+ {
+  "journey": "cautious-fhb",
+  "check": "the page loads with the form ready",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "journey": "cautious-fhb",
+  "check": "optional size/storey boxes start empty",
+  "ok": true,
+  "detail": "{'house': '', 'land': '', 'storeys': ''}"
+ },
+ {
+  "journey": "cautious-fhb",
+  "check": "gets an answer",
+  "ok": true,
+  "detail": "5957 chars"
+ },
+ {
+  "journey": "cautious-fhb",
+  "check": "shows ranked options",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "journey": "cautious-fhb",
+  "check": "no error wording shown",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "journey": "cautious-fhb",
+  "check": "no junk suburb in the results",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "journey": "cautious-fhb",
+  "check": "no $0 rent or 0.00% yield",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "journey": "cautious-fhb",
+  "check": "no None/NaN/undefined leaked",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "journey": "cautious-fhb",
+  "check": "can open the client report",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "journey": "cautious-fhb",
+  "check": "the report has content and a disclaimer",
+  "ok": true,
+  "detail": "11468 chars"
+ },
+ {
+  "journey": "cautious-fhb",
+  "check": "console stayed clean",
+  "ok": true,
+  "detail": "[][]"
+ },
+ {
+  "journey": "melbourne",
+  "check": "a VIC brief returns listings, not an empty answer",
+  "ok": true,
+  "detail": "COMPARE Rank #1: 2-Part Detached SS West 2103 Seventh Bend Weir Views 332 LX 18N Br Weir Views, VIC | Builder:"
+ },
+ {
+  "journey": "melbourne",
+  "check": "the results are in VIC",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "journey": "melbourne",
+  "check": "no junk suburb",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "journey": "melbourne",
+  "check": "no None/NaN leaked",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "journey": "melbourne",
+  "check": "an unstated spec is named, not invented",
+  "ok": true,
+  "detail": "advisory wording present"
+ },
+ {
+  "journey": "melbourne",
+  "check": "console stayed clean",
+  "ok": true,
+  "detail": "[][]"
+ },
+ {
+  "journey": "investor",
+  "check": "the stock table loads",
+  "ok": true,
+  "detail": "5,993 of 5,993 shown \u00b7 2,284 superseded hidden \u00b7 first 150"
+ },
+ {
+  "journey": "investor",
+  "check": "filter bState works for every option tried",
+  "ok": true,
+  "detail": "5 values"
+ },
+ {
+  "journey": "investor",
+  "check": "filter bAvail works for every option tried",
+  "ok": true,
+  "detail": "6 values"
+ },
+ {
+  "journey": "investor",
+  "check": "filter bProduct works for every option tried",
+  "ok": true,
+  "detail": "5 values"
+ },
+ {
+  "journey": "investor",
+  "check": "filter bSource works for every option tried",
+  "ok": true,
+  "detail": "4 values"
+ },
+ {
+  "journey": "investor",
+  "check": "filter bBuilder works for every option tried",
+  "ok": true,
+  "detail": "6 values"
+ },
+ {
+  "journey": "investor",
+  "check": "every column sorts both ways",
+  "ok": true,
+  "detail": "33/33 columns"
+ },
+ {
+  "journey": "investor",
+  "check": "free-text search narrows the list",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "journey": "investor",
+  "check": "'Show more' keeps adding rows",
+  "ok": true,
+  "detail": "150 -> 600"
+ },
+ {
+  "journey": "investor",
+  "check": "can mark a whole filtered set",
+  "ok": true,
+  "detail": "1,212 marked"
+ },
+ {
+  "journey": "investor",
+  "check": "the marked set exports as CSV",
+  "ok": true,
+  "detail": "{'rows': 1212, 'head': 'Builder / Development,Address,Address as captured,Lot,Suburb'}"
+ },
+ {
+  "journey": "investor",
+  "check": "console stayed clean apart from the known /api/select 404",
+  "ok": true,
+  "detail": "[][]"
+ },
+ {
+  "journey": "impatient",
+  "check": "rapid clicks still produce one clean answer",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "journey": "impatient",
+  "check": "no duplicated results block",
+  "ok": true,
+  "detail": "1 x Rank #1"
+ },
+ {
+  "journey": "impatient",
+  "check": "no page error from the races",
+  "ok": true,
+  "detail": "[]"
+ },
+ {
+  "journey": "empty-form",
+  "check": "answers instead of breaking",
+  "ok": true,
+  "detail": "6119 chars"
+ },
+ {
+  "journey": "empty-form",
+  "check": "says what it could not do rather than showing an error",
+  "ok": true,
+  "detail": "COMPARE Rank #1: Lot 97, Sunnyvue Ripley, QLD | Builder: FRD Homes (House & Land) 94 / 100 RECOMMEND"
+ },
+ {
+  "journey": "empty-form",
+  "check": "no HTTP 500",
+  "ok": true,
+  "detail": "[]"
+ },
+ {
+  "journey": "empty-form",
+  "check": "no page error",
+  "ok": true,
+  "detail": "[]"
+ },
+ {
+  "journey": "nonsense",
+  "check": "survives junk input",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "journey": "nonsense",
+  "check": "no HTTP 500",
+  "ok": true,
+  "detail": "[]"
+ },
+ {
+  "journey": "nonsense",
+  "check": "the script tag was not executed",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "journey": "nonsense",
+  "check": "no page error",
+  "ok": true,
+  "detail": "[]"
+ },
+ {
+  "journey": "phone",
+  "check": "no sideways page scroll",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "journey": "phone",
+  "check": "research works on a phone",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "journey": "phone",
+  "check": "the table is reachable and scrolls in its own box",
+  "ok": true,
+  "detail": "{'rows': 150, 'scrolls': True, 'page': 0}"
+ },
+ {
+  "journey": "phone",
+  "check": "'Approved Builder Directory' renders on a phone",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "journey": "phone",
+  "check": "'Vendor Brochures & Details' renders on a phone",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "journey": "phone",
+  "check": "'CRM Integration Payload' renders on a phone",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "journey": "phone",
+  "check": "no page error",
+  "ok": true,
+  "detail": "[]"
+ },
+ {
+  "journey": "keyboard",
+  "check": "controls are keyboard-reachable",
+  "ok": true,
+  "detail": "31 focusable controls"
+ },
+ {
+  "journey": "keyboard",
+  "check": "typing into a focused field works",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "journey": "keyboard",
+  "check": "Enter on the focused button runs the search",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "journey": "keyboard",
+  "check": "no page error",
+  "ok": true,
+  "detail": "[]"
+ }
+]
