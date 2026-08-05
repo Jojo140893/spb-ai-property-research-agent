@@ -68,14 +68,16 @@ BUILDING_FIELDS = [
     # is the most common thing to change between harvests. It leaks nothing: it is a
     # digest of listing attributes already published in the row beside it.
     "content_hash", "promo_selected",
-    # Derived at build time by provenance.py, not database columns: the one link
-    # that traces a listing back to where it was found, and what it opens.
-    "source_link_url", "source_link_opens", "source_link_label",
     # An older capture of a lot that is also stored fresher. Exported rather than
     # dropped so the dashboard can hide them by default AND say how many it hid —
     # silently serving 5,703 rows from a 6,480-row table would be its own small lie.
     "superseded_by",
 ]
+# Derived at build time, NOT database columns — so they are exported and allow-listed
+# but must never reach the SELECT. Keeping them in one list made the build fail with
+# "no such column: source_link_url", which is the build guard doing its job.
+BUILDING_DERIVED_FIELDS = ["source_link_url", "source_link_opens", "source_link_label"]
+
 # builders: NOTE the deliberate omission of portal_login_email / portal_login_password.
 BUILDER_FIELDS = [
     "builder_name", "states", "portal_url", "stock_channel", "is_on_e_agent",
@@ -242,7 +244,8 @@ def _pick(row, fields):
 
 
 def build(out_dir: Path, with_assets: bool = True) -> dict:
-    for name, fields in (("buildings", BUILDING_FIELDS), ("builders", BUILDER_FIELDS),
+    for name, fields in (("buildings", BUILDING_FIELDS + BUILDING_DERIVED_FIELDS),
+                         ("builders", BUILDER_FIELDS),
                          ("assets", ASSET_FIELDS)):
         _check(name, fields)
 
@@ -293,8 +296,11 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     (out_dir / "stock.json").write_text(json.dumps({
         "status": "success", "total": len(buildings), "by_channel": by_channel,
         "generated": stamp,
-        "keys": BUILDING_FIELDS,
-        "rows": [[b[f] for f in BUILDING_FIELDS] for b in buildings],
+        # Stored columns plus the links derived above, so the table can trace a listing
+        # back without the browser re-deriving the ranking.
+        "keys": BUILDING_FIELDS + BUILDING_DERIVED_FIELDS,
+        "rows": [[b.get(f) for f in BUILDING_FIELDS + BUILDING_DERIVED_FIELDS]
+                 for b in buildings],
     }, separators=(",", ":"), default=str), encoding="utf-8")
 
     # builder registry, credentials stripped
