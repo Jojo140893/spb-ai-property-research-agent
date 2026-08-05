@@ -171,8 +171,12 @@ we reviewed available stock and shortlisted the following {len(top3)} option(s) 
 # Where the logo is expected to live. Colin, 5 Aug: "I'm going to give you a logo, right?
 # When we do this one, right? We need a logo. You can get the logo from our Facebook page,
 # Smart Property Buying."
-LOGO_CANDIDATES = ("brand/spb-logo.svg", "brand/spb-logo.png",
-                   "brand/logo.svg", "brand/logo.png")
+# Order matters: the OFFICIAL artwork wins. Dropping brand/spb-logo.png supersedes the
+# reproduction below with no code change, which is the whole point of the fallback being
+# last — a stand-in must never outrank the real thing.
+LOGO_CANDIDATES = ("brand/spb-logo.png", "brand/spb-logo.svg",
+                   "brand/logo.png", "brand/logo.svg",
+                   "brand/spb-logo-fallback.svg")
 
 _LOGO_CACHE = None
 

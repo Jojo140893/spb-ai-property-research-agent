@@ -33,7 +33,15 @@ Three repairs:
    price: 113 rows published roughly $400,000 below what the package costs. Corrected
    from the row's own text, and only where that text clearly beats what we published.
 
-4. THE SAME LISTING STORED SEVERAL TIMES.
+4. LAND SOLD AS IF IT WERE A HOUSE.
+   Rows whose own project title says "Land Only" and which carry no bedrooms and no
+   house size are typed as Land, so a block of dirt is not read as a dwelling. The
+   companion rule — beds plus a house size means "House & Land" — was measured against
+   the 1,670 rows already typed and rejected at 79% accuracy: 306 of them are
+   apartments and 43 townhouses. A rule that mislabels one row in five is worse than
+   the blank it replaces.
+
+5. THE SAME LISTING STORED SEVERAL TIMES.
    395 groups of rows share a byte-identical source_text — the same row reached us
    through more than one channel (an e-agent portal and the emailed price list). They
    are not variants: they are one listing. The copies disagree, and the weaker copy is
@@ -120,6 +128,34 @@ def find_understated_prices(rows):
             if len(amounts) >= 3 and amounts[-1] == total:
                 land, build = amounts[-3], amounts[-2]
             out.append((r, total, land, build))
+    return out
+
+
+# The source SAYS the product is land — "…Box Hill Land Only (10/27)" — rather than us
+# concluding it from an absence.
+_SAYS_LAND_ONLY = re.compile(r"land\s*only|\bvacant\s+land\b", re.I)
+
+
+def find_land_only(rows):
+    """Rows the source itself calls land only, and which carry no dwelling at all.
+
+    Colin, 5 Aug: "This one is a lot. It's land. It's not a house... how come they have
+    bedrooms and baths?" Typing these stops a block of dirt being read as a house.
+
+    The obvious companion rule — beds + house size means "House & Land" — was measured
+    and REJECTED: of 1,670 already-typed rows carrying both, only 79% are a house
+    product; 306 are apartments and 43 townhouses. A rule that mislabels one row in five
+    is worse than the blank it replaces, so product_type stays empty for those.
+    """
+    out = []
+    for r in rows:
+        if str(r["product_type"] or "").strip():
+            continue
+        if r["bedrooms"] or r["house_sqm"] or not r["land_sqm"]:
+            continue          # anything with a dwelling on it is not land only
+        text = "%s %s" % (r["estate_name"] or "", r["source_text"] or "")
+        if _SAYS_LAND_ONLY.search(text):
+            out.append(r)
     return out
 
 
@@ -231,6 +267,12 @@ def main(apply_changes):
               f"({(r['builder_name'] or '?')[:18]:18} {str(r['suburb'] or '-')[:14]:14})")
         print(f"       {str(r['source_text'])[:96]}")
 
+    land_only = find_land_only(live)
+    print(f"\n4. rows the source itself calls land only: {len(land_only)}")
+    for r in land_only[:3]:
+        print(f"     land={r['land_sqm']}m2 no dwelling :: "
+              f"{str(r['estate_name'] or r['lot_address'])[:64]}")
+
     groups = find_duplicate_groups(live)
     losers = [r for _, rest in groups for r in rest]
     print(f"\n2. identical-source_text groups: {len(groups)}, "
@@ -260,6 +302,8 @@ def main(apply_changes):
                         (total, land, build, r["id"]))
         else:
             cur.execute("UPDATE buildings SET price=? WHERE id=?", (total, r["id"]))
+    for r in land_only:
+        cur.execute("UPDATE buildings SET product_type='Land' WHERE id=?", (r["id"],))
     for r in cheap:
         # Cleared, not adjusted. We know the stored number is not the price; we do not
         # know what the price is, and the "no price" gate already keeps a priceless row
@@ -280,6 +324,7 @@ def main(apply_changes):
     print(f"\napplied: {len(fabricated)} postcode(s) withdrawn "
           f"({states_dropped} state(s) cleared), {len(cheap)} implausible price(s) cleared, "
           f"{len(understated)} understated price(s) corrected, "
+          f"{len(land_only)} row(s) typed as land, "
           f"{len(losers)} duplicate row(s) superseded")
     after = len([r for r in _rows(conn) if not r["superseded_by"]])
     print(f"live rows: {len(live)} -> {after}")
