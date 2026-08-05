@@ -102,6 +102,38 @@ def _shortlist_entry(p):
     }
 
 
+# Bounded so a large shortlist cannot balloon the response: 5 options is 10 pairs.
+MAX_COMPARISON_PAIRS = int(os.environ.get("SPB_MAX_COMPARISON_PAIRS", "10"))
+
+
+def _pairwise_comparisons(brief_dict, shortlist):
+    """{"0-1": html} for each pairing, so the browser can switch instantly.
+
+    Never fatal: a comparison is a convenience on top of a completed search, and a
+    formatting error in it must not cost the client their results.
+    """
+    if len(shortlist) < 2:
+        return {}
+    try:
+        from brief_parser import ClientBriefParser
+        from comparison_report import ComparisonReportGenerator
+        brief = ClientBriefParser.parse_dict(brief_dict)
+    except Exception as exc:                                       # noqa: BLE001
+        print("comparison reports unavailable: %s" % exc, file=sys.stderr)
+        return {}
+    out = {}
+    for i in range(len(shortlist)):
+        for j in range(i + 1, len(shortlist)):
+            if len(out) >= MAX_COMPARISON_PAIRS:
+                return out
+            try:
+                out["%d-%d" % (i, j)] = ComparisonReportGenerator.generate_html(
+                    brief, [shortlist[i], shortlist[j]])
+            except Exception as exc:                               # noqa: BLE001
+                print("comparison %d-%d failed: %s" % (i, j, exc), file=sys.stderr)
+    return out
+
+
 def _empty_kommo_payload(brief_dict, record_id, coverage_reason):
     """What the pipeline would have produced with nothing to shortlist."""
     from datetime import datetime
@@ -232,6 +264,12 @@ def run_research(payload):
         'search_area': result.get('search_area', []),
         'builder_coverage': result.get('builder_coverage', {}),
         'client_report_html': result.get('client_report_html', ''),
+        # Every pairing of the shortlist, pre-rendered. Colin's own workflow is "two
+        # options, side by side, which do I send" — see comparison_report.py. Built here
+        # because this is where the full CandidateProperty objects live; handing the pair
+        # back over HTTP would mean rebuilding them from JSON, enums and all, to produce
+        # a document we can generate now for a few KB each.
+        'comparisons': _pairwise_comparisons(brief_dict, result['shortlist']),
         # The local server hands back a real file path. Here the report was written to
         # the function's /tmp and is gone when the instance recycles, so the path is
         # withheld rather than returned as a link that cannot be opened.

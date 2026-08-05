@@ -421,7 +421,7 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
 # function, so EVERY request 500s while the page and the tests look perfectly healthy.
 # _verify_function_imports below fails the build rather than shipping that again.
 _FUNCTION_ROOT_MODULES = (
-    "address_label.py", "benchmark.py", "provenance.py", "brief_parser.py", "builder_registry.py",
+    "address_label.py", "benchmark.py", "provenance.py", "comparison_report.py", "brief_parser.py", "builder_registry.py",
     "client_report.py", "config.py", "database.py", "drive_ingest.py", "geo.py",
     "kommo_agent.py", "kommo_client.py", "qa_checker.py", "report_generator.py",
     "schema.py", "scoring_engine.py", "secrets_store.py", "state_resolver.py",

@@ -146,7 +146,17 @@
             color: var(--text-heading);
             margin-bottom: 0.3rem;
         }
-        /* The rejection log, folded. Thirty red cards below five results made a working
+        /* The compare tick beside a rank, deliberately small — it is a consultant's tool,
+       not something a client reads. */
+    .cmp-pick {
+        display: inline-flex; align-items: center; gap: 0.25rem;
+        font-size: 0.68rem; font-weight: 600; text-transform: uppercase;
+        letter-spacing: 0.05em; color: var(--text-muted); margin-right: 0.5rem;
+        cursor: pointer; vertical-align: middle;
+    }
+    .cmp-pick input { width: auto; margin: 0; }
+
+    /* The rejection log, folded. Thirty red cards below five results made a working
            page look like a failed one; the reasoning is still one click away. */
         .reject-log {
             border: 1px solid var(--border-soft, #e3e8ef);
@@ -1448,6 +1458,41 @@
     // the shortlist card also carries a "Confirm before presenting" advisory for it.
     const NOT_STATED = 'not stated';
 
+    /* Colin's own workflow, from the 5 Aug call: he had already narrowed a client to two
+       builders and wanted them side by side — "these are the major inclusions, this is
+       the cost for each, and the strengths by category". Every pairing is pre-rendered
+       by the API (see comparison_report.py), so switching between them is instant and
+       needs no second round trip. */
+    let COMPARISONS = {};
+
+    function comparisonKey() {
+        const picked = [...document.querySelectorAll('.cmp-box:checked')]
+            .map(el => parseInt(el.dataset.idx, 10)).sort((a, b) => a - b);
+        if (picked.length !== 2) return null;
+        return `${picked[0]}-${picked[1]}`;
+    }
+
+    function paintCompareBar() {
+        const btn = document.getElementById('openComparison');
+        if (!btn) return;
+        const n = document.querySelectorAll('.cmp-box:checked').length;
+        const key = comparisonKey();
+        const have = key && COMPARISONS[key];
+        btn.disabled = !have;
+        btn.textContent = n === 2 ? (have ? 'Compare these two' : 'Comparison unavailable')
+                                  : `Compare two (${n} of 2 ticked)`;
+    }
+
+    document.addEventListener('change', e => {
+        if (e.target && e.target.classList && e.target.classList.contains('cmp-box')) {
+            // Three ticks is ambiguous, so the oldest gives way rather than the click
+            // being silently ignored.
+            const boxes = [...document.querySelectorAll('.cmp-box:checked')];
+            if (boxes.length > 2) boxes[0].checked = false;
+            paintCompareBar();
+        }
+    });
+
     /* Colin, 5 Aug: "The idea is to avoid all that extra, because then I have to go back
        and start looking for it. If there's a URL that I can click..." He spent eight
        minutes of that call hunting one Rouse Hill lot.
@@ -1560,7 +1605,11 @@
                     card.innerHTML = `
                         <div class="card-top-row">
                             <div>
-                                <div class="prop-title-text">Rank #${idx+1}: ${prop.lot_address}</div>
+                                <div class="prop-title-text">
+                                  <label class="cmp-pick" title="Tick two options to compare them side by side">
+                                    <input type="checkbox" class="cmp-box" data-idx="${idx}"> compare
+                                  </label>
+                                  Rank #${idx+1}: ${prop.lot_address}</div>
                                 <div class="prop-subtitle-text">${prop.suburb}, ${prop.state} | Builder: <strong>${prop.builder_name || NOT_STATED}</strong>${prop.house_design ? ` (${prop.house_design})` : ''}</div>
                             </div>
                             <div class="score-badge">
@@ -1659,6 +1708,9 @@
                             (${(cov.e_agent_channel || []).length} via E-Agent, ${(cov.direct_portal_channel || []).length} direct portals, ${(cov.email_or_drive_channel || []).length} email/drive)
                         </div>
                         <button id="openClientReport" class="btn-submit" style="width:auto; padding:0.5rem 1rem; margin:0;">Open Client Report</button>
+                        <button id="openComparison" class="btn-submit" disabled
+                                style="width:auto; padding:0.5rem 1rem; margin:0 0 0 0.5rem;"
+                                title="Tick 'compare' on exactly two options above">Compare two</button>
                     `;
                     resultsDiv.appendChild(bar);
                     document.getElementById('openClientReport').onclick = () => {
@@ -1666,6 +1718,8 @@
                         w.document.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>SPB Client Report</title></head><body>' + (data.client_report_html || '<p>No report generated.</p>') + '</body></html>');
                         w.document.close();
                     };
+                    const cmpBtn = document.getElementById('openComparison');
+                    if (cmpBtn) cmpBtn.onclick = openComparisonReport;
                 }
 
                 // Filtered Rejection Log.
@@ -1736,6 +1790,8 @@
                     });
                 }
 
+                COMPARISONS = data.comparisons || {};
+                paintCompareBar();
                 currentPayload = data.kommo_payload;
                 document.getElementById('jsonPayloadView').textContent = JSON.stringify(data.kommo_payload, null, 2);
             }
@@ -1747,6 +1803,16 @@
                 displayed.</strong> ${esc(e.message || 'unexpected error')} — press
                 <em>Execute Property Research &amp; Benchmarking</em> to try again.</div>`;
         }
+    }
+
+    function openComparisonReport() {
+        const key = comparisonKey();
+        const html = key && COMPARISONS[key];
+        if (!html) return;
+        const w = window.open('', '_blank');
+        w.document.write('<!DOCTYPE html><html><head><meta charset="utf-8">'
+            + '<title>SPB Builder Comparison</title></head><body>' + html + '</body></html>');
+        w.document.close();
     }
 
     function copyPayloadJSON() {

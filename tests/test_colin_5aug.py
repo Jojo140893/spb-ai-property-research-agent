@@ -199,6 +199,12 @@ def run_all():
         ("nothing to point at -> no link",
          test_a_row_with_nothing_to_point_at_gets_no_link_rather_than_a_guess),
         ("prose is never a link", test_a_non_http_reference_is_never_offered_as_a_link),
+        ("comparison has every section", test_the_comparison_has_every_section_colins_report_has),
+        ("cheaper quote != cheaper package", test_the_cheaper_quote_is_not_called_the_cheaper_package),
+        ("no invented lead on equal scores", test_it_refuses_to_invent_a_lead_when_the_scores_are_equal),
+        ("same builder still tellable apart", test_two_lots_from_one_builder_are_still_tellable_apart),
+        ("an unstated row is omitted", test_a_field_neither_side_states_is_omitted_not_shown_blank),
+        ("one or three properties refused", test_a_comparison_of_one_or_three_is_refused),
     ]
     failed = 0
     for name, fn in tests:
@@ -210,6 +216,107 @@ def run_all():
             print(f" [FAIL] 5-aug: {name}: {exc}")
     return failed
 
+
+
+# ------------------------------------------------- the two-option comparison report
+
+def _pair():
+    """Two candidates that differ in the ways the report is supposed to surface."""
+    from schema import (CandidateProperty, PriceBreakdown, TurnkeyStatus,
+                        VerificationStatus, ScoringBreakdown)
+
+    def prop(pid, builder, pkg, extra, house, missing, score):
+        pb = PriceBreakdown(
+            advertised_package_price=pkg, land_price=0, build_price=0, fixed_site_costs=0,
+            driveway_cost=0, fencing_cost=0, landscaping_cost=0, flooring_cost=0,
+            blinds_cost=0, hvac_cost=0, estimated_additional_costs=extra,
+            realistic_total_price=pkg + extra,
+            turnkey_status=TurnkeyStatus.PARTIAL_TURNKEY if extra else TurnkeyStatus.FULL_TURNKEY,
+            missing_inclusions=missing)
+        p = CandidateProperty(
+            property_id=pid, lot_address=f"Lot {pid}", suburb="Tarneit", state="VIC",
+            builder_name=builder, developer_name="", house_design="Aspen 22",
+            bedrooms=4, bathrooms=2, car_spaces=2, storeys=None, land_size_sqm=400.0,
+            house_size_sqm=house, title_status="Titled", expected_title_date="",
+            price_breakdown=pb, estimated_rent_weekly_min=0, estimated_rent_weekly_max=0,
+            amenities_summary="", builder_confidence_rating="HIGH",
+            source_channel="Test", source_url_or_ref="https://example.test/1",
+            date_checked="06/08/2026", verification_status=VerificationStatus.VERIFIED)
+        p.scoring = ScoringBreakdown(20, 20, 15, 15, 10, 10, 10, score)
+        return p
+
+    a = prop("A", "Alpha Homes", 700000, 0, 180.0, [], 92.0)
+    b = prop("B", "Beta Homes", 690000, 35000, 165.0, ["Fencing", "Landscaping"], 88.0)
+    return a, b
+
+
+def _brief():
+    from brief_parser import ClientBriefParser
+    return ClientBriefParser.parse_dict({"client_name": "Test Buyer", "state": "VIC",
+                                         "budget_max": 800000})
+
+
+def test_the_comparison_has_every_section_colins_report_has():
+    from comparison_report import ComparisonReportGenerator
+    a, b = _pair()
+    html = ComparisonReportGenerator.generate_html(_brief(), [a, b])
+    for section in ("Builder comparison report", "1. Headline comparison",
+                    "2. What each one gives you", "3. Inclusions still to be arranged",
+                    "4. Cost and completion", "5. Things to be aware of"):
+        assert section in html, section
+    assert "Alpha Homes vs Beta Homes" in html
+
+
+def test_the_cheaper_quote_is_not_called_the_cheaper_package():
+    """The whole point of Colin's section 4: Beta's quote is $10,000 lower but its
+    COMPLETED position is $25,000 higher, and the report must lead with the latter."""
+    from comparison_report import ComparisonReportGenerator
+    a, b = _pair()
+    html = ComparisonReportGenerator.generate_html(_brief(), [a, b])
+    assert "$700,000" in html and "$690,000" in html      # both quotes shown
+    assert "$725,000" in html                              # Beta's completed position
+    assert "Alpha Homes</strong> lands $25,000 lower" in html, (
+        "the verdict must compare completed positions, not quoted prices")
+
+
+def test_it_refuses_to_invent_a_lead_when_the_scores_are_equal():
+    from comparison_report import ComparisonReportGenerator
+    a, b = _pair()
+    b.scoring.total_score = a.scoring.total_score
+    html = ComparisonReportGenerator.generate_html(_brief(), [a, b])
+    assert "scores higher" not in html
+    assert "both score" in html
+
+
+def test_two_lots_from_one_builder_are_still_tellable_apart():
+    """The first pair the tool ever produced was two lots from one builder, and it
+    rendered as "Verv Projects vs Verv Projects" with two identical column heads."""
+    from comparison_report import ComparisonReportGenerator
+    a, b = _pair()
+    b.builder_name = a.builder_name
+    html = ComparisonReportGenerator.generate_html(_brief(), [a, b])
+    assert "Alpha Homes vs Alpha Homes" not in html
+    assert "two options compared" in html
+    assert "Option 1" in html and "Option 2" in html
+
+
+def test_a_field_neither_side_states_is_omitted_not_shown_blank():
+    from comparison_report import ComparisonReportGenerator
+    a, b = _pair()
+    a.storeys = b.storeys = None
+    html = ComparisonReportGenerator.generate_html(_brief(), [a, b])
+    assert "<th>Storeys</th>" not in html, "a row neither side states adds nothing"
+
+
+def test_a_comparison_of_one_or_three_is_refused():
+    from comparison_report import ComparisonReportGenerator
+    a, b = _pair()
+    for bad in ([a], [a, b, a], []):
+        try:
+            ComparisonReportGenerator.generate_html(_brief(), bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"should have refused {len(bad)} properties")
 
 if __name__ == "__main__":
     sys.exit(1 if run_all() else 0)
