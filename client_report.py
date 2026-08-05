@@ -88,6 +88,34 @@ class ClientReportGenerator:
             dist = getattr(p, 'distance_km_from_target', None)
             dist_line = f" &middot; {dist} km from {brief.primary_suburbs[0]}" if dist not in (None, 0.0) and brief.primary_suburbs else ""
 
+            # What "Partial Turnkey" actually costs the buyer, itemised.
+            #
+            # The turnkey calculator has always produced this list — driveway, fencing,
+            # landscaping, flooring, site costs — and the report threw it away, printing
+            # only "Partial Turnkey — allow $15,000 additional costs". Colin's own
+            # builder-comparison report (shown on the 5 Aug call) devotes a whole section
+            # to exactly this: the items that "would still need to be confirmed, supplied
+            # or arranged separately", then a quoted price -> completed position table.
+            # A buyer cannot compare two builders without it, because the cheaper quote
+            # is routinely the one that hands over less.
+            turnkey_block = ""
+            if pb.missing_inclusions or pb.estimated_additional_costs:
+                items = "".join(f"<li>{m}</li>" for m in (pb.missing_inclusions or []))
+                item_list = (f"<p>Still to be confirmed, supplied or arranged separately:</p>"
+                             f"<ul class='risks'>{items}</ul>" if items else "")
+                turnkey_block = f"""
+      <h3>What it costs to complete</h3>
+      {item_list}
+      <table class='comps'>
+        <tr><th>Cost position</th><th>Amount</th></tr>
+        <tr><td>Quoted package price</td><td>{_money(pb.advertised_package_price)}</td></tr>
+        <tr><td>Estimated completion items</td><td>{_money(pb.estimated_additional_costs)}</td></tr>
+        <tr><td><strong>Indicative completed position</strong></td>
+            <td><strong>{_money(pb.realistic_total_price)}</strong></td></tr>
+      </table>
+      <p class='pending'>The completion allowance is an estimate only. Actual cost depends
+      on site conditions, fencing lengths, landscaping scope and supplier pricing.</p>"""
+
             risk_items = "".join(f"<li>{r.risk_name} ({r.rating.value}): {r.proposed_mitigation}</li>" for r in p.risks)
             risk_block = f"<ul class='risks'>{risk_items}</ul>" if risk_items else "<p>No medium or high risks identified at time of checking.</p>"
 
@@ -113,6 +141,7 @@ class ClientReportGenerator:
       {yield_row}
       <div class="row"><span class="label">Turnkey status</span><span>{pb.turnkey_status.value}{' &mdash; allow ' + _money(pb.estimated_additional_costs) + ' additional costs' if pb.estimated_additional_costs else ''}</span></div>
       <div class="row"><span class="label">Title</span><span>{title_text}</span></div>
+      {turnkey_block}
       <h3>Why we recommend it</h3>
       <p>{p.recommendation_reason}</p>
       {amenity_line}
