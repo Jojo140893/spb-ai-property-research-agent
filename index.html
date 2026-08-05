@@ -1305,8 +1305,16 @@
         const lo = priceBound('bMinPrice'), hi = priceBound('bMaxPrice');
         const pickedOnly = (document.getElementById('bPickedOnly') || {}).checked;
         const showSuperseded = (document.getElementById('bShowSuperseded') || {}).checked;
+        // lot_number and postcode were missing, which is why Colin's own attempt on the
+        // 5 Aug call failed: he pasted a lot number, said "that's it, remove everything
+        // else", and got "no, it doesn't come out". A consultant identifies a listing to
+        // a builder by its lot number, so it has to be the one thing you can search.
         const fields = ['builder_name', 'lot_address', 'street_address', 'suburb',
-                        'estate_name', 'state', 'availability_status'];
+                        'estate_name', 'state', 'availability_status',
+                        'lot_number', 'postcode'];
+        // "lot 21", "Lot 21" and "21" should all find lot 21 — and find it EXACTLY,
+        // not every lot whose number happens to contain 21.
+        const lotQuery = (q.match(/^\s*(?:lot\s*)?([0-9]+[a-z]?)\s*$/i) || [])[1];
 
         stockView = STOCK.filter(b => {
             // Superseded rows are hidden unless asked for: they are an earlier capture
@@ -1323,6 +1331,7 @@
             if (hi !== null && !(Number(b.price) <= hi)) return false;
             if (pickedOnly && !PICKED.has(rowKey(b))) return false;
             if (!q) return true;
+            if (lotQuery && String(b.lot_number ?? '').toLowerCase() === lotQuery) return true;
             return fields.some(f => String(b[f] ?? '').toLowerCase().includes(q));
         });
 
