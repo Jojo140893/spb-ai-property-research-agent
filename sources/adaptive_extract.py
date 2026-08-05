@@ -22,6 +22,8 @@ import re
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
+from sources.scraper_base import normalise_money_spacing
+
 PRICE_RE = re.compile(r"\$\s*(\d{1,3}(?:[\s,]+\d{3})+|\d{4,7})(?:\.\d{2})?")
 # "4 bed", "4 Bedrooms", "4br", "4 x bed"
 BEDS_RE = re.compile(r"(\d+)\s*(?:x\s*)?(?:bed|bd|br)\b", re.I)
@@ -115,7 +117,15 @@ def _suburb_lookup():
 
 
 def _clean(s: Optional[str]) -> str:
-    return re.sub(r"\s+", " ", (s or "")).strip()
+    """Collapse whitespace, and re-join money amounts a PDF copy split mid-number.
+
+    The money repair belongs here rather than at each reader because every price path in
+    this module reads from _clean's output — the labelled searches, the document-order
+    scan and the bare PRICE_RE. A "$ 9 32,900" total parsed as $9, was discarded as
+    implausible, and a COMPONENT became the package price: 113 rows published at roughly
+    $400,000 below what the package actually costs. See normalise_money_spacing.
+    """
+    return re.sub(r"\s+", " ", normalise_money_spacing(s)).strip()
 
 
 def parse_price(text: str) -> Optional[float]:

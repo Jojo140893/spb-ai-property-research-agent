@@ -27,7 +27,13 @@ Three repairs:
    and we do not know what the price is. A priceless row is excluded from every
    shortlist and visibly blank in the table, which is the honest outcome.
 
-3. THE SAME LISTING STORED SEVERAL TIMES.
+3. PRICES UNDERSTATED BY A SPLIT MONEY AMOUNT.
+   "$ 9 32,900" is $932,900 with a space in it, courtesy of a PDF copy. It parsed as $9,
+   was discarded as implausible, and a COMPONENT of the package became the headline
+   price: 113 rows published roughly $400,000 below what the package costs. Corrected
+   from the row's own text, and only where that text clearly beats what we published.
+
+4. THE SAME LISTING STORED SEVERAL TIMES.
    395 groups of rows share a byte-identical source_text — the same row reached us
    through more than one channel (an e-agent portal and the emailed price list). They
    are not variants: they are one listing. The copies disagree, and the weaker copy is
@@ -39,13 +45,14 @@ Three repairs:
 
 import argparse
 import collections
+import re
 import sqlite3
 import sys
 from datetime import datetime
 
 import config
 from sources.feature_extract import parse_postcode
-from sources.scraper_base import MIN_PLAUSIBLE_PRICE
+from sources.scraper_base import MIN_PLAUSIBLE_PRICE, normalise_money_spacing
 
 # A state that rests on nothing but the postcode cannot survive the postcode being
 # withdrawn. A state read off the page or the suburb stands on its own and is left alone.
@@ -70,6 +77,49 @@ def find_fabricated_postcodes(rows):
                       str(r["state_source"] or "").strip().lower()
                       in STATE_SOURCES_THAT_DIE_WITH_THE_POSTCODE)
         out.append((r, drop_state))
+    return out
+
+
+_MONEY = re.compile(r"\$\s?\d[\d,]*(?:\.\d+)?")
+_UNDERSTATED_BY = 1.25          # only correct a price the row's own text clearly beats
+
+
+def find_understated_prices(rows):
+    """Rows whose own text states a package total ABOVE the price we published.
+
+    The cause is a money amount split by a space — "$ 9 32,900" for $932,900 — which
+    parsed as $9, was dropped as implausible, and left a COMPONENT as the headline
+    price. The land and build figures survive intact beside it, so the row reads
+    land $397,900, build $535,000 and we published $535,000 for a $932,900 package.
+
+    Only corrected when the recovered total clearly exceeds the stored price, so a
+    correct price is never rewritten by a mis-read of the same line.
+    """
+    out = []
+    for r in rows:
+        if not r["price"]:
+            continue
+        text = str(r["source_text"] or "")
+        fixed = normalise_money_spacing(text)
+        if fixed == text:
+            continue                       # nothing was broken in this row
+        amounts = []
+        for m in _MONEY.finditer(fixed):
+            try:
+                v = float(m.group(0).replace("$", "").replace(",", "").strip())
+            except ValueError:
+                continue
+            if MIN_PLAUSIBLE_PRICE <= v <= 5_000_000:
+                amounts.append(v)
+        if not amounts:
+            continue
+        total = max(amounts)
+        if total > float(r["price"]) * _UNDERSTATED_BY:
+            # Document order in every observed stocklist is land, build, total.
+            land = build = None
+            if len(amounts) >= 3 and amounts[-1] == total:
+                land, build = amounts[-3], amounts[-2]
+            out.append((r, total, land, build))
     return out
 
 
@@ -173,6 +223,14 @@ def main(apply_changes):
         print(f"     ${float(r['price']):>10,.0f}  {(r['builder_name'] or '?')[:24]:24} "
               f"{str(r['source_text'])[:56]}")
 
+    understated = find_understated_prices(live)
+    print(f"\n3. prices UNDERSTATED because the row's total was split mid-number: "
+          f"{len(understated)}")
+    for r, total, land, build in understated[:5]:
+        print(f"     published ${float(r['price']):>10,.0f}  ->  actual ${total:>10,.0f}  "
+              f"({(r['builder_name'] or '?')[:18]:18} {str(r['suburb'] or '-')[:14]:14})")
+        print(f"       {str(r['source_text'])[:96]}")
+
     groups = find_duplicate_groups(live)
     losers = [r for _, rest in groups for r in rest]
     print(f"\n2. identical-source_text groups: {len(groups)}, "
@@ -196,6 +254,12 @@ def main(apply_changes):
 
     now = datetime.now().isoformat(timespec="seconds")
     cur = conn.cursor()
+    for r, total, land, build in understated:
+        if land and build:
+            cur.execute("UPDATE buildings SET price=?, land_price=?, build_price=? WHERE id=?",
+                        (total, land, build, r["id"]))
+        else:
+            cur.execute("UPDATE buildings SET price=? WHERE id=?", (total, r["id"]))
     for r in cheap:
         # Cleared, not adjusted. We know the stored number is not the price; we do not
         # know what the price is, and the "no price" gate already keeps a priceless row
@@ -215,6 +279,7 @@ def main(apply_changes):
     conn.commit()
     print(f"\napplied: {len(fabricated)} postcode(s) withdrawn "
           f"({states_dropped} state(s) cleared), {len(cheap)} implausible price(s) cleared, "
+          f"{len(understated)} understated price(s) corrected, "
           f"{len(losers)} duplicate row(s) superseded")
     after = len([r for r in _rows(conn) if not r["superseded_by"]])
     print(f"live rows: {len(live)} -> {after}")

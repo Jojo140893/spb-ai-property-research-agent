@@ -168,3 +168,8 @@ class CandidateProperty:
     recommendation_reason: str = ""
     benchmark: Optional[Dict[str, Any]] = None  # SOP Step 7 market benchmark result
     distance_km_from_target: Optional[float] = None  # km from nearest primary suburb
+    # {label, url, opens} for the source of this listing, so a recommendation can be
+    # traced back in one click. `opens` names what the link lands on — lot / project /
+    # price list / email — because a link labelled "the lot" that opens a spreadsheet
+    # is worse than no link. Built by provenance.py; None when the row has nothing.
+    source_link: Optional[Dict[str, str]] = None

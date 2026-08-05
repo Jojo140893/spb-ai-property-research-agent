@@ -44,6 +44,7 @@ from typing import Any, Dict, List, Optional
 
 from sources.base import PropertySource
 from sources.scraper_base import PlaywrightScraper, PLAYWRIGHT_AVAILABLE
+from builder_names import is_not_a_builder_name
 
 logger = logging.getLogger("spb.scraper.proxima")
 
@@ -309,7 +310,8 @@ class ProximaSource(PropertySource):
             })
         return out
 
-    def _row(self, d: Dict[str, str], header: Dict[str, str]) -> Optional[Dict[str, Any]]:
+    def _row(self, d: Dict[str, str], header: Dict[str, str],
+             project_id: str = "") -> Optional[Dict[str, Any]]:
         price = _num(d.get("rop")) or _num(d.get("packageprice"))
         if not price:
             self._bump("no price")
@@ -323,6 +325,16 @@ class ProximaSource(PropertySource):
 
         project = (header.get("project") or "").strip()
         developer = (header.get("developer") or "").strip()
+        # Proxima's developer field sometimes holds a place inside the development rather
+        # than a company: one project published "Level 33" there and 318 listings were
+        # stored under a builder that does not exist. Colin spotted it on 5 Aug — "there's
+        # no builder called Level 33". Dropped rather than replaced: the project title is
+        # not the builder's name, and guessing one is exactly what this file refuses to do.
+        if developer and is_not_a_builder_name(developer):
+            logger.info("     project %s: developer field is %r, which is a place and not "
+                        "a company — left blank", project[:40] or "?", developer)
+            self._bump("developer field was not a company name")
+            developer = ""
         # The project header's location is "NSW" or "BRADDON, ACT, 2612"; take a state
         # from it only where one is actually written.
         location = ""
@@ -359,6 +371,12 @@ class ProximaSource(PropertySource):
             "availability_status": (d.get("_status") or "").strip(),
             "floorplan_url": (d.get("_floorplan") or "").strip(),
             "source_channel": self.channel_name,
+            # The project this lot belongs to. Stored so a recommendation can link
+            # straight to its Proxima project page — the harvest has always known the
+            # id and always threw it away, leaving the agent projects index as the only
+            # "source" on 1,212 rows, which is no help at all when you are hunting one
+            # lot. See provenance.py.
+            "source_project_id": str(project_id or "").strip(),
             "source_url_or_ref": PROJECTS_URL,
             "source_text": name,
             "date_checked": datetime.now().strftime("%d/%m/%Y"),
@@ -428,7 +446,10 @@ class ProximaSource(PropertySource):
                             logger.info("  [%2d/%d] project %s (%s): no lots published",
                                         i, len(pids), pid, data["header"].get("project", "")[:40])
                             continue
-                        rows = [r for r in (self._row(d, data["header"])
+                        # pid travels with the row: it is the only thing that can turn
+                        # "somewhere in Proxima" into a link to the project page, and
+                        # Colin lost eight minutes of a call to not having it.
+                        rows = [r for r in (self._row(d, data["header"], pid)
                                             for d in data["props"]) if r]
                         if rows:
                             self.projects_with_stock += 1

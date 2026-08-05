@@ -217,6 +217,9 @@ class KommoPropertyResearchAgent:
                 price_breakdown=price_breakdown,
                 estimated_rent_weekly_min=float(raw_pkg.get('estimated_rent_weekly_min', 550)),
                 estimated_rent_weekly_max=float(raw_pkg.get('estimated_rent_weekly_max', 600)),
+                # Carried through so a recommendation can be traced to its source in one
+                # click — Colin lost eight minutes of the 5 Aug call to not having it.
+                source_link=raw_pkg.get('source_link'),
                 amenities_summary=raw_pkg.get('amenities_summary', 'Close to schools, train station & town centre.'),
                 builder_confidence_rating=b_rating,
                 source_channel=raw_pkg.get('source_channel', 'E-Agent / Builder Portal'),

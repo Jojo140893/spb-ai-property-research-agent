@@ -41,10 +41,18 @@ def test_a_trailing_plural_is_the_same_builder():
 
 # ----------------------------------------------------------- what must NOT
 
-def test_bathla_variants_are_left_alone():
-    """They share a word. A development arm and a group can be different entities,
-    and deciding they are one is the client's call, not the parser's."""
-    for name in ("Bathla Development", "Bathla Group", "Bathla"):
+def test_bathla_variants_merge_because_the_client_said_so():
+    """They share a word, and a development arm and a group CAN be different entities —
+    so this was deliberately left unmerged until Colin confirmed on 5 Aug 2026 that it
+    is one builder. The merge lives in CLIENT_CONFIRMED_ALIASES precisely so the record
+    shows it was the client's call and not a similarity rule."""
+    for name in ("Bathla Development", "Bathla Group", "Bathla", "BATHLA GROUP"):
+        assert _c().canonical(name) == "Bathla Development", name
+
+
+def test_a_similar_name_the_client_has_not_confirmed_is_still_left_alone():
+    """The confirmed list must not become a licence to merge on a shared word."""
+    for name in ("Bathla Constructions Trust", "Bathurst Homes"):
         assert _c().canonical(name) == name, name
 
 
@@ -104,7 +112,9 @@ def run_all():
         ("domain resolves to its builder", test_a_domain_resolves_to_the_builder_it_belongs_to),
         ("case/punctuation not a new builder", test_case_and_punctuation_do_not_make_a_second_builder),
         ("trailing plural is the same builder", test_a_trailing_plural_is_the_same_builder),
-        ("Bathla variants left alone", test_bathla_variants_are_left_alone),
+        ("Bathla merges — client confirmed", test_bathla_variants_merge_because_the_client_said_so),
+        ("an unconfirmed similar name is left alone",
+         test_a_similar_name_the_client_has_not_confirmed_is_still_left_alone),
         ("unknown domain kept, not invented", test_an_unknown_domain_is_kept_not_invented_into_a_name),
         ("unknown builder passes through", test_an_unknown_builder_passes_through_unchanged),
         ("a domain is never a canonical target", test_a_domain_is_never_learned_as_a_canonical_target),
@@ -221,8 +231,10 @@ def test_the_export_canonicaliser_merges_spellings_but_not_judgement_calls():
     assert out["Strike Developments"] == out["Strike Development"], (
         "singular/plural is the module's own documented example and must merge")
     # a development arm and a group may be different companies; that is the client's call
-    assert len({out["Bathla"], out["Bathla Development"], out["Bathla Group"]}) == 3, (
-        "Bathla variants must NOT be merged — see builder_names.py")
+    # Colin confirmed on 5 Aug 2026 that these are one supplier, so they now merge —
+    # via CLIENT_CONFIRMED_ALIASES, which records that the call was the client's.
+    assert len({out["Bathla"], out["Bathla Development"], out["Bathla Group"]}) == 1, (
+        "Bathla variants are a client-confirmed merge — see CLIENT_CONFIRMED_ALIASES")
     # nothing is invented: every output is a spelling that appeared in the input
     assert set(out.values()) <= set(stock)
 

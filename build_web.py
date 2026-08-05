@@ -52,6 +52,7 @@ BUILDING_FIELDS = [
     "land_sqm", "house_sqm", "frontage_m", "storey", "title_status", "estate_name",
     "incentive_amount", "incentive_text", "product_type", "source_channel",
     "attribution_scope", "date_checked", "listing_url", "floorplan_url",
+    "source_project_id", "stocklist_file", "source_url",
     "brochure_url", "benchmark_median", "benchmark_variance_pct",
     # benchmark_basis states what each median was computed against — internal peer
     # stock or a real CoreLogic/REA comparable set. Without it on the row, a reader
@@ -392,7 +393,7 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
 # function, so EVERY request 500s while the page and the tests look perfectly healthy.
 # _verify_function_imports below fails the build rather than shipping that again.
 _FUNCTION_ROOT_MODULES = (
-    "address_label.py", "benchmark.py", "brief_parser.py", "builder_registry.py",
+    "address_label.py", "benchmark.py", "provenance.py", "brief_parser.py", "builder_registry.py",
     "client_report.py", "config.py", "database.py", "drive_ingest.py", "geo.py",
     "kommo_agent.py", "kommo_client.py", "qa_checker.py", "report_generator.py",
     "schema.py", "scoring_engine.py", "secrets_store.py", "state_resolver.py",

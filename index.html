@@ -174,6 +174,10 @@
         .reject-log > summary:hover { color: var(--accent-blue); }
         .reject-log > .prop-card { margin: 0.5rem 0.7rem 0.7rem 0.9rem; }
 
+        /* The two price boxes in the stock filter bar. Narrow, so they read as a pair
+           of bounds rather than as another dropdown. */
+        .filter-num { width: 6.5rem; }
+
         /* Marks a field that imposes nothing when left blank, so nobody types a number
            just because the box looked like it wanted one. */
         .hint-opt {
@@ -739,6 +743,10 @@
             <select id="bAvail"><option value="">Any availability</option></select>
             <select id="bProduct"><option value="">All products</option></select>
             <select id="bSource"><option value="">All sources</option></select>
+            <!-- Colin, 5 Aug: "is there price here? There's no price. Maybe you can add
+                 the filter for price, right? Because it's easy, right?" -->
+            <input type="number" id="bMinPrice" class="filter-num" placeholder="Min $" step="10000" min="0">
+            <input type="number" id="bMaxPrice" class="filter-num" placeholder="Max $" step="10000" min="0">
             <label class="pick-toggle" title="An older capture of a lot that is also stored fresher — same address, same spec, earlier date. Hidden by default because its price may have moved since.">
                 <input type="checkbox" id="bShowSuperseded"> Show superseded
             </label>
@@ -1219,12 +1227,14 @@
         // here on its own the moment Proxima rows carry that source_channel.
         fill('bSource', uniq('source_channel'));
 
-        ['bSearch', 'bBuilder', 'bState', 'bAvail', 'bProduct', 'bSource', 'bShowSuperseded'].forEach(id => {
+        ['bSearch', 'bBuilder', 'bState', 'bAvail', 'bProduct', 'bSource',
+         'bMinPrice', 'bMaxPrice', 'bShowSuperseded'].forEach(id => {
             const e2 = document.getElementById(id);
             e2.oninput = e2.onchange = () => renderStock();
         });
         document.getElementById('bReset').onclick = () => {
-            ['bSearch', 'bBuilder', 'bState', 'bAvail', 'bProduct', 'bSource']
+            ['bSearch', 'bBuilder', 'bState', 'bAvail', 'bProduct', 'bSource',
+             'bMinPrice', 'bMaxPrice']
                 .forEach(id => document.getElementById(id).value = '');
             // "Marked only" is a filter too, and leaving it on made Reset look broken:
             // an empty selection plus a still-ticked box shows zero rows and no clue why.
@@ -1270,6 +1280,14 @@
         const fa = document.getElementById('bAvail').value;
         const fp = document.getElementById('bProduct').value;
         const fc = document.getElementById('bSource').value;
+        // A blank box means "no bound", not zero — parseFloat('') is NaN, and NaN in a
+        // comparison silently filters everything out.
+        const priceBound = id => {
+            const el = document.getElementById(id);
+            const n = parseFloat((el && el.value || '').toString().replace(/[, $]/g, ''));
+            return Number.isFinite(n) ? n : null;
+        };
+        const lo = priceBound('bMinPrice'), hi = priceBound('bMaxPrice');
         const pickedOnly = (document.getElementById('bPickedOnly') || {}).checked;
         const showSuperseded = (document.getElementById('bShowSuperseded') || {}).checked;
         const fields = ['builder_name', 'lot_address', 'street_address', 'suburb',
@@ -1284,6 +1302,10 @@
             if (fa && (b.availability_status || '') !== fa) return false;
             if (fp && (b.product_type || '') !== fp) return false;
             if (fc && (b.source_channel || '') !== fc) return false;
+            // A row with no price cannot satisfy a price bound, so it drops out when one
+            // is set rather than being shown as if it might fit.
+            if (lo !== null && !(Number(b.price) >= lo)) return false;
+            if (hi !== null && !(Number(b.price) <= hi)) return false;
             if (pickedOnly && !PICKED.has(rowKey(b))) return false;
             if (!q) return true;
             return fields.some(f => String(b[f] ?? '').toLowerCase().includes(q));
@@ -1412,6 +1434,30 @@
     // printed it verbatim — a client-facing card read "0m² / nullm²". Say "not stated";
     // the shortlist card also carries a "Confirm before presenting" advisory for it.
     const NOT_STATED = 'not stated';
+
+    /* Colin, 5 Aug: "The idea is to avoid all that extra, because then I have to go back
+       and start looking for it. If there's a URL that I can click..." He spent eight
+       minutes of that call hunting one Rouse Hill lot.
+
+       The label says what the link OPENS, because the honest answer differs per source:
+       E-Agent publishes price-list files rather than per-listing pages, so "price list"
+       is the truth there and pretending otherwise would waste his time all over again. */
+    const OPENS_LABEL = {
+        lot: 'opens this lot',
+        project: 'opens the project on the portal',
+        'price list': 'opens the price list it came from',
+        email: 'finds the email it came in',
+        document: 'opens the source document',
+    };
+    const sourceLinkRow = link => {
+        if (!link || !link.url) return '';
+        const what = OPENS_LABEL[link.opens] || 'opens the source';
+        return `<div style="font-size:0.8rem; margin-top:0.35rem;">
+            <strong>Where this came from:</strong>
+            <a href="${esc(link.url)}" target="_blank" rel="noopener"
+               style="color:var(--accent-blue); font-weight:600;">${esc(link.label)}</a>
+            <span style="color:var(--text-muted);">&mdash; ${what}</span></div>`;
+    };
     const sqm = v => (v === null || v === undefined || v === '' || Number(v) === 0)
         ? NOT_STATED : `${Number(v).toLocaleString()}m²`;
     const spec = (v, unit) => (v === null || v === undefined || v === '')
@@ -1531,6 +1577,7 @@
                                 : `<span style="color:var(--amber-yellow); font-weight:600;">${prop.benchmark ? prop.benchmark.classification : 'Unbenchmarked'}</span>`}
                             ${prop.benchmark && prop.benchmark.needs_manual_benchmark ? `<div style="color:${prop.benchmark.basis === 'internal' ? 'var(--text-muted, #64748b)' : 'var(--amber-yellow)'}; font-size:0.78rem; margin-top:0.2rem;">${esc(prop.benchmark.data_note || '')}</div>` : ''}
                             ${prop.distance_km_from_target ? `<div style="font-size:0.8rem; margin-top:0.2rem;"><strong>Distance:</strong> ${prop.distance_km_from_target} km from target suburb</div>` : ''}
+                            ${sourceLinkRow(prop.source_link)}
                         </div>
 
                         <div class="score-section">

@@ -22,11 +22,13 @@ judgement:
   2. A trailing plural on an otherwise identical name.
      "Strike Development" -> "Strike Developments".
 
-Everything else is left exactly as it was found. In particular "Bathla Development",
-"Bathla Group" and "Bathla" are NOT merged: they share a word, but a development arm
-and a group can be different entities, and deciding they are the same is a judgement
-about the client's suppliers that belongs to the client. Standing rule — a blank, or
-an unmerged name, beats a plausible guess.
+Everything else is left exactly as it was found, EXCEPT where the client has told us
+two names are one supplier. That is not an inference we are allowed to make, so it
+lives in CLIENT_CONFIRMED_ALIASES with a note of who said so and when — the judgement
+belongs to the client, and the record shows it was theirs.
+
+Standing rule still holds for everything not on that list: a blank, or an unmerged
+name, beats a plausible guess.
 """
 
 import re
@@ -49,6 +51,40 @@ def domain_label(name: str) -> str:
     s = re.sub(r"^www\.", "", s)
     s = _TLD_TAIL.sub("", s)
     return s.split(".")[0]
+
+
+# Names the CLIENT has confirmed are one supplier. Never add to this from a similarity
+# rule — only from someone with authority saying so, and record who and when.
+#
+#   Bathla — Colin Nduru, call of 5 Aug 2026: "there's Bathla Development, and there's
+#   another Bathla here, Bathla Group, and there's another Bathla. It's all the same
+#   builder." Previously left deliberately unmerged, because a development arm and a
+#   group can be separate entities and that call was not ours to make.
+#   Level 33 — Colin Nduru, same call: "Level 33 is not a builder. There's no builder
+#   called Level 33... the builder is called Atchison and Kenny." Corroborated by our own
+#   data without needing his word for it: every one of those 318 rows carries the project
+#   title "Atchison and Kenny Wollongong Building A/B". Proxima's project header put a
+#   FLOOR in the developer field and the harvest stored it, exactly as it was told to.
+CLIENT_CONFIRMED_ALIASES = {
+    "bathla": "Bathla Development",
+    "bathlagroup": "Bathla Development",
+    "bathladevelopment": "Bathla Development",
+    "bathladevelopments": "Bathla Development",
+    "level33": "Atchison and Kenny",
+}
+
+# Values that cannot be a company, whatever field they arrived in. A floor, a stage or a
+# tower is a place inside a development, and storing one as the builder puts a fiction in
+# front of a buyer — "Level 33" reached 318 listings that way. Structural, so the next
+# "Level 4" or "Stage 2" is caught without anyone having to notice it first.
+_NOT_A_COMPANY = re.compile(
+    r"^\s*(?:level|lvl|floor|storey|story|stage|tower|building|block|unit|apt|apartment|"
+    r"precinct|release)\s*[-#]?\s*[0-9]{0,4}[a-z]?\s*$", re.I)
+
+
+def is_not_a_builder_name(value: str) -> bool:
+    """True when this value is a place inside a development, not a company."""
+    return bool(_NOT_A_COMPANY.match(str(value or "")))
 
 
 def _squash(name: str) -> str:
@@ -96,6 +132,12 @@ class BuilderNameCanonicaliser:
         raw = str(name or "").strip()
         if not raw:
             return ""
+
+        # 0. a merge the client has confirmed. First, because it outranks every
+        #    spelling rule below — it is a stated fact about their suppliers.
+        confirmed = CLIENT_CONFIRMED_ALIASES.get(_squash(raw))
+        if confirmed:
+            return confirmed
 
         # 1. a bare domain -> the builder whose name it belongs to
         label = domain_label(raw)

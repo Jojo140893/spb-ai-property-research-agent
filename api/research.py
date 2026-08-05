@@ -75,6 +75,10 @@ def _shortlist_entry(p):
         'amenities_summary': p.amenities_summary,
         'builder_confidence_rating': p.builder_confidence_rating,
         'benchmark': p.benchmark,
+        # Where a consultant can go to see this listing at its source. Colin lost eight
+        # minutes of the 5 Aug call hunting one lot; the label says what the link opens
+        # so "price list" is never mistaken for "the lot". See provenance.py.
+        'source_link': getattr(p, 'source_link', None),
         'distance_km_from_target': p.distance_km_from_target,
         'score': p.scoring.total_score if p.scoring else 0,
         'scoring_details': {

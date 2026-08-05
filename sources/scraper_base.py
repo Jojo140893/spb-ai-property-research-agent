@@ -117,6 +117,27 @@ def browser_user_agent(browser=None, pw=None) -> str:
 # sorts by price ascending, so they were the FIRST four listings a client ever saw.
 MIN_PLAUSIBLE_PRICE = 50_000.0
 
+# A money amount broken by a space inside the digits — "$ 9 32,900" for $932,900 — which
+# is how several price lists come out of PDF and spreadsheet copy.
+#
+# THIS ONE UNDERSTATED PRICES TO CLIENTS. The row reads
+#     ... Available 4 2 1 272  $ 397,900  $ 535,000  $ 9 32,900  Split Registered
+# i.e. land $397,900, build $535,000, package $932,900. The broken total parsed as $9,
+# fell under MIN_PLAUSIBLE_PRICE, was discarded, and max() of what survived picked a
+# COMPONENT: the listing was published at $535,000 for a $932,900 package. 113 of the
+# 114 affected rows were understated, most by about $400,000. Colin caught it on the
+# call by knowing what Rouse Hill costs.
+#
+# The second group must carry the thousands comma, so two genuinely separate amounts
+# ("$ 397,900 $ 535,000") can never be joined: after "$ 397" the next character is a
+# comma, not whitespace.
+_SPLIT_MONEY = re.compile(r"\$\s*(\d{1,3})\s+(\d{2,3},\d{3})\b")
+
+
+def normalise_money_spacing(text: Optional[str]) -> str:
+    """Re-join money amounts that a PDF/spreadsheet copy split mid-number."""
+    return _SPLIT_MONEY.sub(lambda m: "$%s%s" % (m.group(1), m.group(2)), str(text or ""))
+
 
 def parse_price(text: Optional[str]) -> Optional[float]:
     """'$725,000' / 'From $725k' / '725000' -> 725000.0 ; None if not parseable.

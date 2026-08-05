@@ -40,6 +40,7 @@ if _HERE not in sys.path:                       # api/ on sys.path: sibling impo
 
 from _bootstrap import HERE, ROOT
 from address_label import clean_display_address
+from provenance import primary_source_link
 
 # Exactly the fields build_web.py exports to stock.json, so both readers agree and
 # neither can reach an internal column (content_hash, dedup_key, source_text).
@@ -50,7 +51,8 @@ SNAPSHOT_FIELDS = [
     "car_spaces", "land_sqm", "house_sqm", "storey", "title_status", "estate_name",
     "incentive_amount", "incentive_text", "product_type", "source_channel",
     "attribution_scope", "date_checked", "listing_url", "floorplan_url",
-    "brochure_url", "benchmark_median", "benchmark_variance_pct",
+    "brochure_url", "source_project_id", "stocklist_file", "source_url",
+    "benchmark_median", "benchmark_variance_pct",
     "benchmark_classification", "benchmark_basis",
     # Required, not optional: build_packages skips superseded captures, and without
     # this column the SQLite reader would hand over rows with the flag missing and
@@ -58,10 +60,27 @@ SNAPSHOT_FIELDS = [
     "superseded_by",
 ]
 
-# Not purchasable, so not a candidate. Absent/blank is NOT in this set: most stocklists
-# have no availability column at all, and treating "unstated" as "sold" would empty
-# the pool. Unstated availability is instead why such a row is not marked verified.
-NOT_AVAILABLE = {"sold", "under offer", "reserved", "leased", "on hold", "withdrawn"}
+# Not purchasable, so not a candidate.
+#
+# "not available" was missing from this set and it is the literal value on 581 rows —
+# so a sold Rouse Hill lot was RECOMMENDED to Colin on 5 Aug. He put it plainly: "it's
+# not available, but it came as available from your end... you should only see what's
+# available and nothing else."
+NOT_AVAILABLE = {"sold", "under offer", "reserved", "leased", "on hold", "withdrawn",
+                 "not available", "unavailable", "not avail", "no longer available",
+                 "off market", "settled", "deposit taken", "contract pending"}
+
+# Values that positively assert the lot can be bought today. A recommendation now needs
+# one of these rather than merely failing to be on the excluded list.
+#
+# 1,462 live rows (22%) record no availability at all, and "unstated" is not "available":
+# recommending one risks putting a sold house in front of a buyer, which is the outcome
+# Colin was objecting to. Excluding them leaves 4,135 priced candidates (VIC 1,970,
+# NSW 795, QLD 667), so this costs coverage we can afford. They stay visible in the
+# Building Stock table and the count is reported in the coverage line — hidden from
+# recommendations, not hidden from view.
+IS_AVAILABLE = {"available", "for sale", "in stock", "released", "selling",
+                "titled", "now selling", "open"}
 
 # Same headroom the live sources apply before handing a package to scoring
 # (sources/e_agent.py:524, sources/builder_portals.py:204).
@@ -354,7 +373,7 @@ def build_packages(brief_dict, rows, today=None):
         "not_available": 0, "no_price": 0, "over_budget": 0, "no_suburb": 0,
         "incomplete_facts": 0, "storey_unknown_and_binding": 0, "scored": 0,
         "truncated": 0, "stale_unverified": 0, "same_listing_collapsed": 0,
-        "suburb_not_a_locality": 0, "superseded": 0,
+        "suburb_not_a_locality": 0, "superseded": 0, "availability_unstated": 0,
     }
     missing_field_counts = {}
     unstated_but_scored = {}
@@ -379,6 +398,11 @@ def build_packages(brief_dict, rows, today=None):
         avail = str(row.get("availability_status") or "").strip().lower()
         if avail in NOT_AVAILABLE:
             counts["not_available"] += 1
+            continue
+        if avail not in IS_AVAILABLE:
+            # Unstated, or a word we do not recognise as a positive signal. Not
+            # recommended — see IS_AVAILABLE for why "unstated" is not "available".
+            counts["availability_unstated"] += 1
             continue
 
         price = _num(row.get("price"))
@@ -507,6 +531,9 @@ def build_packages(brief_dict, rows, today=None):
             "source_channel": "%s - database snapshot" % (
                 str(row.get("source_channel") or "stored stock").strip()),
             "source_url_or_ref": listing_ref or ("stored stock, captured %s" % (seen_on or "date unknown")),
+            # Where a consultant can go to see this listing at its source, labelled with
+            # what the link actually opens. See provenance.py.
+            "source_link": primary_source_link(row),
             "verified": verified,
             "consultant_approved": False,
             "risks": [],
@@ -543,13 +570,15 @@ def coverage_sentence(counts, source_path, state):
         "Scored %d of %d stored listing(s) from the deployed snapshot (%s)."
         % (counts["scored"], counts["snapshot_rows"], os.path.basename(source_path)),
         "Not scored: %d superseded by a fresher capture of the same lot, %d outside %s, "
-        "%d with no state recorded, %d not available (sold/on hold/under offer), "
+        "%d with no state recorded, %d not available (sold/on hold/under offer/not "
+        "available), %d whose availability the source never stated, "
         "%d with no price, %d over the budget ceiling, %d with no suburb, "
         "%d whose suburb is not a recognised locality, "
         "%d without the facts the brief's minimums are checked against (%s)."
         % (counts.get("superseded", 0),
            counts["other_state"], state or "the requested state", counts["state_unknown"],
-           counts["not_available"], counts["no_price"], counts["over_budget"],
+           counts["not_available"], counts.get("availability_unstated", 0),
+           counts["no_price"], counts["over_budget"],
            counts["no_suburb"], counts.get("suburb_not_a_locality", 0),
            counts["incomplete_facts"], missing_txt),
         "Those rows are NOT guessed into the shortlist: the pipeline would otherwise "

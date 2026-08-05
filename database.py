@@ -67,6 +67,9 @@ BUILDINGS_EXTRA_COLUMNS = (
     # a client reads as the headline of every shortlist card. This is the clean version
     # where the source stated one; lot_address is left exactly as captured.
     ("street_address", "TEXT"),
+    # Which project on the source portal this lot belongs to, so a recommendation can
+    # link back to it. See provenance.py.
+    ("source_project_id", "TEXT"),
     ("listing_url", "TEXT"),             # human-openable page for this lot
     ("floorplan_url", "TEXT"),
     ("brochure_url", "TEXT"),
