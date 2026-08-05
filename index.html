@@ -948,6 +948,11 @@
         // state had been retracted, so an internal audit trail was printing as though it
         // were a data value. The note is still on the row for anyone reading the table.
         { k: 'state_source', t: 'State from', onlyWith: 'state' },
+        // Colin, 5 Aug, after eight minutes hunting one lot: "If there's a URL that I can
+        // click." The per-lot open/plan/file columns only fire where such a URL exists, so
+        // 3,776 E-Agent rows showed nothing. This is the always-there fallback, computed
+        // at build time by provenance.py and labelled with what it opens.
+        { k: 'source_link_url', t: 'Source', trace: true },
         { k: 'availability_status', t: 'Availability',   pill: true },
         { k: 'price',               t: 'Package',        cls: 'num', money: true },
         { k: 'land_price',          t: 'Land',           cls: 'num', money: true },
@@ -1339,6 +1344,14 @@
             const v = (b[c.k] ?? '') !== '' ? b[c.k] : (c.fallback ? b[c.fallback] : b[c.k]);
             if (c.titleFrom && b[c.titleFrom] && b[c.titleFrom] !== v)
                 return `<td class="${c.cls || ''}" title="${esc(b[c.titleFrom])}">${esc(v ?? '')}</td>`;
+            if (c.trace) {
+                if (!v) return '<td></td>';
+                const opens = b.source_link_opens || 'source';
+                const label = b.source_link_label || 'source';
+                return `<td><a href="${esc(v)}" target="_blank" rel="noopener noreferrer"
+                    title="${esc(label)} — opens the ${esc(opens)}"
+                    style="color:var(--accent-blue);">${esc(opens)}</a></td>`;
+            }
             if (c.link) return `<td>${v ? `<a href="${esc(v)}" target="_blank" rel="noopener noreferrer"
                 style="color:var(--accent-blue);">${c.link}</a>` : ''}</td>`;
             if (c.pill) return `<td>${availPill(v)}</td>`;

@@ -68,6 +68,9 @@ BUILDING_FIELDS = [
     # is the most common thing to change between harvests. It leaks nothing: it is a
     # digest of listing attributes already published in the row beside it.
     "content_hash", "promo_selected",
+    # Derived at build time by provenance.py, not database columns: the one link
+    # that traces a listing back to where it was found, and what it opens.
+    "source_link_url", "source_link_opens", "source_link_label",
     # An older capture of a lot that is also stored fresher. Exported rather than
     # dropped so the dashboard can hide them by default AND say how many it hid —
     # silently serving 5,703 rows from a 6,480-row table would be its own small lie.
@@ -261,6 +264,25 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         if fixed and fixed != b.get("builder_name"):
             b["builder_name"] = fixed
             _relabelled += 1
+
+    # "Where this came from", precomputed per row so the Building Stock table can offer
+    # it too. The recommendation cards already had it; the table only showed a link where
+    # a per-lot URL happened to exist, so 3,776 E-Agent rows — the ones Colin was
+    # scrolling through on 5 Aug hunting a lot — showed nothing at all.
+    #
+    # Computed HERE rather than mirrored in JavaScript: the ranking of lot > project >
+    # price list > email is a judgement about what helps a consultant, and having it in
+    # two places guarantees the two drift. Two short strings per row against a 5 MB
+    # payload is the cheaper trade.
+    from provenance import primary_source_link as _link_for
+    _linked = 0
+    for b in buildings:
+        link = _link_for(b)
+        b["source_link_url"] = (link or {}).get("url") or ""
+        b["source_link_opens"] = (link or {}).get("opens") or ""
+        b["source_link_label"] = (link or {}).get("label") or ""
+        if link:
+            _linked += 1
     by_channel = [{"source_channel": r[0], "n": r[1]} for r in conn.execute(
         "SELECT source_channel, COUNT(*) FROM buildings GROUP BY 1 ORDER BY 2 DESC")]
     stamp = datetime.now().strftime("%d %b %Y, %H:%M")
