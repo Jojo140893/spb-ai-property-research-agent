@@ -441,6 +441,16 @@ def _bundle_research_function(app: Path, out_dir: Path) -> int:
     if (app / "data" / "au_suburbs.csv").is_file():
         shutil.copyfile(app / "data" / "au_suburbs.csv", lib / "data" / "au_suburbs.csv")
         n += 1
+    # The report logo. client_report.py resolves it relative to its own file, which in
+    # the bundle is api/_lib/, so the brand folder has to travel with it. Without this
+    # the report generated locally carried the logo and the DEPLOYED one silently did
+    # not — the function imported cleanly, so the import guard could not see it.
+    if (app / "brand").is_dir():
+        (lib / "brand").mkdir(exist_ok=True)
+        for logo in sorted((app / "brand").iterdir()):
+            if logo.is_file() and logo.suffix.lower() in (".svg", ".png", ".jpg", ".jpeg"):
+                shutil.copyfile(logo, lib / "brand" / logo.name)
+                n += 1
     # the builder directory with every credential column blanked
     try:
         sys.path.insert(0, str(app))
@@ -470,9 +480,17 @@ def _verify_function_imports(dest_api: Path) -> None:
 
     Raising here means a bundle that cannot import never reaches the alias.
     """
+    # Also assert the report can still find its logo INSIDE the bundle. A missing data
+    # file is invisible to an import check — the deployed report simply came out
+    # unbranded while the local one looked perfect.
+    want_logo = (Path(__file__).parent / "brand").is_dir() and any(
+        p.suffix.lower() in (".svg", ".png", ".jpg", ".jpeg")
+        for p in (Path(__file__).parent / "brand").iterdir() if p.is_file())
     probe = ("import sys; sys.path[:0] = [r'%s', r'%s'];"
              " import research, _candidates, _export_builders;"
-             " print('imports-ok')" % (dest_api, dest_api / "_lib"))
+             " import client_report;"
+             " assert (not %r) or client_report._logo_html(), 'logo missing from bundle';"
+             " print('imports-ok')" % (dest_api, dest_api / "_lib", want_logo))
     done = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
                           cwd=str(dest_api))
     if done.returncode != 0 or "imports-ok" not in done.stdout:
