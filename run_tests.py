@@ -44,6 +44,7 @@ from tests.test_builder_names import run_all as _builder_names_suite
 from tests.test_brief_robustness import run_all as _brief_suite
 from tests.test_unstated_facts import run_all as _unstated_suite
 from tests.test_colin_5aug import run_all as _colin_5aug_suite
+from tests.test_price_kind import run_all as _price_kind_suite
 from tests.test_adaptive_extract import test_adaptive_extracts_from_unknown_layouts
 
 
@@ -89,6 +90,7 @@ def run_all_tests():
         ("Brief: survives null / junk input", lambda: (_ for _ in ()).throw(AssertionError("brief suite failed")) if _brief_suite() else None),
         ("Unstated facts: no minimum, no exclusion", lambda: (_ for _ in ()).throw(AssertionError("unstated facts suite failed")) if _unstated_suite() else None),
         ("Colin 5 Aug: prices, availability, provenance", lambda: (_ for _ in ()).throw(AssertionError("5 aug suite failed")) if _colin_5aug_suite() else None),
+        ("Price kind: never compare across kinds", lambda: (_ for _ in ()).throw(AssertionError("price-kind suite failed")) if _price_kind_suite() else None),
     ]
 
     passed = 0
