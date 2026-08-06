@@ -385,16 +385,62 @@ def _is_group_header(text: str, fields: Dict[str, Any]) -> bool:
     return bool(text) and len(text) < 90 and digits <= 4
 
 
-def _context_suburb(header: str) -> Optional[str]:
-    """'ʊ Aberdeen - Winter Valley - VIC - House & Land' -> 'Winter Valley' (the locality part)."""
+_BANNER_SPLIT = re.compile(r"\s*[|/,\-–—]\s*")
+_STATE_TOKENS = ("VIC", "NSW", "QLD", "SA", "WA", "NT", "ACT", "TAS")
+_NOT_A_LOCALITY = re.compile(
+    r"house|land|terrace|townhouse|apartment|dual|key|stage|estate|stock|list|"
+    r"contract|price|package|available|updated|as of|smsf|rating|energy|star", re.I)
+
+_BANNER_GEO = None
+
+
+def _context_suburb(header: str, state: str = "") -> Optional[str]:
+    """The LOCALITY named in a section banner, or None.
+
+    'Aberdeen - Winter Valley - VIC - House & Land'        -> 'Winter Valley'
+    'Harvest Hill | 1377 Hue Hue Road, Wyee'               -> 'Wyee'
+    'WILLOWGLEN ESTATE - STAGE 1 / WARNERVALE / NSW / SMSF'-> 'Warnervale'
+    'One Part Contracts'                                   -> None
+
+    This used to split on "-" and return whichever fragment sat in position 1, with no
+    check that the result was a place. That is where the catalogue's fake suburbs came
+    from: a banner reading "One Part Contracts" or "7 Star Energy Rating" was stored
+    verbatim as the suburb, and those became the largest cohorts in the whole database —
+    47 and 54 listings each, pointed at somewhere that does not exist.
+
+    Every candidate is now checked against the suburb index, and the LAST match wins
+    because an Australian address ends with its locality ('… Hue Hue Road, Wyee'). If
+    nothing in the banner is a real locality the answer is None, and the row keeps an
+    empty suburb rather than a confident wrong one.
+    """
     if not header:
         return None
+    global _BANNER_GEO
+    if _BANNER_GEO is None:
+        from geo import SuburbGeoIndex
+        _BANNER_GEO = SuburbGeoIndex()
+    if not _BANNER_GEO.loaded:
+        return None
+
     cleaned = re.sub(r"^[^A-Za-z0-9]+", "", header)
-    bits = [b.strip() for b in cleaned.split("-") if b.strip()]
-    # drop state codes and product types
-    bits = [b for b in bits if b.upper() not in ("VIC", "NSW", "QLD", "SA", "WA", "NT", "ACT", "TAS")
-            and not re.search(r"house|land|terrace|townhouse|apartment|dual|key", b, re.I)]
-    return bits[1] if len(bits) > 1 else (bits[0] if bits else None)
+    found = None
+    for bit in _BANNER_SPLIT.split(cleaned):
+        bit = bit.strip()
+        if not bit or bit.upper() in _STATE_TOKENS or _NOT_A_LOCALITY.search(bit):
+            continue
+        # The WHOLE segment must be a locality. Searching INSIDE it for a known suburb
+        # name is the estate-name trap: the banner "Bingara Gorge - Spec Contract" then
+        # yields "Bingara", a real NSW town 500 km from the estate, whose lots are
+        # actually in Wilton. An estate is frequently named after somewhere else, so a
+        # substring match is not evidence of location.
+        # locate() is keyed on (suburb, state), so with no state it never matches —
+        # fall back to "is this a locality in ANY state". The banner usually names the
+        # state alongside, and the row's own state is passed in where the parser found one.
+        known = (_BANNER_GEO.locate(bit, state) if state
+                 else _BANNER_GEO.states_for_suburb(bit))
+        if known:
+            found = bit.title()
+    return found
 
 
 # ---------------------------------------------------------------- row iterators
@@ -586,7 +632,9 @@ def _listing_from_row(text: str, links: LinkList, context: str, source_label: st
     elif not fields.get("lot_address"):
         fields["lot_address"] = _clean(text)[:110]
     if not fields.get("suburb"):
-        fields["suburb"] = _context_suburb(context)
+        # The row's own state where the parser found one, so an ambiguous banner
+        # segment resolves in the right state ("Springfield" is QLD, NSW and SA).
+        fields["suburb"] = _context_suburb(context, fields.get("state") or "")
     fields.update(_link_fields(links))
     filled = sum(1 for k in ("bedrooms", "land_size_sqm", "suburb", "house_size_sqm")
                  if fields.get(k))

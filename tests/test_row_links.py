@@ -295,8 +295,42 @@ def test_a_named_column_is_read_instead_of_guessed_from_the_flattened_row():
         "45 bedrooms is not a bedroom count"
 
 
+
+def test_a_section_banner_yields_a_locality_only_when_it_names_one():
+    """Where the catalogue's fake suburbs came from.
+
+    _context_suburb split the banner on "-" and returned whichever fragment sat in
+    position 1, with no check that it was a place. So banners reading "One Part
+    Contracts" and "7 Star Energy Rating" were stored verbatim as suburbs and became the
+    largest cohorts in the database, pointed at somewhere that does not exist.
+
+    The opposite failure is just as bad and nearly shipped: searching INSIDE a segment
+    for a known suburb name turns "Bingara Gorge - Spec Contract" into "Bingara", a real
+    NSW town 500 km from the estate, whose lots are actually in Wilton. An estate is
+    frequently named after somewhere else, so a substring match is not evidence of
+    location. The whole segment has to BE a locality.
+    """
+    from sources.spreadsheet_extract import _context_suburb
+
+    # Banners that really do name their locality.
+    assert _context_suburb("Harvest Hill | 1377 Hue Hue Road, Wyee") == "Wyee"
+    assert _context_suburb("WILLOWGLEN ESTATE - STAGE 1 / WARNERVALE / NSW / SMSF") == "Warnervale"
+    assert _context_suburb("Aberdeen - Winter Valley - VIC - House & Land") == "Winter Valley"
+
+    # Estate names that are, or contain, a real place somewhere else.
+    for estate in ("Bingara Gorge - Spec Contract", "Jensen Rise", "Warner Park"):
+        assert _context_suburb(estate) is None, f"{estate!r} was read as a locality"
+
+    # Spreadsheet furniture.
+    for junk in ("One Part Contracts", "7 Star Energy Rating", "Untitled Packages",
+                 "IN TERNAL BALCONY TOTAL", "As of 2026-07-31 13:14:27", "QLD"):
+        assert _context_suburb(junk) is None, f"{junk!r} was read as a locality"
+
+
 def run_all():
     tests = [
+        ("a banner yields a locality or nothing",
+         test_a_section_banner_yields_a_locality_only_when_it_names_one),
         ("named columns beat the flattened row",
          test_a_named_column_is_read_instead_of_guessed_from_the_flattened_row),
         ("address column is a label", test_address_column_is_a_label_not_the_whole_row),
