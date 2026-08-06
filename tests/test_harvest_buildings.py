@@ -90,10 +90,35 @@ def _run_without_pytest():
     mp = MP()
     try:
         test_harvest_stores_and_dedupes(mp)
+        test_a_channel_that_reads_nothing_but_holds_stock_is_a_failure()
         return True
     finally:
         mp.undo()
 
+
+
+def test_a_channel_that_reads_nothing_but_holds_stock_is_a_failure():
+    """Proxima's sign-in expired on 3 Aug and the harvest reported [SUCCESS] every
+    night after it.
+
+    It read zero lots, printed a helpful line about running portal_login, and exited 0
+    — so run_daily carried on to export, build and deploy, and the dashboard served
+    three-day-old prices as current. Nobody found out until Colin opened the portal.
+
+    Reading zero is only a failure when the channel HAS stock. A channel that has never
+    returned anything is a configuration state, and one skipped for missing credentials
+    never ran at all, so neither can raise a false alarm at 3am.
+    """
+    from harvest_buildings import _dead_channels
+
+    # The real 6 Aug shape: Proxima dead, everything else healthy.
+    dead = _dead_channels({"Proxima": 0, "E-Agent": 4851},
+                          {"Proxima": 1212, "E-Agent": 6344})
+    assert dead == [("Proxima", 1212)], dead
+
+    assert _dead_channels({"Proxima": 1212}, {"Proxima": 1212}) == [], "healthy run"
+    assert _dead_channels({"Brand New": 0}, {}) == [], "never had stock is not a regression"
+    assert _dead_channels({}, {"Proxima": 1212}) == [], "a skipped channel never ran"
 
 if __name__ == "__main__":
     import sys
