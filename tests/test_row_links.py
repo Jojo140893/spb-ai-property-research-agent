@@ -253,8 +253,52 @@ def test_a_price_broken_out_of_a_listing_is_not_a_listing():
         assert not _is_price_fragment(text, fields(text)), f"deleted a real listing: {text[:50]!r}"
 
 
+def test_a_named_column_is_read_instead_of_guessed_from_the_flattened_row():
+    """35% of live rows had no bedroom count, 63% no house size — and both were present.
+
+    Every fact is scraped back out of the row once it has been flattened to one string,
+    which works for money and fails for bare numbers:
+
+        "AVAILABLE Option 2 Single Kuraby Traditional 10 344.3 164.93 4 2 1 Q4 2026"
+                                          frontage ─┘ land ─┘ house ─┘ b b c
+
+    Nothing marks which number is which, so all of them were dropped, and any brief
+    stating a minimum then excluded the row. The sheet's own header row names those
+    columns, so they are read rather than inferred.
+    """
+    from sources.spreadsheet_extract import extract_from_csv
+
+    csv_text = (
+        "CREATION HOMES NSW STOCK LIST\n"
+        "Status,Lot,Option,Storey,House Type,Frontage (m),Land Size (sqm),"
+        "House Size (sqm),Bedrooms,Bathrooms,Garage,Registration,Contract,"
+        "Land Price,Build Price,Package Price\n"
+        "Available,2,N/A,Single,Dualkey - Modern,15.8,502,245.16,6,3.5,2,Q2 2027,"
+        "Split,\"$519,000\",\"$732,800\",\"$1,251,800\"\n"
+    ).encode()
+    rows = extract_from_csv(csv_text, "creation-homes")
+    assert len(rows) == 1, rows
+    r = rows[0]
+    assert r["advertised_package_price"] == 1_251_800, r
+    assert r["bedrooms"] == 6 and r["bathrooms"] == 3.5 and r["car_spaces"] == 2, r
+    assert r["land_size_sqm"] == 502.0 and r["house_size_sqm"] == 245.16, r
+    assert r["frontage_m"] == 15.8, r
+
+    # "Land Price" is money and must never be mistaken for "Land Size".
+    assert r["land_size_sqm"] != 519_000
+
+    # A value outside a plausible range means the mapping is wrong for that row, and a
+    # wrong bedroom count passes a "minimum 4 bedrooms" filter exactly like an invented
+    # one would. It is dropped, not clamped.
+    odd = csv_text.replace(b",6,3.5,2,Q2 2027", b",45,3.5,2,Q2 2027")
+    assert extract_from_csv(odd, "creation-homes")[0].get("bedrooms") in (None, 0), \
+        "45 bedrooms is not a bedroom count"
+
+
 def run_all():
     tests = [
+        ("named columns beat the flattened row",
+         test_a_named_column_is_read_instead_of_guessed_from_the_flattened_row),
         ("address column is a label", test_address_column_is_a_label_not_the_whole_row),
         ("column headers are not context", test_column_header_rows_never_become_estate_context),
         ("csv stocklist parsed", test_csv_stocklist_is_parsed),

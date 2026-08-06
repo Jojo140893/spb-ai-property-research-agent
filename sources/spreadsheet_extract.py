@@ -239,6 +239,37 @@ def _is_price_header(label: str) -> bool:
     return bool(_PRICE_WORD.search(label)) and not bool(_NOT_PRICE_WORD.search(label))
 
 
+# Columns whose header NAMES a fact, so the value can be read instead of inferred from
+# the flattened row. render() joins a row into one string and every fact is then scraped
+# back out of that text, which works for money (a "$" is unmistakable) and fails for bare
+# numbers: on
+#
+#   "AVAILABLE Option 2 Single Kuraby Traditional 10 344.3 164.93 4 2 1 Q4 2026"
+#                                        frontage ┘ land ─┘ house ┘ b b c
+#
+# nothing marks which number is which, so bedrooms, bathrooms, car spaces and house size
+# were all left blank -- on 35%, 40%, 53% and 63% of live rows respectively. A brief that
+# states any minimum then excludes those rows entirely, correctly but expensively.
+#
+# The sheet's own header row says "Bedrooms | Bathrooms | Garage | Land Size (sqm) |
+# House Size (sqm)". Reading the column it names is not a guess.
+_SPEC_HEADERS = (
+    ("bedrooms",   re.compile(r"\bbed(?:room)?s?\b", re.I),                 1, 12),
+    ("bathrooms",  re.compile(r"\bbath(?:room)?s?\b", re.I),                1, 12),
+    ("car_spaces", re.compile(r"\b(?:car(?:\s*space)?s?|garage|gge)\b", re.I), 0, 12),
+    # These two carry the extractor's own field names, not the database column names —
+    # parse_fields emits land_size_sqm / house_size_sqm and the mapping to land_sqm /
+    # house_sqm happens downstream. Naming them after the columns filled nothing.
+    ("land_size_sqm",  re.compile(r"\b(?:land|lot)\s*(?:size|area)\b", re.I), 30, 100_000),
+    ("house_size_sqm", re.compile(r"\b(?:house|home|build(?:ing)?|floor|living|internal)"
+                                  r"\s*(?:size|area)\b", re.I),              20, 3_000),
+    ("frontage_m", re.compile(r"\bfrontage\b", re.I),                       1, 200),
+)
+
+# A header naming money is never a spec column: "Land Price" is money, "Land Size" is not.
+_SPEC_DISQUALIFIER = re.compile(r"price|cost|\$|deposit|total|rent", re.I)
+
+
 class _MoneyColumns:
     """Remembers which columns a stocklist's own header row says hold money.
 
@@ -258,6 +289,9 @@ class _MoneyColumns:
     def __init__(self):
         self.cols: set = set()
         self._labels: Dict[int, str] = {}
+        # Set here as well as in feed_header: a sheet with no recognisable header row
+        # never reaches the assignment there, and specs() would then raise on every row.
+        self.spec_cols: Dict[int, str] = {}
         self._prev_was_header = False
 
     def feed_header(self, cells: List[Tuple[str, bool, int]], is_header: bool) -> None:
@@ -272,7 +306,38 @@ class _MoneyColumns:
             if text:
                 self._labels[idx] = f"{self._labels.get(idx, '')} {text}".strip()
         self.cols = {i for i, lab in self._labels.items() if _is_price_header(lab)}
+        self.spec_cols = {}
+        for idx, label in self._labels.items():
+            if _SPEC_DISQUALIFIER.search(label):
+                continue
+            for field, pattern, _lo, _hi in _SPEC_HEADERS:
+                if pattern.search(label) and field not in self.spec_cols.values():
+                    self.spec_cols[idx] = field
+                    break
         self._prev_was_header = True
+
+    def specs(self, cells: List[Tuple[str, bool, int]]) -> Dict[str, float]:
+        """Facts read from the columns this sheet's header row named.
+
+        Out-of-range values are dropped rather than clamped: a "Bedrooms" column holding
+        0 or 45 means the header mapping is wrong for that row, and a wrong bedroom count
+        sails through a "minimum 4 bedrooms" filter exactly like an invented one would.
+        """
+        out: Dict[str, float] = {}
+        bounds = {f: (lo, hi) for f, _p, lo, hi in _SPEC_HEADERS}
+        for text, _is_currency, idx in cells:
+            field = self.spec_cols.get(idx)
+            if not field or field in out:
+                continue
+            raw = str(text or "").strip().replace(",", "")
+            m = re.match(r"^(\d+(?:\.\d+)?)", raw)
+            if not m:
+                continue
+            value = float(m.group(1))
+            lo, hi = bounds[field]
+            if lo <= value <= hi:
+                out[field] = value
+        return out
 
     def render(self, cells: List[Tuple[str, bool, int]]) -> str:
         parts = []
@@ -290,6 +355,23 @@ class _MoneyColumns:
                     continue
             parts.append(text)
         return _clean(" ".join(parts))
+
+
+
+def _apply_header_specs(listings: List[Dict[str, Any]], specs: Dict[str, float]) -> None:
+    """Fill a fact the flattened-text scan missed, using the column the header named.
+
+    Only ever fills a BLANK. A value the text scan already found stays, because it was
+    read from the row's own words ("4 beds / 2 baths") which is at least as good evidence
+    as a column position, and because overriding it could silently rewrite a fact that is
+    currently correct. This can add coverage; it cannot change an existing answer.
+    """
+    if not specs:
+        return
+    for row in listings:
+        for field, value in specs.items():
+            if not row.get(field):
+                row[field] = int(value) if field in ("bedrooms", "car_spaces") else value
 
 
 def _is_group_header(text: str, fields: Dict[str, Any]) -> bool:
@@ -614,6 +696,7 @@ def extract_from_xlsx(data: bytes, source_label: str = "", builder_hint: str = "
             continue
         listings, context, banner = _rows_to_listings(
             [(money.render(cells), links)], context, source_label, builder_hint, banner)
+        _apply_header_specs(listings, money.specs(cells))
         out.extend(listings)
     _log_yield("xlsx", source_label, out)
     return out
@@ -662,7 +745,11 @@ def extract_from_csv(data: bytes, source_label: str = "", builder_hint: str = ""
         return []
     sample = text[:4000]
     delimiter = "\t" if sample.count("\t") > sample.count(",") else ","
-    rows: List[Tuple[str, LinkList]] = []
+    # One row at a time, like the xlsx path, so each listing can be matched back to the
+    # cells it came from. Batching them lost that mapping, and with it any chance of
+    # reading a fact out of the column its header names.
+    out: List[Dict[str, Any]] = []
+    context, banner = "", ""
     money = _MoneyColumns()
     for raw in csv.reader(io.StringIO(text), delimiter=delimiter):
         cells = [(str(v).strip(), False, i) for i, v in enumerate(raw) if str(v).strip()]
@@ -671,9 +758,12 @@ def extract_from_csv(data: bytes, source_label: str = "", builder_hint: str = ""
             continue
         is_header = _is_column_header(plain)
         money.feed_header(cells, is_header)
-        if not is_header:
-            rows.append((money.render(cells), []))
-    out, _, _ = _rows_to_listings(rows, "", source_label, builder_hint)
+        if is_header:
+            continue
+        listings, context, banner = _rows_to_listings(
+            [(money.render(cells), [])], context, source_label, builder_hint, banner)
+        _apply_header_specs(listings, money.specs(cells))
+        out.extend(listings)
     _log_yield("csv", source_label, out)
     return out
 
