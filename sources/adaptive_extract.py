@@ -22,9 +22,25 @@ import re
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
-from sources.scraper_base import normalise_money_spacing
+from sources.scraper_base import MIN_PLAUSIBLE_PRICE, normalise_money_spacing
 
-PRICE_RE = re.compile(r"\$\s*(\d{1,3}(?:[\s,]+\d{3})+|\d{4,7})(?:\.\d{2})?")
+# A COMMA is the thousands separator, never a space.
+#
+# This used to read [\s,]+, which let a space group two adjacent spreadsheet columns into
+# one number. On a stocklist row the damage is total:
+#
+#   "... 450.1 $896,000 202.15 $550,411 $1,446,411 900 Due..."
+#      land $896,000 ─┘  house m2 ┘  build ─┘  TOTAL ─┘
+#
+# "$896,000 202" parsed as 896000202 and "$1,446,411 900" as 1446411900. Both blew past
+# the $5,000,000 plausibility ceiling and were discarded, leaving only $550,411 — so
+# max() published the BUILD COMPONENT and the stated total was thrown away. 212 live
+# rows were understated this way, by a median of $424,900 and up to $896,000.
+#
+# The space was only ever here for money a PDF copy split mid-number ("$ 9 32,900" for
+# $932,900). _clean already repairs those through normalise_money_spacing before any
+# price regex sees the text, so nothing depends on this tolerance any more.
+PRICE_RE = re.compile(r"\$\s*(\d{1,3}(?:,\d{3})+|\d{4,7})(?:\.\d{2})?")
 # "4 bed", "4 Bedrooms", "4br", "4 x bed"
 BEDS_RE = re.compile(r"(\d+)\s*(?:x\s*)?(?:bed|bd|br)\b", re.I)
 BATHS_RE = re.compile(r"(\d+(?:\.5)?)\s*(?:x\s*)?(?:bath|ba)\b", re.I)
@@ -128,8 +144,39 @@ def _clean(s: Optional[str]) -> str:
     return re.sub(r"\s+", " ", normalise_money_spacing(s)).strip()
 
 
+def _labelled_price(pattern, text: str) -> Optional[float]:
+    """A price found next to its label, or None if it is not a plausible price.
+
+    The dollar sign is optional in these patterns, because a spreadsheet cell often
+    holds a bare number under a "Package Price" heading. That made the word "Total"
+    followed by ANY number a package price, and an apartment schedule's floor-area row
+    reads exactly that way:
+
+        "Unit No. 1101 1102 1103 1104 Total 149 149 55 107 107 55"
+        "Price $7,950,000 $7,900,000 Total 149 149 58 30 77 77 30 58"
+
+    LBL_PACKAGE_PRICE matched "Total 149" and, because a labelled price outranks every
+    other figure in the row, $149 was published for a $7,950,000 apartment. 12 live rows
+    were priced between $7 and $392 this way, and the dashboard sorts by price ascending,
+    so they were the first listings anyone saw.
+
+    A label is strong evidence of WHICH number is the price; it is no evidence that the
+    number IS one. Anything under the plausibility floor is rejected here and the row
+    falls through to the document-order scan, which requires a literal "$".
+    """
+    m = pattern.search(text)
+    if not m:
+        return None
+    value = _money(m.group(1))
+    return value if value and value >= MIN_PLAUSIBLE_PRICE else None
+
+
 def parse_price(text: str) -> Optional[float]:
-    m = PRICE_RE.search(text or "")
+    # Repair a mid-number split BEFORE matching. PRICE_RE requires a comma as the
+    # thousands separator, so "$ 1 ,757,400" has to be rejoined first — every other
+    # price path in this module reads _clean's output, which already does this, but
+    # this one takes raw text straight from a caller.
+    m = PRICE_RE.search(normalise_money_spacing(text or ""))
     if not m:
         return None
     val = float(m.group(1).replace(",", ""))
@@ -210,9 +257,9 @@ def parse_fields(text: str) -> Dict[str, Any]:
 
     # Prices: prefer a labelled package/total price; keep land + build separately
     # (SOP Step 6 needs the breakdown, not just the headline).
-    pkg = _money(LBL_PACKAGE_PRICE.search(t).group(1)) if LBL_PACKAGE_PRICE.search(t) else None
-    land_price = _money(LBL_LAND_PRICE.search(t).group(1)) if LBL_LAND_PRICE.search(t) else None
-    build_price = _money(LBL_BUILD_PRICE.search(t).group(1)) if LBL_BUILD_PRICE.search(t) else None
+    pkg = _labelled_price(LBL_PACKAGE_PRICE, t)
+    land_price = _labelled_price(LBL_LAND_PRICE, t)
+    build_price = _labelled_price(LBL_BUILD_PRICE, t)
 
     # A stocklist row often carries Land Price, Build Price AND Total Price with no
     # labels. Prices are read in DOCUMENT ORDER (that is the column order in every

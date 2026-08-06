@@ -6,7 +6,8 @@ wrong number that would have gone in front of a buyer.
 """
 
 from sources.adaptive_extract import (PRICE_RE, TITLE_RE, _money,
-                                      _ordered_package_prices, parse_fields)
+                                      _ordered_package_prices, parse_fields,
+                                      parse_price)
 
 # Real row. Column order: code | land m2 | title | house m2 | bed+bath+car | design |
 # storey | WEEKLY RENT | ANNUAL RENT | yield | title | land $ | build $ | total $
@@ -42,10 +43,42 @@ def test_vic_row_still_splits_correctly():
 
 
 def test_price_with_space_inside_the_number():
-    """pdfplumber emits "$ 1 ,757,400"; this row's package read as $1,035,000."""
-    assert [_money(m) for m in PRICE_RE.findall("$ 1 ,757,400")] == [1_757_400.0]
-    assert _money("1 ,757,400") == 1_757_400.0
+    """pdfplumber emits "$ 1 ,757,400"; this row's package read as $1,035,000.
+
+    The repair now happens in normalise_money_spacing rather than by letting PRICE_RE
+    accept a space as a thousands separator. That tolerance also glued two adjacent
+    spreadsheet columns into one 9-digit number (see the test below), which cost 212
+    rows their package price — so the split is rejoined first and PRICE_RE stays strict.
+    """
+    from sources.scraper_base import normalise_money_spacing
+
+    joined = normalise_money_spacing("$ 1 ,757,400")
+    assert [_money(m) for m in PRICE_RE.findall(joined)] == [1_757_400.0]
+    # The older split shape, on the other side of the comma, still works.
+    assert [_money(m) for m in
+            PRICE_RE.findall(normalise_money_spacing("$ 9 32,900"))] == [932_900.0]
     assert _money("$1,035,000".lstrip("$")) == 1_035_000.0
+    # Callers that hand parse_price raw text must get the same repair.
+    assert parse_price("$ 1 ,757,400") == 1_757_400.0
+
+
+def test_two_columns_are_never_glued_into_one_number():
+    """The defect that understated 212 live rows by a median of $424,900.
+
+    A stocklist row runs "... 450.1 $896,000 202.15 $550,411 $1,446,411 900 Due ...":
+    land, house size, build, TOTAL, then a weekly rent. When a space counted as a
+    thousands separator, "$896,000 202" and "$1,446,411 900" became 896000202 and
+    1446411900, both blew past the $5M ceiling and were discarded, and max() of what
+    was left published the BUILD component of $550,411 as the package price.
+    """
+    from sources.scraper_base import normalise_money_spacing
+
+    row = ("Rooty Hill Available 6 Gardner Road Riverton MOD Coastal 4 2 2 450.1 "
+           "$896,000 202.15 $550,411 $1,446,411 900 Due Oct 26")
+    found = [_money(m) for m in PRICE_RE.findall(normalise_money_spacing(row))]
+    assert found == [896_000.0, 550_411.0, 1_446_411.0], found
+    assert parse_fields(row)["advertised_package_price"] == 1_446_411.0, (
+        "the stated total must win, not the largest surviving component")
 
 
 def test_title_dates_that_previously_never_matched():
@@ -95,6 +128,7 @@ def run_all():
         ("QLD land/build split correct", test_qld_row_splits_land_and_build_correctly),
         ("VIC split still correct", test_vic_row_still_splits_correctly),
         ("price with internal space", test_price_with_space_inside_the_number),
+        ("two columns are never glued", test_two_columns_are_never_glued_into_one_number),
         ("title dates now match", test_title_dates_that_previously_never_matched),
         ("title_status on real rows", test_title_status_populated_on_real_rows),
         ("rent words are word-bounded", test_rent_words_must_be_bounded_not_matched_inside_words),

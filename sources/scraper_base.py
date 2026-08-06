@@ -133,10 +133,26 @@ MIN_PLAUSIBLE_PRICE = 50_000.0
 # comma, not whitespace.
 _SPLIT_MONEY = re.compile(r"\$\s*(\d{1,3})\s+(\d{2,3},\d{3})\b")
 
+# The same break, but landing on the other side of the comma:
+#     "$ 1 ,455,900.00"   ->   $1,455,900.00
+#     "$ 1 ,064,230"      ->   $1,064,230
+# The leading group is followed by a space and then a COMMA, so _SPLIT_MONEY above (which
+# needs digits straight after the space) never matched it. PRICE_RE used to absorb this
+# shape by allowing whitespace as a thousands separator, but that same tolerance glued
+# adjacent spreadsheet columns into 9-digit numbers and cost 212 rows their package
+# price. The repair belongs here, where it is bounded, rather than in the price regex,
+# where it was not.
+#
+# One or more comma groups must follow, so "$ 1 ,455,900" joins while two genuinely
+# separate amounts never can: nothing here can bridge "$896,000 202.15", because 202.15
+# is not a comma group.
+_SPLIT_MONEY_COMMA = re.compile(r"\$\s*(\d{1,3})\s+((?:,\d{3})+)")
+
 
 def normalise_money_spacing(text: Optional[str]) -> str:
     """Re-join money amounts that a PDF/spreadsheet copy split mid-number."""
-    return _SPLIT_MONEY.sub(lambda m: "$%s%s" % (m.group(1), m.group(2)), str(text or ""))
+    out = _SPLIT_MONEY.sub(lambda m: "$%s%s" % (m.group(1), m.group(2)), str(text or ""))
+    return _SPLIT_MONEY_COMMA.sub(lambda m: "$%s%s" % (m.group(1), m.group(2)), out)
 
 
 def parse_price(text: Optional[str]) -> Optional[float]:
