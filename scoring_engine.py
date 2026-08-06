@@ -138,9 +138,27 @@ class ScoringEngine:
             rejection_reasons.append(f"House size ({prop.house_size_sqm:,.0f} m²) below minimum mandatory requirement ({brief.house_size_min_sqm:,.0f} m²)")
             req_pts -= 5.0
 
-        if brief.land_size_min_sqm and prop.land_size_sqm < brief.land_size_min_sqm:
-            deficit = brief.land_size_min_sqm - prop.land_size_sqm
-            req_pts -= min(5.0, (deficit / brief.land_size_min_sqm) * 10.0)
+        # Land size is a MANDATORY minimum, exactly like house size above it.
+        #
+        # It used to cost at most 5 points and reject nothing, so a buyer who asked for
+        # 800 m² was shown 296 m² lots as a "Strong match" — Coleen types the number into
+        # "Min Land Size (m²)" on the Research tab and the system quietly ignored it.
+        # A stated minimum the tool declines to apply is worse than no field at all.
+        if brief.land_size_min_sqm:
+            # 0 means "the stocklist never said", not "a lot with no land": a 0 m² lot
+            # does not exist, and api/_candidates passes a missing size through as 0.0.
+            # Treated as unstated so a data gap is flagged rather than silently rejected —
+            # the same choice house size makes when it is missing.
+            if not prop.land_size_sqm:
+                advisories.append("Land size not stated in the builder's stocklist — "
+                                  "confirm it meets the client's minimum before presenting")
+                req_pts -= 1.0
+            elif prop.land_size_sqm < brief.land_size_min_sqm:
+                hard_rejection = True
+                rejection_reasons.append(
+                    f"Land size ({prop.land_size_sqm:,.0f} m²) below minimum mandatory "
+                    f"requirement ({brief.land_size_min_sqm:,.0f} m²)")
+                req_pts -= 5.0
 
         req_pts = max(0.0, req_pts)
 

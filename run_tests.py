@@ -8,7 +8,8 @@ from tests.test_defects import (
     test_defect_2_csv_parsing,
     test_defect_3_config_paths,
     test_defect_4_house_size_minimum,
-    test_defect_5_verification_defaults
+    test_defect_5_verification_defaults,
+    test_a_stated_land_minimum_actually_rejects
 )
 from tests.test_intended_features import (
     test_geo_index_loads_and_locates,
@@ -57,6 +58,7 @@ def run_all_tests():
         ("Defect #3: Relative Config Paths", test_defect_3_config_paths),
         ("Defect #4: Mandatory House Size Check", test_defect_4_house_size_minimum),
         ("Defect #5: Pending Verification Defaults", test_defect_5_verification_defaults),
+        ("A stated land minimum rejects", test_a_stated_land_minimum_actually_rejects),
         ("Feature: Geo index loads & locates", test_geo_index_loads_and_locates),
         ("Feature: Distance search expands suburbs", test_distance_search_expands_suburbs),
         ("Feature: Brief parser reads radius", test_brief_parser_reads_radius),
