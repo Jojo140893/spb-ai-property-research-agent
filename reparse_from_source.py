@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import DATABASE_PATH                                     # noqa: E402
 from sources.scraper_base import normalise_money_spacing             # noqa: E402
 from sources.spreadsheet_extract import extract_stocklist            # noqa: E402
+from sources import remote_stocklist as remote                       # noqa: E402
 from verify_against_source import fetch, fetchable                   # noqa: E402
 
 # extractor field -> database column
@@ -99,6 +100,23 @@ def _replaceable_suburb(value, state: str) -> bool:
     return not _GEO.resolve_locality(str(value), state or "")
 
 
+def _postcode_fits(value, state) -> bool:
+    """A postcode must belong to the row's own state.
+
+    Today's audit found this column populated from lot numbers, unit numbers and floor
+    areas, with 138 live rows carrying a postcode nothing supported — and on two of them
+    the fake postcode had also set the wrong state. Writing more of those would deepen
+    the problem, so a recovered postcode is only accepted when its range matches the
+    state the row already has.
+    """
+    from state_resolver import state_from_postcode
+    text = str(value or "").strip()
+    if not re.fullmatch(r"\d{4}", text):
+        return False
+    st = str(state or "").strip().upper()
+    return not st or state_from_postcode(text) == st
+
+
 def _is_locality(value, state) -> bool:
     """Whether a value is a real Australian locality — the gate on every suburb written."""
     if _empty(value):
@@ -126,7 +144,11 @@ def main():
     by_file = collections.defaultdict(list)
     for r in rows:
         url = r.get("stocklist_file") or r.get("source_url") or ""
-        if fetchable(url):
+        # Anything remote_stocklist can resolve, not just a direct file URL. It already
+        # knows how to walk a Dropbox "Access Portal" folder, enumerate a Google Sheets
+        # workbook's tabs and follow a SharePoint/OneDrive share -- which is 1,476 and 133
+        # rows respectively that a plain GET only ever sees as an HTML shell.
+        if url.lower().startswith(("http://", "https://")):
             by_file[url].append(r)
     targets = sorted(by_file.items(), key=lambda kv: -len(kv[1]))
     if args.limit_files:
@@ -141,11 +163,23 @@ def main():
     unmatched = unreadable = 0
 
     for n, (url, stored) in enumerate(targets, 1):
+        fresh = []
         try:
-            fresh = extract_stocklist(fetch(url), source_label=url)
+            if fetchable(url):
+                fresh = extract_stocklist(fetch(url), source_label=url)
+            else:
+                # One link can be many files, so every piece contributes to the index.
+                for piece in remote.fetch_stocklist(url, label=url):
+                    if piece.problem or piece.kind != remote.KIND_FILE or not piece.data:
+                        continue
+                    fresh.extend(extract_stocklist(piece.data, source_label=piece.label))
         except Exception as exc:                                     # noqa: BLE001
             unreadable += 1
             print(f"  [{n:3}/{len(targets)}] UNREADABLE ({type(exc).__name__}) {url[:64]}")
+            continue
+        if not fresh:
+            unreadable += 1
+            print(f"  [{n:3}/{len(targets)}] NOTHING READABLE  {url[:64]}")
             continue
         index = {}
         for f in fresh:
@@ -165,6 +199,8 @@ def main():
                 if col not in row:
                     continue
                 value = f.get(src)
+                if col == "postcode" and not _postcode_fits(value, row.get("state")):
+                    continue
                 if col == "suburb":
                     # Validate what is being WRITTEN, not only what is being replaced.
                     # The banner reader refuses junk, but parse_fields can still put a
