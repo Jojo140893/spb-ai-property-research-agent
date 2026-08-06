@@ -37,7 +37,10 @@ def coerce_number(value: Any, default=None):
             return default
     try:
         out = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError, not ValueError, is what a Python int beyond float range raises.
+        # json.loads turns a bare 1e400-sized integer literal into exactly that, so it
+        # reached here as an int and crashed the request with a 500.
         return default
     # NaN and infinities survive json.loads and poison every comparison after them.
     if out != out or out in (float("inf"), float("-inf")):

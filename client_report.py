@@ -7,6 +7,7 @@ and the reasons behind each recommendation.
 Output: a single self-contained, print-ready HTML file (no external assets).
 """
 
+import html
 from datetime import datetime
 from typing import List
 from schema import ClientBrief, CandidateProperty
@@ -14,6 +15,25 @@ from schema import ClientBrief, CandidateProperty
 
 def _money(v) -> str:
     return f"${v:,.0f}" if v is not None else "TBC"
+
+
+def _esc(v) -> str:
+    """Any value that came from a brief or a vendor file, made safe to put in HTML.
+
+    This document is client-facing and index.html renders it with document.write(), so
+    an unescaped angle bracket is not a formatting bug, it is script execution. A brief
+    is typed by a consultant and a listing's text comes from a builder's spreadsheet:
+    neither is trusted input.
+
+        client_name = "<script>alert(1)</script>"
+        -> "Prepared for <strong><script>alert(1)</script></strong>"   and it ran.
+
+    Everything printed around these values is written in the templates below, so
+    escaping the DATA cannot damage the intended markup or the &middot;/&sup2; entities.
+    """
+    if v is None:
+        return ""
+    return html.escape(str(v), quote=True)
 
 
 class ClientReportGenerator:
@@ -43,18 +63,19 @@ class ClientReportGenerator:
                               f"<strong>{_money(saving)}</strong>")
             elif avg_market:
                 value_line = (f"{_money(pb.realistic_total_price)} vs {what} "
-                              f"{_money(avg_market)} ({bm.get('classification', '')})")
+                              f"{_money(avg_market)} ({_esc(bm.get('classification', ''))})")
             else:
                 value_line = f"{_money(pb.realistic_total_price)}"
 
             comp_rows = "".join(
-                f"<tr><td>{c['suburb']}, {c['state']}</td><td>{c['bedrooms']} bed</td><td>{_money(c['price'])}</td><td>{c['source']}</td></tr>"
+                f"<tr><td>{_esc(c['suburb'])}, {_esc(c['state'])}</td><td>{_esc(c['bedrooms'])} bed</td>"
+                f"<td>{_money(c['price'])}</td><td>{_esc(c['source'])}</td></tr>"
                 for c in bm.get('comparables', [])
             )
             comp_table = (
                 f"<table class='comps'><tr><th>Comparable</th><th>Beds</th><th>Price</th><th>Source</th></tr>{comp_rows}</table>"
                 if comp_rows else (
-                    f"<p class='pending'>{bm.get('data_note') or ''}</p>" if internal
+                    f"<p class='pending'>{_esc(bm.get('data_note') or '')}</p>" if internal
                     else "<p class='pending'>Market comparables to be confirmed.</p>")
             )
 
@@ -73,20 +94,20 @@ class ClientReportGenerator:
                              f'<span>{gross_yield:.2f}%</span></div>')
 
             # "August 2026 ()" — an empty bracket where no date was captured.
-            title_text = str(p.title_status or "Not stated in source").strip()
+            title_text = _esc(str(p.title_status or "Not stated in source").strip())
             if str(p.expected_title_date or "").strip():
-                title_text += f" ({p.expected_title_date})"
+                title_text += f" ({_esc(p.expected_title_date)})"
 
             # Only print the location note when it says something. "No amenity
             # assessment captured for this listing." under a heading called Location
             # reads, to a buyer, as though the area is a problem.
             amenity = str(p.amenities_summary or "").strip()
-            amenity_line = (f"<p><em>Location:</em> {amenity}</p>"
+            amenity_line = (f"<p><em>Location:</em> {_esc(amenity)}</p>"
                             if amenity and not amenity.lower().startswith("no amenity")
                             else "")
 
             dist = getattr(p, 'distance_km_from_target', None)
-            dist_line = f" &middot; {dist} km from {brief.primary_suburbs[0]}" if dist not in (None, 0.0) and brief.primary_suburbs else ""
+            dist_line = f" &middot; {dist} km from {_esc(brief.primary_suburbs[0])}" if dist not in (None, 0.0) and brief.primary_suburbs else ""
 
             # What "Partial Turnkey" actually costs the buyer, itemised.
             #
@@ -100,7 +121,7 @@ class ClientReportGenerator:
             # is routinely the one that hands over less.
             turnkey_block = ""
             if pb.missing_inclusions or pb.estimated_additional_costs:
-                items = "".join(f"<li>{m}</li>" for m in (pb.missing_inclusions or []))
+                items = "".join(f"<li>{_esc(m)}</li>" for m in (pb.missing_inclusions or []))
                 item_list = (f"<p>Still to be confirmed, supplied or arranged separately:</p>"
                              f"<ul class='risks'>{items}</ul>" if items else "")
                 turnkey_block = f"""
@@ -116,7 +137,7 @@ class ClientReportGenerator:
       <p class='pending'>The completion allowance is an estimate only. Actual cost depends
       on site conditions, fencing lengths, landscaping scope and supplier pricing.</p>"""
 
-            risk_items = "".join(f"<li>{r.risk_name} ({r.rating.value}): {r.proposed_mitigation}</li>" for r in p.risks)
+            risk_items = "".join(f"<li>{_esc(r.risk_name)} ({_esc(r.rating.value)}): {_esc(r.proposed_mitigation)}</li>" for r in p.risks)
             risk_block = f"<ul class='risks'>{risk_items}</ul>" if risk_items else "<p>No medium or high risks identified at time of checking.</p>"
 
             # A spec the stocklist never stated is omitted from this line, not printed as
@@ -128,22 +149,22 @@ class ClientReportGenerator:
                 f"{p.car_spaces} car" if p.car_spaces is not None else "",
                 f"{p.land_size_sqm:,.0f} m&sup2; land" if p.land_size_sqm else "",
                 f"{p.house_size_sqm:,.0f} m&sup2; house" if p.house_size_sqm else "",
-                p.builder_name or "",
+                _esc(p.builder_name),
             ) if bit)
 
             cards.append(f"""
     <div class="card">
       <div class="rank">Option {rank}</div>
-      <h2>{p.lot_address}, {p.suburb} {p.state}</h2>
+      <h2>{_esc(p.lot_address)}, {_esc(p.suburb)} {_esc(p.state)}</h2>
       <p class="sub">{spec}{dist_line}</p>
       <div class="row"><span class="label">Your price</span><span>{value_line}</span></div>
       {rent_row}
       {yield_row}
-      <div class="row"><span class="label">Turnkey status</span><span>{pb.turnkey_status.value}{' &mdash; allow ' + _money(pb.estimated_additional_costs) + ' additional costs' if pb.estimated_additional_costs else ''}</span></div>
+      <div class="row"><span class="label">Turnkey status</span><span>{_esc(pb.turnkey_status.value)}{' &mdash; allow ' + _money(pb.estimated_additional_costs) + ' additional costs' if pb.estimated_additional_costs else ''}</span></div>
       <div class="row"><span class="label">Title</span><span>{title_text}</span></div>
       {turnkey_block}
       <h3>Why we recommend it</h3>
-      <p>{p.recommendation_reason}</p>
+      <p>{_esc(p.recommendation_reason)}</p>
       {amenity_line}
       <h3>{'Price comparison' if internal else 'Market comparison'}</h3>
       {comp_table}
@@ -177,11 +198,11 @@ class ClientReportGenerator:
   {_logo_html()}
   <div class="titles">
     <h1>Property Recommendations</h1>
-    <p class="meta">Prepared for <strong>{brief.client_name}</strong> &middot; {date_str} &middot; Budget up to {_money(brief.budget_max)} &middot; {brief.state}</p>
+    <p class="meta">Prepared for <strong>{_esc(brief.client_name)}</strong> &middot; {date_str} &middot; Budget up to {_money(brief.budget_max)} &middot; {_esc(brief.state)}</p>
   </div>
 </header>
 <p>Based on your requirements ({brief.bedrooms_min}+ bedrooms, {brief.bathrooms_min}+ bathrooms,
-{brief.car_spaces_min}+ car spaces{', ' + ', '.join(brief.primary_suburbs) if brief.primary_suburbs else ''}),
+{brief.car_spaces_min}+ car spaces{', ' + ', '.join(_esc(s) for s in brief.primary_suburbs) if brief.primary_suburbs else ''}),
 we reviewed available stock and shortlisted the following {len(top3)} option(s) for you.</p>
 {''.join(cards)}
 <footer>

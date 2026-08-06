@@ -97,8 +97,98 @@ def test_a_real_brief_is_unchanged():
     assert b.primary_suburbs == ["Ripley"]
 
 
+def test_no_hostile_payload_reaches_a_500():
+    """A malformed request must be answered, not crash the function.
+
+    Every one of these returned HTTP 500 — "we broke" — instead of a result or a 400
+    naming the bad field:
+
+      * a Python int beyond float range (json.loads turns a bare 1e400-sized literal
+        into one) raises OverflowError, not ValueError, so it went past every parser;
+      * inf and nan survive json.loads and then blew up inside int();
+      * primary_suburbs sent as a bare scalar was iterated in one file and subscripted
+        in another, crashing both the scoring path and the zero-results path.
+
+    The zero-results branch was the worst of them, because it returns before the parser
+    runs — so the path a caller hits when their search is already going badly was the
+    one with no input handling at all.
+    """
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "api"))
+    os.environ.setdefault("SPB_SNAPSHOT_JSON", os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "vercel_site", "stock.json"))
+    import research
+    from research import BadRequest
+
+    huge = 10 ** 400
+    hostile = [
+        "not-a-dict",
+        {"client_brief": "a string"},
+        {"client_brief": [1, 2]},
+        {"client_brief": None},
+        {"client_brief": {}},
+        {"client_brief": {"state": "NSW", "budget_max": huge}},
+        {"client_brief": {"state": "NSW", "budget_max": float("inf")}},
+        {"client_brief": {"state": "NSW", "budget_max": float("nan")}},
+        {"client_brief": {"state": "NSW", "budget_max": [1]}},
+        {"client_brief": {"state": {"x": 1}, "budget_max": 900000}},
+        {"client_brief": {"state": "NSW", "budget_max": 900000, "primary_suburbs": 5}},
+        {"client_brief": {"state": "NSW", "budget_max": 900000, "primary_suburbs": True}},
+        {"client_brief": {"state": "NSW", "budget_max": 900000,
+                          "primary_suburbs": [{"a": 1}]}},
+        {"client_brief": {"state": "NSW", "budget_max": 900000, "storeys_max": huge}},
+        {"client_brief": {"state": "NSW", "budget_max": 900000, "bedrooms_min": huge}},
+        {"client_brief": {"state": "NSW", "budget_max": 900000, "search_radius_km": [5]}},
+        # the zero-results branch, reached with junk still in the brief
+        {"client_brief": {"state": "ACT", "budget_max": huge, "primary_suburbs": 7}},
+    ]
+    for payload in hostile:
+        try:
+            research.run_research(payload)
+        except BadRequest:
+            pass                      # a 400 naming the problem is the correct answer
+        except Exception as exc:      # noqa: BLE001
+            raise AssertionError(
+                f"{type(exc).__name__} on {str(payload)[:90]}: {exc}") from exc
+
+
+def test_a_brief_cannot_inject_script_into_the_client_report():
+    """index.html renders this report with document.write(), so an unescaped angle
+    bracket is script execution, not a formatting glitch.
+
+    The consultant types the client name and the suburbs; the listing text comes out of
+    a builder's spreadsheet. Neither is trusted input, and both were interpolated raw.
+    """
+    from brief_parser import ClientBriefParser
+    from client_report import ClientReportGenerator
+
+    payload = "<script>alert(1)</script>"
+    brief = ClientBriefParser.parse_dict(
+        {"client_name": payload, "state": "NSW", "budget_max": 900_000,
+         "primary_suburbs": [payload]})
+    out = ClientReportGenerator.generate_html(brief, [])
+    assert "<script>alert" not in out, "script tag reached the client report"
+    assert "&lt;script&gt;" in out, "the name should still be shown, just inert"
+
+    # Quotes must be escaped too, or the payload breaks out of an attribute instead of
+    # sitting inside one. Asserted on the payload itself rather than on a window of
+    # surrounding text, which contains the template's own quotes (class="meta").
+    attr = '" onerror="alert(1)'
+    quoted = ClientBriefParser.parse_dict(
+        {"client_name": attr, "state": "NSW", "budget_max": 900_000})
+    html_out = ClientReportGenerator.generate_html(quoted, [])
+    assert attr not in html_out, "the raw quote survived; it can break out of an attribute"
+    assert "&quot; onerror=&quot;alert(1)" in html_out, "the name should still be shown, inert"
+
+
 def run_all():
     tests = [
+        ("no hostile payload reaches a 500", test_no_hostile_payload_reaches_a_500),
+        ("a brief cannot inject script", test_a_brief_cannot_inject_script_into_the_client_report),
         ("null in any numeric field", test_a_null_in_any_numeric_field_does_not_crash),
         ("empty string in any numeric field", test_an_empty_string_in_any_numeric_field_does_not_crash),
         ("junk text falls back", test_junk_text_in_a_numeric_field_falls_back_rather_than_crashing),

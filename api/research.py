@@ -165,6 +165,46 @@ def _empty_kommo_payload(brief_dict, record_id, coverage_reason):
     }
 
 
+# Brief fields that must be a LIST of strings downstream. A caller that sends one suburb
+# as a bare value is being reasonable; two separate code paths crashed on it.
+_LIST_FIELDS = ("primary_suburbs", "secondary_suburbs", "must_have_features",
+                "nice_to_have_features", "excluded_suburbs", "preferred_builders")
+
+
+def _normalised_brief(brief):
+    """Coerce a caller's brief into the shape every consumer below already assumes.
+
+    Done ONCE here rather than defensively at each reader, because the two crashes this
+    fixes were in different files reading the same field two different ways:
+
+        primary_suburbs = 5   ->  brief_parser.py:86  iterated it        (not iterable)
+                              ->  research.py:220     took suburbs[0]    (not subscriptable)
+
+    The second is the worse of the two: it is in the ZERO-RESULTS branch, which returns
+    early and therefore never passes through the parser that would have cleaned the value
+    up. That is the path a caller hits when their search is already going badly.
+    """
+    out = dict(brief)
+    for field in _LIST_FIELDS:
+        value = out.get(field)
+        if value is None or isinstance(value, list):
+            continue
+        if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+            # One suburb sent bare, or an integration that unwrapped a single-element list.
+            text = str(value).strip()
+            out[field] = [text] if text else []
+        elif isinstance(value, (tuple, set)):
+            out[field] = [str(v).strip() for v in value if str(v).strip()]
+        else:
+            out[field] = []
+    # Every element must be a string: a list holding a dict crashes the same readers.
+    for field in _LIST_FIELDS:
+        if isinstance(out.get(field), list):
+            out[field] = [str(v).strip() for v in out[field]
+                          if isinstance(v, (str, int, float)) and str(v).strip()]
+    return out
+
+
 def run_research(payload):
     """The whole endpoint as a plain function, so it is testable without a socket."""
     # Anything can arrive over HTTP. A payload that is not an object, or a client_brief
@@ -176,6 +216,7 @@ def run_research(payload):
     if not isinstance(brief_dict, dict):
         raise BadRequest("'client_brief' must be a JSON object, got %s"
                          % type(brief_dict).__name__)
+    brief_dict = _normalised_brief(brief_dict)
 
     agent = _bootstrap.get_agent()
 
@@ -215,9 +256,14 @@ def run_research(payload):
         # Deliberately NOT calling the pipeline: candidate_packages=[] is falsy and
         # run_property_research would fall through to a live crawl of every builder.
         from datetime import datetime
+
+        from brief_parser import coerce_number
         suburbs = brief_dict.get('primary_suburbs') or []
         suburb = (suburbs[0] if suburbs else 'General')
-        budget = float(brief_dict.get('budget_max') or 0)
+        # coerce_number, not float(): this branch returns before the parser runs, so a
+        # budget of 1e400 or a list arrives here raw. Both crashed the request with a
+        # 500 on the exact path a caller hits when their search found nothing.
+        budget = coerce_number(brief_dict.get('budget_max'), 0) or 0
         record_id = "%s - %s/%s - $%s - %s" % (
             brief_dict.get('client_name', 'Unnamed Client'),
             str(brief_dict.get('state') or 'QLD').upper(), suburb,
@@ -232,7 +278,7 @@ def run_research(payload):
             'reports': [],
             'search_area': agent.geo.expand_search_suburbs(
                 [s for s in suburbs if s], str(brief_dict.get('state') or '').upper(),
-                float(brief_dict.get('search_radius_km') or 0)),
+                coerce_number(brief_dict.get('search_radius_km'), 0) or 0),
             'builder_coverage': {},
             'client_report_html': '',
             'client_report_path': '',

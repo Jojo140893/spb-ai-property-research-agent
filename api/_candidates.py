@@ -194,19 +194,39 @@ def _read_sqlite(path):
 # ------------------------------------------------------------------------ conversion
 
 def _num(value):
-    """float or None. Never a default — a missing figure must stay missing."""
+    """float or None. Never a default — a missing figure must stay missing.
+
+    Anything can arrive over HTTP, and a value this cannot represent must come back as
+    "no number", never as an exception: an unparseable field is a 400 naming the field,
+    and an uncaught raise here is a 500 that says only "we broke".
+
+      * a Python int beyond float range ("budget_max": 1e400 as a bare integer literal,
+        which json.loads returns as an int) raises OverflowError, not ValueError, so it
+        went straight past the old handler on all 13 numeric brief fields;
+      * JSON has no infinity, but 1e400 parses to inf and "nan" to nan, and both then
+        blew up in int() further down instead of here.
+    """
     if value is None or value == "":
         return None
     try:
         out = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        return None
+    # inf and nan are not quantities: they compare false against every budget bound and
+    # would silently pass a filter rather than fail it.
+    if out != out or out in (float("inf"), float("-inf")):
         return None
     return out
 
 
 def _int(value):
     n = _num(value)
-    return int(n) if n is not None else None
+    if n is None:
+        return None
+    try:
+        return int(n)
+    except (ValueError, OverflowError):     # belt and braces; _num already excludes these
+        return None
 
 
 def _display_address(row):
