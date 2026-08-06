@@ -312,7 +312,27 @@ class ProximaSource(PropertySource):
 
     def _row(self, d: Dict[str, str], header: Dict[str, str],
              project_id: str = "") -> Optional[Dict[str, Any]]:
-        price = _num(d.get("rop")) or _num(d.get("packageprice"))
+        # PACKAGE PRICE FIRST, and `rop` only as a fallback.
+        #
+        # This order used to be the other way round, and it understated listings by
+        # roughly $450,000 each. Colin opened Proxima on 6 Aug against our own card:
+        #
+        #     Lot 2 Unit 2, 275 Twelfth Avenue, AUSTRAL   we said $675,000
+        #     Proxima "Package Price" column              $1,127,000
+        #
+        # Across that project our figure tracked LAND AREA (250.1 m2 -> $675,000,
+        # 300.1 m2 -> $740,000) and sat at ~58% of the package every time, which is what
+        # a land component looks like. `rop` is the land price, not the finished cost.
+        #
+        # Where rop is the only figure we cannot tell which of the two it is, so the
+        # pairing is logged: the next authenticated harvest resolves this from real data
+        # instead of from inference.
+        pkg = _num(d.get("packageprice"))
+        rop = _num(d.get("rop"))
+        price = pkg or rop
+        if pkg and rop and abs(pkg - rop) > 1:
+            logger.info("     %s: package %s vs rop %s — using the package, keeping rop "
+                        "as the land component", (d.get("lot") or "?"), pkg, rop)
         if not price:
             self._bump("no price")
             return None
@@ -359,6 +379,9 @@ class ProximaSource(PropertySource):
             "lot_number": lot,
             "postcode": a["postcode"],
             "advertised_package_price": price,
+            # Kept separately when the package price supersedes it, so the breakdown is
+            # visible and the two are never confused again.
+            "land_price": rop if (pkg and rop and abs(pkg - rop) > 1) else None,
             "bedrooms": _int(d.get("room")),
             "bathrooms": _int(d.get("bathroom")),
             "car_spaces": _int(d.get("carspace")),

@@ -135,10 +135,91 @@ def test_proxima_links_to_its_project_page_when_the_id_is_known():
 
 
 def test_proxima_without_a_project_id_says_so_rather_than_promising_the_lot():
+    """It can only reach the portal front door, so it must not claim to open a project.
+
+    Colin followed one of these on 6 Aug and searched Proxima for the lot ADDRESS, which
+    returns nothing — Proxima indexes lots inside project accordions. The label now
+    carries the project name to search for, and `opens` says "portal", not "project".
+    """
     link = primary_source_link({"source_channel": "Proxima", "source_project_id": "",
                                 "source_url": "https://portal.proxima.com.au/agent/projects/index/"})
-    assert link and link["opens"] == "project"
+    assert link and link["opens"] == "portal", link
     assert "projects list" in link["label"].lower(), link
+
+    # With a project name recorded, the label must name it — that is the only thing
+    # that makes the portal index usable.
+    named = primary_source_link({"source_channel": "Proxima", "source_project_id": "",
+                                 "estate_name": "275 Twelfth Ave Austral (6/6)",
+                                 "source_url": "https://portal.proxima.com.au/agent/projects/index/"})
+    assert "275 Twelfth Ave Austral" in named["label"], named
+    assert "(6/6)" not in named["label"], "the sold/total counter moves; it is not the name"
+
+
+def test_the_package_price_beats_the_land_price_on_proxima():
+    """The $452,000 understatement Colin caught on 6 Aug.
+
+    Proxima carries both data-rop and data-packageprice. We preferred rop, which is the
+    LAND component: Lot 2 at 275 Twelfth Ave Austral published as $675,000 against a
+    real package price of $1,127,000, and across that project our figure tracked land
+    area at ~58% of the package every time.
+    """
+    import sources.proxima as px
+
+    class _Src(px.ProximaSource):
+        def __init__(self):
+            self._counts = {}
+
+        def _bump(self, why):
+            self._counts[why] = self._counts.get(why, 0) + 1
+
+    src = _Src()
+    header = {"project": "275 Twelfth Ave Austral (6/6)", "developer": "Noble Investment Group"}
+    row = src._row({"name": "Lot 2 Unit 2, 275 Twelfth Avenue, AUSTRAL, NSW, 2179",
+                    "lot": "00000002/00000002", "landsize": "250.10",
+                    "rop": "675000", "packageprice": "1127000"}, header, "99")
+    assert row["advertised_package_price"] == 1127000.0, (
+        "the package price must win over the land component")
+    assert row["land_price"] == 675000.0, "and the land component is kept, not discarded"
+
+    # Where only one figure exists there is nothing to prefer, and it is used as-is.
+    only = src._row({"name": "Lot 3 Unit 3, 1 Test St, AUSTRAL, NSW, 2179",
+                     "lot": "3", "landsize": "250", "rop": "800000"}, header, "99")
+    assert only["advertised_package_price"] == 800000.0
+    assert only["land_price"] is None
+
+
+def test_a_channel_with_unverified_prices_reaches_no_shortlist():
+    """The fix above corrects future harvests. It cannot correct rows already stored.
+
+    Every one of the 1,212 stored Proxima rows was captured through the old preference,
+    so each is carrying a land figure in the price column. Until a harvest re-reads them
+    they are held out of recommendations entirely — a wrong price is worse than no
+    listing. They stay in the Building Stock table; this hides them from a buyer's
+    shortlist, not from Coleen.
+    """
+    import api._candidates as cand
+
+    rows = [
+        {"builder_name": "Noble Investment Group", "source_channel": "Proxima",
+         "suburb": "Austral", "state": "NSW", "availability_status": "Available",
+         "price": 675000.0, "lot_address": "Lot 2 Unit 2, 275 Twelfth Avenue",
+         "date_checked": "2026-08-06"},
+        {"builder_name": "Bathla Development", "source_channel": "E-Agent",
+         "suburb": "Austral", "state": "NSW", "availability_status": "Available",
+         "price": 720000.0, "lot_address": "Lot 9, 12 Sample Street",
+         "date_checked": "2026-08-06"},
+    ]
+    brief = {"client_name": "T", "budget_max": 1_500_000, "state": "NSW"}
+    packages, counts = cand.build_packages(brief, rows)
+
+    channels = {str(p.get("source_channel") or "").lower() for p in packages}
+    assert not any("proxima" in c for c in channels), (
+        "a channel whose prices are under re-verification must not reach a buyer")
+    assert len(packages) == 1, "and the trustworthy row beside it is unaffected"
+    assert counts["price_unverified"] == 1
+
+    # Silently dropping them would read as "there is nothing in NSW". It is counted.
+    assert "re-verified" in cand.coverage_sentence(counts, "stock.json", "NSW")
 
 
 def test_e_agent_offers_the_price_list_because_no_lot_page_exists():
@@ -192,6 +273,9 @@ def run_all():
         ("Proxima links to its project", test_proxima_links_to_its_project_page_when_the_id_is_known),
         ("Proxima without an id is honest",
          test_proxima_without_a_project_id_says_so_rather_than_promising_the_lot),
+        ("package price beats land price", test_the_package_price_beats_the_land_price_on_proxima),
+        ("unverified prices reach no shortlist",
+         test_a_channel_with_unverified_prices_reaches_no_shortlist),
         ("E-Agent offers the price list", test_e_agent_offers_the_price_list_because_no_lot_page_exists),
         ("a lot document outranks the price list", test_a_per_lot_document_outranks_the_price_list),
         ("an email becomes a findable search",

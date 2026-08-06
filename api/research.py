@@ -79,6 +79,11 @@ def _shortlist_entry(p):
         # minutes of the 5 Aug call hunting one lot; the label says what the link opens
         # so "price list" is never mistaken for "the lot". See provenance.py.
         'source_link': getattr(p, 'source_link', None),
+        # When this listing was last actually seen at the source. Proxima's sign-in
+        # expired on 3 Aug and the daily harvest has failed silently every night since,
+        # so its rows kept being served as current while going three days stale. A
+        # consultant about to send one to a buyer has to be able to see that.
+        'date_checked': getattr(p, 'date_checked', ''),
         'distance_km_from_target': p.distance_km_from_target,
         'score': p.scoring.total_score if p.scoring else 0,
         'scoring_details': {

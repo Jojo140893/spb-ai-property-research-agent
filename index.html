@@ -941,6 +941,11 @@
     }
 
     /* ---------------------------------------------------------------- building stock */
+    /* Channels whose stored Package figure is known to be wrong and is awaiting a fresh
+       harvest. Mirrors PRICES_UNVERIFIED_CHANNELS in api/_candidates.py, which keeps the
+       same rows out of every client-facing recommendation. Compared lowercased. */
+    const PRICE_UNVERIFIED = new Set(['proxima']);
+
     const STOCK_COLUMNS = [
         { k: 'builder_name',        t: 'Builder / development', cls: '', strong: true },
         // street_address is the street recovered from the row's own source text; on 47%
@@ -1374,7 +1379,17 @@
             if (c.link) return `<td>${v ? `<a href="${esc(v)}" target="_blank" rel="noopener noreferrer"
                 style="color:var(--accent-blue);">${c.link}</a>` : ''}</td>`;
             if (c.pill) return `<td>${availPill(v)}</td>`;
-            if (c.money) return `<td class="num">${money(v)}</td>`;
+            if (c.money) {
+                /* The Package figure on these rows was read from the wrong field and is
+                   the land component, not the package — Lot 2 at 275 Twelfth Ave Austral
+                   stored as $675,000 against a real package price of $1,127,000. They are
+                   already held out of every recommendation; this is so the number cannot
+                   be quoted off the table either while it is still wrong. */
+                if (c.k === 'price' && PRICE_UNVERIFIED.has(String(b.source_channel || '').toLowerCase()))
+                    return `<td class="num" style="color:var(--amber-yellow);"
+                        title="Not confirmed — this figure was read from the land price field, not the package price. Re-harvest pending. Check the source before quoting it.">${money(v)}&nbsp;?</td>`;
+                return `<td class="num">${money(v)}</td>`;
+            }
             if (c.strong) return `<td>${v ? `<strong>${esc(v)}</strong>`
                 : unnamedPill(b)}</td>`;
             return `<td class="${c.cls || ''}">${esc(v ?? '')}</td>`;
@@ -1513,9 +1528,30 @@
         lot: 'opens this lot',
         project: 'opens the project on the portal',
         'price list': 'opens the price list it came from',
+        portal: 'opens the portal — search there for the project named in the link',
         email: 'finds the email it came in',
         document: 'opens the source document',
     };
+    /* How old a listing's last real sighting is. Anything past this reads as a warning
+       rather than a footnote: a price and an availability are only as true as the day
+       they were captured, and a channel whose login has expired keeps serving the same
+       rows indefinitely without anything looking wrong. */
+    const STALE_AFTER_DAYS = 2;
+    const capturedRow = checked => {
+        const raw = String(checked || '').trim();
+        const m = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+        if (!m) return '';
+        const seen = new Date(+m[3], +m[2] - 1, +m[1]);
+        const days = Math.floor((Date.now() - seen.getTime()) / 86400000);
+        if (days < STALE_AFTER_DAYS) {
+            return `<div style="font-size:0.78rem; color:var(--text-muted); margin-top:0.25rem;">
+                Last checked at the source ${esc(raw)}.</div>`;
+        }
+        return `<div style="font-size:0.8rem; color:var(--amber-yellow); font-weight:600; margin-top:0.3rem;">
+            Last checked at the source ${esc(raw)} &mdash; ${days} days ago. Confirm price
+            and availability with the builder before sending this to a client.</div>`;
+    };
+
     const sourceLinkRow = link => {
         if (!link || !link.url) return '';
         const what = OPENS_LABEL[link.opens] || 'opens the source';
@@ -1649,6 +1685,7 @@
                             ${prop.benchmark && prop.benchmark.needs_manual_benchmark ? `<div style="color:${prop.benchmark.basis === 'internal' ? 'var(--text-muted, #64748b)' : 'var(--amber-yellow)'}; font-size:0.78rem; margin-top:0.2rem;">${esc(prop.benchmark.data_note || '')}</div>` : ''}
                             ${prop.distance_km_from_target ? `<div style="font-size:0.8rem; margin-top:0.2rem;"><strong>Distance:</strong> ${prop.distance_km_from_target} km from target suburb</div>` : ''}
                             ${sourceLinkRow(prop.source_link)}
+                            ${capturedRow(prop.date_checked)}
                         </div>
 
                         <div class="score-section">

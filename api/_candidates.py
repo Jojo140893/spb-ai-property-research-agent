@@ -82,6 +82,26 @@ NOT_AVAILABLE = {"sold", "under offer", "reserved", "leased", "on hold", "withdr
 IS_AVAILABLE = {"available", "for sale", "in stock", "released", "selling",
                 "titled", "now selling", "open"}
 
+# Channels whose stored PRICES cannot currently be trusted, and are therefore kept out
+# of recommendations until a fresh harvest re-reads them. They stay fully visible in the
+# Building Stock table — this hides them from a client-facing shortlist, not from Coleen.
+#
+# Proxima, 6 Aug 2026. Colin opened the portal against our own card:
+#
+#     Lot 2 Unit 2, 275 Twelfth Avenue, AUSTRAL    we published $675,000
+#     Proxima "Package Price"                      $1,127,000
+#
+# The harvest preferred `data-rop` over `data-packageprice`, and rop is the LAND
+# component: across that project our figure tracked land area (250.1 m2 -> $675,000,
+# 300.1 m2 -> $740,000) at ~58% of the package every time. All 1,212 stored Proxima
+# rows carry land dimensions and no house area, so every one of them is priced off that
+# field. sources/proxima.py now prefers the package price, but a stored row can only be
+# corrected by re-harvesting, and Proxima's sign-in expired on 3 Aug.
+#
+# Quoting a buyer $675,000 for a $1,127,000 property is the worst thing this system can
+# do. Removing the line below is a one-word change once a harvest confirms the prices.
+PRICES_UNVERIFIED_CHANNELS = {"proxima"}
+
 # Same headroom the live sources apply before handing a package to scoring
 # (sources/e_agent.py:524, sources/builder_portals.py:204).
 BUDGET_HEADROOM = 50_000.0
@@ -374,6 +394,7 @@ def build_packages(brief_dict, rows, today=None):
         "incomplete_facts": 0, "storey_unknown_and_binding": 0, "scored": 0,
         "truncated": 0, "stale_unverified": 0, "same_listing_collapsed": 0,
         "suburb_not_a_locality": 0, "superseded": 0, "availability_unstated": 0,
+        "price_unverified": 0,
     }
     missing_field_counts = {}
     unstated_but_scored = {}
@@ -395,6 +416,9 @@ def build_packages(brief_dict, rows, today=None):
             counts["other_state"] += 1
             continue
 
+        if str(row.get("source_channel") or "").strip().lower() in PRICES_UNVERIFIED_CHANNELS:
+            counts["price_unverified"] += 1
+            continue
         avail = str(row.get("availability_status") or "").strip().lower()
         if avail in NOT_AVAILABLE:
             counts["not_available"] += 1
@@ -534,6 +558,11 @@ def build_packages(brief_dict, rows, today=None):
             # Where a consultant can go to see this listing at its source, labelled with
             # what the link actually opens. See provenance.py.
             "source_link": primary_source_link(row),
+            # The day this listing was last actually seen at its source. The card turns
+            # this into a staleness warning, which is the only thing that would have made
+            # Proxima's expired sign-in visible: its rows sat three days old while every
+            # other channel refreshed nightly, and nothing on screen looked wrong.
+            "date_checked": seen_on or "",
             "verified": verified,
             "consultant_approved": False,
             "risks": [],
@@ -572,12 +601,14 @@ def coverage_sentence(counts, source_path, state):
         "Not scored: %d superseded by a fresher capture of the same lot, %d outside %s, "
         "%d with no state recorded, %d not available (sold/on hold/under offer/not "
         "available), %d whose availability the source never stated, "
+        "%d whose channel's prices are being re-verified, "
         "%d with no price, %d over the budget ceiling, %d with no suburb, "
         "%d whose suburb is not a recognised locality, "
         "%d without the facts the brief's minimums are checked against (%s)."
         % (counts.get("superseded", 0),
            counts["other_state"], state or "the requested state", counts["state_unknown"],
            counts["not_available"], counts.get("availability_unstated", 0),
+           counts.get("price_unverified", 0),
            counts["no_price"], counts["over_budget"],
            counts["no_suburb"], counts.get("suburb_not_a_locality", 0),
            counts["incomplete_facts"], missing_txt),
