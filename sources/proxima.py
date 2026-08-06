@@ -133,6 +133,24 @@ def _int(v: Any) -> Optional[int]:
     return int(f) if f is not None else None
 
 
+# The largest count any of these fields can plausibly hold. Three live listings reached
+# the public dashboard advertising 41 and 51 BEDROOMS (Dunleary Avenue, Nirimba Fields).
+# Whatever produced those figures — a dual-occupancy "4+1" losing its separator upstream,
+# or the portal's own field — the number is not a bedroom count, and no sane brief can
+# filter it out because every "minimum N bedrooms" test passes.
+_MAX_COUNT = 12
+
+
+def _count(v: Any) -> Optional[int]:
+    """A bed/bath/car count, or None when the value cannot be one.
+
+    Dropped rather than clamped: 41 clamped to 12 is still a fabricated number, and the
+    rule here is that a blank with a stated reason beats a plausible guess.
+    """
+    n = _int(v)
+    return n if n is not None and 0 < n <= _MAX_COUNT else None
+
+
 # Ask the portal for a project's availability-view iframe. The encrypted project id
 # and the form_key are BOTH per-session, so they are read live from the page — a
 # captured value is dead on the next sign-in.
@@ -400,9 +418,9 @@ class ProximaSource(PropertySource):
             # Kept separately when the package price supersedes it, so the breakdown is
             # visible and the two are never confused again.
             "land_price": rop if (pkg and rop and abs(pkg - rop) > 1) else None,
-            "bedrooms": _int(d.get("room")),
-            "bathrooms": _int(d.get("bathroom")),
-            "car_spaces": _int(d.get("carspace")),
+            "bedrooms": _count(d.get("room")),
+            "bathrooms": _count(d.get("bathroom")),
+            "car_spaces": _count(d.get("carspace")),
             "land_size_sqm": _num(d.get("landsize")),
             "house_size_sqm": _num(d.get("internal_area")),
             "frontage_m": _num(d.get("propertywidth")),
@@ -410,7 +428,9 @@ class ProximaSource(PropertySource):
             # What Proxima itself displays ("For Sale", "Sold", ...). Never derived
             # from the reservation class, which answers a different question.
             "availability_status": (d.get("_status") or "").strip(),
-            "floorplan_url": (d.get("_floorplan") or "").strip(),
+            # None, not "": an empty string is truthy in the columnar snapshot, so
+            # every renderer testing `if row.floorplan_url` emitted a dead anchor.
+            "floorplan_url": (d.get("_floorplan") or "").strip() or None,
             "source_channel": self.channel_name,
             # The project this lot belongs to. Stored so a recommendation can link
             # straight to its Proxima project page — the harvest has always known the

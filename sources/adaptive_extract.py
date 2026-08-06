@@ -56,6 +56,10 @@ TITLE_RE = re.compile(
     r"|tbc)\b", re.I)
 AU_STATES = ("QLD", "NSW", "VIC", "SA", "WA", "NT", "ACT", "TAS")
 
+# The smallest floor area that can be a dwelling. Below this the number is a balcony,
+# a courtyard or a storage cage, not somewhere a buyer lives.
+MIN_DWELLING_SQM = 40.0
+
 # Explicitly labelled fields (common on real portal stock lists), e.g.
 # "HOUSE SIZE : 209 m2", "LAND PRICE : $ 466,000", "PACKAGE $ 929,934",
 # "LAND REGISTRATION : Aug 2026".
@@ -234,6 +238,23 @@ def parse_fields(text: str) -> Dict[str, Any]:
             house, land = areas_sorted[0], areas_sorted[-1]
         elif len(areas_sorted) == 1:
             land = areas_sorted[0]
+        # "smaller is the house, larger is the land" holds for house-and-land and is
+        # exactly wrong for an apartment schedule, where the two figures are INTERNAL
+        # area and BALCONY:
+        #
+        #   "G02 Available Prestige 3B2.5B2C 184.7m2 31.8m2"
+        #                                    internal ┘ balcony ┘
+        #
+        # so a $4,000,000 three-bedroom apartment was published as a 31.8 m2 home with
+        # 184.7 m2 of "land". 67 live rows stated a dwelling under 40 m2, several of
+        # them over $3m.
+        #
+        # Which figure is which cannot be recovered from the row — nothing in it says
+        # "balcony" — so nothing is swapped or inferred. The pairing is simply refused
+        # when it produces a dwelling no one could live in, and both figures go with it
+        # because the one called "land" is then the internal area.
+        if house is not None and house < MIN_DWELLING_SQM:
+            house = land = None
 
     # Address: the whole cell/line containing "Lot N" (e.g. "Beaumoor Estate, Lot 519").
     lot_address = None
