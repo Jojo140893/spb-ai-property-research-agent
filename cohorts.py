@@ -21,6 +21,7 @@ never quietly folded into the nearest cohort.
 """
 
 import os
+import re
 from collections import Counter, defaultdict
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
 
@@ -78,6 +79,42 @@ def _locality(suburb: str, state: str) -> str:
     return _GEO.resolve_locality(suburb, state) or ""
 
 
+# A locality immediately followed by a four-digit postcode. That is how an Australian
+# address ends, so this is address grammar rather than a guess about which of several
+# names in a row is the suburb.
+_BEFORE_POSTCODE = re.compile(
+    r"\b([A-Za-z][A-Za-z'\-]+(?:\s+[A-Za-z][A-Za-z'\-]+){0,2})\s+(\d{4})\b")
+
+
+def _locality_from_text(row: Dict[str, Any], state: str) -> str:
+    """Last resort: the locality printed immediately before a postcode.
+
+    THE THING THIS DELIBERATELY DOES NOT DO is scan the row for any known suburb name.
+    That was tried and it is a trap. 27% of the blocked rows appear "recoverable" that
+    way and the recoveries are wrong, because an estate name is not a suburb and many
+    estate names are real localities somewhere:
+
+        estate "Jensen Rise"  -> "Jensen"      (a QLD suburb; the lot is in Wadalba NSW)
+        estate "Warner Park"  -> "Warner"      (the lot is in Warnervale NSW)
+
+    Benchmarking one of those would compare a Wadalba property against Jensen comps. So
+    only the postcode-anchored form is accepted: it reaches 71 rows rather than 791, and
+    it is right. The remaining ~2,835 lost their locality at extraction time and need a
+    re-harvest, not a cleverer guess.
+    """
+    text = " ".join(str(row.get(k) or "")
+                    for k in ("lot_address", "street_address", "source_text"))
+    for match in _BEFORE_POSTCODE.finditer(text):
+        words = match.group(1).strip().split()
+        for size in (3, 2, 1):                 # "Rouse Hill 2155", not "Hill 2155"
+            if len(words) < size:
+                continue
+            name = " ".join(words[-size:])
+            if _GEO and _GEO.locate(name, state):
+                return name.title()
+    return ""
+
+
 class CohortKey(NamedTuple):
     suburb: str
     state: str
@@ -114,6 +151,8 @@ def key_for(row: Dict[str, Any]) -> Tuple[Optional[CohortKey], str]:
     # not exist. It also RECOVERS rows whose suburb is buried in a composite:
     # "Kemps Estate | 155 Boyd Avenue, Austral" -> "Austral".
     suburb = _locality(str(row.get("suburb") or "").strip(), state)
+    if not suburb and state:
+        suburb = _locality_from_text(row, state)
     if not suburb or not state:
         return None, SKIP_NO_SUBURB
 
