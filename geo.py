@@ -127,11 +127,24 @@ class SuburbGeoIndex:
         words = re.findall(r"[A-Za-z][A-Za-z'\-]+", text)
         states = [state.strip().upper()] if state else []
         states += [s for s in self._by_state.keys() if s not in states]
-        # try 3-word, then 2-word, then single-word candidates (longest match wins)
-        for size in (3, 2, 1):
-            for i in range(len(words) - size + 1):
-                cand = " ".join(words[i:i + size])
-                for st in states:
+
+        # The STATE is the outer loop, so a locality in the row's own state always beats
+        # one that merely appears earlier in the text.
+        #
+        # It used to be the innermost loop, which made text position win despite the
+        # docstring saying otherwise. On a real NSW row reading
+        #
+        #     "Jensen Rise Estate - Wadalba 49 Road #5 Wadalba 2259 CENTRAL COAST COUNCIL"
+        #
+        # it returned "Jensen" — an estate name, and a suburb that exists only in QLD —
+        # while Wadalba, a real NSW locality present twice in the same line, was never
+        # reached. The consequence is not cosmetic: this feeds distance filtering and
+        # scoring (kommo_agent.py:136-142), so the lot was being placed in the wrong
+        # town, and it would have benchmarked a Wadalba property against Jensen comps.
+        for st in states:
+            for size in (3, 2, 1):          # longest match wins within a state
+                for i in range(len(words) - size + 1):
+                    cand = " ".join(words[i:i + size])
                     if (cand.lower(), st) in self._index:
                         return cand.title()
         return None

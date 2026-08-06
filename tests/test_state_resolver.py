@@ -218,8 +218,42 @@ def test_a_national_file_is_recognised_from_its_own_rows():
     assert not file_is_national(vic)
 
 
+
+def test_a_locality_in_the_rows_own_state_beats_one_earlier_in_the_text():
+    """find_suburb_in_text placed a Wadalba NSW lot in Jensen QLD.
+
+    The state loop was the INNERMOST of three, so the first candidate by text POSITION
+    won and fell through to any state that happened to contain it. On a real NSW row:
+
+        "Jensen Rise Estate - Wadalba 49 Road #5 Wadalba 2259 CENTRAL COAST COUNCIL"
+
+    it returned "Jensen" -- an estate name, and a locality that exists only in QLD --
+    while Wadalba, a real NSW suburb present twice in the same line, was never reached.
+    The docstring already claimed it preferred the given state; it did not.
+
+    This is not cosmetic: the value feeds distance filtering and scoring
+    (kommo_agent.py:136-142), so the lot was geocoded to the wrong town.
+    """
+    from geo import SuburbGeoIndex
+
+    geo = SuburbGeoIndex()
+    if not geo.loaded:
+        return                      # no suburb data in this environment; nothing to assert
+
+    row = ("Available 23/04/2025 Jensen Rise Estate - Wadalba 49 Road #5 Wadalba "
+           "2259 CENTRAL COAST COUNCIL NSW November 2026")
+    assert geo.find_suburb_in_text(row, "NSW") == "Wadalba", "an estate name won again"
+    assert geo.locate("Jensen", "NSW") is None, "fixture assumption: Jensen is not in NSW"
+
+    # The case the docstring was written for still works, with and without a state.
+    assert geo.find_suburb_in_text("LOT 79 STELLA ST, COLAC 3250", "VIC") == "Colac"
+    assert geo.find_suburb_in_text("LOT 79 STELLA ST, COLAC 3250", "") == "Colac"
+
+
 def run_all():
     tests = [
+        ("own-state locality beats text position",
+         test_a_locality_in_the_rows_own_state_beats_one_earlier_in_the_text),
         ("postcode ranges cover every state", test_postcode_ranges_cover_every_state),
         ("state names normalise", test_normalise_state_accepts_what_the_files_actually_say),
         ("misparsed postcode does not move a lot", test_a_misparsed_postcode_does_not_move_a_listing_interstate),
