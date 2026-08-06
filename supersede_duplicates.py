@@ -109,6 +109,10 @@ def text_key(row):
     price and none of them is touched.
     """
     text = normalise_money_spacing(str(row.get("source_text") or ""))
+    # Drop the unit suffix before comparing. A vendor re-exporting "269" as "269 m2" is
+    # the same line, and that alone left 33 pairs live -- one of them the same Tarneit
+    # lot twice, differing only by two characters.
+    text = re.sub(r"(?<=\d)\s*(?:m2|m²|sqm|sq\.?m)\b", "", text, flags=re.I)
     text = re.sub(r"\s+", " ", text).strip().lower()
     if not text:
         return None
