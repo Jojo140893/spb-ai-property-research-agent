@@ -51,3 +51,9 @@ output/
 spb_research_audit.db
 spb_research_audit.db.bak-*
 _daily.log
+
+# Local verification cache of vendor price lists, and pre-repair database backups.
+# Client stock data must never be committed.
+.verify_cache/
+*.backup-*.db
+.verify_full.log

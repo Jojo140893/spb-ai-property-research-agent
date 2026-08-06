@@ -81,6 +81,37 @@ def test_two_columns_are_never_glued_into_one_number():
         "the stated total must win, not the largest surviving component")
 
 
+def test_a_yield_printed_after_the_total_does_not_delete_the_total():
+    """125 live FRD Homes rows published the LAND price.
+
+    A money figure trailed by a percentage was dropped as annual rent, because the QLD
+    dual-occupancy layout prints the yield right after the rent:
+
+        "$2,330 $121,160 8.03% TBC $850,000 $659,400 $1,509,400"
+                        ^ yield follows the ANNUAL RENT
+
+    FRD's stocklist prints it after the PACKAGE TOTAL instead:
+
+        "Lot 550 512.0 m2 $650,000 ... $422,900 $1,072,900 3.97% - 4.12%"
+                          land ──┘      build ─┘  TOTAL ──┘  ^ yield follows the TOTAL
+
+    so the total was deleted and max() of the survivors published the $650,000 land.
+    Position cannot tell the two apart; arithmetic can. A figure that is the sum of two
+    others on its own line is the package total whatever follows it. Verified against
+    FRD's live PDF on e-agent.com.au: all 80 package lines satisfy land + build = total.
+    """
+    frd = ("Available Lot 550 512.0 m2 $650,000 December House Brooke LH 185.0m2 "
+           "4 beds / 2 baths / 2 cars $422,900 $1,072,900 3.97% - 4.12%")
+    assert _ordered_package_prices(frd) == [650_000.0, 422_900.0, 1_072_900.0]
+    assert parse_fields(frd)["advertised_package_price"] == 1_072_900.0
+
+    # The rent figure can never satisfy the test -- $121,160 is not the sum of any two
+    # prices on its row -- so this cannot let rent back in as a price.
+    assert parse_fields(QLD_DUAL)["advertised_package_price"] == 1_509_400
+    assert 121_160 not in _ordered_package_prices(QLD_DUAL)
+    assert 2_330 not in _ordered_package_prices(QLD_DUAL)
+
+
 def test_title_dates_that_previously_never_matched():
     for text, expected in (("Q1-2026", "Q1-2026"), ("Sep-26", "Sep-26"),
                            ("Q2 2026", "Q2 2026"), ("Nov-27", "Nov-27"),
@@ -129,6 +160,8 @@ def run_all():
         ("VIC split still correct", test_vic_row_still_splits_correctly),
         ("price with internal space", test_price_with_space_inside_the_number),
         ("two columns are never glued", test_two_columns_are_never_glued_into_one_number),
+        ("yield after total keeps the total",
+         test_a_yield_printed_after_the_total_does_not_delete_the_total),
         ("title dates now match", test_title_dates_that_previously_never_matched),
         ("title_status on real rows", test_title_status_populated_on_real_rows),
         ("rent words are word-bounded", test_rent_words_must_be_bounded_not_matched_inside_words),

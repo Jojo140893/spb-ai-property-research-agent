@@ -100,17 +100,37 @@ def _ordered_package_prices(text: str) -> List[float]:
     Discards any figure that is immediately followed by a percentage (that is the
     annual-rent/yield pair in the QLD stocklists) or that sits next to rent wording.
     """
-    out: List[float] = []
+    found = []
     for m in PRICE_RE.finditer(text):
         v = _money(m.group(1))
         if not v or not (50_000 <= v <= 5_000_000):
             continue
         after = text[m.end():m.end() + 14]
         before = text[max(0, m.start() - 22):m.start()]
-        if re.search(r"^\s*\d+(?:\.\d+)?\s*%", after):      # "$121,160 8.03%" -> annual rent
-            continue
-        if _RENTY.search(after) or _RENTY.search(before):
-            continue
+        yielded = bool(re.search(r"^\s*\d+(?:\.\d+)?\s*%", after))
+        found.append((v, yielded or _RENTY.search(after) or _RENTY.search(before)))
+
+    # A figure that is the SUM of two others on the same line is the package total, no
+    # matter what follows it. Position is ambiguous and arithmetic is not.
+    #
+    # The QLD dual-occupancy layout puts the yield after the ANNUAL RENT
+    # ("$2,330 $121,160 8.03% ... $850,000 $659,400 $1,509,400"), so a figure trailed by
+    # a percentage was dropped. FRD Homes puts it after the TOTAL:
+    #
+    #   Available Lot 550 512.0 m2 $650,000 ... $422,900 $1,072,900 3.97% - 4.12%
+    #                              land ──┘     build ─┘  TOTAL ──┘   yield range
+    #
+    # so the same rule deleted the package price and max() of the survivors published
+    # the LAND. The rent figure can never satisfy this test -- $121,160 is not the sum of
+    # any two prices on its row -- so the exemption cannot let rent back in.
+    values = [v for v, _ in found]
+    out: List[float] = []
+    for v, is_rent in found:
+        if is_rent:
+            pairs = [a for a in values if a < v]
+            if not any(abs((a + b) - v) <= 1 for i, a in enumerate(pairs)
+                       for b in pairs[i + 1:]):
+                continue
         out.append(v)
     return out
 
