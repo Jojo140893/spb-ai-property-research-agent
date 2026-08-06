@@ -21,6 +21,49 @@ def _row(i, price, date, suburb="Sampleton", addr="lot 9, example road",
             "content_hash": f"v2:hash{i}"}
 
 
+_LINE = ("68 Amory Ripley Tallow 170 - Urban Available 4 2 2 455 "
+         "$ 407,900 $ 582,000 $ 9 89,900 Split Registered")
+
+
+def test_the_same_source_line_is_one_listing():
+    """1,038 surplus rows survived because the SPEC was unstable, not the listing.
+
+    lot_key needs an identical spec, and the extractor recorded land_sqm as NULL on one
+    harvest and 455.0 on the next, and lot_number as NULL then '68'. Seven captures of
+    this one line therefore formed seven groups of one, and the stock table showed the
+    listing five times. The line itself never changed.
+    """
+    rows = [
+        # Same line, but each capture disagrees about what it managed to extract.
+        dict(_row(1, 989_900, "29/07/2026", land=None, house=None), source_text=_LINE),
+        dict(_row(2, 989_900, "04/08/2026", land=455.0, house=None), source_text=_LINE),
+        dict(_row(3, 989_900, "05/08/2026", land=455.0, house=170.0), source_text=_LINE),
+        # The stocklist reformatted the split money; it is still the same line.
+        dict(_row(4, 989_900, "06/08/2026", land=455.0, house=170.0),
+             source_text=_LINE.replace("$ 9 89,900", "$989,900")),
+    ]
+    pairs = find_superseded(rows)
+    assert len(pairs) == 3, [(l["id"], w["id"]) for l, w in pairs]
+    assert {l["id"] for l, _ in pairs} == {1, 2, 3}
+    assert {w["id"] for _, w in pairs} == {4}, "the freshest capture is the survivor"
+
+
+def test_two_captures_that_disagree_on_price_are_left_alone():
+    """Identical in every field but the price is TWO PACKAGES, by this repo's own rule.
+
+    database.building_content_hash appends variant_ordinal precisely so that such
+    siblings stop replacing each other. Collapsing them here would undo that, so the
+    price is part of the key: 11 real groups differ only on price and none is touched.
+    """
+    rows = [
+        dict(_row(1, 730_000, "03/08/2026"), source_text="lot 243 unit b-1602, 30 ellen st"),
+        dict(_row(2, 745_000, "03/08/2026"), source_text="lot 243 unit b-1602, 30 ellen st"),
+    ]
+    # Differing land/house keeps lot_key apart too, so only text_key could merge them.
+    rows[0]["land_sqm"], rows[1]["land_sqm"] = 400.0, 410.0
+    assert find_superseded(rows) == []
+
+
 def test_the_freshest_capture_wins():
     rows = [_row(1, 962_351, "27/07/2026"),
             _row(2, 1_058_877, "03/08/2026")]
@@ -145,6 +188,8 @@ def test_the_superseded_flag_is_read_from_both_snapshot_readers():
 
 def run_all():
     tests = [
+        ("identical source line collapses", test_the_same_source_line_is_one_listing),
+        ("a price difference is left alone", test_two_captures_that_disagree_on_price_are_left_alone),
         ("freshest capture wins", test_the_freshest_capture_wins),
         ("stale cheaper row is superseded", test_the_stale_cheaper_row_is_the_one_superseded),
         ("three captures leave one live", test_three_captures_leave_exactly_one_live),

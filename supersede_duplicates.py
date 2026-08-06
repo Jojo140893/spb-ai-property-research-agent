@@ -36,10 +36,13 @@ advertised then. It keeps its row and gains a pointer to the row that replaced i
 """
 
 import argparse
+import re
 import shutil
 import sqlite3
 import sys
 from collections import defaultdict
+
+from sources.scraper_base import normalise_money_spacing
 from datetime import datetime
 
 import config
@@ -86,22 +89,79 @@ def _freshness(row):
             row["id"])
 
 
+def text_key(row):
+    """The row's own source line — the strongest evidence two captures are one listing.
+
+    lot_key needs an IDENTICAL spec, and the spec is exactly what is unstable: the
+    extractor recorded land_sqm as NULL on one harvest and 455.0 on the next, and
+    lot_number as NULL then '68', so seven captures of "68 Amory Ripley Tallow 170"
+    formed seven groups of one and none was superseded. 1,038 surplus rows survived
+    that way and the stock table showed a listing five times over.
+
+    Two captures carrying byte-identical source text from the same channel cannot be two
+    different products — the line contains the lot, the address, the spec and the price.
+    Money spacing is normalised first, because a stocklist that reformats "$ 9 89,900"
+    into "$989,900" is the same line, and that reformatting alone created 46 duplicates.
+
+    The PRICE has to match too. This repo deliberately treats two rows identical in every
+    other field but the price as two real packages (see variant_ordinal in
+    database.building_content_hash), so those are left alone: 11 groups differ only on
+    price and none of them is touched.
+    """
+    text = normalise_money_spacing(str(row.get("source_text") or ""))
+    text = re.sub(r"\s+", " ", text).strip().lower()
+    if not text:
+        return None
+    return (_norm(row.get("source_channel")), text,
+            round(float(row.get("price") or 0), 2))
+
+
 def find_superseded(rows):
-    """[(loser_row, winner_row)] for every surplus capture."""
-    groups = defaultdict(list)
-    for r in rows:
-        k = lot_key(r)
-        if k is not None:
-            groups[k].append(r)
+    """[(loser_row, winner_row)] for every surplus capture.
+
+    Two independent groupings, because either can catch what the other misses: lot_key
+    matches the same lot across DIFFERENT source lines, text_key matches the same source
+    line whose extracted spec came out differently. A row caught by both is recorded once.
+    """
+    losers = {}                       # loser id -> winner row, so the passes cannot double up
+    for key_fn in (lot_key, text_key):
+        groups = defaultdict(list)
+        for r in rows:
+            k = key_fn(r)
+            if k is not None:
+                groups[k].append(r)
+        for members in groups.values():
+            if len(members) < 2:
+                continue
+            ordered = sorted(members, key=_freshness, reverse=True)
+            winner = ordered[0]
+            for loser in ordered[1:]:
+                # Never let a row that already lost become someone's winner, and never
+                # supersede the row that is winning elsewhere: both would orphan a group.
+                if loser["id"] == winner["id"] or loser["id"] in losers:
+                    continue
+                losers[loser["id"]] = winner
+    by_id = {r["id"]: r for r in rows}
+
+    # A winner can itself lose to a fresher capture in the other grouping, so follow the
+    # chain to the row that actually survives. Dropping those pairs instead left 86
+    # duplicates live; pointing them at the end of the chain retires all of them.
+    # Bounded by the number of rows, so a cycle cannot spin here.
+    def survivor(row):
+        seen = {row["id"]}
+        while row["id"] in losers:
+            nxt = losers[row["id"]]
+            if nxt["id"] in seen:
+                break                    # defensive: a cycle keeps the row it is on
+            seen.add(nxt["id"])
+            row = nxt
+        return row
 
     out = []
-    for members in groups.values():
-        if len(members) < 2:
-            continue
-        ordered = sorted(members, key=_freshness, reverse=True)
-        winner = ordered[0]
-        for loser in ordered[1:]:
-            out.append((loser, winner))
+    for lid, w in losers.items():
+        final = survivor(w)
+        if final["id"] != lid:
+            out.append((by_id[lid], final))
     return out
 
 
