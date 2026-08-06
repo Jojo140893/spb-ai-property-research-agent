@@ -1372,8 +1372,12 @@
                 if (!v) return '<td></td>';
                 const opens = b.source_link_opens || 'source';
                 const label = b.source_link_label || 'source';
+                // The term the destination will actually match on, in the tooltip, so a
+                // lot can be found without guessing which of our fields the source indexes.
+                const term = b.source_link_search
+                    ? ` — search there for: ${b.source_link_search}` : '';
                 return `<td><a href="${esc(v)}" target="_blank" rel="noopener noreferrer"
-                    title="${esc(label)} — opens the ${esc(opens)}"
+                    title="${esc(label)} — opens the ${esc(opens)}${esc(term)}"
                     style="color:var(--accent-blue);">${esc(opens)}</a></td>`;
             }
             if (c.link) return `<td>${v ? `<a href="${esc(v)}" target="_blank" rel="noopener noreferrer"
@@ -1559,8 +1563,51 @@
             <strong>Where this came from:</strong>
             <a href="${esc(link.url)}" target="_blank" rel="noopener"
                style="color:var(--accent-blue); font-weight:600;">${esc(link.label)}</a>
-            <span style="color:var(--text-muted);">&mdash; ${what}</span></div>`;
+            <span style="color:var(--text-muted);">&mdash; ${what}</span>
+            ${searchTermRow(link)}</div>`;
     };
+    /* The exact string to type into the source's own search box.
+       Colin, 6 Aug: "the name should be same so when i search on their portal it should
+       give me exact building instead of an error." He pasted the card's headline address
+       into Proxima and got nothing back, because that address names the LOT while
+       Proxima's search indexes PROJECTS. Showing the destination's own term -- and
+       making it one click to copy -- is the difference between a link that works and
+       eight minutes of hunting. */
+    const searchTermRow = link => {
+        if (!link || !link.search) return '';
+        const term = String(link.search);
+        return `<div style="margin-top:0.3rem;">
+            <span style="color:var(--text-muted);">Search there for</span>
+            <code class="copy-term" data-term="${esc(term)}" title="Click to copy"
+                  style="background:var(--surface-2,#1e293b); padding:0.1rem 0.4rem;
+                         border-radius:4px; cursor:pointer; user-select:all;">${esc(term)}</code>
+            <span class="copied-flag" style="color:var(--accent-green,#22c55e);
+                  font-weight:600; display:none;">copied</span></div>`;
+    };
+    /* One delegated listener rather than a handler per card -- the shortlist re-renders
+       on every search and inline onclick would not survive it. */
+    document.addEventListener('click', ev => {
+        const el = ev.target.closest('.copy-term');
+        if (!el) return;
+        const done = () => {
+            const flag = el.parentElement.querySelector('.copied-flag');
+            if (!flag) return;
+            flag.style.display = 'inline';
+            setTimeout(() => { flag.style.display = 'none'; }, 1500);
+        };
+        const term = el.getAttribute('data-term') || '';
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(term).then(done, () => {});
+        } else {
+            // file:// and plain http have no clipboard API; select the text instead so
+            // Ctrl+C still works rather than the click doing nothing at all.
+            const r = document.createRange();
+            r.selectNodeContents(el);
+            const s = window.getSelection();
+            s.removeAllRanges(); s.addRange(r);
+            try { document.execCommand('copy'); done(); } catch (e) { /* selected anyway */ }
+        }
+    });
     const sqm = v => (v === null || v === undefined || v === '' || Number(v) === 0)
         ? NOT_STATED : `${Number(v).toLocaleString()}m²`;
     const spec = (v, unit) => (v === null || v === undefined || v === '')

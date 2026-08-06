@@ -222,6 +222,76 @@ def test_a_channel_with_unverified_prices_reaches_no_shortlist():
     assert "re-verified" in cand.coverage_sentence(counts, "stock.json", "NSW")
 
 
+def test_the_search_term_is_what_the_destination_indexes_not_our_address():
+    """Colin, 6 Aug: "the name should be same so when i search on their portal it
+    should give me exact building instead of an error."
+
+    He pasted the card's headline address into Proxima and got nothing, because that
+    string names the LOT while Proxima's search indexes PROJECTS. Every link now carries
+    the term that destination will actually match on.
+    """
+    prox = primary_source_link({
+        "source_channel": "Proxima", "source_project_id": "",
+        "estate_name": "275 Twelfth Ave Austral (6/6)", "lot_number": "2",
+        "suburb": "Austral",
+        "lot_address": "Lot 2 Unit 2, 275 Twelfth Avenue, AUSTRAL, NSW, 2179",
+        "source_url": "https://portal.proxima.com.au/agent/projects/index/"})
+    assert prox["search"] == "275 Twelfth Ave Austral", prox
+    assert "(6/6)" not in prox["search"], "the sold counter moves; it is not the name"
+    assert "Lot 2" not in prox["search"], (
+        "the lot address is precisely what returned an error")
+
+    # A price list is a spreadsheet, so the term is what its own Lot column holds --
+    # qualified by the estate, because "121" on its own matches every sheet.
+    sheet = primary_source_link({
+        "source_channel": "E-Agent", "lot_number": "121", "estate_name": "Bingara Gorge",
+        "lot_address": "AVAILABLE 121 10C Bingara Drive Hamptons 15 450 248.14 6 3.5 2 "
+                       "Mid 2026 Split $665,000 $786,000",
+        "stocklist_file": "https://www.e-agent.com.au/_files/ugd/x.xlsx"})
+    assert sheet["search"] == "121 Bingara Gorge", sheet
+
+    # 1,573 E-Agent rows hold the whole flattened spreadsheet line in lot_address.
+    # Pasting that into a search box matches nothing, so it is never offered as a term.
+    junk = primary_source_link({
+        "source_channel": "E-Agent",
+        "lot_address": "AVAILABLE 121 10C Bingara Drive Hamptons 15 450 248.14 6 3.5 2 "
+                       "Mid 2026 Split $665,000 $786,000",
+        "stocklist_file": "https://www.e-agent.com.au/_files/ugd/x.xlsx"})
+    assert junk["search"] == "", "a dumped data row is not a name; no term beats a bad one"
+
+    # Every other channel gets one too, from whatever that destination indexes.
+    portal = primary_source_link({
+        "source_channel": "Direct Builder Portal (live)", "street_address": "12 Sample Street",
+        "suburb": "Austral", "listing_url": "https://builder.example.com/lots/12"})
+    assert portal["search"] == "12 Sample Street", portal
+
+
+def test_a_full_state_name_is_a_state_and_not_the_suburb():
+    """56 live rows stored suburb="New South Wales".
+
+    Proxima writes the state both ways -- "…, AUSTRAL, NSW, 2179" and "…, WILTON,
+    New South Wales, 2571". Only the abbreviation was recognised, so the full name was
+    taken for the suburb and the real suburb was swallowed by the street. That breaks
+    distance search, benchmarking, and matching a lot across two channels -- which is
+    how the Proxima price error was confirmed in the first place.
+    """
+    from sources.proxima import parse_property_name
+
+    spelled = parse_property_name("Lot 121 Unit 121, BINGARA DRIVE, WILTON, "
+                                  "New South Wales, 2571")
+    assert spelled["suburb"] == "Wilton", spelled
+    assert spelled["state"] == "NSW", spelled
+    assert spelled["street"] == "BINGARA DRIVE", spelled
+
+    # The abbreviated form must keep working exactly as before.
+    short = parse_property_name("Lot 2 Unit 2, 275 Twelfth Avenue, AUSTRAL, NSW, 2179")
+    assert short["suburb"] == "Austral" and short["state"] == "NSW", short
+
+    act = parse_property_name("Lot 7, Sample Street, BRADDON, "
+                              "Australian Capital Territory, 2612")
+    assert act["suburb"] == "Braddon" and act["state"] == "ACT", act
+
+
 def test_e_agent_offers_the_price_list_because_no_lot_page_exists():
     link = primary_source_link({
         "source_channel": "E-Agent",
@@ -276,6 +346,10 @@ def run_all():
         ("package price beats land price", test_the_package_price_beats_the_land_price_on_proxima),
         ("unverified prices reach no shortlist",
          test_a_channel_with_unverified_prices_reaches_no_shortlist),
+        ("search term matches the source",
+         test_the_search_term_is_what_the_destination_indexes_not_our_address),
+        ("a full state name is not a suburb",
+         test_a_full_state_name_is_a_state_and_not_the_suburb),
         ("E-Agent offers the price list", test_e_agent_offers_the_price_list_because_no_lot_page_exists),
         ("a lot document outranks the price list", test_a_per_lot_document_outranks_the_price_list),
         ("an email becomes a findable search",

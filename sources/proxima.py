@@ -52,6 +52,14 @@ PROJECTS_URL = "https://portal.proxima.com.au/agent/projects/index/"
 
 _STATES = ("NSW", "VIC", "QLD", "SA", "WA", "TAS", "NT", "ACT")
 
+# The same eight, written out. Sources mix the two forms freely inside one feed, and a
+# full name that goes unrecognised is not a harmless miss: it is taken for the suburb.
+_STATE_NAMES = {
+    "NEW SOUTH WALES": "NSW", "VICTORIA": "VIC", "QUEENSLAND": "QLD",
+    "SOUTH AUSTRALIA": "SA", "WESTERN AUSTRALIA": "WA", "TASMANIA": "TAS",
+    "NORTHERN TERRITORY": "NT", "AUSTRALIAN CAPITAL TERRITORY": "ACT",
+}
+
 # Read one project accordion.
 #
 # SCOPE MATTERS MORE THAN IT LOOKS. Every project's lots live in ONE shared
@@ -169,8 +177,18 @@ def parse_property_name(name: str) -> Dict[str, str]:
 
     if re.fullmatch(r"\d{4}", parts[-1]):
         out["postcode"] = parts.pop()
-    if parts and parts[-1].upper() in _STATES:
+    # Proxima writes the state either way — "…, AUSTRAL, NSW, 2179" but also
+    # "…, BINGARA DRIVE, WILTON, New South Wales, 2571". Matching only the abbreviation
+    # meant the full name was never recognised as a state, so it was taken as the SUBURB
+    # and the real suburb was absorbed into the street: 56 live rows stored
+    # suburb="New South Wales" with Wilton buried in the street field. A wrong suburb
+    # breaks distance search, benchmarking, and matching the lot against another channel.
+    tail = parts[-1].upper() if parts else ""
+    if tail in _STATES:
         out["state"] = parts.pop().upper()
+    elif tail in _STATE_NAMES:
+        out["state"] = _STATE_NAMES[tail]
+        parts.pop()
     if parts:
         out["suburb"] = parts.pop().title()
     if parts:

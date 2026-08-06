@@ -76,7 +76,8 @@ BUILDING_FIELDS = [
 # Derived at build time, NOT database columns — so they are exported and allow-listed
 # but must never reach the SELECT. Keeping them in one list made the build fail with
 # "no such column: source_link_url", which is the build guard doing its job.
-BUILDING_DERIVED_FIELDS = ["source_link_url", "source_link_opens", "source_link_label"]
+BUILDING_DERIVED_FIELDS = ["source_link_url", "source_link_opens", "source_link_label",
+                           "source_link_search"]
 
 # builders: NOTE the deliberate omission of portal_login_email / portal_login_password.
 BUILDER_FIELDS = [
@@ -278,12 +279,26 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     # two places guarantees the two drift. Two short strings per row against a 5 MB
     # payload is the cheaper trade.
     from provenance import primary_source_link as _link_for
+    from address_label import display_suburb as _suburb_for
     _linked = 0
+    _resuburbed = 0
     for b in buildings:
+        # 56 Proxima rows stored a STATE NAME in the suburb column, which made them
+        # unfindable by suburb in the table and its filter. Recovered from the row's own
+        # address on the way out; the stored value is left alone because suburb_norm is
+        # part of the content hash. See address_label.display_suburb.
+        _fixed = _suburb_for(b)
+        if _fixed and _fixed != (b.get("suburb") or ""):
+            b["suburb"] = _fixed
+            _resuburbed += 1
         link = _link_for(b)
         b["source_link_url"] = (link or {}).get("url") or ""
         b["source_link_opens"] = (link or {}).get("opens") or ""
         b["source_link_label"] = (link or {}).get("label") or ""
+        # The exact string to paste into that source's own search box. Colin searched
+        # our headline address on Proxima and got an error: the address names the LOT,
+        # while the portal's search indexes PROJECTS. See provenance._kind.
+        b["source_link_search"] = (link or {}).get("search") or ""
         if link:
             _linked += 1
     by_channel = [{"source_channel": r[0], "n": r[1]} for r in conn.execute(

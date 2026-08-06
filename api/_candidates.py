@@ -39,7 +39,7 @@ if _HERE not in sys.path:                       # api/ on sys.path: sibling impo
     sys.path.insert(0, _HERE)
 
 from _bootstrap import HERE, ROOT
-from address_label import clean_display_address
+from address_label import clean_display_address, display_suburb
 from provenance import primary_source_link
 
 # Exactly the fields build_web.py exports to stock.json, so both readers agree and
@@ -437,7 +437,11 @@ def build_packages(brief_dict, rows, today=None):
             counts["over_budget"] += 1
             continue
 
-        suburb = str(row.get("suburb") or "").strip()
+        # Rows that stored a state name in the suburb column would otherwise fail
+        # clean_locality and be dropped as "suburb is not a recognised locality", even
+        # though their own address names the suburb. Read-time only — see
+        # address_label.display_suburb for why this is not written back.
+        suburb = display_suburb(row).strip()
         if not suburb:
             # Without a locality the row cannot be geocoded, so no distance and no
             # benchmark can be established for it. kommo_agent tries to recover one

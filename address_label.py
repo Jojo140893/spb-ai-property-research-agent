@@ -141,3 +141,54 @@ def clean_asset_title(title: Any, source_url: Any = "") -> str:
         # a name that is entirely lower case, so "SQ-Brochure" does not become "Sq".
         return name.title() if name.islower() else name
     return text or "Untitled document"
+
+
+# --------------------------------------------------------------------- suburb recovery
+
+# The eight states, abbreviated and spelled out. A value equal to one of these is not a
+# suburb, whatever column it is sitting in.
+_STATE_TOKENS = {
+    "NSW": "NSW", "VIC": "VIC", "QLD": "QLD", "SA": "SA", "WA": "WA", "TAS": "TAS",
+    "NT": "NT", "ACT": "ACT",
+    "NEW SOUTH WALES": "NSW", "VICTORIA": "VIC", "QUEENSLAND": "QLD",
+    "SOUTH AUSTRALIA": "SA", "WESTERN AUSTRALIA": "WA", "TASMANIA": "TAS",
+    "NORTHERN TERRITORY": "NT", "AUSTRALIAN CAPITAL TERRITORY": "ACT",
+}
+
+
+def display_suburb(row: Dict[str, Any]) -> str:
+    """The row's suburb, recovering it where a STATE NAME was stored in that column.
+
+    56 live Proxima rows hold suburb="New South Wales". The address parser only knew the
+    abbreviated form, so on "…, BINGARA DRIVE, WILTON, New South Wales, 2571" the full
+    name was taken for the suburb and Wilton was swallowed by the street. Those rows
+    cannot be found by suburb, cannot be distance-searched, and cannot be matched against
+    the same lot in another channel — which is how the Proxima price error was confirmed.
+
+    Corrected on READ, not rewritten in the database, because suburb_norm is part of
+    building_content_hash (database.py:225): editing it in place would change the row's
+    identity and the next harvest would insert a second copy instead of updating it.
+    The parser fix in sources/proxima.py is what makes the stored value right; this
+    makes the rows usable until that harvest can run.
+
+    Returns the stored suburb unchanged whenever there is nothing to correct — this
+    never invents a suburb, it only reads the one the row's own address already states.
+    """
+    stored = str(row.get("suburb") or "").strip()
+    if stored.upper() not in _STATE_TOKENS:
+        return stored
+
+    parts = [p.strip() for p in str(row.get("lot_address") or "").split(",") if p.strip()]
+    if len(parts) < 2:
+        return stored
+    if re.fullmatch(r"\d{4}", parts[-1]):          # postcode
+        parts.pop()
+    if parts and parts[-1].upper() in _STATE_TOKENS:
+        parts.pop()
+    # Whatever now sits at the end is the suburb, unless it is another state token or
+    # carries a street number — in which case the address never named one.
+    if parts:
+        candidate = parts[-1].strip()
+        if candidate.upper() not in _STATE_TOKENS and not re.match(r"^\d+\s", candidate):
+            return candidate.title()
+    return stored
