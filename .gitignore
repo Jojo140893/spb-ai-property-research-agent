@@ -57,3 +57,4 @@ _daily.log
 .verify_cache/
 *.backup-*.db
 .verify_full.log
+.last_deploy_rows

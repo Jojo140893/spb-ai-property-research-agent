@@ -502,10 +502,16 @@ def _bundle_research_function(app: Path, out_dir: Path) -> int:
         print(f"[+] builder directory for the function: {rows} rows, credentials blanked")
         n += 1
     except Exception as e:
-        print(f"[!] could not write the public builder registry ({e}) — "
-              f"deploying without the research endpoint")
+        # FATAL, not a warning. This used to delete the bundle and carry on, so a build
+        # that failed here still "succeeded": the site shipped with no api/research at
+        # all, every POST to it 404'd, and the Research & Scoring tab — the whole
+        # client-facing pipeline — was dead on a deployment that reported success.
+        # _verify_function_imports, which exists to catch exactly this, was never
+        # reached because the function returned first.
         shutil.rmtree(dest_api, ignore_errors=True)
-        return 0
+        raise RuntimeError(
+            f"could not write the public builder registry ({e}); refusing to publish a "
+            f"site with no research endpoint") from e
     for junk in dest_api.rglob("__pycache__"):
         shutil.rmtree(junk, ignore_errors=True)
     _verify_function_imports(dest_api)

@@ -35,6 +35,7 @@ Exit code is non-zero if a step fails, so Task Scheduler shows the run as failed
 """
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -48,6 +49,11 @@ INTERACTIVE_PORTALS = {"paramount": "invisible reCAPTCHA", "proxima": "2FA"}
 SESSION_MAX_AGE_DAYS = 14
 
 
+# Optional steps that FAILED rather than being skipped. Reported at the end so a
+# partially-degraded run is never announced as a clean one.
+_DEGRADED: list = []
+
+
 def _run(label: str, args: list, optional: bool = False) -> bool:
     print(f"\n{'=' * 70}\n  {label}\n{'=' * 70}", flush=True)
     if not (APP / args[0]).is_file():
@@ -57,10 +63,33 @@ def _run(label: str, args: list, optional: bool = False) -> bool:
         print(f"  -> NOT BUILT YET ({args[0]} does not exist) — step skipped", flush=True)
         return optional
     started = time.time()
-    proc = subprocess.run([sys.executable, "-X", "utf8", *args], cwd=str(APP))
-    ok = proc.returncode == 0
-    mark = "ok" if ok else ("skipped" if optional else "FAILED")
+    # A step that hangs must not hold the run open until Task Scheduler kills it hours
+    # later, silently costing a whole day's refresh. Generous, because a full harvest is
+    # legitimately slow; override with SPB_STEP_TIMEOUT_S.
+    limit = int(os.environ.get("SPB_STEP_TIMEOUT_S", "5400"))
+    try:
+        proc = subprocess.run([sys.executable, "-X", "utf8", *args], cwd=str(APP),
+                              timeout=limit)
+        ok = proc.returncode == 0
+    except subprocess.TimeoutExpired:
+        ok = False
+        print(f"  -> TIMED OUT after {limit}s", flush=True)
+
+    # An optional step that CRASHED is not the same as one that was skipped. Printing
+    # "skipped" for a crash is how a broken benchmark step read as success for the whole
+    # chain: the run carried on to export, build and deploy, and reported "Data
+    # refreshed" while benchmark_median and friends went stale in the public snapshot.
+    # The chain still continues — that is what optional means — but it says what
+    # happened, and main() reports it at the end.
+    if ok:
+        mark = "ok"
+    elif optional:
+        mark = "FAILED (optional — the chain continues, but this did not run)"
+    else:
+        mark = "FAILED"
     print(f"  -> {mark} in {time.time() - started:.0f}s", flush=True)
+    if not ok and optional:
+        _DEGRADED.append(label)
     return ok or optional
 
 
