@@ -196,6 +196,33 @@ def _redact_contacts(text) -> str:
     return re.sub(r"\s{2,}", " ", out).strip()
 
 
+def _assert_a_benchmark_names_its_place(path: Path) -> None:
+    """A published benchmark must say which suburb it is a benchmark FOR.
+
+    benchmark_buildings.py resolves the suburb with source_text in hand; the export
+    does not publish that column. When the export could not also READ it, 19 rows went
+    out carrying a median computed for Wadalba with the suburb cell empty — a number in
+    front of a buyer with nothing naming what it was compared against, which is exactly
+    what benchmark_basis exists to prevent.
+
+    Cheap to check and easy to break again, since the two resolve in different files.
+    """
+    if not path.exists():
+        return
+    data = json.loads(path.read_text(encoding="utf-8"))
+    keys, rows = data.get("keys") or [], data.get("rows") or []
+    if not ({"suburb", "benchmark_median"} <= set(keys)):
+        return
+    si, bi = keys.index("suburb"), keys.index("benchmark_median")
+    orphans = sum(1 for r in rows
+                  if r[bi] not in (None, "") and not str(r[si] or "").strip())
+    if orphans:
+        raise SystemExit(
+            f"[ABORT] {path.name}: {orphans} row(s) publish a benchmark with no suburb. "
+            f"The export and benchmark_buildings.py must resolve the suburb from the "
+            f"same fields — check that source_text is READ (not exported) in build().")
+
+
 def _assert_no_contact_details(path: Path) -> None:
     """Refuse to publish a payload containing a direct email address or phone number.
 
@@ -261,10 +288,17 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     conn = sqlite3.connect(str(config.DATABASE_PATH))
     conn.row_factory = sqlite3.Row
 
+    # source_text is READ but never EXPORTED. suburb_quality's postcode anchor scans it,
+    # and benchmark_buildings.py selects it, so without it here the two disagreed: 19
+    # published rows carried a benchmark computed for Wadalba while showing no suburb at
+    # all, because the export could not see the text the benchmark had resolved from.
+    # It stays out of BUILDING_FIELDS deliberately — it is the whole flattened
+    # spreadsheet row, megabytes of it, and _pick drops it again immediately below.
+    _read_fields = BUILDING_FIELDS + ["source_text"]
     rows = conn.execute(
-        f"SELECT {', '.join(BUILDING_FIELDS)} FROM buildings "
+        f"SELECT {', '.join(_read_fields)} FROM buildings "
         "ORDER BY builder_name, price").fetchall()
-    buildings = [_pick(r, BUILDING_FIELDS) for r in rows]
+    buildings = [_pick(r, _read_fields) for r in rows]
     # One builder, one name, in the copy that reaches the browser. See
     # _display_name_canonicaliser for why this happens here and not in the database.
     _canon = _display_name_canonicaliser(b.get("builder_name") for b in buildings)
@@ -307,6 +341,7 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         _suburb_reasons[why] = _suburb_reasons.get(why, 0) + 1
         if b["suburb"] != before:
             _resuburbed += 1
+        b.pop("source_text", None)          # read for resolution only, never published
         link = _link_for(b)
         b["source_link_url"] = (link or {}).get("url") or ""
         b["source_link_opens"] = (link or {}).get("opens") or ""
@@ -665,6 +700,7 @@ if __name__ == "__main__":
     if m.get("relabelled"):
         print(f"    {m['relabelled']} row(s) re-labelled to one name per builder "
               f"(the database keeps its spellings — see _display_name_canonicaliser)")
+    _assert_a_benchmark_names_its_place(where / "stock.json")
     for f in ("stock.json", "builders.json", "vendor-assets.json"):
         _assert_no_contact_details(where / f)
         print(f"    {f:<20} {(where / f).stat().st_size:>10,} bytes")
