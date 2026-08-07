@@ -19,8 +19,21 @@ class BuilderConfidenceModel:
     @classmethod
     def evaluate_builder(cls, builder_name: str, registry_info: Dict[str, Any]) -> Tuple[str, float, str]:
         if not registry_info:
-            # Unknown builder default: Medium confidence with verification note
-            return "MEDIUM", 7.0, f"Builder '{builder_name}' not listed in primary SPB registry; verification required."
+            # An UNIDENTIFIED builder cannot be a confident one.
+            #
+            # This returned MEDIUM / 7.0, three points ABOVE the 4.0 given to a builder
+            # who IS in the registry but has no contract and no portal — so the absence
+            # of information outscored known-bad information, and an anonymous listing
+            # was ranked over a named one Coleen has actually assessed. Nothing about
+            # "we have never heard of this builder" supports medium confidence.
+            #
+            # Scored below the lowest KNOWN rating rather than merely equal to it: a
+            # registry builder awaiting review is at least identified, and a consultant
+            # can chase it.
+            return ("LOW", 3.0,
+                    f"Builder '{builder_name}' is not in the SPB registry at all — "
+                    f"identity and contract terms must be confirmed before this is "
+                    f"presented to a client.")
 
         is_eagent = registry_info.get('is_on_e_agent', False)
         contract_avail = 'YES' in str(registry_info.get('contract_available', '')).upper()
