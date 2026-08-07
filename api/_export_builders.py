@@ -20,6 +20,7 @@ or standalone:  python -m api._export_builders [dest.csv]
 """
 
 import csv
+import re
 import sys
 from pathlib import Path
 
@@ -49,8 +50,25 @@ def _rows(builders):
             b.get("portal_url") or "",
             "",                                              # portal login email
             "",                                              # portal password
-            b.get("notes") or "",
+            _scrub(b.get("notes")),
         ]
+
+
+
+# The structured contact columns are blanked above, and NOTES then published the same
+# details in prose: "Email comes from Neha@dreamscopehomes.com.au", "Sent email to -
+# Anu.saxena@homegroup.com.au". An allow-list filters field NAMES and cannot see inside a
+# free-text value, which is exactly how two builder-rep addresses reached the deployed
+# bundle. Standing rule 4 is about the details, not the column they sit in.
+_CONTACT_IN_PROSE = re.compile(
+    r"[\w.+-]+@[\w-]+\.[\w.]{2,}"                       # an email anywhere
+    r"|0[2-478](?:[ \-]?\d){8}"                       # AU landline / mobile
+    r"|(?:\+?61[ \-]?)[2-478](?:[ \-]?\d){8}", re.I)
+
+
+def _scrub(text):
+    """Free text with any contact detail removed, and the removal made visible."""
+    return _CONTACT_IN_PROSE.sub("[contact detail removed]", str(text or ""))
 
 
 def write_public_registry(root, source_csv=None):
