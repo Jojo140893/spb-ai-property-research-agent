@@ -250,6 +250,79 @@ def test_a_locality_in_the_rows_own_state_beats_one_earlier_in_the_text():
     assert geo.find_suburb_in_text("LOT 79 STELLA ST, COLAC 3250", "") == "Colac"
 
 
+def test_an_estate_glued_to_a_locality_still_proves_its_state():
+    """One E-Agent QLD stocklist, 73 rows, every one stamped QLD off the page hint --
+    while its own cells read 'Windermere Mambourin', 'Coridale Lara' and 'Warralily
+    Armstrong Creek', all Victorian.
+
+    own_state could not see it because locality_in_listing requires a SEPARATOR, and
+    these cells glue the estate to the locality with a space. So the file never looked
+    national, the hint stood, and the two Warralily lots geocoded to Armstrong Creek
+    QLD -- about 1,400 km from the Geelong estate they are actually in.
+    """
+    from geo import SuburbGeoIndex
+    from state_resolver import file_is_national, locality_tail_in_cell, own_state
+
+    geo = SuburbGeoIndex()
+    if not geo.loaded:
+        return
+
+    assert locality_tail_in_cell("Windermere Mambourin", geo) == "Mambourin"
+    assert locality_tail_in_cell("Coridale Lara", geo) == "Lara"
+    assert own_state(suburb="Windermere Mambourin", geo=geo)[0] == "VIC"
+    assert own_state(suburb="Riverbank Estate Caboolture", geo=geo)[0] == "QLD"
+
+    # Which is what makes the file national, and voids its QLD page hint.
+    assert file_is_national({"VIC", "QLD"})
+
+
+def test_the_separator_rule_it_supplements_is_not_weakened():
+    """Each of these is why locality_in_listing demands a separator in the first place.
+
+    A single bare word must never qualify -- that is the 'Jubilee' / 'Mandalay' case,
+    estate names and column headers sitting in the suburb column. And an LGA is not a
+    locality: 'CITY OF LOGAN' is a Queensland council, while Logan is a locality in
+    VICTORIA and nowhere else, so its tail proves VIC for a Queensland lot.
+    """
+    from geo import SuburbGeoIndex
+    from state_resolver import locality_tail_in_cell, own_state
+
+    geo = SuburbGeoIndex()
+    if not geo.loaded:
+        return
+
+    for single in ("Jubilee", "Mandalay", "Price", "Woodstock"):
+        assert locality_tail_in_cell(single, geo) == "", single
+
+    for lga in ("CITY OF LOGAN", "Logan City Council", "COAST COUNCIL",
+                "Moreton Bay Regional Council"):
+        assert locality_tail_in_cell(lga, geo) == "", lga
+        assert own_state(suburb=lga, geo=geo)[0] != "VIC", lga
+
+    # A two-word locality must not lose its first word.
+    assert locality_tail_in_cell("Mount Duneed", geo) == "Mount Duneed"
+
+
+def test_an_estate_name_is_never_read_as_a_place():
+    """The tail walk runs on the SUBURB cell only.
+
+    Allowed on estate_name it manufactured false proofs: 'Redbank Plains Sienna Eden'
+    answers Eden NSW for a lot in Redbank Plains QLD, and 'The Grove' answers Grove TAS.
+    A false proof is worse than no proof here -- this is the standard used to throw away
+    a whole file's hint.
+    """
+    from geo import SuburbGeoIndex
+    from state_resolver import own_state
+
+    geo = SuburbGeoIndex()
+    if not geo.loaded:
+        return
+
+    assert own_state(suburb="SILKWOOD HOMES", estate="Redbank Plains Sienna Eden",
+                     geo=geo) == ("", ""), "an estate tail was read as a place"
+    assert own_state(suburb="10% Deposit", estate="The Grove", geo=geo) == ("", "")
+
+
 def test_a_street_name_does_not_become_the_suburb():
     """"12 Windsor Street ... Woodford" was geocoded to Windsor.
 
@@ -291,6 +364,12 @@ def run_all():
          test_a_locality_in_the_rows_own_state_beats_one_earlier_in_the_text),
         ("a street name does not become the suburb",
          test_a_street_name_does_not_become_the_suburb),
+        ("estate+locality proves its state",
+         test_an_estate_glued_to_a_locality_still_proves_its_state),
+        ("the separator rule is not weakened",
+         test_the_separator_rule_it_supplements_is_not_weakened),
+        ("an estate name is never a place",
+         test_an_estate_name_is_never_read_as_a_place),
         ("postcode ranges cover every state", test_postcode_ranges_cover_every_state),
         ("state names normalise", test_normalise_state_accepts_what_the_files_actually_say),
         ("misparsed postcode does not move a lot", test_a_misparsed_postcode_does_not_move_a_listing_interstate),

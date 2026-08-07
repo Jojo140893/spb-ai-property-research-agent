@@ -164,6 +164,55 @@ def locality_in_listing(*cells: Any) -> str:
     return ""
 
 
+# Administrative areas that are not localities. Used by locality_tail_in_cell.
+_ADMIN_AREA = re.compile(r"\b(council|city of|shire|regional|region)\b", re.IGNORECASE)
+
+
+def locality_tail_in_cell(cell: Any, geo: Any) -> str:
+    """"<estate> <locality>" with no separator — 'Windermere Mambourin' -> 'Mambourin'.
+
+    locality_in_listing above requires a separator, and that rule earns its keep: it is
+    what stops the bare estate names and column headers in the suburb column ('Mandalay',
+    'Jubilee', 'Price', 'Titled Packages') being read as places. But plenty of files glue
+    the estate to the locality with nothing but a space, and refusing those cost a whole
+    file its national detection:
+
+        one E-Agent QLD stocklist, 73 rows, every one stamped QLD from the page hint —
+        while its own cells read 'Windermere Mambourin', 'Coridale Lara' and 'Warralily
+        Armstrong Creek', all Victorian. Armstrong Creek exists in QLD too, so those two
+        lots geocoded to Caboolture, about 1,400 km from the Geelong estate they are in.
+
+    Two guards keep this as strict as the separator rule it supplements:
+      * at least two words, so a single bare word can never qualify — that is exactly the
+        'Jubilee' / 'Mandalay' case, and it stays refused;
+      * the LONGEST trailing tail that is a locality, so 'Smythes Creek' beats 'Creek'.
+
+    Ambiguity is not resolved here. own_state still requires the name to belong to
+    exactly one state before it counts as proof of anything.
+    """
+    raw = str(cell or "")
+    # An LGA is not a suburb, and its tail is a trap. 'CITY OF LOGAN' is a Queensland
+    # council; Logan is a locality in VICTORIA and nowhere else, so the tail walk proves
+    # VIC for a Queensland lot — the same collision an existing test already pins down
+    # for the suburb column. 'Logan City Council' (27 rows), 'COAST COUNCIL' (40) and
+    # 'Moreton Bay Regional Council' (21) are all live values in this column.
+    if _ADMIN_AREA.search(raw):
+        return ""
+    words = raw.split()
+    if len(words) < 2 or geo is None:
+        return ""
+    try:
+        # The WHOLE cell first, or a two-word locality loses its first word:
+        # 'Mount Duneed' would answer 'Duneed', a different question entirely.
+        for start in range(0, len(words)):
+            tail = " ".join(words[start:])
+            if geo.states_for_suburb(tail):
+                return tail
+    except Exception:                                                 # noqa: BLE001
+        return ""
+    return ""
+
+
 def own_state(postcode: Any = None, suburb: Any = "", estate: Any = "",
               address: Any = "", geo: Any = None) -> Tuple[str, str]:
     """What the ROW proves on its own, ignoring every page and file. ('', '') if nothing.
@@ -185,6 +234,17 @@ def own_state(postcode: Any = None, suburb: Any = "", estate: Any = "",
         return named, "listing text"
 
     loc = locality_in_listing(suburb, estate)
+    if not loc:
+        # No separator, but the SUBURB cell may still be "<estate> <locality>". Same
+        # standard of proof applies below: one state or it proves nothing.
+        #
+        # THE SUBURB CELL ONLY, never estate_name. An estate name is marketing text by
+        # definition, and its trailing word lands on a locality often enough to matter:
+        # 'Redbank Plains Sienna Eden' answers Eden NSW for a lot in Redbank Plains QLD,
+        # and 'The Grove' answers Grove TAS. Measured over the live table, allowing the
+        # estate cell here manufactured 31 false proofs — and a false proof is worse than
+        # no proof, because this is the standard used to overrule a whole file's hint.
+        loc = locality_tail_in_cell(suburb, geo)
     if loc and geo is not None:
         try:
             cand = [c for c in geo.states_for_suburb(loc) if c in VALID_STATES]
