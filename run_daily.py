@@ -129,6 +129,31 @@ def _log_tail(lines: int = 40) -> str:
     return "\n".join(text.splitlines()[-lines:]) or "(the log is empty)"
 
 
+def _benchmark_basis_report() -> None:
+    """Say, every night, whether the benchmark can actually reach a market source.
+
+    Without a provider the benchmark still runs and still writes numbers -- against
+    OTHER STOCK WE HOLD. That is a real signal and it is not a market benchmark, which
+    is the distinction Coleen raised on 3 Aug. The run has to state which basis it used,
+    or a stack of internal medians quietly reads as the thing she asked for.
+    """
+    header = "=" * 70
+    print(chr(10) + header + chr(10) + "  Market comparables" + chr(10) + header)
+    try:
+        from comp_provider import provider_status
+        st = provider_status()
+    except Exception as exc:                                          # noqa: BLE001
+        print(f"  could not determine provider status: {exc}")
+        return
+    if st["live"]:
+        print(f"  ok     provider '{st['provider']}' is configured — market basis available")
+    else:
+        print("  NONE   no market source is configured, so every benchmark tonight is")
+        print("         INTERNAL: this lot against other stock we hold, not against the")
+        print("         market. Nothing published will claim otherwise.")
+        print(f"         {st['reason']}")
+
+
 def _alert(subject: str, body: str) -> None:
     """Tell someone the run failed, rather than leaving it in a log nobody opens.
 
@@ -206,6 +231,7 @@ def main() -> int:
         return 0
 
     _session_report()
+    _benchmark_basis_report()
     failed = []
     for label, cmd, optional in steps:
         if not _run(label, cmd, optional):

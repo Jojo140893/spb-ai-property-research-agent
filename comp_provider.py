@@ -241,11 +241,43 @@ class DomainProvider:
         return f"{suburb.strip().title()}|{state.strip().upper()}" if suburb else None
 
 
-def get_provider() -> Any:
-    """The configured provider, or NullProvider. Never raises."""
+_ANNOUNCED = [False]
+
+
+def get_provider(quiet: bool = False) -> Any:
+    """The configured provider, or NullProvider. Never raises. SAYS WHICH, once.
+
+    This used to fall back in silence, and the silence was the problem: someone sets
+    SPB_COMP_PROVIDER=domain, forgets the key, gets "insufficient" on every listing, and
+    has nothing to tell them the difference between "no comparables exist" and "no
+    source was ever contacted". Those two look identical by design -- that is the whole
+    point of NullProvider -- so the distinction has to be printed somewhere.
+
+    Verified against real stock with a stub in place of the licence: 400 rows produced
+    99 flags and 12 passes, so the pipeline is complete and this is the only gap.
+    """
     which = (os.environ.get("SPB_COMP_PROVIDER") or "").strip().lower()
+    chosen, why = NullProvider(), ""
     if which == "domain":
         p = DomainProvider()
         if p.configured:
-            return p
-    return NullProvider()
+            chosen = p
+        else:
+            why = ("SPB_COMP_PROVIDER=domain is set but no key is stored. Run: "
+                   "python setup_credentials.py domain_api")
+    elif which:
+        why = f"SPB_COMP_PROVIDER={which!r} is not a provider this build knows."
+    else:
+        why = NullProvider.reason
+    if why and not quiet and not _ANNOUNCED[0]:
+        _ANNOUNCED[0] = True
+        print(f"[i] market comparables: {why}", flush=True)
+    return chosen
+
+
+def provider_status() -> Dict[str, Any]:
+    """Machine-readable answer to "is the benchmark actually able to run?"."""
+    p = get_provider(quiet=True)
+    live = getattr(p, "name", "none") != "none"
+    return {"provider": getattr(p, "name", "none"), "live": live,
+            "reason": "" if live else NullProvider.reason}

@@ -147,6 +147,30 @@ def test_exposure_never_reports_no_verdict_as_a_clean_bill():
     assert "not a clean bill of health" in text
 
 
+def test_the_command_we_tell_the_client_to_run_actually_exists():
+    """The single item blocking the whole benchmark is a licence key, and the one
+    instruction printed for it was a dead end.
+
+    NullProvider.reason says `python setup_credentials.py domain_api`. That script
+    builds its target list from the builder REGISTRY, so domain_api was not in it and
+    the command answered "no portal matches 'domain_api'" with a list of seven builder
+    logins. A blocking step with no working command behind it stays blocked forever.
+    """
+    import setup_credentials
+    from comp_provider import NullProvider, provider_status
+
+    keys = [k for k, _label, _u, _p in setup_credentials._portals()]
+    assert "domain_api" in keys, f"the documented target is missing: {keys}"
+
+    # ...and the reason string still names that exact command.
+    assert "setup_credentials.py domain_api" in NullProvider.reason, NullProvider.reason
+
+    # provider_status must answer honestly rather than look configured.
+    st = provider_status()
+    assert set(st) == {"provider", "live", "reason"}, st
+    assert st["live"] is (st["provider"] != "none")
+
+
 def run_all():
     tests = [
         ("new-build comps preferred", test_a_new_build_comp_set_is_preferred_and_says_so),
@@ -155,6 +179,8 @@ def run_all():
         ("no provider, no claim", test_no_provider_produces_context_but_never_a_claim),
         ("land never prices a package", test_a_land_comp_never_reaches_the_market_benchmark_either),
         ("a junk suburb is never priced", test_a_junk_suburb_is_never_priced_against_its_suburb),
+        ("the documented setup command exists",
+         test_the_command_we_tell_the_client_to_run_actually_exists),
         ("exposure groups on the locality", test_exposure_groups_on_the_locality_not_the_raw_column),
         ("exposure rolls up by builder", test_exposure_rolls_verdicts_up_by_builder),
         ("no verdict is not a pass", test_exposure_never_reports_no_verdict_as_a_clean_bill),

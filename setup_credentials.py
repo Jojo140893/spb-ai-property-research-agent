@@ -26,10 +26,27 @@ def _slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
 
 
+# API keys the app can use that are NOT builder portals, so _portals() below -- which
+# reads the builder registry -- can never discover them. Without this entry the one
+# instruction printed for the single item blocking the benchmark,
+#
+#     python setup_credentials.py domain_api
+#
+# answered "no portal matches 'domain_api'" and listed seven builder logins. The
+# blocking step had no working command behind it.
+_API_KEYS = (
+    ("domain_api", "Domain API (market comparables for the benchmark)"),
+)
+
+
 def _portals():
-    """(key, label, csv_user, csv_pass) for E-Agent + each real direct portal."""
+    """(key, label, csv_user, csv_pass) for E-Agent + each real direct portal, plus the
+    non-portal API keys above."""
     reg = BuilderRegistry()
     out, seen = [], set()
+    for key, label in _API_KEYS:
+        out.append((key, label, "", ""))
+        seen.add(key)
 
     def real(u: str) -> bool:
         u = (u or "").strip().lower()
