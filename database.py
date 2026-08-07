@@ -651,6 +651,32 @@ class ResearchDatabase:
                 "ORDER BY state, suburb, price").fetchall()
             return [dict(r) for r in rows]
 
+    def distinct_suburbs(self, min_listings: int = 1):
+        """[(suburb, state)] we actually hold live stock in, busiest first.
+
+        The set a market comparison needs: asking a paid API about suburbs we hold
+        nothing in spends someone else's money for no answer. RESOLVED suburbs only --
+        the raw column holds '2026', 'GARAGE' and 'Logan City Council', and querying a
+        provider for those is how a benchmark ends up quoting a parsing accident.
+        """
+        import suburb_quality
+        counts = {}
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT suburb, state, lot_address, street_address, source_text "
+                "FROM buildings WHERE price > 0 "
+                "  AND (superseded_by IS NULL OR superseded_by = '')").fetchall()
+        for r in rows:
+            row = dict(r)
+            name, why = suburb_quality.resolve(row)
+            if not suburb_quality.is_located(why):
+                continue
+            key = (name, (row.get("state") or "").strip().upper())
+            counts[key] = counts.get(key, 0) + 1
+        return [k for k, n in sorted(counts.items(), key=lambda kv: -kv[1])
+                if n >= min_listings]
+
     def building_counts_by_channel(self) -> List[Dict[str, Any]]:
         """Per channel: `n` every capture ever stored, `n_live` those not superseded.
 

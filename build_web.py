@@ -606,6 +606,7 @@ _FUNCTION_SOURCES = (
     "__init__.py", "adaptive_extract.py", "base.py", "builder_portals.py", "dedupe.py",
     "drive_pdf.py", "e_agent.py", "feature_extract.py", "portal_config.py",
     "remote_stocklist.py", "scraper_base.py", "spreadsheet_extract.py",
+    "realestate.py",
 )
 _FUNCTION_ENTRY = ("research.py", "_bootstrap.py", "_candidates.py", "_export_builders.py")
 

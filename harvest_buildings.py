@@ -35,13 +35,15 @@ from sources.e_agent import EAgentSource
 from sources.builder_portals import BuilderPortalSource
 from sources.email_inbox import EmailStocklistSource
 from sources.proxima import ProximaSource
+from sources.realestate import RealestateSource
 from database import ResearchDatabase
 
 # Permissive filters => return the full stock list, not a client-filtered subset.
 ALL_STOCK_FILTERS = {"budget_max": 100_000_000, "primary_suburbs": []}
 
 
-def harvest(eagent=True, portals=True, email=True, proxima=True, email_days=90):
+def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
+            email_days=90):
     logging.basicConfig(level=logging.INFO, format='    %(levelname)s %(message)s')
     registry = BuilderRegistry()
     db = ResearchDatabase()
@@ -96,6 +98,36 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, email_days=90):
                     total_new += 1
         read["Direct Builder Portal (live)"] = len(seen_portals)
         print(f"    Direct portals: {len(seen_portals)} unique listing(s) seen.")
+
+    if rea:
+        # realestate.com.au, through PropTrack (REA Group's own API). The site itself
+        # cannot be read: measured 2026-08-08, a plain request AND headless Chromium both
+        # get HTTP 429 with a Kasada challenge on the first hit. Scraping it would mean
+        # defeating bot detection, so this uses the licensed channel instead.
+        #
+        # Suburb-scoped because PropTrack bills per call: the suburbs we actually hold
+        # stock in are the ones a comparison needs, and asking for the rest is someone
+        # else's money.
+        rea_src = RealestateSource()
+        if not rea_src.configured:
+            print("[i] realestate.com.au: no PropTrack key stored — skipped. "
+                  "Run: python setup_credentials.py proptrack_api")
+        else:
+            suburbs = db.distinct_suburbs() if hasattr(db, "distinct_suburbs") else []
+            print(f"[+] realestate.com.au: reading listings for {len(suburbs)} suburb(s)...")
+            listings = rea_src.search({"primary_suburbs": [s for s, _st in suburbs],
+                                       "state": ""})
+            read["realestate.com.au"] = len(listings)
+            if not listings:
+                print("    realestate.com.au: nothing read.")
+                for why, n in sorted(rea_src.skipped.items()):
+                    print(f"      {n} x {why}")
+            else:
+                outcomes = [db.record_building(L) for L in listings]
+                new, updated = outcomes.count("new"), outcomes.count("updated")
+                total_new += new
+                print(f"    realestate.com.au: {len(listings)} listing(s), {new} new, "
+                      f"{updated} updated, {rea_src.calls} API call(s).")
 
     if proxima:
         # Colin's #1 ask from 30 July. Not part of the BuilderPortalSource loop: the

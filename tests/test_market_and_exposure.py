@@ -218,6 +218,107 @@ def test_a_withheld_proptrack_price_is_never_read_as_zero():
     assert mid == 750000 and basis, (mid, basis)
 
 
+def test_the_rea_extractor_never_reports_a_silent_empty_harvest():
+    """Unconfigured it must return nothing AND say why.
+
+    An empty harvest that reads as a successful one is the failure this codebase keeps
+    paying for -- Proxima's filtered session stored 52 lots in place of 1,212 and
+    reported success. So: zero rows, and a counted reason.
+    """
+    from sources.realestate import RealestateSource
+
+    src = RealestateSource(provider=False)          # explicitly unconfigured
+    rows = src.search({"primary_suburbs": ["Tarneit"], "state": "VIC"})
+    assert rows == []
+    assert src.skipped.get("no API key configured") == 1, src.skipped
+    assert src.verify({})["status"] == "UNVERIFIED"
+
+
+def test_the_rea_extractor_stores_listings_and_invents_no_builder():
+    """With a provider present it extracts -- and never names a builder.
+
+    The portal is not the builder. Guessing one put 319 lots under "Proxima" and 318
+    under "Level 33"; a listings feed knows even less about who built the house.
+    """
+    from comp_provider import BASIS_EXACT, RawComp
+    from sources.realestate import RealestateSource
+
+    class _Stub:
+        name, calls, configured = "stub", 0, True
+
+        def search_comps(self, q):
+            _Stub.calls += 1
+            if _Stub.calls > 1:
+                return []
+            return [RawComp(price=812000, price_basis=BASIS_EXACT,
+                            price_kind=q.price_kind, suburb=q.suburb, state=q.state,
+                            bedrooms=4, land_sqm=400.0, provider_listing_id="abc",
+                            provider_url="https://www.realestate.com.au/property-x",
+                            is_new_build=True),
+                    # withheld price: dropped and counted, never stored as zero
+                    RawComp(price=None, price_basis="", price_kind=q.price_kind,
+                            suburb=q.suburb, state=q.state, provider_listing_id="def",
+                            provider_url="https://www.realestate.com.au/property-y")]
+
+        def get_suburb_stats(self, *a, **k):
+            return None
+
+        def resolve_suburb(self, *a, **k):
+            return None
+
+    src = RealestateSource(provider=_Stub())
+    rows = src.search({"primary_suburbs": ["Tarneit"], "state": "VIC"})
+    assert len(rows) == 1, rows
+    row = rows[0]
+    assert row["price"] == 812000
+    assert row["builder_name"] == "", "the extractor named a builder"
+    assert row["source_channel"] == "realestate.com.au"
+    assert "realestate.com.au" in row["listing_url"]
+    assert src.skipped.get("listing withheld its price") == 1, src.skipped
+
+
+def test_the_harvest_asks_only_about_suburbs_we_hold_stock_in():
+    """distinct_suburbs decides what a PAID API is asked about, so it must return only
+    resolved localities.
+
+    The raw suburb column holds '2026', 'GARAGE' and 'Logan City Council'. Asking a
+    provider about those spends money to be told nothing, and any answer that came back
+    would be a benchmark against a parsing accident.
+
+    Seeds its own database rather than reading the live one: the suite isolates via
+    SPB_DATABASE_PATH, and a test that needs production data passes or fails for reasons
+    that have nothing to do with the code.
+    """
+    import os
+    import pathlib
+    import sqlite3
+    import tempfile
+
+    from database import ResearchDatabase
+
+    tmp = os.path.join(tempfile.mkdtemp(), "subs.db")
+    db = ResearchDatabase(pathlib.Path(tmp))          # creates the schema
+    with sqlite3.connect(tmp) as conn:
+        conn.executemany(
+            "INSERT INTO buildings (suburb, state, price, source_channel) "
+            "VALUES (?, ?, ?, 'test')",
+            [("Tarneit", "VIC", 700000),              # a real locality
+             ("Tarneit", "VIC", 710000),              # ...twice, so it sorts first
+             ("Cloverton Estate , Kalkallo 3064", "VIC", 690000),   # recoverable
+             ("GARAGE", "QLD", 650000),               # not a place
+             ("2026", "QLD", 640000),                 # not a place
+             ("Logan City Council", "QLD", 660000)])  # an LGA, not a suburb
+        conn.commit()
+
+    got = db.distinct_suburbs()
+    names = [n for n, _st in got]
+    assert "Tarneit" in names, got
+    assert "Kalkallo" in names, ("the composite was not unglued", got)
+    for junk in ("GARAGE", "2026", "Logan City Council"):
+        assert junk not in names, (junk, got)
+    assert got[0] == ("Tarneit", "VIC"), ("busiest suburb should sort first", got)
+
+
 def run_all():
     tests = [
         ("new-build comps preferred", test_a_new_build_comp_set_is_preferred_and_says_so),
@@ -232,6 +333,12 @@ def run_all():
          test_realestate_resolves_to_the_licensed_channel_not_a_scraper),
         ("a withheld price is never zero",
          test_a_withheld_proptrack_price_is_never_read_as_zero),
+        ("REA extractor never reports a silent empty harvest",
+         test_the_rea_extractor_never_reports_a_silent_empty_harvest),
+        ("REA extractor stores listings, invents no builder",
+         test_the_rea_extractor_stores_listings_and_invents_no_builder),
+        ("harvest asks only about suburbs we hold",
+         test_the_harvest_asks_only_about_suburbs_we_hold_stock_in),
         ("exposure groups on the locality", test_exposure_groups_on_the_locality_not_the_raw_column),
         ("exposure rolls up by builder", test_exposure_rolls_verdicts_up_by_builder),
         ("no verdict is not a pass", test_exposure_never_reports_no_verdict_as_a_clean_bill),
