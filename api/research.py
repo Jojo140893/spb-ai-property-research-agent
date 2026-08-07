@@ -84,6 +84,10 @@ def _shortlist_entry(p):
         # so its rows kept being served as current while going three days stale. A
         # consultant about to send one to a buyer has to be able to see that.
         'date_checked': getattr(p, 'date_checked', ''),
+        # Benchmark A: could this buyer find comparable stock cheaper right now?
+        # Attached by run_research below; None until a comparables provider is licensed,
+        # which the card renders as "couldn't verify" rather than as any kind of claim.
+        'competitive': getattr(p, 'competitive', None),
         'distance_km_from_target': p.distance_km_from_target,
         'score': p.scoring.total_score if p.scoring else 0,
         'scoring_details': {
@@ -288,6 +292,44 @@ def run_research(payload):
         }
 
     result = agent.run_property_research(brief_dict, packages)
+
+    # The competitive check runs over the SHORTLIST only, not the whole pool: it is a
+    # pre-send safety check on what a consultant is about to show, and running it over
+    # every scored candidate would burn provider quota on listings nobody will see.
+    try:
+        from datetime import datetime
+        from benchmark_competitive import evaluate as _competitive
+        from comp_provider import get_provider as _get_provider
+        _provider = _get_provider()
+        for _p in result['shortlist']:
+            _res = _competitive({
+                'suburb': _p.suburb, 'state': _p.state,
+                'bedrooms': _p.bedrooms, 'land_sqm': _p.land_size_sqm,
+                'price': _p.price_breakdown.advertised_package_price,
+                # CandidateProperty carries no product_type, so price_kind would call
+                # every shortlisted lot "unknown" and refuse to benchmark any of them.
+                # The breakdown is on the property, and a land price plus a build price
+                # that add up to the total is the row PROVING what its price covers —
+                # the same evidence price_kind.derive accepts from a stored row.
+                'product_type': getattr(_p, 'product_type', ''),
+                'land_price': _p.price_breakdown.land_price,
+                'build_price': _p.price_breakdown.build_price,
+            }, provider=_provider)
+            _p.competitive = {
+                'verdict': _res.verdict, 'confidence': _res.confidence,
+                'tier': _res.tier, 'n_comps': _res.n_comps,
+                'n_excluded_no_price': _res.n_excluded_no_price,
+                'median': _res.median, 'cheapest': _res.cheapest,
+                'cheapest_url': _res.cheapest_url, 'delta_abs': _res.delta_abs,
+                'source': _res.source or getattr(_provider, 'name', ''),
+                'as_at': datetime.now().strftime('%d/%m/%Y'),
+                'note': _res.note, 'client_safe': _res.client_safe,
+                'comps': _res.comps,
+            }
+    except Exception as exc:                                          # noqa: BLE001
+        # Never fatal. A benchmark is a check on top of a completed search; a failure in
+        # it must not cost the consultant their results.
+        print("competitive benchmark unavailable: %s" % exc, file=sys.stderr)
 
     rejected_log = list(result['rejected_log'])
     trimmed = 0

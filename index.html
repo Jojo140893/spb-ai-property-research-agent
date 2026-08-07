@@ -1588,6 +1588,43 @@
             and availability with the builder before sending this to a client.</div>`;
     };
 
+    /* Benchmark A on the card: could this buyer find comparable stock cheaper?
+       The verdict is deliberately blunt — flag / pass / couldn't verify — because it is a
+       pre-send safety check, not a score. Comp count, tier, confidence and the as-at date
+       ride along with it: an undated benchmark is not a benchmark. */
+    const competitiveRow = c => {
+        if (!c) return '';
+        const meta = c.n_comps
+            ? `${c.n_comps} comparable${c.n_comps === 1 ? '' : 's'}`
+              + (c.tier ? ` · tier ${c.tier}` : '') + ` · ${esc(c.confidence)}`
+              + (c.source && c.source !== 'none' ? ` · ${esc(c.source)}` : '')
+              + (c.as_at ? ` · ${esc(c.as_at)}` : '')
+              + (c.n_excluded_no_price ? ` · ${c.n_excluded_no_price} with no price shown` : '')
+            : '';
+        if (c.verdict === 'flag') {
+            return `<div style="margin-top:.4rem; padding:.4rem .55rem; border-radius:6px;
+                 background:#fef2f2; border:1px solid #fecaca;">
+                 <strong style="color:#b91c1c;">Comparable stock is cheaper</strong>
+                 <div style="font-size:.8rem;">${esc(c.note || '')}</div>
+                 ${c.cheapest_url ? `<a href="${esc(c.cheapest_url)}" target="_blank"
+                    rel="noopener" style="font-size:.8rem; color:var(--accent-blue);">
+                    View the cheaper comparable</a>` : ''}
+                 <div style="font-size:.72rem; color:var(--text-muted);">${meta}</div></div>`;
+        }
+        if (c.verdict === 'pass') {
+            return `<div style="margin-top:.4rem; padding:.4rem .55rem; border-radius:6px;
+                 background:#f0fdf4; border:1px solid #bbf7d0;">
+                 <strong style="color:#15803d;">No comparable stock is cheaper</strong>
+                 <div style="font-size:.8rem;">${esc(c.note || '')}</div>
+                 <div style="font-size:.72rem; color:var(--text-muted);">${meta}</div></div>`;
+        }
+        /* insufficient — say so plainly and make no claim in either direction. This is
+           also what shows while no comparables provider is licensed. */
+        return `<div style="margin-top:.4rem; font-size:.8rem; color:var(--text-muted);">
+             <strong>Market check: not verified</strong> &mdash; ${esc(c.note || 'no comparable stock found')}
+             ${meta ? `<span style="font-size:.72rem;"> (${meta})</span>` : ''}</div>`;
+    };
+
     const sourceLinkRow = link => {
         if (!link || !link.url) return '';
         const what = OPENS_LABEL[link.opens] || 'opens the source';
@@ -1882,6 +1919,7 @@
                                 : `<span style="color:var(--amber-yellow); font-weight:600;">${prop.benchmark ? prop.benchmark.classification : 'Unbenchmarked'}</span>`}
                             ${prop.benchmark && prop.benchmark.needs_manual_benchmark ? `<div style="color:${prop.benchmark.basis === 'internal' ? 'var(--text-muted, #64748b)' : 'var(--amber-yellow)'}; font-size:0.78rem; margin-top:0.2rem;">${esc(prop.benchmark.data_note || '')}</div>` : ''}
                             ${prop.distance_km_from_target ? `<div style="font-size:0.8rem; margin-top:0.2rem;"><strong>Distance:</strong> ${prop.distance_km_from_target} km from target suburb</div>` : ''}
+                            ${competitiveRow(prop.competitive)}
                             ${sourceLinkRow(prop.source_link)}
                             ${capturedRow(prop.date_checked)}
                         </div>
