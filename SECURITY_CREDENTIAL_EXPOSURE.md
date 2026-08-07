@@ -1,6 +1,6 @@
 # Builder-portal passwords are in public git history
 
-**Status: live exposure. Rotation has not happened.**
+**Status: one password still live (Bathla). Two of the three are already rotated.**
 Verified 2026-08-07 against this repository.
 
 ## What is exposed
@@ -31,9 +31,26 @@ and email addresses.
 The file is now correctly listed in `.gitignore` (`*Builders* List.csv`), so this cannot
 recur. That protects the future, not the past.
 
+## Which of them are still live (checked 2026-08-07)
+
+Compared the exposed value against what is in the OS vault today, by hash, so neither
+value was printed:
+
+| builder | exposed password still the current one? |
+|---|---|
+| Paramount Living | no — already rotated |
+| Hermitage Homes | no — already rotated |
+| **Bathla** | **YES — still live** |
+
+So this is **one portal, not three**. Repository state at the same check: public,
+**0 forks**, last pushed 5 Aug.
+
+Two rotated passwords are still worth treating as burned for anything they were reused
+on, but they no longer open those two portals.
+
 ## What to do, in this order
 
-### 1. Rotate the three passwords first
+### 1. Rotate Bathla — the one that is still live
 
 Do this before anything else, and treat all three as already compromised — the repository
 has been public since 22 July, and you cannot know whether anyone cloned it. History
@@ -42,15 +59,14 @@ rewriting does not undo a password that has already been read.
 Change them on each builder's own portal, then store the new ones in the OS vault:
 
 ```bash
-python setup_credentials.py portal_paramount_living
-```
-
-```bash
-python setup_credentials.py portal_hermitage_homes
-```
-
-```bash
 python setup_credentials.py portal_bathla
+```
+
+Paramount Living and Hermitage Homes have already been rotated and need nothing. If you
+want to re-check that at any time:
+
+```bash
+python check_exposed_credentials.py
 ```
 
 Each prompts for the password with the input hidden. It goes straight into the Windows
