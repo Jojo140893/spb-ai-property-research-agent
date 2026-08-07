@@ -250,10 +250,47 @@ def test_a_locality_in_the_rows_own_state_beats_one_earlier_in_the_text():
     assert geo.find_suburb_in_text("LOT 79 STELLA ST, COLAC 3250", "") == "Colac"
 
 
+def test_a_street_name_does_not_become_the_suburb():
+    """"12 Windsor Street ... Woodford" was geocoded to Windsor.
+
+    Windsor is a real locality, which is exactly why it won: the scan matched it on name
+    alone and never looked at the word after it. Measured on live stock, 33 rows were
+    placed in their own street this way — "612 Oxford Street ... Joyner",
+    "2427 Cathcart Ave ... Tarneit", "Strathmore Street, Morayfield". resolve_locality
+    already refuses this shape by taking the last comma-separated part; free text has no
+    commas to lean on, so the street type itself has to be the signal.
+
+    Demotion, not exclusion: a street-suffixed candidate is still returned when the row
+    offers nothing else, because stripping the house number out of "Wadalba 49 Road"
+    leaves a genuine suburb looking street-suffixed.
+    """
+    from geo import SuburbGeoIndex
+
+    geo = SuburbGeoIndex()
+    if not geo.loaded:
+        return
+
+    assert geo.find_suburb_in_text(
+        "Lot 130, Ausbuild Stock List. Strathmore Street Lot 130, Strathmore Street, "
+        "Morayfield Montrose", "QLD") == "Morayfield", "a street name won"
+
+    # The demotion must not cost a recovery when the street-suffixed name is all there is.
+    assert geo.find_suburb_in_text("49 Wadalba Road", "NSW") == "Wadalba", \
+        "demoting a street-suffixed match must never drop it entirely"
+
+    # And the two cases the function was written for still hold.
+    assert geo.find_suburb_in_text("LOT 79 STELLA ST, COLAC 3250", "VIC") == "Colac"
+    assert geo.find_suburb_in_text(
+        "Available 23/04/2025 Jensen Rise Estate - Wadalba 49 Road #5 Wadalba "
+        "2259 CENTRAL COAST COUNCIL NSW November 2026", "NSW") == "Wadalba"
+
+
 def run_all():
     tests = [
         ("own-state locality beats text position",
          test_a_locality_in_the_rows_own_state_beats_one_earlier_in_the_text),
+        ("a street name does not become the suburb",
+         test_a_street_name_does_not_become_the_suburb),
         ("postcode ranges cover every state", test_postcode_ranges_cover_every_state),
         ("state names normalise", test_normalise_state_accepts_what_the_files_actually_say),
         ("misparsed postcode does not move a lot", test_a_misparsed_postcode_does_not_move_a_listing_interstate),

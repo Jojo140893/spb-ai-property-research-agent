@@ -17,6 +17,14 @@ from config import PROJECT_ROOT
 
 SUBURBS_CSV = PROJECT_ROOT / "data" / "au_suburbs.csv"
 
+# Words that make the name before them a STREET rather than a locality. Used by
+# find_suburb_in_text; see the comment there for the 33 live rows this corrects.
+_STREET_TYPE = re.compile(
+    r"(?:st|street|rd|road|dr|drive|ave|avenue|av|cres|crescent|cct|circuit|pde|parade|"
+    r"way|wy|ct|court|cl|close|pl|place|blvd|boulevard|tce|terrace|gr|grove|gve|lane|ln|"
+    r"esp|esplanade|hwy|highway|mews|walk|loop|link|vista|gdns|gardens)",
+    re.IGNORECASE)
+
 
 def haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     R = 6371.0
@@ -37,6 +45,11 @@ class SuburbGeoIndex:
         # locality names exist in more than one state, so the caller has to be told when
         # the answer is ambiguous rather than handed the first match.
         self._states_by_suburb: Dict[str, set] = {}
+        # {suburb_lower: the dataset's own spelling} — so 'GLENVALE' and 'Glenvale' stop
+        # being two suburbs in the facet, the distance lookup and the benchmark cohort.
+        # Taken from the locality dataset rather than .title(), which mangles the real
+        # names: McKinnon, O'Connor, Kurri Kurri.
+        self._canonical: Dict[str, str] = {}
         self._load()
 
     def _load(self):
@@ -50,10 +63,15 @@ class SuburbGeoIndex:
                 self._index[(suburb.lower(), state)] = (lat, lng)
                 self._by_state.setdefault(state, []).append((suburb, lat, lng))
                 self._states_by_suburb.setdefault(suburb.lower(), set()).add(state)
+                self._canonical.setdefault(suburb.lower(), suburb)
 
     @property
     def loaded(self) -> bool:
         return bool(self._index)
+
+    def canonical_suburb(self, suburb: str, state: str = "") -> str:
+        """The locality dataset's own spelling of this name, or '' if unknown."""
+        return self._canonical.get(str(suburb or "").strip().lower(), "")
 
     def states_for_suburb(self, suburb: str) -> List[str]:
         """Every state that has a locality of this name, sorted. Empty if unknown.
@@ -141,13 +159,32 @@ class SuburbGeoIndex:
         # reached. The consequence is not cosmetic: this feeds distance filtering and
         # scoring (kommo_agent.py:136-142), so the lot was being placed in the wrong
         # town, and it would have benchmarked a Wadalba property against Jensen comps.
+        # A NAME FOLLOWED BY A STREET TYPE IS A STREET, NOT THE SUBURB.
+        #
+        # "12 Windsor Street, BRISBANE NORTH ... Woodford" returned Windsor — a real
+        # locality, and the wrong one, while Woodford sat in the same line. Measured on
+        # live stock: 33 rows, every one of them geocoded to its own street. Same shape
+        # as "612 Oxford Street ... Joyner", "2427 Cathcart Ave ... Tarneit" and
+        # "Strathmore Street, Morayfield". resolve_locality already refuses this by
+        # taking the last comma-separated part; free text has no commas to lean on.
+        #
+        # DEMOTED, NOT DROPPED. A street-suffixed candidate is still returned if nothing
+        # else in the row matches, because "Wadalba 49 Road" — where the house number is
+        # stripped by the word regex above — makes a genuine suburb look street-suffixed.
+        # Demoting can only ever improve a match; dropping could lose one.
+        fallback = None
         for st in states:
             for size in (3, 2, 1):          # longest match wins within a state
                 for i in range(len(words) - size + 1):
                     cand = " ".join(words[i:i + size])
-                    if (cand.lower(), st) in self._index:
-                        return cand.title()
-        return None
+                    if (cand.lower(), st) not in self._index:
+                        continue
+                    after = words[i + size] if i + size < len(words) else ""
+                    if after and _STREET_TYPE.fullmatch(after):
+                        fallback = fallback or cand.title()
+                        continue
+                    return cand.title()
+        return fallback
 
     def distance_between(self, suburb_a: str, suburb_b: str, state: str) -> Optional[float]:
         a = self.locate(suburb_a, state)

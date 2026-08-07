@@ -39,6 +39,7 @@ if _HERE not in sys.path:                       # api/ on sys.path: sibling impo
     sys.path.insert(0, _HERE)
 
 from _bootstrap import HERE, ROOT
+import suburb_quality
 from address_label import clean_display_address, display_suburb
 from provenance import primary_source_link
 
@@ -46,7 +47,9 @@ from provenance import primary_source_link
 # neither can reach an internal column (content_hash, dedup_key, source_text).
 SNAPSHOT_FIELDS = [
     "builder_name", "lot_address", "street_address", "lot_number",
-    "suburb", "state", "availability_status",
+    # suburb_source travels with the blank so the coverage sentence can still separate
+    # "the source never gave one" from "the source gave something that is not a place".
+    "suburb", "suburb_source", "state", "availability_status",
     "state_source", "price", "land_price", "build_price", "bedrooms", "bathrooms",
     "car_spaces", "land_sqm", "house_sqm", "storey", "title_status", "estate_name",
     "incentive_amount", "incentive_text", "product_type", "source_channel",
@@ -457,34 +460,29 @@ def build_packages(brief_dict, rows, today=None):
             counts["over_budget"] += 1
             continue
 
-        # Rows that stored a state name in the suburb column would otherwise fail
-        # clean_locality and be dropped as "suburb is not a recognised locality", even
-        # though their own address names the suburb. Read-time only — see
-        # address_label.display_suburb for why this is not written back.
-        suburb = display_suburb(row).strip()
+        # ONE ANSWER ABOUT WHAT COUNTS AS A PLACE, shared with the published snapshot.
+        #
+        # This gate used to be three steps written out here — display_suburb, then
+        # clean_locality, then a bare-else that dropped the row — while build_web.py ran
+        # only the first of them. So a row could be excluded from every search as "not a
+        # recognised locality" and still be published to the dashboard with that same
+        # value printed as its suburb. suburb_quality.resolve is now the single answer
+        # both paths call, for the reason clean_locality was centralised in the first
+        # place: two copies of this judgement drift, and did.
+        #
+        # PRESENT is not the same as REAL. Those rows were not merely stored, they were
+        # RECOMMENDED: a QLD search returned "Lot 507, 2026 in 2026, QLD" and "Lot 507,
+        # offer in offer, QLD" as four of its five results. A listing whose location
+        # cannot be confirmed must not reach a client, and cannot be geocoded,
+        # distance-filtered or benchmarked either.
+        suburb, suburb_why = suburb_quality.resolve(row)
         if not suburb:
-            # Without a locality the row cannot be geocoded, so no distance and no
-            # benchmark can be established for it. kommo_agent tries to recover one
-            # from the address text; if that is all there is, it is not scoreable.
-            counts["no_suburb"] += 1
-            continue
-        cleaned = clean_locality(suburb, row.get("state"))
-        if cleaned:
-            # Use the locality itself, not the estate glued to the front of it.
-            suburb = cleaned
-        else:
-            # PRESENT is not the same as REAL. The suburb column collects whatever
-            # landed in that position of a stocklist, and 59% of it is not a locality:
-            # postcodes ("2026"), stray words ("offer"), header fragments
-            # ("Street # Type"), states and regions.
-            #
-            # This gate exists because those rows were not merely stored — they were
-            # RECOMMENDED. A QLD search returned "Lot 507, 2026 in 2026, QLD" and
-            # "Lot 507, offer in offer, QLD" as four of its five results, which is
-            # what made the research tab look broken. A listing whose location cannot
-            # be confirmed must not reach a client, and it cannot be geocoded,
-            # distance-filtered or benchmarked either.
-            counts["suburb_not_a_locality"] += 1
+            if suburb_why == suburb_quality.BLANK_ABSENT:
+                # Without a locality the row cannot be geocoded, so no distance and no
+                # benchmark can be established for it.
+                counts["no_suburb"] += 1
+            else:
+                counts["suburb_not_a_locality"] += 1
             continue
 
         facts = {}

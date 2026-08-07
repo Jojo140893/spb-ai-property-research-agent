@@ -963,7 +963,13 @@
         { k: 'street_address', t: 'Address', cls: 'addr',
           fallback: 'lot_address', titleFrom: 'lot_address' },
         { k: 'lot_number',          t: 'Lot' },
-        { k: 'suburb',              t: 'Suburb' },
+        // A blank suburb is a fact, not a gap in our export, and it has to read that way
+        // or it looks like something we lost. 3,854 rows used to print '2026', 'offer',
+        // 'GARAGE' or 'Logan City Council' in this column because whatever landed in
+        // that position of the builder's spreadsheet was shown as a town. Those are now
+        // blanked, and suburb_source says which of the reasons applies — the source
+        // never gave one, or it gave something that is not a place.
+        { k: 'suburb',              t: 'Suburb', blankReason: 'suburb_source' },
         { k: 'state',               t: 'State' },
         { k: 'postcode',            t: 'Postcode' },
         // Blank when there is no state to explain. This column held the provenance note
@@ -1428,6 +1434,13 @@
             }
             if (c.strong) return `<td>${v ? `<strong>${esc(v)}</strong>`
                 : unnamedPill(b)}</td>`;
+            // An empty cell that we can explain says so on hover, rather than leaving a
+            // consultant to wonder whether the export dropped it.
+            if (c.blankReason && !String(v ?? '').trim()) {
+                const why = String(b[c.blankReason] || '').trim();
+                return `<td class="${c.cls || ''}" style="color:var(--text-muted);"
+                    ${why ? `title="${esc(why)}"` : ''}>${why ? '&mdash;' : ''}</td>`;
+            }
             return `<td class="${c.cls || ''}">${esc(v ?? '')}</td>`;
         }).join('') + '</tr>';
         }).join('');

@@ -77,7 +77,13 @@ BUILDING_FIELDS = [
 # but must never reach the SELECT. Keeping them in one list made the build fail with
 # "no such column: source_link_url", which is the build guard doing its job.
 BUILDING_DERIVED_FIELDS = ["source_link_url", "source_link_opens", "source_link_label",
-                           "source_link_search"]
+                           "source_link_search",
+                           # Why the suburb reads the way it does -- "stated by the
+                           # source", "read from the composite", or the reason it is
+                           # blank. A blank suburb with no reason beside it looks like
+                           # data we lost; with the reason it is data the source never
+                           # gave. Same contract as state_source.
+                           "suburb_source"]
 
 # builders: NOTE the deliberate omission of portal_login_email / portal_login_password.
 BUILDER_FIELDS = [
@@ -279,17 +285,27 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     # two places guarantees the two drift. Two short strings per row against a 5 MB
     # payload is the cheaper trade.
     from provenance import primary_source_link as _link_for
-    from address_label import display_suburb as _suburb_for
+    import suburb_quality
     _linked = 0
     _resuburbed = 0
+    _suburb_reasons = {}
     for b in buildings:
-        # 56 Proxima rows stored a STATE NAME in the suburb column, which made them
-        # unfindable by suburb in the table and its filter. Recovered from the row's own
-        # address on the way out; the stored value is left alone because suburb_norm is
-        # part of the content hash. See address_label.display_suburb.
-        _fixed = _suburb_for(b)
-        if _fixed and _fixed != (b.get("suburb") or ""):
-            b["suburb"] = _fixed
+        # IS THIS A PLACE? 3,854 published rows answered no and were shown as suburbs
+        # anyway — '2026', 'offer', 'GARAGE', 'Logan City Council', 'Rooms Rooms m2 m2
+        # m2' — each one sitting in the suburb column and in the suburb filter as though
+        # it were a town.
+        #
+        # suburb_quality.resolve rebuilds the suburb where the row's own address states
+        # one (the 56 Proxima "New South Wales" rows), reads it out of a composite where
+        # the source glued an estate to it, and BLANKS it where there is no locality to
+        # be had — recording which of those happened in suburb_source. The stored column
+        # is untouched: suburb_norm is part of content_hash, so writing it back would
+        # re-identify the row and the next harvest would insert a duplicate.
+        before = (b.get("suburb") or "").strip()
+        b["suburb"], why = suburb_quality.resolve(b)
+        b["suburb_source"] = why
+        _suburb_reasons[why] = _suburb_reasons.get(why, 0) + 1
+        if b["suburb"] != before:
             _resuburbed += 1
         link = _link_for(b)
         b["source_link_url"] = (link or {}).get("url") or ""
@@ -419,6 +435,8 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         "with_state": sum(1 for b in buildings if (b.get("state") or "").strip()),
         "assets": len(assets), "registry": len(regs), "copied": copied,
         "relabelled": _relabelled,
+        "suburb_reasons": _suburb_reasons,
+        "with_suburb": sum(1 for b in buildings if (b.get("suburb") or "").strip()),
     }
     conn.close()
 
@@ -483,6 +501,9 @@ _FUNCTION_ROOT_MODULES = (
     "kommo_agent.py", "kommo_client.py", "qa_checker.py", "report_generator.py",
     "schema.py", "scoring_engine.py", "secrets_store.py", "state_resolver.py",
     "turnkey_calculator.py",
+    # _candidates.py imports this to decide whether a row's suburb is a place at all.
+    # Omitting it would not fail the build — it would fail every deployed search.
+    "suburb_quality.py",
     # Benchmark A. Omitting these did not break the build — api/research.py catches the
     # ImportError so a benchmark failure cannot cost a consultant their search — so the
     # deployed endpoint simply returned no verdict at all while it worked locally. That
