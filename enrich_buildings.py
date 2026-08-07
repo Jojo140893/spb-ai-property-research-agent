@@ -131,12 +131,35 @@ def main():
         rid = r["id"]
         suburb = (r["suburb"] or "").strip()
         if not suburb:
+            # IN MEMORY ONLY. This used to also
+            #
+            #     conn.execute("UPDATE buildings SET suburb=? WHERE id=?", ...)
+            #
+            # which is the one write this codebase must never make: suburb_norm is one of
+            # the eight inputs to building_content_hash, so filling the column changes the
+            # row's identity and the next harvest INSERTS a second copy instead of
+            # updating it. Replayed against live stock this had 603 writes queued and all
+            # 603 broke identity — the same mechanism that produced 777 duplicate captures
+            # when builder_name was rewritten. It had already fired on six nightly runs
+            # (275, 2, 0, 13, 189, 6 rows).
+            #
+            # It was also wrong on the merits. 602 of the 603 rows have no state at all,
+            # so find_suburb_in_text free-runs over every state and returns the house
+            # DESIGN, the estate or the region rather than the locality:
+            #
+            #     'West 777 Harlow Tarneit Available Carlton 18'  -> 'Carlton'   (design; lot is Tarneit)
+            #     'West 705 Balmoral Strathtulloh Sold London 22' -> 'Balmoral'  (lot is Strathtulloh)
+            #     'Geelong 11921 Warralily Armstrong Cree k'      -> 'Geelong'   (region; lot is Armstrong Creek)
+            #
+            # The value is still computed and still feeds own_state below, unchanged, so
+            # state resolution behaves exactly as before — `state` is deliberately NOT a
+            # hash field, which is why writing it is safe and writing this is not. What a
+            # row's suburb should DISPLAY as is decided on the way out, by
+            # suburb_quality.resolve.
             found = geo.find_suburb_in_text(r["lot_address"] or "",
                                             (r["state"] or "").strip().upper())
             if found:
                 suburb = found
-                conn.execute("UPDATE buildings SET suburb=? WHERE id=?", (suburb, rid))
-                fixed_suburb += 1
         state, why = own_state(postcode=r["postcode"], suburb=suburb,
                                estate=r["estate_name"], address=r["lot_address"], geo=geo)
         proven[rid] = (suburb, state, why)
@@ -233,7 +256,10 @@ def main():
     print("=" * 66)
     print(f"  ENRICHED {total} building(s)")
     print("=" * 66)
-    print(f"  suburb  backfilled: {fixed_suburb}")
+    # Always 0, and kept visible on purpose: this step used to backfill the suburb
+    # column and must never do so again (see the note in the loop above). A line that
+    # reads 0 every night is the cheapest possible alarm if someone re-adds the write.
+    print(f"  suburb  backfilled: {fixed_suburb}  (never written -- part of content_hash)")
     print(f"  state   backfilled: {fixed_state}   still blank: {still_no_state}")
     print(f"  state   corrected : {corrected_states}   cleared: {cleared_states}"
           f"   same state, better signal: {retraced_states}")

@@ -588,6 +588,31 @@ def _bundle_research_function(app: Path, out_dir: Path) -> int:
     return n
 
 
+_READONLY_PROBE = """
+import errno, os, pathlib, sys
+sys.path[:0] = [r'%s', r'%s']
+_BUNDLE = os.path.abspath(r'%s')
+_real_mkdir = pathlib.Path.mkdir
+
+
+def _readonly_inside_bundle(self, mode=0o777, parents=False, exist_ok=False):
+    if os.path.abspath(str(self)).startswith(_BUNDLE):
+        raise OSError(errno.EROFS, 'Read-only file system', str(self))
+    return _real_mkdir(self, mode=mode, parents=parents, exist_ok=exist_ok)
+
+
+pathlib.Path.mkdir = _readonly_inside_bundle
+try:
+    import research, _candidates, _export_builders
+    import benchmark_competitive, benchmark_market, comp_provider, price_kind
+    import client_report
+finally:
+    pathlib.Path.mkdir = _real_mkdir
+assert (not %r) or client_report._logo_html(), 'logo missing from bundle'
+print('imports-ok')
+"""
+
+
 def _verify_function_imports(dest_api: Path) -> None:
     """Import the built endpoint the way Vercel will, in a clean interpreter.
 
@@ -605,11 +630,19 @@ def _verify_function_imports(dest_api: Path) -> None:
     want_logo = (Path(__file__).parent / "brand").is_dir() and any(
         p.suffix.lower() in (".svg", ".png", ".jpg", ".jpeg")
         for p in (Path(__file__).parent / "brand").iterdir() if p.is_file())
-    probe = ("import sys; sys.path[:0] = [r'%s', r'%s'];"
-             " import research, _candidates, _export_builders; import benchmark_competitive, benchmark_market, comp_provider, price_kind;"
-             " import client_report;"
-             " assert (not %r) or client_report._logo_html(), 'logo missing from bundle';"
-             " print('imports-ok')" % (dest_api, dest_api / "_lib", want_logo))
+    # ...and import it the way Vercel will: on a READ-ONLY bundle.
+    #
+    # /var/task is read-only there, and config.py runs OUTPUT_DIR.mkdir() at module
+    # level. Any module that reaches config before api/_bootstrap has wrapped that one
+    # import dies with EROFS and takes the whole endpoint down — HTTP 500 on every
+    # search. Locally the same import succeeds, because here the directory can simply be
+    # created, so the probe passed while the deployment was dead. That shipped: a
+    # module-level `import geo` inside suburb_quality.py, one line, green build, 500s
+    # live. _candidates.py imports geo lazily for precisely this reason.
+    #
+    # mkdir is denied only INSIDE the bundle. _bootstrap's own redirect to /tmp is meant
+    # to work and must keep working, so anything outside is left alone.
+    probe = _READONLY_PROBE % (dest_api, dest_api / "_lib", dest_api, want_logo)
     done = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
                           cwd=str(dest_api))
     if done.returncode != 0 or "imports-ok" not in done.stdout:

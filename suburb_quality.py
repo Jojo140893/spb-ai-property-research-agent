@@ -22,11 +22,23 @@ WHAT IT WILL AND WILL NOT DO
 Recovery is structural and state-checked, never a guess:
 
   * the value already IS a locality in the row's state            -> keep it (canonical spelling)
-  * the value CONTAINS one, as the last comma/colon part or the
-    longest tail ('Cloverton Estate , Kalkallo 3064')             -> use it   (626 live rows)
+  * ...unless the row's own address contradicts it AND shows the
+    value to be a STREET ('LOT 2950 LOCKINGTON RD, TARNEIT 3029'
+    was published as Lockington, a town 200 km away)              -> the address wins
+  * the value CONTAINS a locality, as the last comma/colon part or
+    the longest tail ('Cloverton Estate , Kalkallo 3064')         -> use it   (626 live rows)
   * the row's own text names a locality immediately before a
-    postcode, and that postcode belongs to the row's state        -> use it   (23 live rows)
+    postcode, and that postcode belongs to the row's state        -> use it   (25 live rows)
+  * the value is a locality NAME but the row records no state     -> show it, marked
+                                                                     unchecked (706 rows)
   * anything else                                                 -> BLANK, with the reason
+
+SHOWN IS NOT THE SAME AS LOCATED. 706 rows name a place with no state to check it
+against. Blanking them all would throw away 'Mango Hill' x38 and 'Clyde North' x32, which
+the source plainly did state; trusting them geocodes '122 Atlas Crescent' to the SA town
+of Crescent. So they are displayed with the caveat and refused as a location. Callers
+that need to geocode, distance-filter or benchmark must ask is_located(), never merely
+whether the suburb is non-empty.
 
 Blanking is the point, not a shortfall. The client's standing instruction is that a blank
 with a stated reason beats a plausible guess, and this codebase has the scars to prove
@@ -46,7 +58,19 @@ from typing import Any, Dict, Optional, Tuple
 
 import re
 
-import geo as _geo_mod
+# geo is imported LAZILY, inside _index(), and must stay that way.
+#
+# geo does `from config import PROJECT_ROOT`, and config.py runs OUTPUT_DIR.mkdir() at
+# module level. On Vercel that path is under the read-only /var/task, so the mkdir raises
+# EROFS and the import dies — taking api/research.py with it and returning HTTP 500 for
+# every search. api/_bootstrap wraps that one import in a tolerant mkdir, but only when
+# IT imports config; a module that reaches config first, before bootstrap has done so,
+# gets the raw failure. api/_candidates.py already imports geo lazily for exactly this
+# reason, and importing it here at module level silently reintroduced the fault through
+# the back door. Verified: this is what the deployed 500 was.
+#
+# address_label and state_resolver import nothing but `re` and `typing`, so they are safe
+# at module level.
 from address_label import display_suburb as _display_suburb
 from state_resolver import state_from_postcode
 
@@ -55,9 +79,25 @@ from state_resolver import state_from_postcode
 STATED = "stated by the source"
 FROM_COMPOSITE = "read from the composite the source stored"
 FROM_POSTCODE = "read from the postcode in the row's own text"
+# The suburb column named the row's own STREET, and its address named the suburb.
+FROM_ADDRESS = ("read from the row's own address, which contradicted the suburb column")
+# A locality NAME with no state to check it against. Shown, because the source really did
+# say it and 'Mango Hill' x38 and 'Clyde North' x32 are plainly right — but never treated
+# as a location, because it cannot be geocoded, distance-filtered or benchmarked, and
+# because a fifth of Australian locality names exist in more than one state. Use
+# is_located() rather than testing for a non-empty suburb.
+UNCHECKED_NO_STATE = "stated by the source; no state recorded, so it could not be checked"
 BLANK_NOT_A_PLACE = "the source's value is not a locality"
 BLANK_NO_STATE = "no state recorded, so the value cannot be checked against a locality"
 BLANK_ABSENT = "the source did not state one"
+
+# Reasons whose suburb may be used AS A LOCATION.
+_LOCATED = (STATED, FROM_COMPOSITE, FROM_POSTCODE, FROM_ADDRESS)
+
+
+def is_located(why: str) -> bool:
+    """Whether resolve()'s answer is safe to geocode, distance-filter or benchmark."""
+    return why in _LOCATED
 
 # "<Place> <4-digit postcode>". The postcode is what makes this safe: on its own a
 # capitalised word before a number matches lot numbers, years and floor areas. Live
@@ -75,6 +115,7 @@ _INDEX: Optional[Any] = None
 def _index():
     global _INDEX
     if _INDEX is None:
+        import geo as _geo_mod          # lazy on purpose — see the import note above
         _INDEX = _geo_mod.SuburbGeoIndex()
     return _INDEX
 
@@ -126,11 +167,32 @@ def resolve(row: Dict[str, Any], index=None) -> Tuple[str, str]:
         # A real locality name. Still requires the state to agree when one is recorded:
         # 'LOGAN' is a locality in Victoria and nowhere else, and QLD stocklists put it
         # in this column, so accepting it on name alone geocodes a Queensland lot to
-        # Victoria. With no state stored there is nothing to check it against.
-        if not state:
-            return _canonical_spelling(raw, "", index), STATED
-        if index.locate(raw, state):
+        # Victoria.
+        if state and index.locate(raw, state):
+            # The column value is a locality in this state — but so is the name of the
+            # road. 'LOT 2950 LOCKINGTON RD, TARNEIT 3029' was published as Lockington,
+            # a real Victorian town 200 km from the lot, because the spreadsheet put the
+            # street's name in the suburb position. An ADDRESS is stronger evidence than
+            # a spreadsheet column, so where the row's own address both contradicts the
+            # column AND shows the column value to be a street, the address wins.
+            #
+            # Both conditions are required. Either alone would start overriding values
+            # that are simply correct.
+            anchor = _postcode_anchor(row, state, index)
+            if anchor and anchor.lower() != raw.lower() and _looks_like_a_street(raw, row):
+                return _canonical_spelling(anchor, state, index), FROM_ADDRESS
             return _canonical_spelling(raw, state, index), STATED
+        if not state:
+            # Nothing to check it against — 860 live rows. It is still reported, because
+            # the source did say it and 'Mango Hill' x38 is obviously right, but it is
+            # NOT a location: see UNCHECKED_NO_STATE.
+            #
+            # One check does not need a state, though, and it matters: a STREET is not a
+            # suburb. 'Crescent' (a locality in SA) came from '122 Atlas Crescent' and
+            # 'Paramatta' from '132 Paramatta Street', and both were published as places.
+            if _looks_like_a_street(raw, row):
+                return "", BLANK_NOT_A_PLACE
+            return _canonical_spelling(raw, "", index), UNCHECKED_NO_STATE
 
     if not state:
         return "", BLANK_NO_STATE if raw else BLANK_ABSENT
@@ -140,11 +202,45 @@ def resolve(row: Dict[str, Any], index=None) -> Tuple[str, str]:
         if inner:
             return _canonical_spelling(inner, state, index), FROM_COMPOSITE
 
-    for name, postcode in _BEFORE_POSTCODE.findall(_row_text(row)):
-        if state_from_postcode(postcode) == state and index.locate(name, state):
-            return _canonical_spelling(name, state, index), FROM_POSTCODE
+    anchor = _postcode_anchor(row, state, index)
+    if anchor:
+        return _canonical_spelling(anchor, state, index), FROM_POSTCODE
 
     return "", BLANK_NOT_A_PLACE if raw else BLANK_ABSENT
+
+
+def _postcode_anchor(row: Dict[str, Any], state: str, index) -> str:
+    """A locality named immediately before a postcode that belongs to the row's state.
+
+    The postcode is what makes this safe. Without the state-range check the same pattern
+    reads a lot number ('Lot 2427, Newhaven'), a date ('Raceview 2026-08-01') and a plain
+    non-postcode ('Fraser Rise 1106') as suburbs — all three are live rows.
+    """
+    for name, postcode in _BEFORE_POSTCODE.findall(_row_text(row)):
+        if state_from_postcode(postcode) == state and index.locate(name, state):
+            return name
+    return ""
+
+
+def _looks_like_a_street(name: str, row: Dict[str, Any]) -> bool:
+    """Is this value the row's own street rather than its suburb?
+
+    Two shapes, both from live rows that were being published as places:
+      * the value IS a street type — 'Crescent', 'Grove', 'Rise' are all real localities
+        somewhere in Australia, and all three appear here as the tail of a street name;
+      * the value is followed by a street type in the row's own address —
+        '132 Paramatta Street' produced the suburb 'Paramatta'.
+
+    Only used where no state is recorded. With a state, index.locate already settles it.
+    """
+    import geo as _g                        # lazy — see the import note at the top
+    if _g._STREET_TYPE.fullmatch(name.strip()):
+        return True
+    text = _row_text(row)
+    if not text:
+        return False
+    after = re.search(re.escape(name.strip()) + r"\s+([A-Za-z]+)", text, re.IGNORECASE)
+    return bool(after and _g._STREET_TYPE.fullmatch(after.group(1)))
 
 
 def _row_text(row: Dict[str, Any]) -> str:

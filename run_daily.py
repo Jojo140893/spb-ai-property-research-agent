@@ -109,6 +109,26 @@ def _session_report() -> None:
         print(f"  {'STALE' if stale else 'ok   '}  {f.stem:<28} {age:%d %b %H:%M}{note}")
 
 
+def _log_tail(lines: int = 40) -> str:
+    """The end of the run's log, for the alert body.
+
+    Both _alert calls below already ended in `+ tail`, and `tail` was never assigned
+    anywhere in this file — so every alert path raised NameError before sending, and the
+    alerting added to stop failures going unnoticed went unnoticed itself. The 7 Aug run
+    hit it: aborted at step 1/7 with Proxima returning 0 rows, and nobody was told.
+
+    Task Scheduler redirects stdout to _daily.log; SPB_DAILY_LOG overrides. If neither is
+    readable the alert still goes out, saying so, because an alert with no log attached is
+    worth far more than no alert.
+    """
+    path = Path(os.environ.get("SPB_DAILY_LOG") or (APP / "_daily.log"))
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:                                            # noqa: BLE001
+        return f"(could not read {path}: {exc})"
+    return "\n".join(text.splitlines()[-lines:]) or "(the log is empty)"
+
+
 def _alert(subject: str, body: str) -> None:
     """Tell someone the run failed, rather than leaving it in a log nobody opens.
 
@@ -204,7 +224,7 @@ def main() -> int:
                "The nightly run stopped at: " + ", ".join(failed) + "\n\n"
                "Nothing was published, so the dashboard is still serving the last good\n"
                "snapshot rather than a partial one.\n\n"
-               "Last 40 lines of the log:\n\n" + tail)
+               "Last 40 lines of the log:\n\n" + _log_tail())
         return 1
     print("  Data refreshed.")
     if _DEGRADED:
@@ -214,7 +234,7 @@ def main() -> int:
                "The run completed and published, but these steps failed:\n\n  - "
                + "\n  - ".join(_DEGRADED)
                + "\n\nAnything they produce is now stale in the published snapshot.\n\n"
-               + "Last 40 lines of the log:\n\n" + tail)
+               + "Last 40 lines of the log:\n\n" + _log_tail())
     if args.no_deploy:
         print("  Deploy skipped (--no-deploy). To publish: deploy.ps1")
     else:

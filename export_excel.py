@@ -65,6 +65,15 @@ WIDTHS = {  # by header label, so it survives a reordering of BUILDING_COLS
 
 def _rows(db):
     rows = db.get_buildings()
+    # The workbook Coleen actually reads must show the same suburb the dashboard does.
+    # Left raw, this sheet printed '2026', 'offer' and 'Logan City Council' in the Suburb
+    # column and then counted them on the Data Quality tab, reporting 5,235 rows "With a
+    # suburb" when 3,530 had one -- a 1,705-row overstatement on the one sheet whose job
+    # is to say how good the data is. Resolved on the way out for the same reason
+    # build_web.py does it: suburb_norm is part of content_hash and must not be written.
+    import suburb_quality
+    for r in rows:
+        r["suburb"], r["suburb_source"] = suburb_quality.resolve(r)
     # Same order as the CSV: state, then builder with blanks LAST, then suburb, price.
     rows.sort(key=lambda r: (
         r.get("state") or "zz",

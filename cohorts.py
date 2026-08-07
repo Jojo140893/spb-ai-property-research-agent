@@ -128,6 +128,7 @@ class CohortKey(NamedTuple):
 
 
 # Why a row could not be keyed. Reported, never silently dropped.
+SKIP_NO_STATE = "no state recorded, so the suburb cannot be checked or geocoded"
 SKIP_NO_SUBURB = "no suburb recorded"
 SKIP_NO_BEDROOMS = "no bedroom count recorded"
 SKIP_NO_LAND_BAND = "no land size recorded"
@@ -150,10 +151,18 @@ def key_for(row: Dict[str, Any]) -> Tuple[Optional[CohortKey], str]:
     # the highest-quota provider queries in the nightly run, asked about places that do
     # not exist. It also RECOVERS rows whose suburb is buried in a composite:
     # "Kemps Estate | 155 Boyd Avenue, Austral" -> "Austral".
-    suburb = _locality(str(row.get("suburb") or "").strip(), state)
-    if not suburb and state:
-        suburb = _locality_from_text(row, state)
-    if not suburb or not state:
+    # One answer about what counts as a place, shared with the search path and the
+    # published snapshot. It also separates two facts this reported as one: 4,886 rows
+    # came back as "no suburb recorded", 707 of which DO record a real locality and are
+    # missing only a state -- so the diagnostic pointed a human at the wrong column.
+    #
+    # A cohort needs a LOCATED suburb, not merely a non-empty one: the whole point is to
+    # ask a provider about a real place, and an unchecked name cannot be geocoded.
+    import suburb_quality
+    suburb, why = suburb_quality.resolve(row)
+    if not suburb_quality.is_located(why):
+        if why == suburb_quality.UNCHECKED_NO_STATE or (suburb and not state):
+            return None, SKIP_NO_STATE
         return None, SKIP_NO_SUBURB
 
     beds = row.get("bedrooms")

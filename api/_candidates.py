@@ -476,7 +476,13 @@ def build_packages(brief_dict, rows, today=None):
         # cannot be confirmed must not reach a client, and cannot be geocoded,
         # distance-filtered or benchmarked either.
         suburb, suburb_why = suburb_quality.resolve(row)
-        if not suburb:
+        if not suburb_quality.is_located(suburb_why):
+            # SHOWN is not LOCATED. A value can be a real locality name and still be
+            # unusable here: with no state recorded there is nothing to check it against,
+            # geo.locate needs both halves, and a fifth of Australian locality names
+            # exist in more than one state. Those rows stay visible in the Building Stock
+            # table with the caveat; they must not be scored, distance-filtered or
+            # benchmarked.
             if suburb_why == suburb_quality.BLANK_ABSENT:
                 # Without a locality the row cannot be geocoded, so no distance and no
                 # benchmark can be established for it.

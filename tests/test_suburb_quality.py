@@ -75,11 +75,55 @@ def test_a_blank_is_reported_as_never_stated_not_as_rejected():
     assert why2 == suburb_quality.BLANK_NOT_A_PLACE, why2
 
 
-def test_with_no_state_recorded_nothing_can_be_checked():
+def test_with_no_state_recorded_a_name_is_shown_but_never_located():
+    """SHOWN is not LOCATED, and conflating them is how '122 Atlas Crescent' became the
+    SA town of Crescent.
+
+    860 live rows name a place with no state beside it. Blanking them all throws away
+    'Mango Hill' x38 and 'Clyde North' x32, which the source plainly did state; trusting
+    them geocodes a lot to whichever state happens to share the name — and a fifth of
+    Australian locality names exist in more than one. So the name is displayed with the
+    caveat and refused as a location.
+    """
     got, why = suburb_quality.resolve(_r(suburb="Springfield"))
-    assert got == "Springfield" and why == suburb_quality.STATED, (got, why)
+    assert got == "Springfield", got
+    assert why == suburb_quality.UNCHECKED_NO_STATE, why
+    assert not suburb_quality.is_located(why), "an unchecked name must not be geocoded"
+
     got2, why2 = suburb_quality.resolve(_r(suburb="Logan City Council"))
     assert got2 == "" and why2 == suburb_quality.BLANK_NO_STATE, (got2, why2)
+
+
+def test_a_street_is_refused_even_with_no_state_to_check_against():
+    """Real rows: '122 Atlas Crescent' published the suburb 'Crescent' (a locality in
+    SA), and '132 Paramatta Street' published 'Paramatta'. One check needs no state — a
+    street type is a street type."""
+    for value, address in (("Crescent", "122 Atlas Crescent"),
+                           ("Paramatta", "132 Paramatta Street")):
+        got, why = suburb_quality.resolve(_r(suburb=value, lot_address=address))
+        assert got == "", f"{value!r} from {address!r} was published as a place"
+        assert why == suburb_quality.BLANK_NOT_A_PLACE, why
+
+
+def test_the_rows_own_address_beats_a_street_name_in_the_suburb_column():
+    """'LOT 2950 LOCKINGTON RD, TARNEIT 3029' was published as Lockington — a real
+    Victorian town about 200 km from the lot — because the spreadsheet put the street's
+    name in the suburb position. An address is stronger evidence than a column."""
+    got, why = suburb_quality.resolve(_r(
+        suburb="Lockington", state="VIC",
+        lot_address="LOT 2950 LOCKINGTON RD, TARNEIT 3029"))
+    assert got == "Tarneit", got
+    assert why == suburb_quality.FROM_ADDRESS, why
+    assert suburb_quality.is_located(why)
+
+
+def test_a_correct_suburb_is_not_overridden_by_its_own_postcode():
+    """Both conditions are required. Either alone would start rewriting values that are
+    simply right — here the column and the address agree, so nothing may change."""
+    got, why = suburb_quality.resolve(_r(
+        suburb="Tarneit", state="VIC",
+        lot_address="LOT 2950 SOME ROAD, TARNEIT 3029"))
+    assert (got, why) == ("Tarneit", suburb_quality.STATED), (got, why)
 
 
 def test_a_state_name_in_the_column_is_rebuilt_from_the_rows_own_address():
@@ -156,7 +200,14 @@ def run_all():
         ("junk is blanked and says why", test_junk_is_blanked_and_says_why),
         ("never-stated differs from rejected",
          test_a_blank_is_reported_as_never_stated_not_as_rejected),
-        ("no state means nothing can be checked", test_with_no_state_recorded_nothing_can_be_checked),
+        ("no state: shown but never located",
+         test_with_no_state_recorded_a_name_is_shown_but_never_located),
+        ("a street is refused with no state either",
+         test_a_street_is_refused_even_with_no_state_to_check_against),
+        ("the address beats a street in the suburb column",
+         test_the_rows_own_address_beats_a_street_name_in_the_suburb_column),
+        ("a correct suburb is not overridden",
+         test_a_correct_suburb_is_not_overridden_by_its_own_postcode),
         ("a state name is rebuilt from the address",
          test_a_state_name_in_the_column_is_rebuilt_from_the_rows_own_address),
         ("postcode anchor needs the state to fit",
