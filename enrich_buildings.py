@@ -61,10 +61,31 @@ def state_from_filename(url: str) -> str:
 
 
 def builder_from_filename(url: str, names: dict) -> str:
-    """'CREATION VIC' / 'GDEV' in a stocklist name -> the approved builder."""
+    """'CREATION VIC' / 'GDEV' in a stocklist FILE NAME -> the approved builder.
+
+    THE FILE NAME, not the whole URL. Without `dn=` this used the entire string, domain
+    included, so a portal's own address answered its own name:
+
+        https://portal.proxima.com.au/agent/projects/index/  ->  "Proxima"
+
+    Proxima is the PORTAL. 319 live lots were attributed to a builder of that name and
+    published on the dashboard -- the same mistake as the "Level 33" attribution Colin
+    caught on 5 Aug, where a place inside a development became the builder.
+
+    A stocklist file called "CREATION VIC.xlsx" is evidence about who built the stock.
+    The address of the site you fetched it from is not.
+    """
     if not url:
         return ""
-    name = unquote(url).split("dn=")[-1] if "dn=" in url else unquote(url)
+    if "dn=" in url:
+        name = unquote(url).split("dn=")[-1]
+    else:
+        # Last path segment only, and only when it looks like a document. A bare portal
+        # path ('/agent/projects/index/') names no file and therefore names no builder.
+        tail = unquote(url).split("?")[0].rstrip("/").split("/")[-1]
+        name = tail if "." in tail and not tail.lower().endswith((".com", ".au", ".net")) else ""
+    if not name:
+        return ""
     low = re.sub(r"[^a-z ]", " ", name.lower())
     for key, proper in names.items():
         if key and key in low:
@@ -239,9 +260,20 @@ def main():
 
         # --- builder ---
         if not builder:
+            # IN MEMORY ONLY -- this used to also
+            #     conn.execute("UPDATE buildings SET builder_name=? WHERE id=?", ...)
+            # and builder_name is one of the eight inputs to building_content_hash. The
+            # suburb write a few lines up was disarmed for exactly this reason; this one
+            # survived. Writing it re-identifies the row, so the next harvest INSERTs a
+            # duplicate instead of updating in place -- the mechanism behind 777
+            # duplicate captures, which was itself a builder_name rewrite.
+            #
+            # It had already fired: 319 live rows carried builder_name='Proxima', and
+            # not one of them reproduced its own stored content_hash until the column was
+            # put back to blank. builder_names.py fills this correctly at WRITE time,
+            # before the hash is computed, which is the only safe place for it.
             cand = builder_from_text(addr, names) or builder_from_filename(url, names)
             if cand:
-                conn.execute("UPDATE buildings SET builder_name=? WHERE id=?", (cand, rid))
                 builder = cand
                 fixed_builder += 1
 
