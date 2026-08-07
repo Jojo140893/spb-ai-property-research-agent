@@ -50,17 +50,47 @@ from sources import remote_stocklist as remote                       # noqa: E40
 from verify_against_source import fetch, fetchable                   # noqa: E402
 
 # extractor field -> database column
+# NOTHING HERE MAY BE AN INPUT TO building_content_hash.
+#
+# This wrote `suburb` and `land_sqm`, and both are hash fields. Applying it would have
+# re-identified every row it touched, so the next harvest would INSERT a duplicate
+# instead of updating in place -- the mechanism behind 777 duplicate captures when
+# builder_name was rewritten the same way, and the reason clear_impossible_values.py
+# says in as many words that "land_sqm is deliberately left alone for exactly that
+# reason". A coverage tool that silently doubles the catalogue is worse than the gap.
+#
+# Neither loss matters now:
+#   * the suburb is resolved at read and export time by suburb_quality, which is
+#     identity-safe by construction and already recovers the composites this was
+#     reaching for;
+#   * land_sqm is corrected by the next harvest, which recomputes the hash from the
+#     source file and updates the row in place.
+#
+# _assert_no_hashed_fields below fails the run rather than trusting this comment.
 FIELD_MAP = {
-    "suburb": "suburb",
     "bedrooms": "bedrooms",
     "bathrooms": "bathrooms",
     "car_spaces": "car_spaces",
-    "land_size_sqm": "land_sqm",
     "house_size_sqm": "house_sqm",
     "frontage_m": "frontage_m",
     "estate_name": "estate_name",
     "postcode": "postcode",
 }
+
+
+def _assert_no_hashed_fields():
+    """Refuse to run if FIELD_MAP has grown a column that decides row identity."""
+    from database import _HASH_FIELDS
+    # suburb is hashed as `suburb_norm` and land_sqm under its own name; compare on the
+    # bare column name so both shapes are caught.
+    hashed = {f.replace("_norm", "").replace("builder_key", "builder_name")
+              for f in _HASH_FIELDS}
+    clash = sorted(set(FIELD_MAP.values()) & hashed)
+    if clash:
+        raise SystemExit(
+            f"[ABORT] reparse would write {clash}, which decide content_hash. "
+            f"Writing them re-identifies the row and the next harvest inserts a "
+            f"duplicate. Resolve those at read time instead (see suburb_quality.py).")
 
 
 def _key(text: str) -> str:
@@ -135,6 +165,7 @@ def main():
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--limit-files", type=int, default=0)
     args = ap.parse_args()
+    _assert_no_hashed_fields()
 
     conn = sqlite3.connect(str(DATABASE_PATH))
     conn.row_factory = sqlite3.Row
@@ -201,17 +232,9 @@ def main():
                 value = f.get(src)
                 if col == "postcode" and not _postcode_fits(value, row.get("state")):
                     continue
-                if col == "suburb":
-                    # Validate what is being WRITTEN, not only what is being replaced.
-                    # The banner reader refuses junk, but parse_fields can still put a
-                    # product type in this column, and 115 of the first 267 candidates
-                    # were "Dual Key", "COAST COUNCIL", "Duplex" or "Land". Swapping one
-                    # non-place for another is churn, not a repair.
-                    if not _is_locality(value, row.get("state")):
-                        continue
-                    replaceable = _replaceable_suburb(row.get(col), row.get("state"))
-                else:
-                    replaceable = _empty(row.get(col))
+                # No suburb branch any more: suburb is not written at all. It decides
+                # content_hash, and suburb_quality resolves it at read time instead.
+                replaceable = _empty(row.get(col))
                 if replaceable and not _empty(value):
                     change[col] = value
                     filled[col] += 1
