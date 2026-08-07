@@ -79,6 +79,55 @@ def test_harvest_stores_and_dedupes(monkeypatch):
     assert len(ResearchDatabase(db_path=tmp / "harvest_test.db").get_buildings()) == 3
 
 
+def test_the_collapse_floor_is_measured_against_live_stock_not_every_capture():
+    """The floor must not climb past what a healthy run actually reads.
+
+    It was derived from building_counts_by_channel()['n'], which is COUNT(*) over the
+    whole table. Superseded rows are never deleted, so that number only ever grows while
+    a good nightly read stays flat -- E-Agent already stores 8,538 against 4,351 live.
+    Once the floor crossed the real read, run_daily would abort at step 1/7 EVERY night,
+    permanently: each aborted run still stores its rows first, pushing the floor further
+    out of reach. The guard would have become the outage.
+    """
+    from harvest_buildings import _collapsed_channels
+
+    # A channel reading its full live stock, with three times as many superseded
+    # captures behind it. Judged on live rows this is healthy; judged on every capture
+    # ever stored it trips.
+    read = {"E-Agent": 4351}
+    live = {"E-Agent": 4351}
+    # 5x live: floor = 21755 * 0.25 = 5438, comfortably above the 4351 actually read.
+    # (4x lands exactly ON the boundary, and the check is `n < floor`, so it would not
+    # trip -- a fixture sitting on the edge proves nothing.)
+    every_capture = {"E-Agent": 21755}
+
+    assert _collapsed_channels(read, live, previous=read) == [],         "a full read of live stock was reported as a collapse"
+    assert _collapsed_channels(read, every_capture, previous=read),         "fixture no longer reproduces: the old denominator must trip here"
+
+
+def test_the_live_count_is_actually_exposed_by_the_query():
+    """The floor can only use live rows if the query returns them."""
+    import os
+    import pathlib
+    import tempfile
+
+    from database import ResearchDatabase
+    tmp = os.path.join(tempfile.mkdtemp(), "probe.db")
+    os.environ["SPB_DATABASE_PATH"] = tmp     # never the live database
+    try:
+        rows = ResearchDatabase(pathlib.Path(tmp)).building_counts_by_channel()
+    finally:
+        os.environ.pop("SPB_DATABASE_PATH", None)
+    # Empty table, but the SHAPE is the contract.
+    probe = ResearchDatabase(pathlib.Path(tmp))
+    with probe._get_connection() as conn:
+        cols = [d[0] for d in conn.execute(
+            "SELECT source_channel, COUNT(*) AS n, "
+            "SUM(CASE WHEN superseded_by IS NULL OR superseded_by='' THEN 1 ELSE 0 END) "
+            "AS n_live FROM buildings GROUP BY source_channel").description]
+    assert "n_live" in cols and "n" in cols, cols
+
+
 def _run_without_pytest():
     """Fallback runner (no pytest) using a tiny monkeypatch shim."""
     class MP:
@@ -98,6 +147,8 @@ def _run_without_pytest():
         test_a_small_channel_is_not_judged_on_noise()
         test_a_first_run_has_nothing_to_be_measured_against()
         test_the_previous_read_is_the_newest_run_not_the_newest_string()
+        test_the_collapse_floor_is_measured_against_live_stock_not_every_capture()
+        test_the_live_count_is_actually_exposed_by_the_query()
         return True
     finally:
         mp.undo()

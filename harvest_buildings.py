@@ -150,9 +150,17 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, email_days=90):
                 print(f"    -> file and link them with: python attach_email_brochures.py --apply")
 
     counts = db.building_counts_by_channel()
+    # `n` for "has this channel ever produced anything" (_dead_channels asks a yes/no
+    # question, so every capture counts). `n_live` for the collapse FLOOR, which is a
+    # magnitude: superseded rows are never deleted, so `n` only grows while a healthy
+    # read stays flat, and a floor derived from it eventually exceeds what a good run
+    # returns. E-Agent stores 8,538 against 4,351 live already. Once it crossed, every
+    # night would abort at step 1/7 -- and each aborted run still stores its rows first,
+    # pushing the floor further out of reach.
     stored = {row["source_channel"]: row["n"] for row in counts}
+    stored_live = {row["source_channel"]: (row.get("n_live") or 0) for row in counts}
     dead = _dead_channels(read, stored)
-    collapsed = _collapsed_channels(read, stored, previous=baseline)
+    collapsed = _collapsed_channels(read, stored_live, previous=baseline)
 
     print("\n" + "=" * 70)
     if dead:

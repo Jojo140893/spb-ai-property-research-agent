@@ -652,10 +652,25 @@ class ResearchDatabase:
             return [dict(r) for r in rows]
 
     def building_counts_by_channel(self) -> List[Dict[str, Any]]:
+        """Per channel: `n` every capture ever stored, `n_live` those not superseded.
+
+        BOTH, because the two callers want different things and conflating them broke
+        the harvest guard. server.py displays `n` -- "what we hold" legitimately counts
+        every capture. harvest_buildings derives a MINIMUM ROW COUNT from it, and for
+        that `n` is the wrong denominator: superseded rows are never deleted, so `n`
+        only ever grows while a healthy nightly read stays flat. E-Agent already stores
+        8,538 against 4,351 live. Left on `n`, the floor climbs past what a good run
+        actually reads and then aborts run_daily at step 1/7 every night, permanently,
+        because each aborted run still stores its rows first and pushes the floor higher.
+        """
         with self._get_connection() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("""
-                SELECT source_channel, COUNT(*) AS n FROM buildings GROUP BY source_channel ORDER BY n DESC
+                SELECT source_channel,
+                       COUNT(*) AS n,
+                       SUM(CASE WHEN superseded_by IS NULL OR superseded_by = ''
+                                THEN 1 ELSE 0 END) AS n_live
+                FROM buildings GROUP BY source_channel ORDER BY n DESC
             """).fetchall()
             return [dict(r) for r in rows]
 
