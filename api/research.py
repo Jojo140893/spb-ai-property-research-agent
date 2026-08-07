@@ -299,10 +299,11 @@ def run_research(payload):
     try:
         from datetime import datetime
         from benchmark_competitive import evaluate as _competitive
+        from benchmark_market import evaluate as _market
         from comp_provider import get_provider as _get_provider
         _provider = _get_provider()
         for _p in result['shortlist']:
-            _res = _competitive({
+            _row_for_benchmark = {
                 'suburb': _p.suburb, 'state': _p.state,
                 'bedrooms': _p.bedrooms, 'land_sqm': _p.land_size_sqm,
                 'price': _p.price_breakdown.advertised_package_price,
@@ -314,7 +315,15 @@ def run_research(payload):
                 'product_type': getattr(_p, 'product_type', ''),
                 'land_price': _p.price_breakdown.land_price,
                 'build_price': _p.price_breakdown.build_price,
-            }, provider=_provider)
+            }
+            _res = _competitive(_row_for_benchmark, provider=_provider)
+            # Benchmark B: market context for the report. Computed from the same comp
+            # source but a DIFFERENT comp set (new-build preferred), because a new
+            # turnkey package carries a premium a 1990s house does not — fine in the
+            # competitive check, misleading in a document telling a buyer the buy is
+            # sound. One number cannot serve both.
+            _p.market_context = _market(_row_for_benchmark, provider=_provider,
+                                        as_at=datetime.now().strftime('%d/%m/%Y'))
             _p.competitive = {
                 'verdict': _res.verdict, 'confidence': _res.confidence,
                 'tier': _res.tier, 'n_comps': _res.n_comps,

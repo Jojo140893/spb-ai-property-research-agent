@@ -488,7 +488,8 @@ _FUNCTION_ROOT_MODULES = (
     # deployed endpoint simply returned no verdict at all while it worked locally. That
     # is the same silent-degradation shape as the harvest reporting success on an empty
     # channel, and it is why _verify_function_imports asserts on the bundle below.
-    "benchmark_competitive.py", "comp_provider.py", "price_kind.py",
+    "benchmark_competitive.py", "benchmark_market.py", "comp_provider.py",
+    "price_kind.py",
 )
 _FUNCTION_SOURCES = (
     "__init__.py", "adaptive_extract.py", "base.py", "builder_portals.py", "dedupe.py",
@@ -584,7 +585,7 @@ def _verify_function_imports(dest_api: Path) -> None:
         p.suffix.lower() in (".svg", ".png", ".jpg", ".jpeg")
         for p in (Path(__file__).parent / "brand").iterdir() if p.is_file())
     probe = ("import sys; sys.path[:0] = [r'%s', r'%s'];"
-             " import research, _candidates, _export_builders; import benchmark_competitive, comp_provider, price_kind;"
+             " import research, _candidates, _export_builders; import benchmark_competitive, benchmark_market, comp_provider, price_kind;"
              " import client_report;"
              " assert (not %r) or client_report._logo_html(), 'logo missing from bundle';"
              " print('imports-ok')" % (dest_api, dest_api / "_lib", want_logo))

@@ -36,6 +36,54 @@ def _esc(v) -> str:
     return html.escape(str(v), quote=True)
 
 
+def _market_section(p) -> str:
+    """Suburb context for a recommended option, or nothing at all.
+
+    Coleen, 22 Jul: "your purchase price is this, but the average house price is this,
+    right, so that they can see that they are doing a good buy."
+
+    OMITTED ENTIRELY rather than hedged when the comparison is weak. A low-confidence
+    number, or one padded out with established homes that carry no new-build premium,
+    exists internally but does not support a claim — and this document is one a buyer
+    acts on. Every figure that does appear carries its source, its comp count and its
+    date, because an undated benchmark is not a benchmark.
+    """
+    ctx = getattr(p, "market_context", None)
+    if not ctx or not getattr(ctx, "client_safe", False):
+        return ""
+    rows = [f"<div class='row'><span class='label'>Comparable market price</span>"
+            f"<span>{_money(ctx.avg_market_price)}</span></div>"]
+    if ctx.variance_pct is not None:
+        better = ctx.variance_pct < 0
+        rows.append(
+            f"<div class='row'><span class='label'>This purchase</span><span>"
+            f"<span class='{'good' if better else ''}'>"
+            f"{abs(ctx.variance_pct):.1f}% {'below' if better else 'above'}</span>"
+            f" the comparable market price</span></div>")
+    st = getattr(ctx, "stats", None)
+    for label, value in (("Suburb median", getattr(st, "median_price", None)),
+                         ("Median rent", getattr(st, "median_rent", None)),
+                         ("Gross yield", getattr(st, "gross_yield", None)),
+                         ("12-month growth", getattr(st, "growth_12m", None)),
+                         ("Days on market", getattr(st, "days_on_market", None))):
+        if value:
+            shown = (_money(value) if "median" in label.lower() or "rent" in label.lower()
+                     else f"{value}")
+            rows.append(f"<div class='row'><span class='label'>{_esc(label)}</span>"
+                        f"<span>{_esc(shown)}</span></div>")
+    comps = "".join(
+        f"<tr><td>{_esc(c.get('suburb'))}, {_esc(c.get('state'))}</td>"
+        f"<td>{_esc(c.get('bedrooms'))} bed</td><td>{_money(c.get('price'))}</td>"
+        f"<td>{_esc(c.get('source'))}</td></tr>" for c in (ctx.comparables or [])[:5])
+    table = (f"<table class='comps'><tr><th>Comparable</th><th>Beds</th><th>Price</th>"
+             f"<th>Source</th></tr>{comps}</table>" if comps else "")
+    return (f"<h3>How this compares to the suburb</h3>{''.join(rows)}{table}"
+            f"<p class='pending'>{_esc(ctx.data_note or '')} "
+            f"Source: {_esc(ctx.source or 'not stated')}"
+            f"{' &middot; as at ' + _esc(ctx.as_at) if ctx.as_at else ''} &middot; "
+            f"{ctx.n_comps} comparable(s).</p>")
+
+
 class ClientReportGenerator:
     @staticmethod
     def generate_html(brief: ClientBrief, shortlist: List[CandidateProperty],
@@ -166,6 +214,7 @@ class ClientReportGenerator:
       <h3>Why we recommend it</h3>
       <p>{_esc(p.recommendation_reason)}</p>
       {amenity_line}
+      {_market_section(p)}
       <h3>{'Price comparison' if internal else 'Market comparison'}</h3>
       {comp_table}
       <h3>Things to be aware of</h3>
