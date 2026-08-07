@@ -47,6 +47,7 @@ from tests.test_colin_5aug import run_all as _colin_5aug_suite
 from tests.test_price_kind import run_all as _price_kind_suite
 from tests.test_cohorts import run_all as _cohorts_suite
 from tests.test_reparse_guards import run_all as _reparse_suite
+from tests.test_competitive_benchmark import run_all as _competitive_suite
 from tests.test_adaptive_extract import test_adaptive_extracts_from_unknown_layouts
 
 
@@ -95,6 +96,7 @@ def run_all_tests():
         ("Price kind: never compare across kinds", lambda: (_ for _ in ()).throw(AssertionError("price-kind suite failed")) if _price_kind_suite() else None),
         ("Cohorts: a wrong key is a wrong benchmark", lambda: (_ for _ in ()).throw(AssertionError("cohorts suite failed")) if _cohorts_suite() else None),
         ("Reparse: guards on what gets written", lambda: (_ for _ in ()).throw(AssertionError("reparse suite failed")) if _reparse_suite() else None),
+        ("Benchmark A: the competitive check", lambda: (_ for _ in ()).throw(AssertionError("competitive suite failed")) if _competitive_suite() else None),
     ]
 
     passed = 0
