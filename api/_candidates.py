@@ -54,7 +54,11 @@ SNAPSHOT_FIELDS = [
     "car_spaces", "land_sqm", "house_sqm", "storey", "title_status", "estate_name",
     "incentive_amount", "incentive_text", "product_type", "source_channel",
     "attribution_scope", "date_checked", "listing_url", "floorplan_url",
-    "brochure_url", "source_project_id", "stocklist_file", "source_url",
+    "brochure_url", "source_project_id",
+    # The link is PRECOMPUTED at build time and shipped, so the snapshot no longer has to
+    # carry stocklist_file / source_url -- both are capability URLs and this deployment
+    # is public. The SQLite reader still has the raw columns and recomputes.
+    "source_link_url", "source_link_label", "source_link_opens", "source_link_search",
     "benchmark_median", "benchmark_variance_pct",
     "benchmark_classification", "benchmark_basis",
     # Required, not optional: build_packages skips superseded captures, and without
@@ -135,6 +139,24 @@ BRIEF_MINIMUM_FOR = {
     "car_spaces": "car_spaces_min",
     "house_sqm": "house_size_min_sqm",
 }
+
+
+def _source_link(row, suburb):
+    """The "where this came from" link, preferring the one the build already computed.
+
+    stock.json no longer carries stocklist_file or source_url -- both are capability
+    URLs (a Dropbox rlkey grants read access to anyone holding the link, no sign-in) and
+    the deployment is public, so recomputing the link here would mean shipping the very
+    thing that was removed. build_web writes source_link_* into the snapshot instead.
+
+    The SQLite reader still has the raw columns, so it recomputes as before.
+    """
+    if row.get("source_link_url"):
+        return {"url": row.get("source_link_url") or "",
+                "label": row.get("source_link_label") or "",
+                "opens": row.get("source_link_opens") or "",
+                "search": row.get("source_link_search") or ""}
+    return primary_source_link({**row, "suburb": suburb})
 
 
 # --------------------------------------------------------------------------- readers
@@ -590,7 +612,7 @@ def build_packages(brief_dict, rows, today=None):
             # column it produced "122 Crescent" and "132 Paramatta" -- a street number
             # against a street name. A term that returns an error is worse than no term,
             # which is the complaint this function exists to answer.
-            "source_link": primary_source_link({**row, "suburb": suburb}),
+            "source_link": _source_link(row, suburb),
             # The day this listing was last actually seen at its source. The card turns
             # this into a staleness warning, which is the only thing that would have made
             # Proxima's expired sign-in visible: its rows sat three days old while every

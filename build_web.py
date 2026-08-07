@@ -52,7 +52,15 @@ BUILDING_FIELDS = [
     "land_sqm", "house_sqm", "frontage_m", "storey", "title_status", "estate_name",
     "incentive_amount", "incentive_text", "product_type", "source_channel",
     "attribution_scope", "date_checked", "listing_url", "floorplan_url",
-    "source_project_id", "stocklist_file", "source_url",
+    "source_project_id",
+    # stocklist_file and source_url are NOT exported. Both are capability URLs -- a
+    # Dropbox rlkey grants read access to whoever holds the link, with no sign-in -- and
+    # this deployment is public. stocklist_file is the worst of them: 2,753 rows carried
+    # a FOLDER link (scl/fo/...), which hands over the whole shared folder rather than
+    # one document, and index.html never rendered either column. The per-document links
+    # below (listing_url / floorplan_url / brochure_url) and the derived source_link_*
+    # ARE the "show me where this came from" feature Coleen asked for on 5 Aug, so they
+    # stay; these two were pure exposure with nothing reading them.
     "brochure_url", "benchmark_median", "benchmark_variance_pct",
     # benchmark_basis states what each median was computed against — internal peer
     # stock or a real CoreLogic/REA comparable set. Without it on the row, a reader
@@ -196,6 +204,34 @@ def _redact_contacts(text) -> str:
     return re.sub(r"\s{2,}", " ", out).strip()
 
 
+def _FOLDER_CAPABILITY(url: str) -> bool:
+    """A share link that opens a FOLDER rather than one document."""
+    return any(m in url for m in ("dropbox.com/scl/fo/", "/:f:/", "sharepoint.com/:f:"))
+
+
+def _assert_no_folder_capability_urls(path: Path) -> None:
+    """No FOLDER share link may reach the public snapshot.
+
+    A per-document link exposes one PDF and is the feature Coleen asked for. A folder
+    link -- Dropbox 'scl/fo/...', SharePoint/OneDrive folder shares -- hands over
+    everything in the folder to anyone holding the URL, with no sign-in. 2,753 rows
+    carried one in stocklist_file, a column index.html never even rendered.
+
+    The allow-list alone could not catch this: it filters field NAMES, and the field was
+    legitimately named. This checks the values.
+    """
+    if not path.exists():
+        return
+    text = path.read_text(encoding="utf-8")
+    folder = sum(text.count(m) for m in
+                 ("dropbox.com/scl/fo/", "/:f:/", "sharepoint.com/:f:"))
+    if folder:
+        raise SystemExit(
+            f"[ABORT] {path.name}: {folder} folder-level share link(s) would be "
+            f"published. A folder capability grants the whole folder to anyone with the "
+            f"URL. Export the per-document link instead, or nothing.")
+
+
 def _assert_a_benchmark_names_its_place(path: Path) -> None:
     """A published benchmark must say which suburb it is a benchmark FOR.
 
@@ -294,7 +330,11 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     # all, because the export could not see the text the benchmark had resolved from.
     # It stays out of BUILDING_FIELDS deliberately — it is the whole flattened
     # spreadsheet row, megabytes of it, and _pick drops it again immediately below.
-    _read_fields = BUILDING_FIELDS + ["source_text"]
+    # READ but never EXPORTED. provenance.primary_source_link needs source_url and
+    # stocklist_file to BUILD the per-document link; only the built link ships. Dropping
+    # them from the SELECT as well as the export cost 6,242 rows their source link --
+    # the feature stayed, but most rows lost it silently.
+    _read_fields = BUILDING_FIELDS + ["source_text", "source_url", "stocklist_file"]
     rows = conn.execute(
         f"SELECT {', '.join(_read_fields)} FROM buildings "
         "ORDER BY builder_name, price").fetchall()
@@ -341,8 +381,22 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         _suburb_reasons[why] = _suburb_reasons.get(why, 0) + 1
         if b["suburb"] != before:
             _resuburbed += 1
-        b.pop("source_text", None)          # read for resolution only, never published
         link = _link_for(b)
+        # A FOLDER capability is not publishable, even as the derived link. 2,027 rows
+        # had primary_source_link hand back the shared-folder URL, because a folder is
+        # all the provenance those rows have -- and that URL opens the whole folder to
+        # anyone holding it, with no sign-in.
+        #
+        # The URL is dropped; the LABEL and the search term are kept. A consultant still
+        # reads "VIC price list -- search there for Lot 623, Uptown", which is the part
+        # that actually helps, and index.html renders it as text when there is no URL.
+        if link and _FOLDER_CAPABILITY(str(link.get("url") or "")):
+            link = {**link, "url": ""}
+        # AFTER the link is built, not before: primary_source_link reads source_url and
+        # stocklist_file to construct it, and popping them first cost 6,242 rows their
+        # source link while leaving the feature apparently intact.
+        for _internal in ("source_text", "source_url", "stocklist_file"):
+            b.pop(_internal, None)          # read to build the link, never published
         b["source_link_url"] = (link or {}).get("url") or ""
         b["source_link_opens"] = (link or {}).get("opens") or ""
         b["source_link_label"] = (link or {}).get("label") or ""
@@ -700,6 +754,7 @@ if __name__ == "__main__":
     if m.get("relabelled"):
         print(f"    {m['relabelled']} row(s) re-labelled to one name per builder "
               f"(the database keeps its spellings — see _display_name_canonicaliser)")
+    _assert_no_folder_capability_urls(where / "stock.json")
     _assert_a_benchmark_names_its_place(where / "stock.json")
     for f in ("stock.json", "builders.json", "vendor-assets.json"):
         _assert_no_contact_details(where / f)

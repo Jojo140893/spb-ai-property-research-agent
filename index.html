@@ -1407,7 +1407,20 @@
             if (c.titleFrom && b[c.titleFrom] && b[c.titleFrom] !== v)
                 return `<td class="${c.cls || ''}" title="${esc(b[c.titleFrom])}">${esc(v ?? '')}</td>`;
             if (c.trace) {
-                if (!v) return '<td></td>';
+                // No URL, but we may still know WHERE it came from. 2,027 rows have
+                // only a shared-folder link as their provenance, and a folder link is a
+                // capability -- it opens the whole folder to anyone holding it -- so the
+                // build drops the URL and keeps the label. Rendering an empty cell would
+                // throw away the half that is safe and useful.
+                if (!v) {
+                    const lbl = b.source_link_label || b.source_link_opens || '';
+                    if (!lbl) return '<td></td>';
+                    const t = b.source_link_search
+                        ? `${lbl} — search there for: ${b.source_link_search}`
+                        : `${lbl} — no direct link published`;
+                    return `<td style="color:var(--text-muted);"
+                        title="${esc(t)}">${esc(lbl)}</td>`;
+                }
                 const opens = b.source_link_opens || 'source';
                 const label = b.source_link_label || 'source';
                 // The term the destination will actually match on, in the tooltip, so a
