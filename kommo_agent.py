@@ -129,17 +129,34 @@ class KommoPropertyResearchAgent:
 
             # Step 7: Market Benchmarking against ingested comparables
             # (CoreLogic/REA exports from drive_input/; sample data is labelled).
-            pkg_suburb = raw_pkg.get('suburb') or ''
-            # Stocklist rows often carry the locality only inside the address text
-            # ("LOT 79 STELLA ST, COLAC 3250"). Recover it, otherwise the property
-            # cannot be geocoded and would slip past the distance filter unjudged.
-            if not pkg_suburb.strip():
-                pkg_suburb = self.geo.find_suburb_in_text(
-                    f"{raw_pkg.get('lot_address', '')} {raw_pkg.get('estate_context', '')}",
-                    raw_pkg.get('state', brief.state)) or ''
-                if pkg_suburb:
-                    raw_pkg['suburb'] = pkg_suburb
-            pkg_suburb = pkg_suburb or suburb_name
+            # The same judgement about what counts as a place that the search path and
+            # the published snapshot use, so a lot cannot be located here and refused
+            # there. Recovery is structural and state-checked; anything else comes back
+            # blank with a reason.
+            import suburb_quality
+            _resolved, _why = suburb_quality.resolve({
+                'suburb': raw_pkg.get('suburb') or '',
+                'state': raw_pkg.get('state') or brief.state,
+                'lot_address': raw_pkg.get('lot_address') or '',
+                'source_text': raw_pkg.get('estate_context') or '',
+            })
+            pkg_suburb = _resolved if suburb_quality.is_located(_why) else ''
+            if pkg_suburb:
+                raw_pkg['suburb'] = pkg_suburb
+
+            # NO FALLBACK TO THE CLIENT'S OWN TARGET SUBURB.
+            #
+            # This line used to read `pkg_suburb = pkg_suburb or suburb_name`, so a lot
+            # whose location we could not establish was relabelled with the suburb the
+            # CLIENT asked for. It then matched distance_lookup exactly, measured 0.0 km,
+            # and scoring_engine awarded it the full 15/15 for location as though it were
+            # in the target suburb — the unlocatable lots scored best of all. The same
+            # invention ran again below, where the candidate's own suburb field fell back
+            # to brief.primary_suburbs[0] and finally to the literal 'Target Suburb'.
+            #
+            # Left blank, the distance lookup finds nothing, dist_km stays None, and
+            # scoring_engine already treats an unverifiable distance as a hard rejection
+            # against a stated radius rather than a free pass.
             bm_res = self.benchmark_engine.benchmark_package(
                 pkg_suburb, brief.state,
                 # None, not 4: a get() default cannot fire on a key that is present and
@@ -193,7 +210,9 @@ class KommoPropertyResearchAgent:
             cand = CandidateProperty(
                 property_id=f"PROP-{idx+1}",
                 lot_address=raw_pkg.get('lot_address', f"Lot {idx+1}"),
-                suburb=raw_pkg.get('suburb', brief.primary_suburbs[0] if brief.primary_suburbs else 'Target Suburb'),
+                # Blank, never the client's target suburb and never the literal string
+                # 'Target Suburb' — see the note above the benchmark call.
+                suburb=raw_pkg.get('suburb') or '',
                 state=raw_pkg.get('state', brief.state),
                 builder_name=builder_name,
                 developer_name=raw_pkg.get('developer_name', 'Developer'),
