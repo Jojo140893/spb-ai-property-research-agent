@@ -636,7 +636,15 @@
 
                 <div class="form-group" style="margin-top: 0.5rem;">
                     <label>Target Suburbs (Comma separated)</label>
-                    <input type="text" id="suburbs" value="Coomera, Springfield, Hope Island">
+                    <input type="text" id="suburbs" value="Coomera, Springfield, Hope Island"
+                           autocomplete="off" spellcheck="false">
+                    <!-- Suggestions land here. A plain <datalist> cannot do this job: it
+                         matches the WHOLE field value, so on a comma-separated input it
+                         stops suggesting after the first entry. -->
+                    <div id="suburbSuggest" role="listbox" style="display:none; position:absolute;
+                         z-index:40; margin-top:2px; max-height:220px; overflow-y:auto;
+                         background:var(--surface-white,#fff); border:1px solid var(--border-strong,#cbd5e1);
+                         border-radius:6px; box-shadow:0 6px 18px rgba(15,23,42,.12); min-width:260px;"></div>
                 </div>
 
                 <div class="form-group" style="margin-top: 0.5rem;">
@@ -1610,6 +1618,123 @@
             <span class="copied-flag" style="color:#15803d; font-weight:600;
                   display:none;">copied</span></div>`;
     };
+
+    /* ---------------------------------------------------- suburb autocomplete
+       Coleen asked for this twice on 3 Aug, and tied it to correctness rather than
+       convenience: "it has to compare the exact SEBAB name ... if it's not great, then
+       it's hard." A mistyped or ambiguous suburb yields a silently wrong benchmark,
+       which is worse than none. Suburb names repeat across states -- Springfield is in
+       QLD, NSW and SA -- so every suggestion carries its state.
+
+       Written by hand rather than with <datalist> because the field is comma-separated:
+       a datalist matches the whole value and stops suggesting after the first entry. */
+    /* How many live listings we hold per suburb, for ranking suggestions. Computed once
+       from the stock already in the page; empty until it loads, which just means the
+       ranking falls back to name order. */
+    let _stockCounts = null;
+    function stockCounts() {
+        if (_stockCounts) return _stockCounts;
+        _stockCounts = new Map();
+        try {
+            for (const b of (typeof STOCK !== 'undefined' && STOCK) || []) {
+                if (b.superseded_by) continue;
+                const k = String(b.suburb || '').trim().toLowerCase();
+                if (k) _stockCounts.set(k, (_stockCounts.get(k) || 0) + 1);
+            }
+        } catch (e) { /* stock not loaded yet; ranking degrades to name order */ }
+        return _stockCounts;
+    }
+
+    let SUBURBS = null;
+    async function loadSuburbs() {
+        if (SUBURBS) return SUBURBS;
+        try {
+            const r = await fetch('suburbs.json');
+            if (!r.ok) throw new Error(r.status);
+            const d = await r.json();
+            SUBURBS = d.suburb.map((n, i) => ({ n, s: d.state[i], k: n.toLowerCase(),
+                                                 held: (d.listings || [])[i] || 0 }));
+        } catch (e) {
+            SUBURBS = [];          // free text, exactly as before — never a hard failure
+        }
+        return SUBURBS;
+    }
+
+    (function wireSuburbAutocomplete() {
+        const input = document.getElementById('suburbs');
+        const box = document.getElementById('suburbSuggest');
+        if (!input || !box) return;
+        if (input.parentElement) input.parentElement.style.position = 'relative';
+        let items = [], active = -1;
+
+        const segment = () => {
+            const upto = input.value.slice(0, input.selectionStart ?? input.value.length);
+            const start = upto.lastIndexOf(',') + 1;
+            return { start, text: upto.slice(start).trim() };
+        };
+        const close = () => { box.style.display = 'none'; items = []; active = -1; };
+
+        const choose = (pick) => {
+            const { start } = segment();
+            const after = input.value.slice(input.selectionStart ?? input.value.length);
+            const before = input.value.slice(0, start);
+            input.value = `${before}${before && !before.endsWith(' ') ? ' ' : ''}${pick.n}` +
+                          `${after.trim() ? ', ' + after.trim() : ''}`;
+            close();
+            input.focus();
+        };
+
+        const paint = () => {
+            box.innerHTML = items.map((it, i) => `
+                <div class="sug" data-i="${i}" style="padding:.35rem .6rem; cursor:pointer;
+                     ${i === active ? 'background:var(--bg-page,#f1f5f9);' : ''}">
+                  <strong>${esc(it.n)}</strong>
+                  <span style="color:var(--text-muted,#64748b);"> ${esc(it.s)}</span>
+                </div>`).join('');
+            box.style.display = items.length ? 'block' : 'none';
+        };
+
+        input.addEventListener('input', async () => {
+            const all = await loadSuburbs();
+            const { text } = segment();
+            if (text.length < 2 || !all.length) return close();
+            // Restrict to the state already chosen on the form, so "Springfield" offers
+            // the one the client actually means rather than all three.
+            const st = (document.getElementById('stateSelect') || {}).value || '';
+            const q = text.toLowerCase();
+            const starts = [], contains = [];
+            for (const it of all) {
+                if (st && it.s !== st) continue;
+                if (it.k.startsWith(q)) starts.push(it);
+                else if (it.k.includes(q)) contains.push(it);
+            }
+            /* Rank by where we actually hold stock, not by file order.
+               Typing "Too" in QLD otherwise offered Toobanna, Toobeah, Toogoolawah and
+               five more hamlets, and never reached Toowoomba -- the one city in that
+               list anyone searches, and the suburb from Colin's own 3 Aug example.
+               A suggestion for a locality we have nothing in cannot produce a result. */
+            const rank = (a, b) => b.held - a.held
+                                   || a.n.length - b.n.length
+                                   || a.n.localeCompare(b.n);
+            items = starts.sort(rank).concat(contains.sort(rank)).slice(0, 8);
+            active = -1;
+            paint();
+        });
+
+        input.addEventListener('keydown', (e) => {
+            if (box.style.display === 'none' || !items.length) return;
+            if (e.key === 'ArrowDown') { active = (active + 1) % items.length; paint(); e.preventDefault(); }
+            else if (e.key === 'ArrowUp') { active = (active - 1 + items.length) % items.length; paint(); e.preventDefault(); }
+            else if (e.key === 'Enter' && active >= 0) { choose(items[active]); e.preventDefault(); }
+            else if (e.key === 'Escape') close();
+        });
+        box.addEventListener('mousedown', (e) => {
+            const el = e.target.closest('.sug');
+            if (el) { choose(items[+el.dataset.i]); e.preventDefault(); }
+        });
+        input.addEventListener('blur', () => setTimeout(close, 120));
+    })();
+
     /* One delegated listener rather than a handler per card -- the shortlist re-renders
        on every search and inline onclick would not survive it. */
     document.addEventListener('click', ev => {

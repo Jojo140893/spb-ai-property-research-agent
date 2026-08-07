@@ -369,6 +369,48 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         "generated": stamp, "assets": assets,
     }, separators=(",", ":"), default=str), encoding="utf-8")
 
+    # Every Australian locality, for the Research tab's suburb autocomplete.
+    #
+    # Coleen asked for this twice on 3 Aug and tied it to correctness rather than
+    # convenience: "it has to compare the exact SEBAB name ... if it's not great, then
+    # it's hard." A mistyped or ambiguous suburb produces a silently wrong benchmark,
+    # which is worse than no benchmark. data/au_suburbs.csv already ships 17,537 of them
+    # but reaches the deployment only inside the function bundle (see
+    # _bundle_research_function), so the browser cannot read it.
+    #
+    # Parallel arrays, not objects: 17,537 {"suburb":…,"state":…} records is roughly
+    # three times the bytes for the same information, and this is fetched per page load.
+    try:
+        import csv as _csv
+        # How many LIVE listings we hold per locality, so the autocomplete can offer the
+        # places a search can actually return something for. Computed here rather than in
+        # the browser: STOCK is only fetched when the Building Stock tab is opened, so on
+        # the Research tab the ranking would have no data and typing "Too" in QLD offered
+        # Toobeah, Toogoom and Toolara while never reaching Toowoomba.
+        _held = collections.Counter()
+        for _b in buildings:
+            if _b.get("superseded_by"):
+                continue
+            _sub = str(_b.get("suburb") or "").strip().lower()
+            if _sub:
+                _held[(_sub, str(_b.get("state") or "").strip().upper())] += 1
+        _names, _states, _counts = [], [], []
+        with open(app / "data" / "au_suburbs.csv", encoding="utf-8") as _fh:
+            for _row in _csv.DictReader(_fh):
+                _n = _row["suburb"].strip()
+                _st = _row["state"].strip().upper()
+                _names.append(_n)
+                _states.append(_st)
+                _counts.append(_held.get((_n.lower(), _st), 0))
+        (out_dir / "suburbs.json").write_text(json.dumps(
+            {"generated": stamp, "count": len(_names),
+             "suburb": _names, "state": _states, "listings": _counts},
+            separators=(",", ":")), encoding="utf-8")
+        print(f"[+] suburbs.json: {len(_names):,} localities for the suburb autocomplete")
+    except Exception as _e:                                           # noqa: BLE001
+        # Not fatal — the field reverts to free text, which is how it has always worked.
+        print(f"[!] could not write suburbs.json ({_e}) — autocomplete unavailable")
+
     named = sum(1 for b in buildings if (b.get("builder_name") or "").strip())
     meta = {
         "generated": stamp, "total": len(buildings), "named": named,
