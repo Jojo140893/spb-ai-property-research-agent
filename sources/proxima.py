@@ -40,7 +40,7 @@ import json
 import logging
 import re
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from sources.base import PropertySource
 from sources.scraper_base import PlaywrightScraper, PLAYWRIGHT_AVAILABLE
@@ -168,6 +168,110 @@ async (pid) => {
 """
 
 
+# THE PROJECTS PAGE REMEMBERS A FILTER, AND IT IS NOT IN THE URL.
+#
+# Proxima holds the filter in the Magento SESSION, and the harvest deliberately reuses
+# the persistent browser profile a human signs in with (`.browser_profiles/portal_proxima`,
+# required because Proxima re-challenges 2FA for every new browser context). So a filter
+# somebody left set while browsing the portal is STILL APPLIED when the harvest opens the
+# page hours later, and nothing in the URL, the title or the log says so.
+#
+# On 2026-08-07 a leftover `property[state]=NSW` rendered 8 projects instead of 40 and the
+# harvest stored 52 lots instead of 1,293 — small enough to read as a quiet day, large
+# enough to pass every "did anything come back" check. Clearing the filter restored
+# 40 projects / 9 availability views immediately; that is the known-good line.
+#
+# Hidden inputs are excluded: the portal carries its own bookkeeping fields under the same
+# `property[...]` name, and counting those would make every run look filtered.
+_FILTER_FIELDS = ('select[name^="property["], '
+                  'input[name^="property["]:not([type=hidden])')
+
+# What the form reads when it is NOT filtered. A default is not a filter, and treating
+# one as a filter is worse than missing a real one: it puts "the page came up FILTERED"
+# in the log every single night until nobody reads it any more.
+#
+# Confirmed live on 2026-08-07. A run arrived with property[property_status]=SALE and
+# nothing else, read 40/40 projects and 1,293 lots — the known-good line, so the value
+# hides nothing — and the reset control left it in place, which is what restoring a form
+# default looks like.
+#
+# Keyed on the PAIR, not the field: property_status=SOLD is still a filter and is still
+# reported. Adding to this needs the same evidence — a full read with the value present.
+_UNFILTERED_DEFAULTS = {"property_status": "SALE"}
+
+
+def _real_filters(snapshot: Dict[str, str]) -> Dict[str, str]:
+    """The set fields that actually narrow the page, with form defaults removed."""
+    return {k: v for k, v in (snapshot or {}).items()
+            if _UNFILTERED_DEFAULTS.get(k) != v}
+
+
+_FILTER_SNAPSHOT_JS = r"""
+(sel) => {
+  const out = {};
+  document.querySelectorAll(sel).forEach(el => {
+    const name = (el.getAttribute('name') || '').replace(/^property\[/, '').replace(/\]$/, '');
+    if (!name) return;
+    if (el.type === 'checkbox' || el.type === 'radio') {
+      if (el.checked && el.value) out[name] = el.value;
+      return;
+    }
+    const v = (el.value || '').trim();
+    if (v) out[name] = v;
+  });
+  return out;
+}
+"""
+
+# CLEARING THE FORM IS NOT CLEARING THE FILTER. Measured live on 2026-08-07: clicking
+# `#search_clear` empties the select in the DOM and nothing else — the Magento session
+# still holds the filter, so the listing on screen is still the narrowed one and the next
+# page load brings the filter straight back. A first version of this fix clicked that
+# control, re-read the now-empty field, declared the page clear, and harvested 1,049 lots
+# against the unfiltered 1,293 while printing [SUCCESS].
+#
+# So the SUBMIT is the whole point: only posting the form updates the session. The clear
+# control is still clicked first, because it empties the form the way the portal expects,
+# but its click is never taken as evidence of anything.
+#
+# Fields are restored to their DEFAULTS rather than blanked, so property_status goes back
+# to SALE instead of empty — blanking it would ask a different question of the portal than
+# the unfiltered page does, and the known-good line (40 projects / 9 availability views)
+# is measured with it set.
+#
+# Both controls sit BELOW a 1440x900 headless viewport, so Playwright's own `.click()`
+# refuses them with "element is outside of the viewport". A click dispatched from inside
+# the page has no such constraint.
+_CLEAR_AND_SUBMIT_JS = r"""
+(cfg) => {
+  const {sel, defaults} = cfg;
+  let used = [];
+  for (const s of ['#search_clear', '.filter-form-reset', '#search_reset',
+                   '[data-action-code="RESET"]']) {
+    const el = document.querySelector(s);
+    if (el) { try { el.scrollIntoView(); } catch (e) {} el.click(); used.push(s); break; }
+  }
+  document.querySelectorAll(sel).forEach(el => {
+    const name = (el.getAttribute('name') || '').replace(/^property\[/, '').replace(/\]$/, '');
+    const def = Object.prototype.hasOwnProperty.call(defaults, name) ? defaults[name] : '';
+    if (el.type === 'checkbox' || el.type === 'radio') {
+      el.checked = false;
+    } else {
+      el.value = def;
+      if (el.tagName === 'SELECT' && (el.value || '') !== def) el.selectedIndex = -1;
+    }
+    el.dispatchEvent(new Event('change', {bubbles: true}));
+  });
+  const submit = document.querySelector('#search_submit');
+  if (!submit) return '';
+  try { submit.scrollIntoView(); } catch (e) {}
+  submit.click();
+  used.push('#search_submit');
+  return used.join(' + ');
+}
+"""
+
+
 def _lot_number(raw: str) -> str:
     """'00000014/00000014' -> '14'. Returns '' when there is nothing real."""
     if not raw:
@@ -175,6 +279,55 @@ def _lot_number(raw: str) -> str:
     first = str(raw).split("/")[0].strip()
     trimmed = first.lstrip("0")
     return trimmed or ""
+
+
+# A project header is A NAME PLUS A LIVE COUNTER: "Ahlei (85/110)" says 85 of Ahlei's
+# 110 lots are available right now.
+#
+# WHICH NUMBER IS WHICH was checked against our own stored rows on 7 Aug 2026 rather
+# than assumed — Ahlei "(85/110)" stored 85 "Available" and 25 "Not Available", Arcadia
+# Estate "(3/28)" stored 3 and 25, Ashbury Terraces "(16/30)" stored 16 and 14. So it is
+# available/total. Two downstream workarounds call it "(sold/total)"; they strip it and
+# never read it, so the mislabel was harmless there, but it is not what the numbers mean.
+#
+# THE COUNTER MOVES AS LOTS SELL AND COME BACK, and it was being stored as part of the
+# estate's name, which made the name itself volatile. The same Wollongong building:
+#
+#     03/08/2026   "Atchison and Kenny Wollongong Building A (2/305)"
+#     07/08/2026   "Atchison and Kenny Wollongong Building A (3/305)"
+#
+# estate_name is deliberately not part of building_content_hash, so this never split one
+# lot into two rows. What it did do is fragment the estate itself: 324 of 379 duplicated
+# Proxima addresses differ on estate_name and on nothing else, the dashboard lists one
+# estate under several names, and any comparison by estate across two harvests is
+# unreliable by construction.
+#
+# ANCHORED TO A TRAILING PAIR OF INTEGERS ROUND A SLASH, because parentheses are also
+# part of real names in this portal — "Ascenta Living (DBN Homes)", "Creation Homes (Qld)
+# Pty Ltd" — and a looser pattern would amputate those.
+_PROJECT_COUNTER = re.compile(r"\s*\(\s*(\d+)\s*/\s*(\d+)\s*\)\s*$")
+
+
+def parse_project_title(title: Any) -> Tuple[str, Optional[int], Optional[int]]:
+    """'Ahlei (85/110)' -> ('Ahlei', 85, 110). A title with no counter comes back as is.
+
+    The counts are handed back rather than dropped on the floor. Where a project is read
+    through the availability view they are recoverable from the per-lot statuses, but
+    where it is read from the accordion we only ever SEE the lots still for sale, so this
+    header is the only statement of how big the project really is: DAMAC Islands Stage 2
+    stored 80 lots — the DOM's own `data-propertylimit` cap — under a header reading
+    (142/264). Discarding the pair would throw away the only measure of that project's
+    true size and its sell-through.
+    """
+    text = re.sub(r"\s+", " ", str(title or "")).strip()
+    m = _PROJECT_COUNTER.search(text)
+    if not m:
+        return text, None, None
+    name = text[:m.start()].strip()
+    # A header that is ONLY a counter leaves nothing to keep. Hand back the raw string:
+    # a blank estate is the one outcome a grouping cannot recover from, and it would be
+    # this fix causing it.
+    return (name or text), int(m.group(1)), int(m.group(2))
 
 
 def parse_property_name(name: str) -> Dict[str, str]:
@@ -229,6 +382,10 @@ class ProximaSource(PropertySource):
         self.projects_with_stock = 0
         self.cross_listed: List = []
         self.via_api = 0
+        # What the projects page had filtered on when this run opened it, if anything.
+        # Kept so the run summary can say the harvest walked into a filtered page rather
+        # than leaving that to be inferred from a low count. See _clear_filters.
+        self.filter_found: Dict[str, str] = {}
 
     @property
     def channel_name(self) -> str:
@@ -238,6 +395,103 @@ class ProximaSource(PropertySource):
 
     def _bump(self, key: str) -> None:
         self.stats[key] = self.stats.get(key, 0) + 1
+
+    @staticmethod
+    def _settle(scraper) -> None:
+        """Wait for the projects list to come back after a reset re-renders it."""
+        for wait in (lambda: scraper.page.wait_for_load_state("networkidle", timeout=15000),
+                     lambda: scraper.page.wait_for_selector(
+                         "label.tab-label[data-project_id]", timeout=15000),
+                     lambda: scraper.page.wait_for_timeout(800)):
+            try:
+                wait()
+            except Exception:
+                pass
+
+    # The only field whose unfiltered value is CONFIRMED against the live page: clearing
+    # property[state] took the projects page from 1,049 lots and 8 availability views back
+    # to 1,293 and 9 (2026-08-07), and an unfiltered page shows that select with nothing
+    # chosen.
+    #
+    # A refusal rests on this field alone, deliberately. Every filter found is cleared,
+    # but another `property[...]` control could carry a non-empty default nobody has
+    # looked at, and hard-failing the nightly harvest on a guess about one would cost
+    # more than this bug does. Anything else left set is logged loudly and left to the
+    # partial-read guard in harvest_buildings, which is the general net for exactly this.
+    _CONFIRMED_FILTER = "state"
+
+    # Two goes at the same thing. Not a second strategy — there is only one that works —
+    # but the submit reloads the page, and a reload that lands badly is worth one retry
+    # before giving up on the night's harvest.
+    _CLEAR_ATTEMPTS = 2
+
+    def _clear_filters(self, scraper) -> bool:
+        """Leave the projects page unfiltered, or say that it could not be done.
+
+        True means the page can be counted — nothing was set, or the filter was cleared
+        AND a fresh load of the page came back without it. False means the state filter
+        survived, and every count taken after it would be a subset of the truth wearing
+        the shape of a full read.
+
+        THE VERIFICATION IS A FRESH PAGE LOAD, and it has to be. Re-reading the same DOM
+        is what the first version of this fix did, and the portal's clear control empties
+        the form without touching the session — so the field read empty, the check passed,
+        and the harvest went on to read the still-filtered listing: 1,049 lots against
+        1,293, reported as [SUCCESS]. Only a reload asks the server what it actually holds.
+
+        An unreadable page is reported as clear on purpose: it is a bigger problem than a
+        filter and it surfaces a moment later as an empty harvest. Turning it into a
+        refusal here would only bury the real cause under this one.
+        """
+        cfg = {"sel": _FILTER_FIELDS, "defaults": _UNFILTERED_DEFAULTS}
+        try:
+            before = _real_filters(scraper.page.evaluate(_FILTER_SNAPSHOT_JS,
+                                                         _FILTER_FIELDS))
+        except Exception as e:
+            logger.warning("Proxima: could not read the projects filter (%s) — "
+                           "continuing, and the read count is the check.", e)
+            return True
+        if not before:
+            return True
+
+        self.filter_found = dict(before)
+        logger.warning("Proxima: the projects page came up FILTERED (%s). The filter "
+                       "lives in the portal session, so one left behind by a manual "
+                       "sign-in still applies to this harvest. Clearing it before "
+                       "anything is counted.",
+                       ", ".join(f"{k}={v}" for k, v in sorted(before.items())))
+
+        for attempt in range(1, self._CLEAR_ATTEMPTS + 1):
+            label = f"clear+submit (attempt {attempt})"
+            try:
+                hit = scraper.page.evaluate(_CLEAR_AND_SUBMIT_JS, cfg)
+                if not hit:
+                    logger.warning("     %s: no #search_submit on the page. Emptying the "
+                                   "form without posting it leaves the session's filter "
+                                   "exactly where it was.", label)
+                    break
+                self._settle(scraper)
+                # Ask the SERVER, not the DOM we just edited.
+                scraper.goto(PROJECTS_URL)
+                after = _real_filters(scraper.page.evaluate(_FILTER_SNAPSHOT_JS,
+                                                            _FILTER_FIELDS))
+            except Exception as e:
+                logger.warning("     %s failed: %s", label, e)
+                continue
+            if not after:
+                logger.info("     filter cleared via %s, and a fresh load of the page "
+                            "confirms it is gone.", hit)
+                return True
+            left = ", ".join(f"{k}={v}" for k, v in sorted(after.items()))
+            if self._CONFIRMED_FILTER not in after:
+                logger.warning("     %s left %s set. Counting anyway: property[state] is "
+                               "the only field with a confirmed unfiltered value, and "
+                               "stopping the nightly run over a field nobody has verified "
+                               "would cost more than this bug does. If the read comes "
+                               "back short, look here first.", label, left)
+                return True
+            logger.warning("     %s left %s still set.", label, left)
+        return False
 
     def _open_and_read(self, scraper, pid: str, attempts: int = 3):
         """Expand one project and read its lots, retrying an empty result.
@@ -379,7 +633,7 @@ class ProximaSource(PropertySource):
             return None
         a = parse_property_name(name)
 
-        project = (header.get("project") or "").strip()
+        project, avail_count, total_count = parse_project_title(header.get("project"))
         developer = (header.get("developer") or "").strip()
         # Proxima's developer field sometimes holds a place inside the development rather
         # than a company: one project published "Level 33" there and 318 listings were
@@ -411,7 +665,14 @@ class ProximaSource(PropertySource):
             "builder_name": developer,
             "builder_source": "proxima project header" if developer else "",
             "attribution_scope": "builder" if developer else "project",
+            # The estate's NAME, with the live counter taken off it — see
+            # parse_project_title. The two numbers are kept as numbers below.
             "estate_name": project,
+            # How the project stood the last time it was read. Volatile on purpose:
+            # record_building refreshes both in place every harvest rather than holding
+            # the first reading, because a stale availability is worse than none.
+            "project_available": avail_count,
+            "project_total": total_count,
             "lot_number": lot,
             "postcode": a["postcode"],
             "advertised_package_price": price,
@@ -464,6 +725,20 @@ class ProximaSource(PropertySource):
                     logger.error("Proxima bounced to %s — the saved sign-in has expired. "
                                  "Re-run: python portal_login.py portal_proxima --profile",
                                  scraper.page.url)
+                    return []
+
+                # BEFORE enumerating anything. A filtered page does not look broken —
+                # it looks like a smaller portfolio — so the count has to be taken from
+                # a page known to be showing everything.
+                if not self._clear_filters(scraper):
+                    logger.error(
+                        "Proxima: the projects page is STILL filtered by state (%s) "
+                        "after trying to clear it, so refusing to harvest. A filtered "
+                        "read is worse than none: it stores a subset and stamps it as "
+                        "today's stock, leaving the rest to go stale silently — on "
+                        "2026-08-07 that was 52 lots in place of 1,293. Open the portal, "
+                        "clear the projects filter, and re-run.",
+                        ", ".join(f"{k}={v}" for k, v in sorted(self.filter_found.items())))
                     return []
 
                 labels = scraper.page.query_selector_all("label.tab-label[data-project_id]")

@@ -37,8 +37,18 @@ GMAIL_SEARCH_URL = "https://mail.google.com/mail/u/0/#search/%s"
 _EMAIL_REF = re.compile(r"^\s*email:\s*(.+)$", re.I)
 
 
-# Proxima project titles carry a live "(sold/total)" counter — "275 Twelfth Ave Austral
-# (6/6)" — which moves as lots sell and is not part of the name you search for.
+# Proxima project titles used to carry a live "(available/total)" counter — "275 Twelfth
+# Ave Austral (6/6)" — which moves as lots sell and is not part of the name you search
+# for. sources/proxima.py now strips it on the way in and stores the pair as
+# project_available / project_total, so freshly harvested rows arrive clean.
+#
+# STILL STRIPPED HERE, for rows captured before that: a search term is built from
+# whatever is in the column today, and a term carrying a counter matches nothing.
+#
+# Deliberately a local copy of the pattern rather than an import of
+# proxima.parse_project_title: this module ships in the Vercel function bundle
+# (build_web._FUNCTION_ROOT_MODULES) and sources/proxima.py does not, so importing it
+# would raise at request time in the one place nobody is watching.
 _PROJECT_COUNTER = re.compile(r"\(\s*\d+\s*/\s*\d+\s*\)\s*$")
 
 

@@ -34,6 +34,21 @@ def _reparse_recover(building: Dict[str, Any]) -> Dict[str, Any]:
         return {}
 
 
+def _parse_day(value: Any) -> Optional[datetime]:
+    """A stored date string as a datetime, or None when it is not one.
+
+    The buildings table writes "%d/%m/%Y"; older rows migrated from date_checked can
+    carry ISO. Anything unrecognised is None rather than a guess — a mis-read date here
+    would silently reorder "which run was last".
+    """
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(str(value or "").strip(), fmt)
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
 def _first_suburb(brief_dict: Dict[str, Any]) -> str:
     """The first suburb named in the brief, or 'General'.
 
@@ -70,6 +85,14 @@ BUILDINGS_EXTRA_COLUMNS = (
     # Which project on the source portal this lot belongs to, so a recommendation can
     # link back to it. See provenance.py.
     ("source_project_id", "TEXT"),
+    # How the lot's PROJECT stood when it was last read: lots available, lots in total.
+    # Proxima states this in its project header ("Ahlei (85/110)") and it used to be
+    # stored as part of estate_name, which made the estate's own name change between
+    # harvests. Split out here so the name is stable and the numbers stay usable —
+    # for a project read from the accordion, which only ever shows lots still for sale,
+    # this is the only statement of the project's true size. See sources/proxima.py.
+    ("project_available", "INTEGER"),
+    ("project_total", "INTEGER"),
     ("listing_url", "TEXT"),             # human-openable page for this lot
     ("floorplan_url", "TEXT"),
     ("brochure_url", "TEXT"),
@@ -460,6 +483,8 @@ class ResearchDatabase:
             "availability_status": status,
             "storey": b.get("storey"),
             "estate_name": b.get("estate_name"),
+            "project_available": b.get("project_available"),
+            "project_total": b.get("project_total"),
             "lot_number": b.get("lot_number"),
             "postcode": b.get("postcode"),
             "frontage_m": b.get("frontage_m"),
@@ -520,6 +545,13 @@ class ResearchDatabase:
                 v = price if c == "price" else cols[c]
                 if v not in (None, "", 0, 0.0):
                     upd[c] = v
+            # The project counters are re-read from the source header every harvest and
+            # 0 is a genuine reading — a project with nothing left available — so they
+            # cannot ride in the loop above, which treats 0 as "not observed". Absent
+            # still means absent: a run that did not read them changes nothing.
+            for c in ("project_available", "project_total"):
+                if cols[c] is not None:
+                    upd[c] = cols[c]
             if changed:
                 upd["price_previous"] = old_price
                 upd["status_previous"] = old_status
@@ -626,6 +658,43 @@ class ResearchDatabase:
                 SELECT source_channel, COUNT(*) AS n FROM buildings GROUP BY source_channel ORDER BY n DESC
             """).fetchall()
             return [dict(r) for r in rows]
+
+    def building_reads_by_channel(self) -> Dict[str, int]:
+        """How many rows each channel returned on the most recent DAY it ran.
+
+        `last_seen` carries the date of the most recent run that saw a row — refreshed
+        for every row a run reads, including the ones it finds unchanged — so the rows
+        stamped with a channel's newest last_seen date are that day's read. Only the
+        newest date means that: an older date counts nothing but the rows that have not
+        been seen since, so the earlier dates decay as the table is re-harvested and
+        cannot be read as a series.
+
+        Granularity is a DAY, not a run: two harvests on one date give the union of both,
+        because last_seen holds no time. That makes the floor slightly stricter after a
+        same-day re-run, which is the safe direction — it can only over-report a
+        collapse's severity, never hide one. On the nightly cadence the two coincide.
+
+        MUST be called before the run stores anything — record_building stamps last_seen
+        with today, so after the first write the newest date is this run and the previous
+        read is gone. Used by harvest_buildings._collapsed_channels.
+        """
+        with self._get_connection() as conn:
+            rows = conn.execute("""
+                SELECT source_channel, last_seen, COUNT(*) AS n
+                  FROM buildings
+                 WHERE last_seen IS NOT NULL AND TRIM(last_seen) != ''
+                 GROUP BY source_channel, last_seen
+            """).fetchall()
+        # Sorted in Python, not SQL: last_seen is written "%d/%m/%Y", so ORDER BY would
+        # put 30/08/2026 after 01/09/2026 and read the older run as the newer one.
+        latest: Dict[str, Any] = {}
+        for channel, seen, n in rows:
+            day = _parse_day(seen)
+            if day is None:
+                continue
+            if channel not in latest or day > latest[channel][0]:
+                latest[channel] = (day, n)
+        return {channel: n for channel, (_day, n) in latest.items()}
 
     # ---------- Vendor directory ----------
     def upsert_builder(self, b: Dict[str, Any]):

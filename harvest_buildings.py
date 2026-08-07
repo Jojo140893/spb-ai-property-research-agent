@@ -46,6 +46,11 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, email_days=90):
     registry = BuilderRegistry()
     db = ResearchDatabase()
 
+    # CAPTURED BEFORE ANYTHING IS STORED. record_building stamps last_seen with today,
+    # so the moment the first row lands, "the newest last_seen" is this run and what the
+    # channel returned last time is no longer recoverable. See _collapsed_channels.
+    baseline = db.building_reads_by_channel()
+
     print("=" * 70)
     print("  HARVEST ALL BUILDING STOCK (E-Agent + direct portals)")
     print("=" * 70)
@@ -113,6 +118,13 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, email_days=90):
             if px.cross_listed:
                 print(f"    ({len(px.cross_listed)} lot(s) cross-listed under a second "
                       f"project, stored once)")
+        if px.filter_found:
+            # Said out loud even on a good run: the harvest walked into a filtered page,
+            # and the only reason the count is right is that it cleared it first.
+            was = ", ".join(f"{k}={v}" for k, v in sorted(px.filter_found.items()))
+            print(f"    (the projects page came up filtered on {was} — "
+                  + ("cleared before counting)" if listings else
+                     "see the log above for whether it cleared)"))
 
     if email:
         # The nine approved builders with no portal email their stock to
@@ -140,6 +152,7 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, email_days=90):
     counts = db.building_counts_by_channel()
     stored = {row["source_channel"]: row["n"] for row in counts}
     dead = _dead_channels(read, stored)
+    collapsed = _collapsed_channels(read, stored, previous=baseline)
 
     print("\n" + "=" * 70)
     if dead:
@@ -149,7 +162,18 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, email_days=90):
         print("\n    Those rows are now going stale while the dashboard keeps serving")
         print("    them as current. The usual cause is an expired sign-in:")
         print("      python portal_login.py portal_proxima --profile")
-    else:
+    if collapsed:
+        print("[FAILED] a channel read far less than it normally does:")
+        for channel, n, floor, basis in collapsed:
+            print(f"    - {channel}: read {n} this run, against {basis} "
+                  f"(expected at least {floor})")
+        print("\n    A partial read is not a small success: the rows that DID come back")
+        print("    are stamped as today's stock and the rest go stale with nothing on")
+        print("    screen to say so. For Proxima the usual cause is a filter left set on")
+        print("    the projects page — the portal remembers it per session, and a filtered")
+        print("    page reads as a smaller portfolio, not as an error. A healthy Proxima")
+        print("    run logs: 40 project(s) listed, 9 with an availability view.")
+    if not (dead or collapsed):
         print(f"[SUCCESS] {total_new} new building(s) stored.")
     for channel, why in sorted(skipped.items()):
         print(f"    - {channel}: SKIPPED, {why}")
@@ -161,7 +185,7 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, email_days=90):
         got = "" if n_read is None else f"   (read {n_read} this run)"
         print(f"    - {row['source_channel']}: {row['n']}{got}")
     print("=" * 70)
-    return 1 if dead else 0
+    return 1 if (dead or collapsed) else 0
 
 
 def _dead_channels(read: Dict[str, int], stored: Dict[str, int]):
@@ -182,6 +206,57 @@ def _dead_channels(read: Dict[str, int], stored: Dict[str, int]):
             if n == 0 and stored.get(channel, 0) > 0]
 
 
+# A channel that half-fails returns a number, and a number is what every check above was
+# looking for. On 2026-08-07 a filter left set in Proxima's portal session made the
+# projects page render 8 projects instead of 40: the harvest read 52 lots against 1,212
+# stored, printed [SUCCESS], exited 0, and run_daily went on to export, benchmark and
+# publish — the same shape as the 3 Aug incident _dead_channels was written for, one step
+# short of invisible.
+#
+# Two floors, because each covers the other's blind spot:
+#   * HALF of what the channel read last run. Tight, current, and it moves with the
+#     stock — but a partial run WRITES its rows, so on its own it would ratchet down and
+#     wave the same fault through tomorrow.
+#   * A QUARTER of everything the channel has ever stored. Loose, but monotonic: no bad
+#     run can lower it, so a second consecutive collapse is still caught.
+# The higher of the two applies. Both are deliberately generous — this exists to catch a
+# collapse, not ordinary movement, and a false alarm at 3am stops the whole daily run.
+_COLLAPSE_FLOOR = 0.5      # of the previous run's read
+_STORED_FLOOR = 0.25       # of the channel's stored rows
+# Below this, a day's ordinary churn is indistinguishable from a fault, so no floor is
+# applied at all: a channel that sends 8 listings and today sends 3 has not failed.
+_MIN_BASELINE = 20
+
+
+def _collapsed_channels(read: Dict[str, int], stored: Dict[str, int],
+                        previous: Dict[str, int] = None):
+    """Channels that read far less than usual — a partial read wearing success.
+
+    Returns (channel, read_this_run, floor, basis) per collapsed channel.
+
+    Reading NOTHING is left to _dead_channels, so a dead channel is reported once, with
+    the message that names its actual cause.
+    """
+    previous = previous or {}
+    out = []
+    for channel, n in sorted(read.items()):
+        if n <= 0:
+            continue
+        floors = []
+        prev = int(previous.get(channel) or 0)
+        if prev >= _MIN_BASELINE:
+            floors.append((int(prev * _COLLAPSE_FLOOR), f"{prev} read last run"))
+        held = int(stored.get(channel) or 0)
+        if held >= _MIN_BASELINE:
+            floors.append((int(held * _STORED_FLOOR), f"{held} stored"))
+        if not floors:
+            continue                      # nothing to compare against yet: a first run
+        floor, basis = max(floors)
+        if n < floor:
+            out.append((channel, n, floor, basis))
+    return out
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--eagent-only", action="store_true")
@@ -193,8 +268,9 @@ if __name__ == "__main__":
     args = ap.parse_args()
     only = (args.eagent_only or args.portals_only or args.email_only
             or args.proxima_only)
-    # Non-zero when a channel that holds stock read nothing, so run_daily stops and
-    # the operator is told, instead of publishing a stale snapshot as if it were fresh.
+    # Non-zero when a channel that holds stock read nothing, OR read so much less than
+    # usual that the run is a partial, so run_daily stops and the operator is told,
+    # instead of publishing a stale snapshot as if it were fresh.
     sys.exit(harvest(eagent=args.eagent_only or not only,
                      portals=args.portals_only or not only,
                      email=args.email_only or not only,

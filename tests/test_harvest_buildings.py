@@ -91,6 +91,13 @@ def _run_without_pytest():
     try:
         test_harvest_stores_and_dedupes(mp)
         test_a_channel_that_reads_nothing_but_holds_stock_is_a_failure()
+        test_a_partial_read_does_not_pass_as_success()
+        test_a_second_partial_run_is_still_caught()
+        test_ordinary_movement_is_not_a_failure()
+        test_zero_is_left_to_the_dead_channel_check()
+        test_a_small_channel_is_not_judged_on_noise()
+        test_a_first_run_has_nothing_to_be_measured_against()
+        test_the_previous_read_is_the_newest_run_not_the_newest_string()
         return True
     finally:
         mp.undo()
@@ -119,6 +126,98 @@ def test_a_channel_that_reads_nothing_but_holds_stock_is_a_failure():
     assert _dead_channels({"Proxima": 1212}, {"Proxima": 1212}) == [], "healthy run"
     assert _dead_channels({"Brand New": 0}, {}) == [], "never had stock is not a regression"
     assert _dead_channels({}, {"Proxima": 1212}) == [], "a skipped channel never ran"
+
+
+def test_a_partial_read_does_not_pass_as_success():
+    """The 7 Aug incident: a number came back, so every check was satisfied.
+
+    A filter left set in Proxima's portal session made the projects page render 8
+    projects instead of 40. The harvest read 52 lots against 1,212 stored, printed
+    [SUCCESS] and exited 0 — so run_daily went on to export, benchmark and publish. Same
+    shape as the 3 Aug outage _dead_channels was written for, one step short of invisible.
+    """
+    from harvest_buildings import _collapsed_channels
+
+    got = _collapsed_channels({"Proxima": 52, "E-Agent": 4851},
+                              {"Proxima": 1212, "E-Agent": 6344},
+                              previous={"Proxima": 1293, "E-Agent": 4900})
+    assert [c for c, *_ in got] == ["Proxima"], got
+    channel, n, floor, basis = got[0]
+    assert (n, basis) == (52, "1293 read last run"), got
+    assert floor > 52
+
+
+def test_a_second_partial_run_is_still_caught():
+    """The ratchet, and why the stored count is a floor as well as the last read.
+
+    A partial run WRITES its rows, so tomorrow "what it read last run" is 52. Comparing
+    against that alone would wave the identical fault straight through on night two —
+    which is the version of this bug nobody would ever find.
+    """
+    from harvest_buildings import _collapsed_channels
+
+    got = _collapsed_channels({"Proxima": 52}, {"Proxima": 1264}, previous={"Proxima": 52})
+    assert len(got) == 1, "the same collapse passed on the second night"
+    assert got[0][3] == "1264 stored", got
+
+
+def test_ordinary_movement_is_not_a_failure():
+    """This exists to catch a collapse. A false alarm at 3am stops the whole daily run."""
+    from harvest_buildings import _collapsed_channels
+
+    assert _collapsed_channels({"Proxima": 1293}, {"Proxima": 1212},
+                               previous={"Proxima": 1293}) == [], "a healthy run"
+    assert _collapsed_channels({"Proxima": 1100}, {"Proxima": 1212},
+                               previous={"Proxima": 1293}) == [], "lots sell; 15% is a Tuesday"
+    assert _collapsed_channels({"Proxima": 1400}, {"Proxima": 1212},
+                               previous={"Proxima": 1293}) == [], "reading MORE is not a fault"
+
+
+def test_zero_is_left_to_the_dead_channel_check():
+    """One failure, reported once, with the message that names its actual cause."""
+    from harvest_buildings import _collapsed_channels
+
+    assert _collapsed_channels({"Proxima": 0}, {"Proxima": 1212},
+                               previous={"Proxima": 1293}) == []
+
+
+def test_a_small_channel_is_not_judged_on_noise():
+    """The email sweep returns single figures. 8 listings then 3 is not a regression."""
+    from harvest_buildings import _collapsed_channels
+
+    assert _collapsed_channels({"digital email": 3}, {"digital email": 12},
+                               previous={"digital email": 8}) == []
+
+
+def test_a_first_run_has_nothing_to_be_measured_against():
+    from harvest_buildings import _collapsed_channels
+
+    assert _collapsed_channels({"Brand New": 5}, {}, previous={}) == []
+    assert _collapsed_channels({"Brand New": 5}, {"Brand New": 5}) == [], "no baseline arg"
+
+
+def test_the_previous_read_is_the_newest_run_not_the_newest_string():
+    """last_seen is written "%d/%m/%Y", so ordering it as text reads the wrong run.
+
+    "30/08/2026" sorts above "01/09/2026" as a string, which would take a month-old
+    run as the baseline — and the baseline is the whole basis of the partial-read guard.
+    """
+    tmp = Path(tempfile.mkdtemp())
+    db = ResearchDatabase(db_path=tmp / "reads.db")
+
+    def store(n, date, suburb):
+        for i in range(n):
+            db.record_building({
+                "source_channel": "Proxima", "builder_name": "Placeholder Developments",
+                "lot_address": f"Lot {i} {suburb}", "suburb": suburb, "state": "NSW",
+                "lot_number": str(i), "land_size_sqm": 300 + i,
+                "advertised_package_price": 800000 + i, "date_checked": date,
+            })
+
+    store(5, "30/08/2026", "Olderton")     # the older run, and the larger string
+    store(3, "01/09/2026", "Newville")     # the most recent run
+
+    assert db.building_reads_by_channel() == {"Proxima": 3}, db.building_reads_by_channel()
 
 if __name__ == "__main__":
     import sys

@@ -43,10 +43,12 @@ READ_PROJECTS = """
 
 
 def _key(title):
-    """Match on the title with its trailing "(sold/total)" counter removed.
+    """Match on the title with its trailing "(available/total)" counter removed.
 
-    The counter moves as lots sell — "(2/305)" becomes "(1/305)" — so joining on the
-    raw string would stop matching a week later.
+    The counter moves as lots sell and come back — "(2/305)" becomes "(3/305)" — so
+    joining on the raw string would stop matching a week later. Rows harvested since
+    sources/proxima.py started splitting the counter off have no counter to remove;
+    stripping is what lets one key match both those and the older rows.
     """
     text = re.sub(r"\(\s*\d+\s*/\s*\d+\s*\)\s*$", "", str(title or "")).strip()
     return re.sub(r"\s+", " ", text).lower()
