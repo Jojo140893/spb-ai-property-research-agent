@@ -16,16 +16,18 @@ class _FakeCheck:
         self.real = {s.lower() for s in real}
         self.available = True
 
-    def is_real(self, suburb, state):
-        return bool(self.resolve(suburb, state))
+    def is_real(self, row):
+        return bool(self.resolve(row))
 
-    def resolve(self, suburb, state):
-        """Mirrors SuburbGeoIndex.resolve_locality: the locality, or '' if none.
+    def resolve(self, row):
+        """Mirrors suburb_quality.resolve: the locality to group on, or '' if none.
 
         Includes the unglue step, because that is what the real resolver does and a
-        stub that skipped it would let a regression through unnoticed.
+        stub that skipped it would let a regression through unnoticed. Takes the whole
+        ROW, matching the real signature — a stub with the old (suburb, state) shape
+        would keep passing against an interface that no longer exists.
         """
-        raw = str(suburb or "").strip()
+        raw = str(row.get("suburb") or "").strip()
         if raw.lower() in self.real:
             return raw
         for part in reversed([p.strip(" ()") for p in raw.split(",") if p.strip(" ()")]):
@@ -96,6 +98,56 @@ def test_a_junk_suburb_never_forms_a_peer_group():
     res, skipped = bb.benchmark_internal(rows, _FakeCheck(["Sampleton"]))
     assert res == {}, "a parsing accident was used as a peer group"
     assert skipped["suburb is not a recognised locality"] == 6
+
+
+def test_the_market_path_refuses_a_junk_suburb_too():
+    """The dormant path is not the safe path.
+
+    benchmark_against_market tested only that the suburb was NON-EMPTY, so 'Rooms
+    Rooms m2 m2 m2' and 'Logan City Council' would have been sent to the provider as
+    places to price against. It takes over from the internal path automatically the
+    moment a comparables*.csv lands in drive_input/ — no code change, no review — so
+    the gate has to be there before that day, not after it.
+    """
+    class _Engine:
+        def __init__(self):
+            self.asked = []
+
+        def benchmark_package(self, suburb, state, beds, price):
+            self.asked.append(suburb)
+            return {"benchmarked": True, "avg_market_price": 500.0,
+                    "variance_pct": -1.0, "classification": "Below Market Value",
+                    "data_note": "stub"}
+
+    engine = _Engine()
+    rows = _group([100.0] * 3, suburb="Rooms Rooms m2 m2 m2")
+    res, skipped = bb.benchmark_against_market(rows, engine, _FakeCheck(["Sampleton"]))
+    assert engine.asked == [], f"a parsing accident was priced as a suburb: {engine.asked}"
+    assert res == {} and skipped["suburb is not a recognised locality"] == 3, skipped
+
+    # ...and a real one still gets through, grouped on the RESOLVED locality.
+    engine2 = _Engine()
+    good = _group([100.0] * 2, suburb="Stage 5A, Sampleton")
+    res2, _ = bb.benchmark_against_market(good, engine2, _FakeCheck(["Sampleton"]))
+    assert engine2.asked == ["Sampleton", "Sampleton"], engine2.asked
+    assert len(res2) == 2
+
+
+def test_both_paths_ask_the_same_question_about_a_suburb():
+    """One resolver, four consumers. This class used to keep its own copy and the
+    copies drifted twice — once against the scoring pipeline, once against the
+    published snapshot."""
+    import suburb_quality
+    from inspect import signature
+    assert list(signature(bb.SuburbCheck.resolve).parameters)[1:] == ["row"],         "SuburbCheck.resolve must take the whole row, as suburb_quality does"
+    check = bb.SuburbCheck()
+    if not check.available:
+        return
+    row = {"suburb": "Cloverton Estate , Kalkallo 3064", "state": "VIC",
+           "lot_address": "", "street_address": "", "source_text": ""}
+    assert check.resolve(row) == suburb_quality.resolve(row)[0] == "Kalkallo"
+    # LOCATED, not merely non-empty: no state means no peer group.
+    assert check.resolve({"suburb": "Springfield", "state": ""}) == ""
 
 
 def test_a_real_suburb_still_benchmarks_alongside_junk_ones():
@@ -172,6 +224,8 @@ def run_all():
         ("group below the floor refused", test_a_group_below_the_floor_is_refused),
         ("junk suburb forms no group", test_a_junk_suburb_never_forms_a_peer_group),
         ("real suburb unaffected by junk", test_a_real_suburb_still_benchmarks_alongside_junk_ones),
+        ("market path refuses junk too", test_the_market_path_refuses_a_junk_suburb_too),
+        ("both paths ask the same question", test_both_paths_ask_the_same_question_about_a_suburb),
         ("over-spread group refused", test_a_group_that_is_too_spread_out_is_refused),
         ("tight group accepted", test_a_tight_group_is_not_refused),
         ("dispersion uses percentiles", test_dispersion_uses_percentiles_not_extremes),
@@ -266,6 +320,8 @@ def run_all():
         ("group below the floor refused", test_a_group_below_the_floor_is_refused),
         ("junk suburb forms no group", test_a_junk_suburb_never_forms_a_peer_group),
         ("real suburb unaffected by junk", test_a_real_suburb_still_benchmarks_alongside_junk_ones),
+        ("market path refuses junk too", test_the_market_path_refuses_a_junk_suburb_too),
+        ("both paths ask the same question", test_both_paths_ask_the_same_question_about_a_suburb),
         ("over-spread group refused", test_a_group_that_is_too_spread_out_is_refused),
         ("tight group accepted", test_a_tight_group_is_not_refused),
         ("dispersion uses percentiles", test_dispersion_uses_percentiles_not_extremes),

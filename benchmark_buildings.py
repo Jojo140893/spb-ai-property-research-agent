@@ -116,27 +116,41 @@ class SuburbCheck:
     def available(self):
         return bool(self.geo.loaded)
 
-    def is_real(self, suburb, state):
-        return bool(self.resolve(suburb, state))
+    def is_real(self, row):
+        return bool(self.resolve(row))
 
-    def resolve(self, suburb, state):
+    def resolve(self, row):
         """The locality to group on, or '' if the value is not one.
 
-        Uses the SAME resolver the scoring pipeline uses. They used to differ: this
-        checked the raw value while _candidates.py unglued composites, so a lot in
-        "Stage 5A, Greenbank" was shortlisted with no benchmark and never grouped
-        with the other Greenbank stock. Peer groups are only as good as the key, and
-        two components disagreeing about the key is the worst version of that.
+        Delegates to suburb_quality, which is the SAME answer the scoring pipeline,
+        the published snapshot, the cohort builder and the Excel export use. This
+        class used to hold its own copy — geo.resolve_locality alone — and copies of
+        this judgement have drifted twice already: once when this checked the raw
+        value while _candidates.py unglued composites (so a lot in "Stage 5A,
+        Greenbank" was shortlisted with no benchmark and never grouped with the other
+        Greenbank stock), and again when the export published values this refused.
+
+        Peer groups are only as good as their key, and four components disagreeing
+        about the key is the worst version of that. What the class still owns is the
+        CACHE and the degrade-to-raw behaviour when the locality index is missing.
+
+        Takes the whole row now, not (suburb, state): the postcode anchor and the
+        street check read the row's own address text.
         """
         if not self.available:
-            return str(suburb or "").strip()    # no index: behave as before
-        key = (_norm(suburb), _norm(state))
+            return str(row.get("suburb") or "").strip()   # no index: behave as before
+        key = (_norm(row.get("suburb")), _norm(row.get("state")),
+               _norm(row.get("lot_address")))
         if key not in self._cache:
             try:
-                self._cache[key] = self.geo.resolve_locality(
-                    str(suburb or ""), str(state or ""))
+                import suburb_quality
+                name, why = suburb_quality.resolve(row)
+                # LOCATED, not merely non-empty. A peer group IS a place, so a name
+                # with no state to check it against cannot form one — and the tier
+                # keys below would drop it anyway for a null state, silently.
+                self._cache[key] = name if suburb_quality.is_located(why) else ""
             except Exception:
-                self._cache[key] = str(suburb or "").strip()
+                self._cache[key] = str(row.get("suburb") or "").strip()
         return self._cache[key]
 
 
@@ -201,7 +215,7 @@ def benchmark_internal(rows, suburb_check=None):
     # or real listings that happen to share it get benchmarked against nonsense.
     usable = []
     for r in rows:
-        locality = check.resolve(r["suburb"], r["state"])
+        locality = check.resolve(r)
         if locality:
             # Group on the RESOLVED locality, so every "Stage N, Greenbank" lot is a
             # peer of every other Greenbank lot instead of forming its own island.
@@ -248,12 +262,22 @@ def benchmark_internal(rows, suburb_check=None):
     return results, skipped
 
 
-def benchmark_against_market(rows, engine):
+def benchmark_against_market(rows, engine, suburb_check=None):
     """The real thing, once Colin supplies a CoreLogic / REA export."""
     results, skipped = {}, defaultdict(int)
+    check = suburb_check if suburb_check is not None else SuburbCheck()
     for r in rows:
-        suburb, state, beds = r["suburb"], r["state"], r["bedrooms"]
-        if not (suburb and state and beds is not None):
+        state, beds = r["state"], r["bedrooms"]
+        # THE SAME GATE THE INTERNAL PATH HAS. This one tested only that the value was
+        # non-empty, so 'GARAGE', '2026' and 'Logan City Council' would have been sent
+        # to the provider as suburbs — and this path takes over automatically the moment
+        # a comparables*.csv lands in drive_input/, with no code change and no review.
+        # It is dormant, not safe; the gate belongs here before that day, not after it.
+        suburb = check.resolve(r)
+        if not suburb:
+            skipped["suburb is not a recognised locality"] += 1
+            continue
+        if not (state and beds is not None):
             skipped["needs suburb + state + bedrooms for a market comparable"] += 1
             continue
         out = engine.benchmark_package(suburb, state, int(beds), float(r["price"]))
@@ -300,8 +324,15 @@ def main(argv=None):
     # though it were on the market. 777 of them, 199 cheaper than the row that
     # replaced them. Excluded from both sides.
     rows = [dict(r) for r in conn.execute(
-        "SELECT id, state, suburb, product_type, bedrooms, price FROM buildings "
-        "WHERE price IS NOT NULL AND price > 0 AND superseded_by IS NULL")]
+        # lot_address / street_address / source_text are read by suburb_quality for the
+        # postcode anchor and the street check; without them both degrade silently to
+        # nothing, which is the quiet kind of wrong.
+        "SELECT id, state, suburb, product_type, bedrooms, price, "
+        "       lot_address, street_address, source_text FROM buildings "
+        "WHERE price IS NOT NULL AND price > 0 "
+        # Every other consumer uses this form. 0 rows hold an empty string today, so
+        # this changes nothing now and stops the two drifting the day one does.
+        "  AND (superseded_by IS NULL OR superseded_by = '')")]
     total = conn.execute("SELECT COUNT(*) FROM buildings").fetchone()[0]
     stale = conn.execute(
         "SELECT COUNT(*) FROM buildings WHERE superseded_by IS NOT NULL").fetchone()[0]
