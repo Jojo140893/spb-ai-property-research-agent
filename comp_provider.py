@@ -258,13 +258,25 @@ def get_provider(quiet: bool = False) -> Any:
     """
     which = (os.environ.get("SPB_COMP_PROVIDER") or "").strip().lower()
     chosen, why = NullProvider(), ""
-    if which == "domain":
-        p = DomainProvider()
+    # "realestate" resolves to PropTrack on purpose: it is what people call the source,
+    # and PropTrack is REA Group's own API serving realestate.com.au's listings. The
+    # site itself cannot be read — it answers the first request with a Kasada challenge
+    # — so this is the same data through the door that opens.
+    known = {"domain": (DomainProvider, "domain_api")}
+    try:
+        from comp_provider_proptrack import PropTrackProvider
+        known["proptrack"] = (PropTrackProvider, "proptrack_api")
+        known["realestate"] = (PropTrackProvider, "proptrack_api")
+    except Exception:                                                 # noqa: BLE001
+        pass
+    if which in known:
+        cls, cred = known[which]
+        p = cls()
         if p.configured:
             chosen = p
         else:
-            why = ("SPB_COMP_PROVIDER=domain is set but no key is stored. Run: "
-                   "python setup_credentials.py domain_api")
+            why = (f"SPB_COMP_PROVIDER={which} is set but no key is stored. Run: "
+                   f"python setup_credentials.py {cred}")
     elif which:
         why = f"SPB_COMP_PROVIDER={which!r} is not a provider this build knows."
     else:

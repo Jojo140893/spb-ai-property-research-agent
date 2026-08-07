@@ -599,6 +599,7 @@ _FUNCTION_ROOT_MODULES = (
     # is the same silent-degradation shape as the harvest reporting success on an empty
     # channel, and it is why _verify_function_imports asserts on the bundle below.
     "benchmark_competitive.py", "benchmark_market.py", "comp_provider.py",
+    "comp_provider_proptrack.py",
     "price_kind.py",
 )
 _FUNCTION_SOURCES = (

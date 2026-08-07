@@ -36,6 +36,7 @@ def _slug(name: str) -> str:
 # blocking step had no working command behind it.
 _API_KEYS = (
     ("domain_api", "Domain API (market comparables for the benchmark)"),
+    ("proptrack_api", "PropTrack API (realestate.com.au data, via REA Group)"),
 )
 
 

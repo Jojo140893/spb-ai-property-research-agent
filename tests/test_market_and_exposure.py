@@ -171,6 +171,53 @@ def test_the_command_we_tell_the_client_to_run_actually_exists():
     assert st["live"] is (st["provider"] != "none")
 
 
+def test_realestate_resolves_to_the_licensed_channel_not_a_scraper():
+    """realestate.com.au cannot be read directly and must never be attempted.
+
+    Probed 2026-08-08: the FIRST unauthenticated request returns HTTP 429 carrying a
+    Kasada (KPSDK) bot-detection challenge; domain.com.au returns 403. PropTrack is REA
+    Group's own API over the same listings, so "realestate" resolves there.
+    """
+    import os
+
+    import comp_provider
+    from comp_provider_proptrack import PropTrackProvider
+
+    for alias in ("realestate", "proptrack"):
+        os.environ["SPB_COMP_PROVIDER"] = alias
+        comp_provider._ANNOUNCED[0] = False
+        # No key stored, so it must degrade to NullProvider rather than half-work.
+        assert comp_provider.get_provider(quiet=True).name == "none", alias
+    os.environ.pop("SPB_COMP_PROVIDER", None)
+    comp_provider._ANNOUNCED[0] = False
+
+    # And the command the message tells you to run has to exist -- the domain_api one
+    # did not, and that is how a blocking step stays blocked.
+    import setup_credentials
+    keys = [k for k, _l, _u, _p in setup_credentials._portals()]
+    assert "proptrack_api" in keys, keys
+
+    # Unconfigured, it returns nothing rather than raising or inventing.
+    p = PropTrackProvider(key="")
+    assert p.configured is False
+    assert p.search_comps(comp_provider.CompQuery(
+        suburb="Tarneit", state="VIC", price_kind=price_kind.PACKAGE)) == []
+    assert p.get_suburb_stats("Tarneit", "VIC") is None
+
+
+def test_a_withheld_proptrack_price_is_never_read_as_zero():
+    """"Contact agent" and an auction with no guide are real and unusable. A zero would
+    drag every median it touched."""
+    from comp_provider_proptrack import PropTrackProvider as P
+
+    assert P.price_of({"price": 0}) == (None, "")
+    assert P.price_of({"displayPrice": "Contact Agent"}) == (None, "")
+    assert P.price_of({}) == (None, "")
+    assert P.price_of({"price": 812000})[0] == 812000
+    mid, basis = P.price_of({"price": {"from": 700000, "to": 800000}})
+    assert mid == 750000 and basis, (mid, basis)
+
+
 def run_all():
     tests = [
         ("new-build comps preferred", test_a_new_build_comp_set_is_preferred_and_says_so),
@@ -181,6 +228,10 @@ def run_all():
         ("a junk suburb is never priced", test_a_junk_suburb_is_never_priced_against_its_suburb),
         ("the documented setup command exists",
          test_the_command_we_tell_the_client_to_run_actually_exists),
+        ("realestate resolves to the licensed channel",
+         test_realestate_resolves_to_the_licensed_channel_not_a_scraper),
+        ("a withheld price is never zero",
+         test_a_withheld_proptrack_price_is_never_read_as_zero),
         ("exposure groups on the locality", test_exposure_groups_on_the_locality_not_the_raw_column),
         ("exposure rolls up by builder", test_exposure_rolls_verdicts_up_by_builder),
         ("no verdict is not a pass", test_exposure_never_reports_no_verdict_as_a_clean_bill),
