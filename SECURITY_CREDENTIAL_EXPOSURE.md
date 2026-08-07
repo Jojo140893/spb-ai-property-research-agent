@@ -73,7 +73,37 @@ Each prompts for the password with the input hidden. It goes straight into the W
 credential vault — never into the repo, a log, or an environment variable. **This step
 needs a human at a keyboard; an agent must not type a password.**
 
-### 2. Then scrub the history
+### 2. The history scrub is DONE — and it did not close the exposure
+
+Run on 2026-08-07: `git filter-repo` removed the file from all 125 commits and the
+rewritten history was force-pushed. Locally the file is gone; `git show e0b3a76` now
+answers "invalid object name".
+
+**GitHub still serves it.** Verified anonymously, after the force-push:
+
+```
+https://raw.githubusercontent.com/Jojo140893/spb-ai-property-research-agent/e0b3a76/Book1(Builders)%20List.csv
+-> HTTP 200, 19,097 bytes
+```
+
+A force-push does not delete anything on GitHub. Unreachable commits stay in the
+repository and remain fetchable **by SHA** — and the SHA is in this document, in the
+commit log, and in anyone's existing clone. GitHub garbage-collects them on its own
+schedule, if ever.
+
+So the rewrite was necessary and is not sufficient. What actually closes it, in order of
+how fast it works:
+
+1. **Rotate the password.** Already the top item, and now clearly the only step that
+   ends the risk on your side of the wire. Bathla is the one still live.
+2. **Make the repository private** — 30 seconds, reversible, and it stops anonymous
+   access to every dangling object immediately. NOTE: the GitHub account authenticated
+   on this machine (`ahsan-arch`) has push but **not admin** (`"admin": false`); the
+   owner account `Jojo140893` has to do this one.
+3. **Ask GitHub Support to garbage-collect** the unreachable objects, citing the commit
+   SHAs `e0b3a76` and `0130fb7`. There is no API for this; it is a support request.
+
+### 3. If you want the old advice anyway
 
 Only after rotation, because this is the slow and disruptive half and it does not reduce
 risk on its own.
