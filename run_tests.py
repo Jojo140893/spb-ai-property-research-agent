@@ -2,7 +2,22 @@
 Custom Test Runner executing Phase 0 defect tests.
 """
 
+import os
 import sys
+import tempfile
+
+# POINT EVERY WRITE AT A THROWAWAY DATABASE, before anything imports config.
+#
+# The suite exercises the real pipeline, and the real pipeline records what it did — so
+# running the tests wrote synthetic "Test Client" research records into the production
+# audit trail. 13 of 21 records in it were fakes, which makes the trail Coleen relies on
+# majority fiction, and a fake row is indistinguishable from a real one after the fact.
+#
+# config reads SPB_DATABASE_PATH at import time, so this has to happen above the test
+# imports below rather than inside a fixture.
+_TEST_DB = os.path.join(tempfile.mkdtemp(prefix="spb-tests-"), "test_audit.db")
+os.environ.setdefault("SPB_DATABASE_PATH", _TEST_DB)
+os.environ.setdefault("SPB_SCRATCH", os.path.dirname(_TEST_DB))
 from tests.test_defects import (
     test_defect_1_builder_confidence,
     test_defect_2_csv_parsing,

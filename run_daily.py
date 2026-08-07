@@ -109,6 +109,49 @@ def _session_report() -> None:
         print(f"  {'STALE' if stale else 'ok   '}  {f.stem:<28} {age:%d %b %H:%M}{note}")
 
 
+def _alert(subject: str, body: str) -> None:
+    """Tell someone the run failed, rather than leaving it in a log nobody opens.
+
+    The whole point of the step-by-step output is to say WHICH step failed, and until now
+    it went to _daily.log and stopped there. That is the reason Proxima was dead for three
+    nights without anyone knowing: the harvest reported it, and the report had no reader.
+
+    Uses the inbox credentials the email sweep already relies on, so no new secret is
+    introduced. If none are stored the alert is skipped and SAYS so — silently swallowing
+    the alert would recreate the exact problem this exists to fix.
+    """
+    to = os.environ.get("SPB_ALERT_TO", "").strip()
+    if not to:
+        print("  [alert] SPB_ALERT_TO is not set — nobody was notified of this run.",
+              flush=True)
+        return
+    try:
+        import smtplib
+        from email.message import EmailMessage
+
+        from secrets_store import get_credentials
+        user, password, _src = get_credentials("email_inbox")
+        if not (user and password):
+            print("  [alert] no inbox credentials stored — nobody was notified.", flush=True)
+            return
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = user
+        msg["To"] = to
+        msg.set_content(body)
+        host = os.environ.get("SPB_SMTP_HOST", "smtp.gmail.com")
+        port = int(os.environ.get("SPB_SMTP_PORT", "465"))
+        with smtplib.SMTP_SSL(host, port, timeout=30) as smtp:
+            smtp.login(user, password)
+            smtp.send_message(msg)
+        print(f"  [alert] sent to {to}", flush=True)
+    except Exception as exc:                                          # noqa: BLE001
+        # An alert that fails must be loud in the log, not silent — otherwise the
+        # notification channel becomes the next thing that dies unnoticed.
+        print(f"  [alert] COULD NOT NOTIFY {to}: {exc}", flush=True)
+
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-deploy", action="store_true", help="refresh data, skip publishing")
@@ -157,8 +200,21 @@ def main() -> int:
     if failed:
         print(f"  DAILY RUN FAILED at: {', '.join(failed)}")
         print(f"{'=' * 70}")
+        _alert("SPB daily run FAILED — " + failed[0][:60],
+               "The nightly run stopped at: " + ", ".join(failed) + "\n\n"
+               "Nothing was published, so the dashboard is still serving the last good\n"
+               "snapshot rather than a partial one.\n\n"
+               "Last 40 lines of the log:\n\n" + tail)
         return 1
     print("  Data refreshed.")
+    if _DEGRADED:
+        # The run finished, so nobody would otherwise look — which is precisely when a
+        # degraded step goes unnoticed for days.
+        _alert("SPB daily run finished DEGRADED",
+               "The run completed and published, but these steps failed:\n\n  - "
+               + "\n  - ".join(_DEGRADED)
+               + "\n\nAnything they produce is now stale in the published snapshot.\n\n"
+               + "Last 40 lines of the log:\n\n" + tail)
     if args.no_deploy:
         print("  Deploy skipped (--no-deploy). To publish: deploy.ps1")
     else:
