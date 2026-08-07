@@ -58,3 +58,6 @@ _daily.log
 *.backup-*.db
 .verify_full.log
 .last_deploy_rows
+
+# Cached open-data market series (re-downloadable; see market_open_data.py)
+data/market/*.xlsx
