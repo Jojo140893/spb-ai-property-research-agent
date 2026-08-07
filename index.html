@@ -565,6 +565,20 @@
             .tab-btn { padding: 0.5rem 0.75rem; font-size: 0.78rem; }
             .json-code { font-size: 0.72rem; padding: 0.85rem; }
             h1 { word-break: break-word; }
+
+            /* TOUCH TARGETS. The page does not overflow at 375px -- the wide table
+               scrolls inside its own container, which is correct -- but the primary
+               navigation measured 31px tall and the table checkboxes 13px, both below
+               what a thumb reliably hits. 44px is the long-standing touch minimum.
+               Scoped to small screens so the dense desktop table is unaffected. */
+            .tab-btn { min-height: 44px; }
+            button, .filter-bar select, .filter-bar input[type=search],
+            input[type=text], input[type=number], select { min-height: 44px; }
+            input[type=checkbox] { width: 22px; height: 22px; }
+            /* ...except inside the stock table, where a 44px row would turn 150 rows
+               into a very long scroll for no gain -- the checkbox itself is enlarged
+               and the row keeps its density. */
+            .builder-table button, .builder-table select { min-height: 0; }
         }
     </style>
 </head>
@@ -981,7 +995,7 @@
         // click." The per-lot open/plan/file columns only fire where such a URL exists, so
         // 3,776 E-Agent rows showed nothing. This is the always-there fallback, computed
         // at build time by provenance.py and labelled with what it opens.
-        { k: 'source_link_url', t: 'Source', trace: true },
+        { k: 'source_link_url', t: 'Source doc', trace: true },
         { k: 'availability_status', t: 'Availability',   pill: true },
         { k: 'price',               t: 'Package',        cls: 'num', money: true },
         { k: 'land_price',          t: 'Land',           cls: 'num', money: true },
@@ -997,7 +1011,7 @@
         { k: 'estate_name',         t: 'Estate' },
         { k: 'incentive_amount',    t: 'Incentive',      cls: 'num', money: true },
         { k: 'product_type',        t: 'Product' },
-        { k: 'source_channel',      t: 'Source' },
+        { k: 'source_channel',      t: 'Channel' },   // was also 'Source': two columns, one heading, and the one you wanted was a coin flip
         { k: 'attribution_scope',   t: 'Attribution' },
         { k: 'date_checked',        t: 'Checked' },
         // Benchmark, sortable — this is how a listing priced under its comparables
@@ -1383,8 +1397,29 @@
             const numeric = !!(col && (col.money || col.cls === 'num'));
             stockView.sort((x, y) => {
                 let a = x[stockSort], b = y[stockSort];
-                if (numeric) return ((Number(a) || 0) - (Number(b) || 0)) * stockDir;
-                return String(a ?? '').localeCompare(String(b ?? '')) * stockDir;
+                if (numeric) {
+                    // A BLANK IS NOT A ZERO. `Number(a) || 0` made every unrecorded
+                    // value the smallest number there is, so sorting by "Vs comps %"
+                    // put the rows with no benchmark at the top among the genuine
+                    // bargains, and sorting by Land m² led with the rows that never
+                    // stated one. Blanks now sink to the bottom whichever way the
+                    // column is sorted, so a sort ranks what is known and parks what
+                    // is not.
+                    const na = (a === null || a === undefined || a === '') ? null : Number(a);
+                    const nb = (b === null || b === undefined || b === '') ? null : Number(b);
+                    const ba = (na === null || Number.isNaN(na));
+                    const bb = (nb === null || Number.isNaN(nb));
+                    if (ba && bb) return 0;
+                    if (ba) return 1;          // always last, never flipped by stockDir
+                    if (bb) return -1;
+                    return (na - nb) * stockDir;
+                }
+                // Same rule for text: an empty cell is not the alphabetically-first one.
+                const sa = String(a ?? '').trim(), sb = String(b ?? '').trim();
+                if (!sa && !sb) return 0;
+                if (!sa) return 1;
+                if (!sb) return -1;
+                return sa.localeCompare(sb) * stockDir;
             });
         }
         stockShown = STOCK_PAGE;
