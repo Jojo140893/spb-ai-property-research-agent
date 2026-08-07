@@ -142,9 +142,15 @@ def evaluate(row: Dict[str, Any], provider=None, neighbours=None) -> Result:
     if not price:
         return Result(note="no price to compare")
 
-    suburb = str(row.get("suburb") or "").strip()
+    # A COMPARABLE SET IS A PLACE. This tested only that the value was non-empty, so
+    # 'GARAGE', '2026' and 'Logan City Council' would have been sent to the provider as
+    # suburbs to price against -- and a verdict built on that reaches a buyer.
+    # suburb_quality is the same answer the search path, the snapshot, the peer-median
+    # benchmark and the cohort builder give.
+    import suburb_quality
+    suburb, _why = suburb_quality.resolve(row)
     state = str(row.get("state") or "").strip().upper()
-    if not suburb or not state:
+    if not suburb_quality.is_located(_why) or not state:
         return Result(note="no locality, so no comparable set can be built")
 
     beds = row.get("bedrooms")

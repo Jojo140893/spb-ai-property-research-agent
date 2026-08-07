@@ -585,7 +585,12 @@ def build_packages(brief_dict, rows, today=None):
             "source_url_or_ref": listing_ref or ("stored stock, captured %s" % (seen_on or "date unknown")),
             # Where a consultant can go to see this listing at its source, labelled with
             # what the link actually opens. See provenance.py.
-            "source_link": primary_source_link(row),
+            # The RESOLVED suburb, not the stored one. This builds the string a
+            # consultant pastes into the builder's own search box, and off the raw
+            # column it produced "122 Crescent" and "132 Paramatta" -- a street number
+            # against a street name. A term that returns an error is worse than no term,
+            # which is the complaint this function exists to answer.
+            "source_link": primary_source_link({**row, "suburb": suburb}),
             # The day this listing was last actually seen at its source. The card turns
             # this into a staleness warning, which is the only thing that would have made
             # Proxima's expired sign-in visible: its rows sat three days old while every

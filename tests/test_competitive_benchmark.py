@@ -45,6 +45,27 @@ def _row(price=750_000, **kw):
     return base
 
 
+def test_a_junk_suburb_never_builds_a_comparable_set():
+    """A comparable set IS a place, and this verdict is buyer-facing.
+
+    The gate tested only that the suburb value was non-empty, so 'GARAGE', '2026' and
+    'Logan City Council' would have been sent to the provider as suburbs to price
+    against — and a flag or a pass built on that reaches a buyer as evidence.
+    """
+    for junk in ("GARAGE", "2026", "Logan City Council", "Rooms Rooms m2 m2 m2"):
+        stub = _Stub(always=[_comp(700_000)] + [_comp(800_000) for _ in range(11)])
+        res = evaluate(_row(suburb=junk), provider=stub)
+        assert stub.queries == [], f"{junk!r} was sent to the provider"
+        assert res.verdict == VERDICT_NONE, (junk, res.verdict)
+        assert "no locality" in res.note, res.note
+
+    # An estate glued to a real locality is still unglued and still benchmarked.
+    stub = _Stub(always=[_comp(700_000)] + [_comp(800_000) for _ in range(11)])
+    res = evaluate(_row(suburb="Stage 5A, Toowoomba"), provider=stub)
+    assert res.verdict != VERDICT_NONE, res.note
+    assert stub.queries and all(q.suburb == "Toowoomba" for q in stub.queries),         [q.suburb for q in stub.queries]
+
+
 def test_a_cheaper_comparable_flags_and_shows_the_buyer_where():
     """The client's stated logic: if comparable stock is cheaper, say so and link to it."""
     comps = [_comp(700_000, url="https://domain/cheap")] + [_comp(800_000) for _ in range(11)]
@@ -137,6 +158,7 @@ def test_an_unknown_price_kind_is_never_benchmarked():
 
 def run_all():
     tests = [
+        ("a junk suburb builds no comparable set", test_a_junk_suburb_never_builds_a_comparable_set),
         ("a cheaper comparable flags", test_a_cheaper_comparable_flags_and_shows_the_buyer_where),
         ("nothing cheaper passes", test_nothing_cheaper_passes_and_shows_the_reference_price),
         ("vacant land is never a comparable", test_a_vacant_block_is_never_a_comparable_for_a_package),

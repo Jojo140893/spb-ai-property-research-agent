@@ -82,6 +82,52 @@ def test_a_land_comp_never_reaches_the_market_benchmark_either():
     assert not ctx.benchmarked, "a vacant block priced a house-and-land package"
 
 
+def test_a_junk_suburb_is_never_priced_against_its_suburb():
+    """The provider must not be asked for the median price of 'GARAGE'.
+
+    This gate tested only that the suburb value was non-empty, and the answer is passed
+    to provider.get_suburb_stats and rendered in the client report under "How this
+    compares to the suburb". Asking a provider about a parsing accident and printing
+    whatever comes back is the worst version of the suburb-column bug.
+    """
+    class _Counting(_Stub):
+        def __init__(self, comps):
+            super().__init__(comps)
+            self.asked = []
+
+        def search_comps(self, q):
+            self.asked.append(q.suburb)
+            return list(self.comps)
+
+        def get_suburb_stats(self, suburb, *a, **k):
+            self.asked.append(suburb)
+            return None
+
+    for junk in ("GARAGE", "IN TERNAL BALCONY TOTAL", "Logan City Council", "2026"):
+        prov = _Counting([_comp(800_000) for _ in range(12)])
+        ctx = market(_row(750_000, suburb=junk), provider=prov)
+        assert prov.asked == [], f"{junk!r} was sent to the provider: {prov.asked}"
+        assert not ctx.benchmarked and not ctx.client_safe, junk
+
+    # A real suburb still gets through, and an estate glued to one is unglued first.
+    prov = _Counting([_comp(800_000) for _ in range(12)])
+    ctx = market(_row(750_000, suburb="Stage 5A, Toowoomba"), provider=prov)
+    assert ctx.benchmarked, "a recoverable composite was refused"
+    assert prov.asked and all(a == "Toowoomba" for a in prov.asked), prov.asked
+
+
+def test_exposure_groups_on_the_locality_not_the_raw_column():
+    """`--by suburb` printed 'IN TERNAL BALCONY TOTAL' and 'GARAGE' as headings in a
+    report about which places our stock is overpriced in."""
+    rows = [_row(750_000, suburb="Stage 5A, Toowoomba"),
+            _row(750_000, suburb="TOOWOOMBA"),
+            _row(750_000, suburb="GARAGE")]
+    s = summarise(rows, provider=NullProvider(), by="suburb")
+    assert "Toowoomba" in s, s
+    assert s["Toowoomba"]["n"] == 2, "case and composite variants must be one group"
+    assert not any(k in s for k in ("GARAGE", "Stage 5A, Toowoomba", "TOOWOOMBA")), s
+
+
 def test_exposure_rolls_verdicts_up_by_builder():
     cheap = _Stub([_comp(500_000)] + [_comp(900_000) for _ in range(11)])
     rows = [_row(750_000, builder_name="Alpha"), _row(750_000, builder_name="Alpha"),
@@ -108,6 +154,8 @@ def run_all():
         ("a thin set makes no claim", test_a_thin_comp_set_makes_no_market_claim),
         ("no provider, no claim", test_no_provider_produces_context_but_never_a_claim),
         ("land never prices a package", test_a_land_comp_never_reaches_the_market_benchmark_either),
+        ("a junk suburb is never priced", test_a_junk_suburb_is_never_priced_against_its_suburb),
+        ("exposure groups on the locality", test_exposure_groups_on_the_locality_not_the_raw_column),
         ("exposure rolls up by builder", test_exposure_rolls_verdicts_up_by_builder),
         ("no verdict is not a pass", test_exposure_never_reports_no_verdict_as_a_clean_bill),
     ]

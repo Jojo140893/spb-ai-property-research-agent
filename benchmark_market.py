@@ -83,10 +83,16 @@ def evaluate(row: Dict[str, Any], provider=None, neighbours=None,
     provider = provider or get_provider()
     kind, _why = price_kind.derive(row)
     price = row.get("price") or row.get("advertised_package_price")
-    suburb = str(row.get("suburb") or "").strip()
+    # Same gate as the competitive check, and for a sharper reason: the answer here is
+    # passed to provider.get_suburb_stats and rendered in the client report under "How
+    # this compares to the suburb". Asking a provider for the median price of 'GARAGE'
+    # and printing whatever comes back is the worst version of this bug.
+    import suburb_quality
+    suburb, _sub_why = suburb_quality.resolve(row)
     state = str(row.get("state") or "").strip().upper()
 
-    if kind not in price_kind.BENCHMARKABLE or not price or not suburb or not state:
+    if (kind not in price_kind.BENCHMARKABLE or not price
+            or not suburb_quality.is_located(_sub_why) or not state):
         return MarketContext(data_note="not enough recorded about this listing to place "
                                        "it against its suburb")
 

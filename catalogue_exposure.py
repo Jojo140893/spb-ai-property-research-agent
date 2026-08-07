@@ -41,10 +41,26 @@ def summarise(rows: Iterable[Dict[str, Any]], provider=None, by: str = "builder"
     # One verdict per COHORT, fanned out — the whole reason cohorts exist. Keyed on what
     # a comparable set is built from, so two listings alike in all of it share a call.
     cache: Dict[tuple, str] = {}
+    import suburb_quality
     for row in rows:
-        group = str(row.get(by if by != "suburb" else "suburb")
-                    or row.get("builder_name") or "(unnamed)").strip() or "(unnamed)"
-        key = (str(row.get("suburb") or "").lower(), str(row.get("state") or "").upper(),
+        # Group and cache on the RESOLVED locality. Off the raw column, `--by suburb`
+        # printed 'IN TERNAL BALCONY TOTAL', '[Haven]' and 'GARAGE' as headings in a
+        # report about which places our stock is overpriced in — and the cache key split
+        # 'GLENVALE' from 'Glenvale', so the same cohort was paid for twice.
+        located, _why = suburb_quality.resolve(row)
+        if not suburb_quality.is_located(_why):
+            located = ""
+        if by == "suburb":
+            # NOT the builder name. The fallback chain ended in builder_name for both
+            # groupings, so a row whose suburb could not be established was filed under
+            # 'Hermitage Homes' (154 rows) in a report about which SUBURBS our stock is
+            # overpriced in. Its own bucket instead, named, because how much of the
+            # catalogue cannot be placed at all is part of what this report is for.
+            group = located or "(suburb not recorded)"
+        else:
+            group = str(row.get(by) or "").strip() or row.get("builder_name") or ""
+        group = str(group).strip() or "(unnamed)"
+        key = (located.lower(), str(row.get("state") or "").upper(),
                row.get("bedrooms"), row.get("land_sqm"), row.get("price"))
         verdict = cache.get(key)
         if verdict is None:
