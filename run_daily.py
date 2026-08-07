@@ -217,10 +217,6 @@ def main() -> int:
         # advertised at its capture date, and leaving those in the peer pool drags every
         # median toward stale numbers.
         ("4/7  Supersede older captures of the same lot", ["supersede_duplicates.py"], False),
-        # Official suburb medians (CC-BY, via data.gov.au). Quarterly/yearly series, so
-        # this is a no-op most nights and refetches only when the cache goes stale.
-        # Optional: a market source being unreachable must never stop the refresh.
-        ("5/7  Refresh open-data market medians", ["market_open_data.py"], True),
         ("5/7  Benchmark against comparable stock", ["benchmark_buildings.py"], True),
         ("6/7  Export CSV + Excel", ["export_csv.py"], False),
         ("6/7  Export Excel workbook", ["export_excel.py"], False),
