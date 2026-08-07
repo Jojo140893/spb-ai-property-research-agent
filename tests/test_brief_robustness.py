@@ -58,13 +58,60 @@ def test_nan_and_infinity_do_not_survive_into_the_brief():
 def test_a_completely_empty_brief_still_parses():
     b = ClientBriefParser.parse_dict({})
     assert b is not None
-    assert b.bedrooms_min == 3, "the documented default should apply"
     assert b.budget_max == 0.0
     # A size the client never mentioned must not become a requirement they are held to.
     # House size is a hard rejection and is recorded on 18% of stock, so a default of
     # 150 m² silently emptied whole states.
     assert b.house_size_min_sqm == 0.0, "an unstated house size must impose no minimum"
     assert b.land_size_min_sqm == 0.0, "an unstated land size must impose no minimum"
+
+
+def test_an_unstated_requirement_is_never_invented():
+    """The same rule as the two sizes above, applied to the rest of the criteria.
+
+    This test used to assert `bedrooms_min == 3` — "the documented default should
+    apply" — which is exactly the bug. Every one of these is a MANDATORY filter in
+    scoring_engine, so a brief silent about bathrooms rejected honest "1 bathroom"
+    stock against a requirement nobody gave, while a row that recorded nothing at all
+    passed the same filter untouched. A silent brief means no preference.
+    """
+    b = ClientBriefParser.parse_dict({})
+    assert (b.bedrooms_min, b.bathrooms_min, b.car_spaces_min) == (0, 0, 0), (
+        b.bedrooms_min, b.bathrooms_min, b.car_spaces_min)
+    assert b.storeys_max is None, "an unstated storey cap must not reject a 3-storey home"
+
+
+def test_an_unstated_storey_cap_rejects_nothing():
+    """storeys_max=None must not crash the comparison it used to satisfy.
+
+    `prop.storeys > brief.storeys_max` is a TypeError against None, so removing the
+    invented cap without guarding the comparison would trade a silent wrong answer for
+    a 500. Both ends are checked here: no crash, and no rejection.
+    """
+    from schema import CandidateProperty, PriceBreakdown, TurnkeyStatus
+    from scoring_engine import ScoringEngine
+
+    brief = ClientBriefParser.parse_dict(
+        {**FULL, "storeys_max": None, "primary_suburbs": ["Coomera"],
+         "search_radius_km": None})
+    pb = PriceBreakdown(
+        advertised_package_price=700000, land_price=300000, build_price=400000,
+        fixed_site_costs=0, driveway_cost=0, fencing_cost=0, landscaping_cost=0,
+        flooring_cost=0, blinds_cost=0, hvac_cost=0, estimated_additional_costs=0,
+        realistic_total_price=700000, turnkey_status=TurnkeyStatus.FULL_TURNKEY)
+    three_storey = CandidateProperty(
+        property_id="P1", lot_address="Lot 1", suburb="Coomera", state="QLD",
+        builder_name="Avia Homes", developer_name="Dev", house_design="D",
+        bedrooms=4, bathrooms=2, car_spaces=2, storeys=3,
+        land_size_sqm=400.0, house_size_sqm=200.0, title_status="Titled",
+        expected_title_date="Ready", price_breakdown=pb,
+        estimated_rent_weekly_min=600, estimated_rent_weekly_max=650,
+        amenities_summary="", builder_confidence_rating="HIGH",
+        source_channel="E-Agent", source_url_or_ref="http://x",
+        date_checked="07/08/2026")
+    result = ScoringEngine.evaluate_property(brief, three_storey)   # must not raise
+    assert "Storeys" not in result.rejection_reason, result.rejection_reason
+    assert not result.hard_rejection, result.rejection_reason
 
 
 def test_numbers_sent_as_strings_are_accepted():
@@ -194,6 +241,8 @@ def run_all():
         ("junk text falls back", test_junk_text_in_a_numeric_field_falls_back_rather_than_crashing),
         ("NaN / infinity never reach the brief", test_nan_and_infinity_do_not_survive_into_the_brief),
         ("a completely empty brief parses", test_a_completely_empty_brief_still_parses),
+        ("an unstated requirement is never invented", test_an_unstated_requirement_is_never_invented),
+        ("an unstated storey cap rejects nothing", test_an_unstated_storey_cap_rejects_nothing),
         ("numbers as strings accepted", test_numbers_sent_as_strings_are_accepted),
         ("blank suburbs dropped", test_blank_suburbs_are_dropped_not_searched_for),
         ("a real brief is unchanged", test_a_real_brief_is_unchanged),

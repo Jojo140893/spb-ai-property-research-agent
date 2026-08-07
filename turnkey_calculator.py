@@ -25,15 +25,25 @@ class TurnkeyCalculator:
         build_price = float(raw_pkg.get('build_price', 0.0))
         advertised = float(raw_pkg.get('advertised_package_price', land_price + build_price))
 
-        inclusions = raw_pkg.get('inclusions', {})
+        inclusions = raw_pkg.get('inclusions') or {}
         missing_inclusions: List[str] = []
         est_add_cost = 0.0
+
+        # NOTHING RECORDED is not the same as AN ITEM EXCLUDED, and the two must not
+        # produce the same sentence. No extractor populates `inclusions` — 0 of the
+        # packages we hold carry one — so this branch is every package, and the answer
+        # below has to say "the source is silent", not assert what the builder includes.
+        nothing_stated = not inclusions
 
         # Check Site Costs
         site_costs_fixed = inclusions.get('site_costs_fixed', False)
         site_cost_val = float(inclusions.get('site_costs_val', 0.0))
         if not site_costs_fixed and site_cost_val == 0:
-            missing_inclusions.append('Fixed site costs (estimated $15,000 allowance needed)')
+            missing_inclusions.append(
+                'Site costs are not stated by the source — $15,000 allowed as an '
+                'ESTIMATE, not a builder figure'
+                if nothing_stated else
+                'Fixed site costs (estimated $15,000 allowance needed)')
             est_add_cost += cls.DEFAULT_ESTIMATES['site_costs']
 
         # Driveway
@@ -67,7 +77,13 @@ class TurnkeyCalculator:
             est_add_cost += cls.DEFAULT_ESTIMATES['hvac']
 
         # Classification
-        if not missing_inclusions and site_costs_fixed:
+        if nothing_stated:
+            # "Partial Turnkey" is a claim about what the package CONTAINS, and every
+            # package was being given it — on the strength of a source that said nothing
+            # about inclusions either way. What we actually know is that it is unclear,
+            # and that is a status this enum already has.
+            status = TurnkeyStatus.UNCLEAR
+        elif not missing_inclusions and site_costs_fixed:
             status = TurnkeyStatus.FULL_TURNKEY
         elif len(missing_inclusions) <= 2:
             status = TurnkeyStatus.PARTIAL_TURNKEY

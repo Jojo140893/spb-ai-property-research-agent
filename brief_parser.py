@@ -100,10 +100,22 @@ class ClientBriefParser:
             buyer_type=buyer_type,
             state=str(raw_data.get('state') or 'QLD').upper(),
             primary_suburbs=suburbs,
-            bedrooms_min=_i(raw_data, 'bedrooms_min', 3),
-            bathrooms_min=_i(raw_data, 'bathrooms_min', 2),
-            car_spaces_min=_i(raw_data, 'car_spaces_min', 1),
-            storeys_max=_i(raw_data, 'storeys_max', 2),
+            # NO MINIMUM UNLESS THE CLIENT STATES ONE — the same rule already applied
+            # to land and house size below, and for the same reason.
+            #
+            # These defaulted to 3 bedrooms, 2 bathrooms, 1 car space and a 2-storey cap.
+            # Every one of those is a MANDATORY filter, so a brief that simply did not
+            # mention bathrooms silently discarded stock honestly recording "1 bathroom"
+            # against a requirement the client never gave — while a listing that recorded
+            # nothing sailed through the same filter untouched. Inventing a minimum is the
+            # same class of error as inventing a price.
+            #
+            # storeys_max defaulted to 2, which hard-rejected every three-storey home
+            # nobody had objected to. None means no cap; scoring_engine guards for it.
+            bedrooms_min=_i(raw_data, 'bedrooms_min', 0),
+            bathrooms_min=_i(raw_data, 'bathrooms_min', 0),
+            car_spaces_min=_i(raw_data, 'car_spaces_min', 0),
+            storeys_max=_i(raw_data, 'storeys_max', None),
             # No minimum unless the client states one. These used to default to 300 and
             # 150, which invented a requirement nobody asked for — and house size is a
             # HARD rejection, recorded on only 18% of stock, so the invented 150 m² wiped

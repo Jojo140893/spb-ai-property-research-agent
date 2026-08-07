@@ -66,17 +66,47 @@ class ScoringEngine:
         hard_rejection = False
 
         # --- 1. Budget Fit (Max 20 pts) ---
+        # A HARD REJECTION MUST REST ON A REAL NUMBER.
+        #
+        # `realistic_total_price` is the advertised price plus OUR allowances, and today
+        # every package carries an identical invented $15,000 site-cost allowance —
+        # because no stocklist we read records inclusions at all, so the "is it fixed?"
+        # test fails for all of them. Rejecting on that number discarded stock the client
+        # can actually afford: a $900,000 package on a $900,000 budget was thrown out as
+        # "$915,000 — over by $15,000", a figure no builder ever quoted.
+        #
+        # So the ADVERTISED price decides whether it is in budget, and the allowance is
+        # stated as a caveat and still costs points — a buyer does need to know site
+        # costs are unconfirmed. An estimate may inform a ranking; only evidence may
+        # reject. Same rule as the invented bedroom minimum and the plot-price-as-package
+        # bug: never act on a number nobody published.
+        advertised = prop.price_breakdown.advertised_package_price or 0.0
         realistic_price = prop.price_breakdown.realistic_total_price
-        if realistic_price > brief.budget_max:
+        allowance = max(0.0, realistic_price - advertised)
+        if advertised > brief.budget_max:
             hard_rejection = True
-            over_amount = realistic_price - brief.budget_max
-            rejection_reasons.append(f"Realistic price (${realistic_price:,.0f}) exceeds max budget (${brief.budget_max:,.0f}) by ${over_amount:,.0f}")
+            over_amount = advertised - brief.budget_max
+            rejection_reasons.append(f"Advertised package price (${advertised:,.0f}) exceeds max budget (${brief.budget_max:,.0f}) by ${over_amount:,.0f}")
             budget_pts = 0.0
-        elif realistic_price <= brief.preferred_spending_cap:
-            budget_pts = 20.0
         else:
-            ratio = (brief.budget_max - realistic_price) / (brief.budget_max - brief.preferred_spending_cap)
-            budget_pts = 10.0 + (10.0 * max(0.0, min(1.0, ratio)))
+            if allowance and realistic_price > brief.budget_max:
+                advisories.append(
+                    f"Advertised at ${advertised:,.0f}, inside the budget, but an "
+                    f"estimated ${allowance:,.0f} for items the stocklist does not "
+                    f"confirm would take it to ${realistic_price:,.0f} — over budget. "
+                    f"Confirm site costs and inclusions with the builder before "
+                    f"presenting this to the client.")
+            band = brief.budget_max - brief.preferred_spending_cap
+            if realistic_price <= brief.preferred_spending_cap:
+                budget_pts = 20.0
+            elif band > 0:
+                ratio = (brief.budget_max - realistic_price) / band
+                budget_pts = 10.0 + (10.0 * max(0.0, min(1.0, ratio)))
+            else:
+                # No band between the preferred cap and the ceiling to grade within.
+                # Reachable now that the estimate no longer rejects: a lot advertised at
+                # the cap with an allowance on top lands here and used to divide by zero.
+                budget_pts = 10.0
 
         # --- 2. Requirement Match (Max 20 pts) ---
         req_pts = 20.0
@@ -119,7 +149,7 @@ class ScoringEngine:
                     "Storeys not stated in the builder's stocklist — confirm with the "
                     "builder before presenting to the client")
                 req_pts -= 2.0
-        elif prop.storeys > brief.storeys_max:
+        elif brief.storeys_max is not None and prop.storeys > brief.storeys_max:
             hard_rejection = True
             rejection_reasons.append(f"Storeys ({prop.storeys}) exceeds maximum allowed ({brief.storeys_max})")
 
