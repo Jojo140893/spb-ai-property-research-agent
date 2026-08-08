@@ -469,12 +469,18 @@ def _formula_links(data: bytes) -> Dict[Tuple[int, int, int], str]:
 _CURRENCY_FORMAT = re.compile(r"\$|currency|\[\$", re.I)
 
 
-def _iter_rows_xlsx(data: bytes) -> Iterator[Tuple[int, List[Tuple[str, bool, int]], LinkList]]:
-    """Yield (sheet index, cells, links).
+def _iter_rows_xlsx(data: bytes) -> Iterator[
+        Tuple[int, List[Tuple[str, bool, int]], LinkList, str, int]]:
+    """Yield (sheet index, cells, links, sheet name, row number).
 
     Cells are read as objects rather than values so two things survive that
     `values_only=True` discards: `cell.hyperlink` (the per-lot link) and
     `cell.number_format` (which says a bare number is money).
+
+    The sheet NAME and ROW NUMBER are carried out too, because a stocklist URL on its
+    own opens a 400-row workbook and leaves Colin to find the lot by eye — his ask of
+    9 Aug was the row, not the file. openpyxl already knows both (`sheet.title`,
+    `cell.row`); this loop simply threw them away.
     """
     wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
     formulas = {} if any(getattr(ws, "_hyperlinks", None) for ws in wb.worksheets) \
@@ -483,7 +489,9 @@ def _iter_rows_xlsx(data: bytes) -> Iterator[Tuple[int, List[Tuple[str, bool, in
         for row in sheet.iter_rows():
             cells: List[Tuple[str, bool, int]] = []
             links: LinkList = []
+            row_no = 0
             for c in row:
+                row_no = c.row                    # 1-based, and what Excel shows Colin
                 s = str(c.value).strip() if c.value is not None else ""
                 is_currency = bool(isinstance(c.value, (int, float))
                                    and _CURRENCY_FORMAT.search(c.number_format or ""))
@@ -494,7 +502,7 @@ def _iter_rows_xlsx(data: bytes) -> Iterator[Tuple[int, List[Tuple[str, bool, in
                 if url:
                     links.append((s, str(url)))
             if cells or links:
-                yield si, cells, links
+                yield si, cells, links, str(sheet.title or ""), row_no
 
 
 def _annot_links(page: Any) -> List[Tuple[float, float, str]]:
@@ -732,7 +740,7 @@ def extract_from_xlsx(data: bytes, source_label: str = "", builder_hint: str = "
     out: List[Dict[str, Any]] = []
     context, sheet, money = "", -1, _MoneyColumns()
     banner = ""
-    for si, cells, links in rows:
+    for si, cells, links, sheet_name, row_no in rows:
         if si != sheet:
             context, sheet, money = "", si, _MoneyColumns()   # headers are per sheet
         plain = _clean(" ".join(t for t, _c, _i in cells))
@@ -745,6 +753,12 @@ def extract_from_xlsx(data: bytes, source_label: str = "", builder_hint: str = "
         listings, context, banner = _rows_to_listings(
             [(money.render(cells), links)], context, source_label, builder_hint, banner)
         _apply_header_specs(listings, money.specs(cells))
+        # Stamped on every listing this row produced. One row can yield several (priced
+        # siblings that differ only by package), and they all genuinely live on that row —
+        # sending Colin to the row is right even when it holds more than one lot.
+        for _l in listings:
+            _l["source_sheet"] = sheet_name
+            _l["source_row"] = row_no
         out.extend(listings)
     _log_yield("xlsx", source_label, out)
     return out
@@ -767,6 +781,13 @@ def extract_from_pdf(data: bytes, source_label: str = "", builder_hint: str = ""
                         strategy(page, annots), context, source_label, builder_hint, banner)
                     if len(listings) > len(best):
                         best, best_ctx, best_banner, best_name = listings, ctx, ban, name
+                # Which PAGE the lot was read from. A price list URL alone opens a 30-page
+                # PDF; 2,799 of the live rows come from one, far more than from any
+                # spreadsheet, so this is the answer to Colin's ask for most of the stock.
+                # page_number is pdfplumber's own 1-based value — the page the reader
+                # shows, not an index.
+                for _l in best:
+                    _l["source_page"] = getattr(page, "page_number", 0) or 0
                 out.extend(best)
                 context, banner = best_ctx, best_banner
                 if best_name:
@@ -799,7 +820,9 @@ def extract_from_csv(data: bytes, source_label: str = "", builder_hint: str = ""
     out: List[Dict[str, Any]] = []
     context, banner = "", ""
     money = _MoneyColumns()
-    for raw in csv.reader(io.StringIO(text), delimiter=delimiter):
+    # enumerate from 1: a CSV exported from Google Sheets lines up with the row numbers
+    # the sheet itself shows, which is the number Colin will be looking at.
+    for line_no, raw in enumerate(csv.reader(io.StringIO(text), delimiter=delimiter), 1):
         cells = [(str(v).strip(), False, i) for i, v in enumerate(raw) if str(v).strip()]
         plain = _clean(" ".join(t for t, _c, _i in cells))
         if not plain:
@@ -811,6 +834,8 @@ def extract_from_csv(data: bytes, source_label: str = "", builder_hint: str = ""
         listings, context, banner = _rows_to_listings(
             [(money.render(cells), [])], context, source_label, builder_hint, banner)
         _apply_header_specs(listings, money.specs(cells))
+        for _l in listings:
+            _l["source_row"] = line_no
         out.extend(listings)
     _log_yield("csv", source_label, out)
     return out

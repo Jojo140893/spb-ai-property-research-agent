@@ -327,8 +327,90 @@ def test_a_section_banner_yields_a_locality_only_when_it_names_one():
         assert _context_suburb(junk) is None, f"{junk!r} was read as a locality"
 
 
+def test_a_listing_carries_the_sheet_and_row_it_was_read_from():
+    """Colin, 9 Aug: "if it is in the sheet I need the row number of that sheet".
+
+    A price list URL opens a workbook of several hundred lines. Without the line number
+    the link is only marginally better than naming the file, which is the complaint.
+    The blank row matters: openpyxl reports the position Excel shows, so the second
+    listing must be row 4 and not row 3 — an off-by-one here sends him to the wrong lot,
+    which is worse than sending him to the file.
+    """
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Live Packages"
+    ws.append(["Lot", "Suburb", "Beds", "Price"])
+    ws.append(["Lot 12", "Truganina", 4, "$750,000"])
+    ws.append([])                                   # builders leave gaps between blocks
+    ws.append(["Lot 13", "Truganina", 3, "$690,000"])
+    buf = io.BytesIO()
+    wb.save(buf)
+
+    out = extract_from_xlsx(buf.getvalue(), "test.xlsx")
+    assert len(out) == 2, f"expected 2 listings, got {len(out)}"
+    assert [l.get("source_row") for l in out] == [2, 4], (
+        f"positions must match what Excel shows, got {[l.get('source_row') for l in out]}")
+    assert all(l.get("source_sheet") == "Live Packages" for l in out), (
+        "every listing must name the worksheet it came from")
+
+
+def test_the_position_is_never_part_of_the_row_identity():
+    """The whole reason this is safe to backfill, and the thing that must never change.
+
+    content_hash decides identity. A lot shifts down two rows the moment a builder
+    inserts a header, and if the position were hashed every one of those rows would be
+    re-INSERTED on the next harvest rather than updated — the mechanism that produced
+    777 duplicate captures. Asserted against _HASH_FIELDS directly, so adding the field
+    to the hash later fails here instead of in production.
+    """
+    from database import _HASH_FIELDS, building_content_hash
+    for field in ("source_sheet", "source_row", "source_page"):
+        assert field not in _HASH_FIELDS, f"{field} must never decide row identity"
+
+    base = {"source_channel": "E-Agent", "builder_name": "Hattan Homes",
+            "suburb": "Truganina", "lot_number": "12", "source_text": "Lot 12 Truganina"}
+    moved = {**base, "source_sheet": "Live Packages", "source_row": 42, "source_page": 3}
+    assert building_content_hash(base) == building_content_hash(moved), (
+        "recording where a row sits changed its identity — the next harvest would "
+        "re-insert every backfilled row")
+
+
+def test_a_pdf_listing_carries_its_page():
+    """2,799 of the live rows come from a PDF and only 463 from a .xlsx, so for most of
+    the stock the answer to "where is it" is a page, not a row. Skipped rather than
+    failed when pdfplumber is absent, since it is an optional dependency here."""
+    from sources.spreadsheet_extract import PDF_AVAILABLE
+    if not PDF_AVAILABLE:
+        return
+    import provenance
+    assert provenance._sheet_position({"source_page": 7}) == "page 7"
+    # A page outranks a row: the reader opens on a page, and "row 12" inside a PDF
+    # means nothing to the person holding it.
+    assert provenance._sheet_position(
+        {"source_page": 7, "source_row": 12, "source_sheet": "x"}) == "page 7"
+
+
+def test_a_row_with_no_recorded_position_says_nothing_rather_than_guessing():
+    """Rows captured before the position was recorded keep the plain label. An absent
+    row number is stated by its absence; inventing a plausible one puts Colin on the
+    wrong line."""
+    import provenance
+    assert provenance._sheet_position({}) == ""
+    assert provenance._sheet_position({"source_row": 0, "source_page": 0}) == ""
+    links = provenance.source_links(
+        {"source_channel": "E-Agent", "lot_number": "9",
+         "source_url": "https://www.e-agent.com.au/_files/ugd/z.pdf"})
+    assert links, "a row with a file URL must still offer that file"
+    assert all("row" not in e["label"] and "page" not in e["label"] for e in links), (
+        f"a position was invented for a row that has none: {[e['label'] for e in links]}")
+
+
 def run_all():
     tests = [
+        ("sheet and row reach the listing", test_a_listing_carries_the_sheet_and_row_it_was_read_from),
+        ("position never decides identity", test_the_position_is_never_part_of_the_row_identity),
+        ("pdf listing carries its page", test_a_pdf_listing_carries_its_page),
+        ("no position is not a guess", test_a_row_with_no_recorded_position_says_nothing_rather_than_guessing),
         ("a banner yields a locality or nothing",
          test_a_section_banner_yields_a_locality_only_when_it_names_one),
         ("named columns beat the flattened row",

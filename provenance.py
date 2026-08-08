@@ -122,6 +122,35 @@ def _kind(label: str, url: str, opens: str, search: str = "") -> Dict[str, str]:
     return {"label": label, "url": url, "opens": opens, "search": search}
 
 
+def _sheet_position(row: Dict[str, Any]) -> str:
+    """'sheet "Live Packages", row 42' — where in the workbook this lot was read.
+
+    Both parts are optional and each is stated only if it was actually recorded. A
+    workbook with one unnamed sheet gains nothing from "sheet 'Sheet1'", and a row
+    number without a sheet is still the useful half.
+    """
+    sheet = str(row.get("source_sheet") or "").strip()
+
+    def _int(v):
+        try:
+            return int(v or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    line, page = _int(row.get("source_row")), _int(row.get("source_page"))
+    # A PDF page comes first when both somehow exist: the reader opens on a page, and
+    # "row 12" inside a PDF means nothing to the person holding it.
+    if page:
+        return f"page {page}"
+    if sheet and line:
+        return f'sheet "{sheet}", row {line}'
+    if line:
+        return f"row {line}"
+    if sheet:
+        return f'sheet "{sheet}"'
+    return ""
+
+
 def source_links(row: Dict[str, Any]) -> list:
     """Every place this listing can be traced to, best first.
 
@@ -197,7 +226,15 @@ def source_links(row: Dict[str, Any]) -> list:
         # A price list is thousands of spreadsheet rows; the lot label is what to find
         # in it. E-Agent rows carry the whole flattened row as lot_address, so prefer
         # the bare lot number there — that is what the sheet's own Lot column holds.
-        add(label, value, "price list" if label == "Price list" else "document")
+        #
+        # Better still, say WHERE in the file. Colin, 9 Aug: "if it is in the sheet I
+        # need the row number of that sheet where that building is." When the extractor
+        # recorded the position, the label carries it, so he opens the workbook and goes
+        # straight to the line instead of scanning 400 of them for a lot number. Rows
+        # captured before this was recorded simply keep the plain label — an absent row
+        # number is stated by its absence, never guessed at.
+        add(f"{label} — {_sheet_position(row)}" if _sheet_position(row) else label,
+            value, "price list" if label == "Price list" else "document")
 
     return out
 

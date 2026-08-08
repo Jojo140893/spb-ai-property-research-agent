@@ -1512,9 +1512,19 @@
                 // lot can be found without guessing which of our fields the source indexes.
                 const term = b[pfx + '_search']
                     ? ` — search there for: ${b[pfx + '_search']}` : '';
+                // WHERE in that document, as visible text rather than only a tooltip.
+                // Colin, 9 Aug: "if it is in the sheet I need the row number of that
+                // sheet where that building is". The position is already inside `label`
+                // (provenance._sheet_position builds it), and it was reaching the browser
+                // in the title attribute alone — which means hovering 5,859 rows one at a
+                // time to find it. Read back out of the label rather than exported as a
+                // fourth field, so there is one source of the string and the two cannot
+                // disagree about where a lot sits.
+                const at = /(?:sheet "[^"]+", )?(?:row|page) \d+/i.exec(label);
+                const cellText = at ? `${opens} · ${at[0]}` : opens;
                 return `<td><a href="${esc(v)}" target="_blank" rel="noopener noreferrer"
                     title="${esc(label)} — opens the ${esc(opens)}${esc(term)}"
-                    style="color:var(--accent-blue);">${esc(opens)}</a></td>`;
+                    style="color:var(--accent-blue);">${esc(cellText)}</a></td>`;
             }
             if (c.link) return `<td>${v ? `<a href="${esc(v)}" target="_blank" rel="noopener noreferrer"
                 style="color:var(--accent-blue);">${c.link}</a>` : ''}</td>`;

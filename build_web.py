@@ -406,7 +406,15 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     # stocklist_file to BUILD the per-document link; only the built link ships. Dropping
     # them from the SELECT as well as the export cost 6,242 rows their source link --
     # the feature stayed, but most rows lost it silently.
-    _read_fields = BUILDING_FIELDS + ["source_text", "source_url", "stocklist_file"]
+    # source_sheet / source_row / source_page are read for the same reason and fell into
+    # the same trap: they only feed the LABEL that provenance builds, so they are not in
+    # BUILDING_FIELDS — and being absent from the SELECT too meant every one of the 2,350
+    # positions just backfilled reached the browser as a plain "Source file". Verified by
+    # fetching the deployed stock.json and counting labels naming a row or page: 0 of
+    # 5,859 before this line, which is precisely the silent-loss the comment above
+    # describes happening a second time.
+    _read_fields = BUILDING_FIELDS + ["source_text", "source_url", "stocklist_file",
+                                      "source_sheet", "source_row", "source_page"]
     rows = conn.execute(
         f"SELECT {', '.join(_read_fields)} FROM buildings "
         "ORDER BY builder_name, price").fetchall()

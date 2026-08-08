@@ -148,6 +148,20 @@ def cross_channel_text_key(row):
     122 of them cross-channel (121 E-Agent vs digital email, 1 Portal vs E-Agent). The
     same-channel pass already catches everything else, so this adds nothing outside the
     gap it exists to close.
+
+    A CONTRADICTION ON STATE STOPS THE MERGE — see find_superseded, not this key. Keyed
+    on text and price alone, 13 of 148 cross-channel groups held rows that CONTRADICT
+    each other on state: "Jubilee" stored as both QLD and VIC, "Grandview" as both NSW
+    and VIC. The survivor was then picked arbitrarily, and for Jubilee it kept the
+    VIC-labelled copy — Colin's Queensland brief went from one qualified listing to none,
+    because the only lot that matched had been retired in favour of a row claiming to be
+    in another state.
+
+    The guard is applied to the GROUP rather than folded into the key here, and the
+    difference is worth 370 listings. Putting the state in the key also splits a capture
+    that never stated one away from the capture that did, which is not a contradiction —
+    it is one row knowing less. That version retired 44 cross-channel duplicates against
+    417, losing ~370 correct merges to prevent 13 wrong ones.
     """
     k = text_key(row)
     return None if k is None else k[1:]          # drop the channel, keep text + price
@@ -219,6 +233,21 @@ def find_superseded(rows):
             if k is not None:
                 groups[k].append(r)
         for members in groups.values():
+            # Two captures that disagree about which STATE a house is in are not proven
+            # to be one listing — one of them is simply wrong, and merging picks the
+            # wrong one half the time. Keeping both duplicates is the cheaper error: a
+            # duplicate is visible and countable, a lot filed under the wrong state is
+            # neither, and it is the one that reaches a client. A BLANK state is not a
+            # contradiction, only a capture that knows less, so it still merges.
+            #
+            # Applied to the cross-channel pass alone: lot_key already requires the state
+            # to match, and text_key compares captures of one channel, where a state
+            # flip between harvests is the state resolver improving rather than two
+            # sources disagreeing.
+            if key_fn is cross_channel_text_key:
+                stated = {_norm(m.get("state")) for m in members if _norm(m.get("state"))}
+                if len(stated) > 1:
+                    continue
             for other in members[1:]:
                 union(members[0]["id"], other["id"])
 

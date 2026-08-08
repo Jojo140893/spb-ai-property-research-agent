@@ -85,6 +85,22 @@ BUILDINGS_EXTRA_COLUMNS = (
     # Which project on the source portal this lot belongs to, so a recommendation can
     # link back to it. See provenance.py.
     ("source_project_id", "TEXT"),
+    # WHERE IN THE FILE this lot was read from: the worksheet name and the 1-based row
+    # number openpyxl reports. Colin's ask of 9 Aug — "if it is in the sheet I need the
+    # row number of that sheet where that building is". A stocklist URL alone opens a
+    # workbook of 400 rows and leaves him to find the lot by eye, which is the same
+    # problem as no link at all.
+    #
+    # NOT IN content_hash, and it must never be added to it. _HASH_FIELDS decides row
+    # identity; a lot that moves down two rows when the builder inserts a header is the
+    # SAME lot, and hashing its position would re-insert all 11,257 rows on the next
+    # harvest. Filled like any other detail column.
+    ("source_sheet", "TEXT"),
+    ("source_row", "INTEGER"),
+    # The same answer for a PDF, which is where MOST of the stock actually comes from:
+    # 2,799 of the live rows are read out of PDF price lists, against 463 from .xlsx.
+    # "Row 42" means nothing there; the page does.
+    ("source_page", "INTEGER"),
     # How the lot's PROJECT stood when it was last read: lots available, lots in total.
     # Proxima states this in its project header ("Ahlei (85/110)") and it used to be
     # stored as part of estate_name, which made the estate's own name change between
@@ -485,6 +501,18 @@ class ResearchDatabase:
             "estate_name": b.get("estate_name"),
             "project_available": b.get("project_available"),
             "project_total": b.get("project_total"),
+            # Extracted since 1 Aug and silently dropped ever since: source_project_id
+            # was declared in BUILDINGS_EXTRA_COLUMNS and left out of THIS dict, which is
+            # the allow-list that decides what is actually written. sources/proxima.py:701
+            # emits it on every lot, and all 1,368 live Proxima rows stored NULL. The
+            # column existed, the extractor filled it, and nothing carried it across --
+            # the kind of gap that reads as "the portal doesn't give us that" when the
+            # truth is we threw it away.
+            "source_project_id": b.get("source_project_id"),
+            # Where in the workbook the row was read from. See BUILDINGS_EXTRA_COLUMNS.
+            "source_sheet": b.get("source_sheet"),
+            "source_row": b.get("source_row"),
+            "source_page": b.get("source_page"),
             "lot_number": b.get("lot_number"),
             "postcode": b.get("postcode"),
             "frontage_m": b.get("frontage_m"),
@@ -566,7 +594,12 @@ class ResearchDatabase:
             for c in ("builder_name", "suburb", "storey", "estate_name", "lot_number",
                       "postcode", "frontage_m", "listing_url", "floorplan_url",
                       "brochure_url", "incentive_text", "incentive_amount", "bedrooms",
-                      "bathrooms", "car_spaces", "land_sqm", "house_sqm", "state"):
+                      "bathrooms", "car_spaces", "land_sqm", "house_sqm", "state",
+                      # Position in the source file and the portal project. Filled when
+                      # empty like everything else here, so the 11,257 rows already
+                      # stored gain them on the next harvest without a migration.
+                      "source_sheet", "source_row", "source_page",
+                      "source_project_id"):
                 if cols.get(c) not in (None, ""):
                     upd[c] = f"COALESCE(NULLIF(buildings.{c},''), ?)"
             sets, params = [], []
