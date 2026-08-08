@@ -616,17 +616,17 @@
             <form id="propertyForm">
                 <div class="form-group">
                     <label>Client Name</label>
-                    <input type="text" id="clientName" value="Sarah & Mark Johnson" required>
+                    <input type="text" id="clientName" placeholder="Client name" required>
                 </div>
 
                 <div class="form-row">
                     <div class="form-group">
                         <label>Max Budget ($)</label>
-                        <input type="number" id="budgetMax" value="780000" step="10000">
+                        <input type="number" id="budgetMax" placeholder="no maximum" step="10000">
                     </div>
                     <div class="form-group">
                         <label>Preferred Cap ($)</label>
-                        <input type="number" id="budgetPref" value="740000" step="10000">
+                        <input type="number" id="budgetPref" placeholder="optional" step="10000">
                     </div>
                 </div>
 
@@ -634,7 +634,8 @@
                     <div class="form-group">
                         <label>Buyer Type</label>
                         <select id="buyerType">
-                            <option value="Owner Occupier" selected>Owner Occupier</option>
+                            <option value="" selected>Not stated</option>
+                            <option value="Owner Occupier">Owner Occupier</option>
                             <option value="First Home Buyer">First Home Buyer</option>
                             <option value="Investor">Investor</option>
                             <option value="SMSF Buyer">SMSF Buyer</option>
@@ -643,7 +644,8 @@
                     <div class="form-group">
                         <label>State</label>
                         <select id="stateSelect">
-                            <option value="QLD" selected>QLD (Queensland)</option>
+                            <option value="" selected>Any state</option>
+                            <option value="QLD">QLD (Queensland)</option>
                             <option value="NSW">NSW (New South Wales)</option>
                             <option value="VIC">VIC (Victoria)</option>
                             <option value="SA">SA (South Australia)</option>
@@ -654,7 +656,7 @@
 
                 <div class="form-group" style="margin-top: 0.5rem;">
                     <label>Target Suburbs (Comma separated)</label>
-                    <input type="text" id="suburbs" value="Coomera, Springfield, Hope Island"
+                    <input type="text" id="suburbs" placeholder="e.g. Ripley, Truganina"
                            autocomplete="off" spellcheck="false">
                     <!-- Suggestions land here. A plain <datalist> cannot do this job: it
                          matches the WHOLE field value, so on a comma-separated input it
@@ -673,18 +675,18 @@
                 <div class="form-row">
                     <div class="form-group">
                         <label>Min Bedrooms</label>
-                        <input type="number" id="bedrooms" value="4">
+                        <input type="number" id="bedrooms" placeholder="any">
                     </div>
                     <div class="form-group">
                         <label>Min Bathrooms</label>
-                        <input type="number" id="bathrooms" value="2">
+                        <input type="number" id="bathrooms" placeholder="any">
                     </div>
                 </div>
 
                 <div class="form-row">
                     <div class="form-group">
                         <label>Min Car Spaces</label>
-                        <input type="number" id="carSpaces" value="2">
+                        <input type="number" id="carSpaces" placeholder="any">
                     </div>
                     <div class="form-group">
                         <!-- Was pre-filled with 1, i.e. "single storey only" — a requirement
@@ -1602,6 +1604,156 @@
        our own lot count and median, and a working realestate.com.au search per row.  */
     let BENCH_LOADED = false;
 
+    /* ------------------------------------------------------------------ *
+     *  "Check the benchmark" — Colin, 9 Aug.
+     *
+     *  Under every researched property, a button that asks one question: is there a
+     *  BETTER house for this client on realestate.com.au? If there is, it is recommended
+     *  and put side by side with ours. If there is not, ours is confirmed as the final
+     *  pick — which is a real answer, not a failure, and is said as plainly as the other.
+     *
+     *  Same payload the Benchmarks tab reads, cached once and shared, so the two can
+     *  never disagree about what the market holds. A comparable is only ever a
+     *  realestate.com.au listing: our own stock is never compared against itself, which
+     *  would look like it was working and mean nothing.
+     * ------------------------------------------------------------------ */
+    let BENCH_CACHE = null;
+
+    async function benchmarkRows() {
+        if (BENCH_CACHE) return BENCH_CACHE;
+        const data = await getJSON('/api/benchmarks', 'benchmarks.json');
+        const sub = data.suburbs || { keys: [], rows: [] };
+        BENCH_CACHE = {
+            rows: asBuildings(data),
+            provider: data.provider || {},
+            suburbs: (sub.rows || []).map(r => {
+                const o = {}; (sub.keys || []).forEach((k, i) => o[k] = r[i]); return o;
+            }),
+        };
+        return BENCH_CACHE;
+    }
+
+    const _lc = v => String(v || '').trim().toLowerCase();
+
+    /* Like-for-like, and strict about it. Same suburb AND same state, and at least as
+       many bedrooms as ours — a cheaper 3-bed is not a better option than a 4-bed for a
+       client who asked for four. Anything looser stops being a comparison and becomes a
+       different house at a different price. */
+    function comparablesFor(prop, rows) {
+        const beds = Number(prop.bedrooms) || 0;
+        return rows.filter(r =>
+            _lc(r.suburb) === _lc(prop.suburb) &&
+            _lc(r.state) === _lc(prop.state) &&
+            (!beds || (Number(r.bedrooms) || 0) >= beds) &&
+            (Number(r.price) || 0) > 0);
+    }
+
+    function reaSearchFor(prop, benches) {
+        const hit = (benches.suburbs || []).find(s =>
+            _lc(s.suburb) === _lc(prop.suburb) && _lc(s.state) === _lc(prop.state));
+        return hit && hit.search_url ? hit.search_url : '';
+    }
+
+    async function checkBenchmark(idx, btn) {
+        const prop = (LAST_SHORTLIST || [])[idx];
+        const out = document.getElementById(`benchOut${idx}`);
+        if (!prop || !out) return;
+        btn.disabled = true;
+        out.innerHTML = '<span style="color:var(--text-muted);">Checking realestate.com.au…</span>';
+
+        let benches;
+        try {
+            benches = await benchmarkRows();
+        } catch (e) {
+            out.innerHTML = `<span style="color:var(--rose-red);">Could not read the benchmark data.</span>`;
+            btn.disabled = false;
+            return;
+        }
+
+        const ours = Number(prop.price) || 0;
+        const comps = comparablesFor(prop, benches.rows);
+        const search = reaSearchFor(prop, benches);
+        const searchLink = search
+            ? ` <a href="${esc(search)}" target="_blank" rel="noopener noreferrer"
+                 style="color:var(--accent-blue);">Open the live market for ${esc(prop.suburb)}</a>`
+            : '';
+
+        /* Nothing stored. This is the state today and it must not read as "we checked
+           and the market is empty" — nothing was checked, because there is nothing to
+           check against. The live search link still works and needs no subscription. */
+        if (!benches.rows.length) {
+            out.innerHTML = `<div style="border-left:3px solid var(--amber-yellow); padding:0.6rem 0.8rem;
+                 background:rgba(245,158,11,0.06); border-radius:4px;">
+                 <strong>No realestate.com.au listings are stored, so nothing was compared.</strong>
+                 ${esc(benches.provider.reason || '')}
+                 <div style="margin-top:0.4rem;">${searchLink || 'No usable locality on this row, so no search link.'}</div>
+                 </div>`;
+            btn.disabled = false;
+            return;
+        }
+
+        const better = comps.filter(r => Number(r.price) < ours)
+                            .sort((a, b) => Number(a.price) - Number(b.price));
+
+        if (!comps.length) {
+            out.innerHTML = `<div style="border-left:3px solid var(--border-strong); padding:0.6rem 0.8rem;">
+                <strong>No like-for-like listing in ${esc(prop.suburb)}.</strong>
+                ${benches.rows.length.toLocaleString()} listing(s) are stored, none of them in this
+                suburb at ${prop.bedrooms || '?'}+ bedrooms, so there is nothing to compare against.
+                <div style="margin-top:0.4rem;">${searchLink}</div></div>`;
+            btn.disabled = false;
+            return;
+        }
+
+        if (!better.length) {
+            const cheapest = comps.slice().sort((a, b) => Number(a.price) - Number(b.price))[0];
+            out.innerHTML = `<div style="border-left:3px solid var(--emerald-green,#059669); padding:0.6rem 0.8rem;
+                background:rgba(5,150,105,0.06); border-radius:4px;">
+                <strong>This remains the best option.</strong> Checked against
+                ${comps.length} comparable listing(s) on realestate.com.au in ${esc(prop.suburb)};
+                the cheapest is ${money(cheapest.price)}, against ours at ${money(ours)}.
+                <div style="margin-top:0.4rem;">${searchLink}</div></div>`;
+            btn.disabled = false;
+            return;
+        }
+
+        const win = better[0];
+        const saving = ours - Number(win.price);
+        const dest = win.listing_url || win.search_url || search;
+        out.innerHTML = `
+            <div style="border-left:3px solid var(--accent-blue); padding:0.6rem 0.8rem;
+                 background:rgba(37,99,235,0.05); border-radius:4px;">
+              <strong>A better option exists on realestate.com.au</strong> —
+              ${money(saving)} cheaper (${comps.length} comparable(s) checked).
+              <table style="width:100%; margin-top:0.6rem; font-size:0.85rem; border-collapse:collapse;">
+                <tr style="text-align:left; color:var(--text-muted);">
+                  <th style="padding:0.2rem 0;"></th><th>Ours (Rank #${idx + 1})</th>
+                  <th>realestate.com.au</th></tr>
+                <tr><td style="padding:0.2rem 0;">Address</td>
+                  <td>${esc(prop.lot_address || '')}</td>
+                  <td>${esc(win.address_label || win.suburb || '')}</td></tr>
+                <tr><td style="padding:0.2rem 0;">Price</td>
+                  <td>${money(ours)}</td>
+                  <td><strong>${money(win.price)}</strong></td></tr>
+                <tr><td style="padding:0.2rem 0;">Bedrooms</td>
+                  <td>${prop.bedrooms ?? NOT_STATED}</td>
+                  <td>${win.bedrooms ?? NOT_STATED}</td></tr>
+                <tr><td style="padding:0.2rem 0;">Land</td>
+                  <td>${prop.land_size_sqm ? prop.land_size_sqm + ' m²' : NOT_STATED}</td>
+                  <td>${win.land_sqm ? win.land_sqm + ' m²' : NOT_STATED}</td></tr>
+              </table>
+              <div style="margin-top:0.5rem;">
+                ${dest ? `<a href="${esc(dest)}" target="_blank" rel="noopener noreferrer"
+                   style="color:var(--accent-blue); font-weight:600;">Open it on realestate.com.au</a>` : ''}
+              </div>
+              <div style="margin-top:0.4rem; color:var(--text-muted); font-size:0.8rem;">
+                A market listing is an existing house, not a build package — confirm what is
+                included before putting it in front of a client.
+              </div>
+            </div>`;
+        btn.disabled = false;
+    }
+
     async function loadBenchmarks() {
         if (BENCH_LOADED) return;
         const el = document.getElementById('benchmarksContent');
@@ -1774,6 +1926,10 @@
        by the API (see comparison_report.py), so switching between them is instant and
        needs no second round trip. */
     let COMPARISONS = {};
+
+    /* The shortlist as last rendered, so a per-card action can find its own property by
+       index without re-running the search. "Check the benchmark" reads this. */
+    let LAST_SHORTLIST = [];
 
     function comparisonKey() {
         const picked = [...document.querySelectorAll('.cmp-box:checked')]
@@ -2022,6 +2178,15 @@
         input.addEventListener('blur', () => setTimeout(close, 120));
     })();
 
+    /* Same delegation, same reason: the card is rebuilt on every search, so a handler
+       bound to the button itself would be thrown away with it. */
+    document.addEventListener('click', ev => {
+        const b = ev.target.closest('.bench-btn');
+        if (!b) return;
+        ev.preventDefault();
+        checkBenchmark(parseInt(b.dataset.idx, 10), b);
+    });
+
     /* One delegated listener rather than a handler per card -- the shortlist re-renders
        on every search and inline onclick would not survive it. */
     document.addEventListener('click', ev => {
@@ -2060,8 +2225,16 @@
     async function runResearchAgent() {
         const brief = {
             client_name: document.getElementById('clientName').value || 'Unnamed Client',
-            budget_max: numField('budgetMax', 0),
-            preferred_spending_cap: numField('budgetPref', numField('budgetMax', 0)),
+            // A BLANK BUDGET MEANS NO CEILING, not a ceiling of zero. The form used to
+            // ship pre-filled with a fictional client (Sarah & Mark Johnson, $780,000,
+            // Coomera/Springfield/Hope Island, 4 bed) and every search silently carried
+            // those requirements until someone overwrote them. Emptying the fields is
+            // right, but falling back to 0 would then reject every listing as "over the
+            // budget ceiling" and read as a broken page — the same trap the pre-filled
+            // "Max Storeys: 1" caused, which hard-rejected every two-storey house.
+            budget_max: numField('budgetMax', Number.MAX_SAFE_INTEGER),
+            preferred_spending_cap: numField('budgetPref',
+                                             numField('budgetMax', Number.MAX_SAFE_INTEGER)),
             buyer_type: document.getElementById('buyerType').value,
             state: document.getElementById('stateSelect').value,
             primary_suburbs: document.getElementById('suburbs').value
@@ -2125,6 +2298,8 @@
                 resultsDiv.innerHTML = '';
                 document.getElementById('shortlistBadge').textContent = `${data.shortlist_count} Qualified (${data.rejected_count} Filtered)`;
 
+                LAST_SHORTLIST = data.shortlist || [];
+                BENCH_CACHE = null;      // a fresh search re-reads the market, not a stale copy
                 data.shortlist.forEach((prop, idx) => {
                     const isRank1 = idx === 0;
                     const pillStyle = prop.recommendation.includes('Conditions') ? 'pill-conditions' : 'pill-recommend';
@@ -2222,6 +2397,26 @@
                         <div style="font-size:0.82rem; margin-top:0.5rem; color:var(--amber-yellow);">
                             <strong>Confirm before presenting:</strong> ${esc(prop.advisories)}
                         </div>` : ''}
+
+                        <!-- Colin, 9 Aug: a button under each researched property that asks
+                             whether realestate.com.au holds a better one for this client.
+                             Deliberately NOT run automatically with the search: it is a
+                             question the consultant asks about a specific lot, and firing it
+                             for every result would put a market claim on cards nobody looked
+                             at. -->
+                        <div style="margin-top:0.9rem; padding-top:0.75rem; border-top:1px solid var(--border-color,#e2e8f0);">
+                            <button type="button" class="bench-btn" data-idx="${idx}"
+                                style="padding:0.5rem 0.9rem; border:1px solid var(--accent-blue);
+                                       background:transparent; color:var(--accent-blue);
+                                       border-radius:6px; font-weight:600; cursor:pointer;
+                                       font-size:0.85rem;">
+                                Check the benchmark
+                            </button>
+                            <span style="margin-left:0.5rem; color:var(--text-muted); font-size:0.8rem;">
+                                is there a better one on realestate.com.au?
+                            </span>
+                            <div id="benchOut${idx}" style="margin-top:0.6rem; font-size:0.85rem;"></div>
+                        </div>
                     `;
 
                     resultsDiv.appendChild(card);
