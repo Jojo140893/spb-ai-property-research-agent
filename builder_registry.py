@@ -18,6 +18,7 @@ class BuilderRegistry:
         self.csv_filepath = Path(csv_filepath) if csv_filepath else BUILDER_CSV_PATH
         self.builders: List[Dict[str, Any]] = []
         self._load_primary_builders()
+        self._resolve_domain_named_builders()
 
     def _load_primary_builders(self):
         if not self.csv_filepath.exists():
@@ -93,6 +94,46 @@ class BuilderRegistry:
                 'notes': notes,
                 'stock_channel': stock_channel
             })
+
+    def _resolve_domain_named_builders(self):
+        """A WEBSITE typed into the BUILDER column is not a second builder.
+
+        The seed of the Hattan split. `Book1(Builders) List.csv` line 21 reads
+
+            Brian Zeeman,BrianZ@hattan.com.au,0437 503 015,hattan.com.au,VIC,Yes,YES,,,,
+
+        — the builder's site in the name column — while line 30 carries the real
+        `Hattan Homes`. Everything downstream trusted the registry, so both spellings
+        went out as two suppliers: email_inbox's domain_map answered the literal string
+        "hattan.com.au" for mail from that domain, and enrich's name-key builder strips
+        \\b(au|com)\\b so both rows collapsed onto the key "hattan", where setdefault let
+        line 21 win. 192 rows were stored under the domain, 67 of them still live.
+
+        Resolved here, once, at the point the fault enters the system, rather than in
+        each consumer that happens to notice. This is builder_names' transformation 1 —
+        a bare domain resolved against a name we already hold — and nothing more: a
+        domain that matches no registered builder is LEFT AS IT WAS FOUND, because
+        inventing "Hattan" out of "hattan.com.au" would be a guess, and the standing
+        rule is that a raw value beats a plausible invention.
+
+        The code is the guard, not the cure: line 21 should be corrected in the sheet so
+        the client's own contact record names the builder rather than the website.
+        """
+        try:
+            from builder_names import BuilderNameCanonicaliser, looks_like_domain
+        except Exception:                                        # pragma: no cover
+            return
+        # learn() refuses to register a domain as a canonical target, so the resolver is
+        # built from the registry's real names and cannot map one domain onto another.
+        canon = BuilderNameCanonicaliser(b['builder_name'] for b in self.builders)
+        for b in self.builders:
+            if not looks_like_domain(b['builder_name']):
+                continue
+            fixed = canon.canonical(b['builder_name'])
+            if fixed and fixed != b['builder_name']:
+                b['builder_name_source'] = (
+                    f"resolved from the website {b['builder_name']!r} in the BUILDER column")
+                b['builder_name'] = fixed
 
     def _normalize_phone(self, raw_phone: str) -> str:
         cleaned = re.sub(r'[^\d+]', '', raw_phone)

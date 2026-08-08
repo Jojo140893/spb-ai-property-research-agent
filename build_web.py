@@ -33,6 +33,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import benchmarks
 import config
 from address_label import clean_asset_title
 
@@ -91,7 +92,30 @@ BUILDING_DERIVED_FIELDS = ["source_link_url", "source_link_opens", "source_link_
                            # blank. A blank suburb with no reason beside it looks like
                            # data we lost; with the reason it is data the source never
                            # gave. Same contract as state_source.
-                           "suburb_source"]
+                           "suburb_source",
+                           # "Compare on realestate.com.au" -- a SEARCH URL for this
+                           # row's suburb, built by rea_link.py from the RESOLVED suburb
+                           # a few lines below. No key, no API, no request from us: the
+                           # string sits in the page and Coleen's browser makes the
+                           # request when she clicks. Same four-field shape as
+                           # source_link_*, so index.html renders it with the same cell.
+                           "rea_search_url", "rea_search_opens", "rea_search_label",
+                           "rea_search_search"]
+
+# benchmarks.json -- market comparables from realestate.com.au, which are NOT stock.
+# Its own payload, not a section of stock.json, for three reasons: stock.json is already
+# 6.98 MB and this is fetched only when the tab is opened; deploy.ps1:39 counts
+# len(stock.json['rows']) against .last_deploy_rows (11,257) and comparables must never
+# inflate that floor, or the day a PropTrack key lapses the honest smaller snapshot is
+# refused and publishing stops; and index.html's headline count is
+# STOCK.filter(b => !b.superseded_by), which must keep meaning "lots Coleen can sell".
+BENCHMARK_FIELDS = list(benchmarks.EXPORT_FIELDS)
+# One row per (suburb, state) we hold LOCATED live stock in. This is the half that works
+# with no key at all: our lots, our median, our bedroom mix and a working realestate.com.au
+# search per suburb, so the tab is a usable comparison tool tonight rather than an empty
+# grid promising one later. The market columns fill when a key arrives.
+BENCHMARK_SUBURB_FIELDS = ["suburb", "state", "our_lots", "our_median", "our_beds",
+                           "benchmarks_stored", "market_median", "search_url"]
 
 # builders: NOTE the deliberate omission of portal_login_email / portal_login_password.
 BUILDER_FIELDS = [
@@ -241,6 +265,11 @@ def _assert_a_benchmark_names_its_place(path: Path) -> None:
     front of a buyer with nothing naming what it was compared against, which is exactly
     what benchmark_basis exists to prevent.
 
+    NOT about the Benchmarks tab, despite how the name reads. This checks a
+    benchmark_median on a BUILDING row in stock.json. The market comparables Coleen calls
+    "Benchmarks" live in benchmarks.json and are policed by
+    _assert_every_benchmark_listing_opens_somewhere.
+
     Cheap to check and easy to break again, since the two resolve in different files.
     """
     if not path.exists():
@@ -313,10 +342,53 @@ def _pick(row, fields):
     return {f: d.get(f) for f in fields}
 
 
+def _median(values):
+    """Median, or None. None where there is nothing to compute, never 0 — a zero median
+    would read on the Benchmarks tab as "this suburb is free"."""
+    ordered = sorted(v for v in values if v is not None)
+    if not ordered:
+        return None
+    mid = len(ordered) // 2
+    return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2.0
+
+
+def _assert_every_benchmark_listing_opens_somewhere(path: Path) -> None:
+    """A published comparable must open SOMETHING on realestate.com.au.
+
+    The client's ask was "the link that opens that building inside the realestate.com.au
+    website". A benchmark row with neither the provider's own listing URL nor a suburb
+    search is a price with no way to check it — the exact thing this category exists to
+    avoid — and url_source is stored per row precisely so the distinction is auditable
+    rather than inferred from a blank cell.
+
+    NOT the same check as _assert_a_benchmark_names_its_place, which is stock.json-only
+    and is about a benchmark_median on a BUILDING row.
+    """
+    if not path.exists():
+        return
+    data = json.loads(path.read_text(encoding="utf-8"))
+    keys, rows = data.get("keys") or [], data.get("rows") or []
+    if not ({"listing_url", "search_url"} <= set(keys)):
+        return
+    li, si = keys.index("listing_url"), keys.index("search_url")
+    orphans = sum(1 for r in rows
+                  if not str(r[li] or "").strip() and not str(r[si] or "").strip())
+    if orphans:
+        raise SystemExit(
+            f"[ABORT] {path.name}: {orphans} comparable(s) publish a price with no way "
+            f"to open it on realestate.com.au. A benchmark Coleen cannot click is a "
+            f"number she has to take on trust — check benchmarks.record_listing's "
+            f"url_source branch.")
+
+
 def build(out_dir: Path, with_assets: bool = True) -> dict:
     for name, fields in (("buildings", BUILDING_FIELDS + BUILDING_DERIVED_FIELDS),
                          ("builders", BUILDER_FIELDS),
-                         ("assets", ASSET_FIELDS)):
+                         ("assets", ASSET_FIELDS),
+                         # A new payload not named here ships with the credential and
+                         # internal-field allow-list never having run on it at all.
+                         ("benchmarks", BENCHMARK_FIELDS),
+                         ("benchmark suburbs", BENCHMARK_SUBURB_FIELDS)):
         _check(name, fields)
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -359,8 +431,11 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     # two places guarantees the two drift. Two short strings per row against a 5 MB
     # payload is the cheaper trade.
     from provenance import primary_source_link as _link_for
+    import rea_link
+    from rea_link import compare_link as _rea_link_for
     import suburb_quality
     _linked = 0
+    _rea_linked = 0
     _resuburbed = 0
     _suburb_reasons = {}
     for b in buildings:
@@ -406,6 +481,20 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         b["source_link_search"] = (link or {}).get("search") or ""
         if link:
             _linked += 1
+        # "Compare on realestate.com.au". Built AFTER suburb_quality.resolve above,
+        # from b["suburb"] — never the stored column, which still holds 'GARAGE',
+        # '2026' and 'Logan City Council'. rea_link gates on is_located(), so a row
+        # whose suburb we cannot vouch for gets no URL and index.html prints the reason
+        # instead. Measured on this database: 2,927 of 6,141 live rows (47.7%) get a
+        # link — Proxima 1,274/1,368, Direct Portal 207/215, E-Agent 1,425/4,363,
+        # digital email 21/195.
+        rea = _rea_link_for(b)
+        b["rea_search_url"] = rea.get("url") or ""
+        b["rea_search_opens"] = rea.get("opens") or ""
+        b["rea_search_label"] = rea.get("label") if rea.get("url") else ""
+        b["rea_search_search"] = rea.get("search") or ""
+        if b["rea_search_url"]:
+            _rea_linked += 1
     by_channel = [{"source_channel": r[0], "n": r[1]} for r in conn.execute(
         "SELECT source_channel, COUNT(*) FROM buildings GROUP BY 1 ORDER BY 2 DESC")]
     stamp = datetime.now().strftime("%d %b %Y, %H:%M")
@@ -421,6 +510,68 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         "keys": BUILDING_FIELDS + BUILDING_DERIVED_FIELDS,
         "rows": [[b.get(f) for f in BUILDING_FIELDS + BUILDING_DERIVED_FIELDS]
                  for b in buildings],
+    }, separators=(",", ":"), default=str), encoding="utf-8")
+
+    # BENCHMARKS — market comparables, written UNCONDITIONALLY, including with zero rows.
+    #
+    # Unconditional is what makes the tab EMPTY rather than BROKEN. getJSON races the API
+    # against the static file; if neither exists it throws and the tab renders its error
+    # branch, which reads as a fault. It is not a fault — no PropTrack key is stored, and
+    # that is a commercial decision the client has not made. The file says so in its own
+    # words, taken from the extractor rather than restated, so the page and the pipeline
+    # can never report different statuses.
+    _bench_rows = benchmarks.rows()
+    _bench_status = benchmarks.status()
+    _bench_by_place = benchmarks.counts_by_place()
+    # Our own side of the comparison, which needs no key: every LOCATED (suburb, state)
+    # we hold live stock in. Built from the rows already in hand, after suburb_quality
+    # has resolved them, so nothing here can be a suburb we would refuse to link.
+    _places = {}
+    for b in buildings:
+        if b.get("superseded_by"):
+            continue
+        if not b.get("rea_search_url"):      # not located; a link would be a broken search
+            continue
+        key = (str(b.get("suburb") or "").strip(), str(b.get("state") or "").strip().upper())
+        slot = _places.setdefault(key, {"prices": [], "beds": collections.Counter(),
+                                        "url": b.get("rea_search_url")})
+        price = b.get("price")
+        try:
+            if price and float(price) > 0:
+                slot["prices"].append(float(price))
+        except (TypeError, ValueError):
+            pass
+        if b.get("bedrooms"):
+            slot["beds"][str(b["bedrooms"])] += 1
+    _suburb_rows = []
+    for (suburb, state), slot in sorted(_places.items(),
+                                        key=lambda kv: (-len(kv[1]["prices"]), kv[0])):
+        market = _bench_by_place.get((suburb.lower(), state)) or {}
+        _suburb_rows.append({
+            "suburb": suburb, "state": state,
+            "our_lots": len(slot["prices"]),
+            "our_median": _median(slot["prices"]),
+            "our_beds": " / ".join(f"{n}x{b} bed" for b, n in slot["beds"].most_common(3)),
+            "benchmarks_stored": market.get("n") or 0,
+            "market_median": market.get("median"),
+            # The suburb's own search link, from the same builder as the row-level one,
+            # so the two can never disagree about what "compare this suburb" opens.
+            "search_url": rea_link.search_url(suburb, state),
+        })
+    (out_dir / "benchmarks.json").write_text(json.dumps({
+        "status": "success", "generated": stamp,
+        "total": len(_bench_rows),
+        "portal": benchmarks.PORTAL, "attribution": benchmarks.ATTRIBUTION,
+        # configured / reason / stored / open_the_listing / open_a_suburb_search /
+        # oldest_last_seen / last_read. The comparables channel is deliberately outside
+        # harvest_buildings' blocking guard (a comparables outage must never freeze the
+        # dashboard), so this meta block IS its health check — see benchmarks.status.
+        "provider": _bench_status,
+        "keys": BENCHMARK_FIELDS,
+        "rows": [[r.get(f) for f in BENCHMARK_FIELDS] for r in _bench_rows],
+        "suburbs": {"count": len(_suburb_rows), "keys": BENCHMARK_SUBURB_FIELDS,
+                    "rows": [[r.get(f) for f in BENCHMARK_SUBURB_FIELDS]
+                             for r in _suburb_rows]},
     }, separators=(",", ":"), default=str), encoding="utf-8")
 
     # builder registry, credentials stripped
@@ -525,6 +676,12 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         "assets": len(assets), "registry": len(regs), "copied": copied,
         "relabelled": _relabelled,
         "suburb_reasons": _suburb_reasons,
+        # The compare-on-REA half, which works with no key at all. Reported so the
+        # coverage is a number in the build log rather than something a reader has to
+        # infer from how many em-dashes they scroll past.
+        "rea_linked": _rea_linked,
+        "rea_suburbs": len(_suburb_rows),
+        "benchmarks": len(_bench_rows),
         "with_suburb": sum(1 for b in buildings if (b.get("suburb") or "").strip()),
     }
     conn.close()
@@ -753,12 +910,19 @@ if __name__ == "__main__":
           f"{m['named']:,} named · {m['with_state']:,} with a state")
     print(f"    {m['registry']} registry builders (credentials excluded) · "
           f"{m['assets']} assets, {m['copied']} PDF(s) bundled so they actually open")
+    print(f"    Benchmarks: {m['benchmarks']:,} market comparable(s) stored · "
+          f"{m['rea_linked']:,} listing(s) carry a realestate.com.au compare link · "
+          f"{m['rea_suburbs']} suburb(s) on the Benchmarks tab")
     if m.get("relabelled"):
         print(f"    {m['relabelled']} row(s) re-labelled to one name per builder "
               f"(the database keeps its spellings — see _display_name_canonicaliser)")
     _assert_no_folder_capability_urls(where / "stock.json")
     _assert_a_benchmark_names_its_place(where / "stock.json")
-    for f in ("stock.json", "builders.json", "vendor-assets.json"):
+    _assert_every_benchmark_listing_opens_somewhere(where / "benchmarks.json")
+    # benchmarks.json is in this list for the same reason `notes` was the leak that
+    # created the check: a listing payload sourced from an agency is the most likely
+    # place a direct phone number has ever reached this project's free text.
+    for f in ("stock.json", "builders.json", "vendor-assets.json", "benchmarks.json"):
         _assert_no_contact_details(where / f)
         print(f"    {f:<20} {(where / f).stat().st_size:>10,} bytes")
     print("    X-Robots-Tag: noindex set (a Vercel URL is public by default)")

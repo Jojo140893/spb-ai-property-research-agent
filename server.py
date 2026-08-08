@@ -61,6 +61,31 @@ class PropertyAgentRequestHandler(http.server.SimpleHTTPRequestHandler):
             }).encode('utf-8'))
             return
 
+        if parsed_url.path == "/api/benchmarks":
+            # Market comparables from realestate.com.au — a DIFFERENT table from
+            # `buildings` on purpose (see benchmarks.py), so /api/buildings above cannot
+            # and must not return them. Answers even with zero rows: the Benchmarks tab
+            # has to be able to render "empty, and here is why" rather than fall into
+            # its error branch, which reads as a fault when the real state is "no
+            # PropTrack subscription has been bought".
+            import benchmarks as _bench
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            rows = _bench.rows()
+            self.wfile.write(json.dumps({
+                'status': 'success', 'total': len(rows),
+                'portal': _bench.PORTAL, 'attribution': _bench.ATTRIBUTION,
+                'provider': _bench.status(),
+                'keys': _bench.EXPORT_FIELDS,
+                'rows': [[r.get(f) for f in _bench.EXPORT_FIELDS] for r in rows],
+                # The suburb half is derived at BUILD time from the resolved suburb of
+                # every exported row, so it is not reproduced here; the static snapshot
+                # carries it and this endpoint is only used with the app running locally.
+                'suburbs': {'count': 0, 'keys': [], 'rows': []},
+            }, default=str).encode('utf-8'))
+            return
+
         if parsed_url.path == "/api/vendor-assets":
             # Harvested brochures / fliers / booklets, sorted by builder
             self.send_response(200)

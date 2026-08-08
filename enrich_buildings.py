@@ -14,12 +14,14 @@ in it — the fix for Hudson Homes' 149 lots, which sit on E-Agent's Queensland 
 were exported as Queensland while naming Wadalba, Warnervale, Bellbird and Denman NSW.
 A row of a national file that proves nothing itself is left BLANK, not guessed.
 
-BUILDER is resolved in order:
-  1. whatever the scrape already attributed (portal scrapes name their builder)
-  2. an approved-builder name appearing in the row text / estate context
-  3. the stocklist filename when it names one (CREATION VIC -> Creation Homes)
-  4. otherwise left blank and counted — E-Agent pools several builders per state
-     file, and a wrong attribution is worse than an honest blank.
+BUILDER is NOT resolved here any more, and this step no longer writes builder_name.
+It is decided at WRITE time by builder_names.py, before content_hash is computed, which
+is the only place a name can be settled without changing the row's identity. What this
+step used to do instead — guess from the row text and the stocklist filename, and UPDATE
+the column afterwards — put 319 rows under a builder called "Proxima" and 192 under one
+called "hattan.com.au", and 63 of those are still live and can never self-heal. This
+step now only REPORTS what is still blank, and how many stored names disagree with the
+canonical spelling of themselves.
 
 Also records which aggregator a listing came from so E-Agent stock is identifiable.
 Idempotent: safe to re-run after every harvest.
@@ -31,7 +33,6 @@ from typing import Dict
 from urllib.parse import unquote
 
 import config
-from builder_registry import BuilderRegistry
 from database import ResearchDatabase
 from geo import SuburbGeoIndex
 from state_resolver import (disagreement, file_is_national, own_state, resolve_state)
@@ -60,37 +61,40 @@ def state_from_filename(url: str) -> str:
     return m.group(1).upper() if m else ""
 
 
-def builder_from_filename(url: str, names: dict) -> str:
-    """'CREATION VIC' / 'GDEV' in a stocklist FILE NAME -> the approved builder.
+def _assert_no_hashed_fields(cols):
+    """Refuse the write if it touches a column that decides row identity.
 
-    THE FILE NAME, not the whole URL. Without `dn=` this used the entire string, domain
-    included, so a portal's own address answered its own name:
+    This file has grown the same defect TWICE. It backfilled `suburb` (603 writes
+    queued, all 603 identity-breaking) and it backfilled `builder_name` — 319 rows
+    stamped "Proxima", then 192 stamped "hattan.com.au", of which 63 are still live and
+    still cannot self-heal: their content_hash encodes builder_key='', so the harvest
+    matches them and record_building's COALESCE fill can never correct a non-empty wrong
+    value. Both times the write was removed and replaced by a comment saying not to add
+    it back. A comment is not a guard, and it lost twice.
 
-        https://portal.proxima.com.au/agent/projects/index/  ->  "Proxima"
-
-    Proxima is the PORTAL. 319 live lots were attributed to a builder of that name and
-    published on the dashboard -- the same mistake as the "Level 33" attribution Colin
-    caught on 5 Aug, where a place inside a development became the builder.
-
-    A stocklist file called "CREATION VIC.xlsx" is evidence about who built the stock.
-    The address of the site you fetched it from is not.
+    Mirrors reparse_from_source._assert_no_hashed_fields. Named columns are compared
+    against _HASH_FIELDS with the two aliases undone (builder_key -> builder_name,
+    suburb_norm -> suburb), so both shapes are caught.
     """
-    if not url:
-        return ""
-    if "dn=" in url:
-        name = unquote(url).split("dn=")[-1]
-    else:
-        # Last path segment only, and only when it looks like a document. A bare portal
-        # path ('/agent/projects/index/') names no file and therefore names no builder.
-        tail = unquote(url).split("?")[0].rstrip("/").split("/")[-1]
-        name = tail if "." in tail and not tail.lower().endswith((".com", ".au", ".net")) else ""
-    if not name:
-        return ""
-    low = re.sub(r"[^a-z ]", " ", name.lower())
-    for key, proper in names.items():
-        if key and key in low:
-            return proper
-    return ""
+    from database import _HASH_FIELDS
+    hashed = {f.replace("_norm", "").replace("builder_key", "builder_name")
+              for f in _HASH_FIELDS}
+    clash = sorted(set(cols) & hashed)
+    if clash:
+        raise SystemExit(
+            f"[ABORT] enrich would write {clash}, which decide content_hash. Writing "
+            f"them re-identifies the row, so the next harvest INSERTs a duplicate "
+            f"instead of updating in place -- the mechanism behind 777 duplicate "
+            f"captures, and behind the 63 live rows still stuck on 'hattan.com.au'. "
+            f"Resolve those at write time (builder_names.py) or at read time "
+            f"(suburb_quality.py) instead.")
+
+
+def _write(conn, rid, **cols):
+    """The only way this module is allowed to write to `buildings`."""
+    _assert_no_hashed_fields(cols)
+    sets = ", ".join(f"{c}=?" for c in cols)
+    conn.execute(f"UPDATE buildings SET {sets} WHERE id=?", (*cols.values(), rid))
 
 
 def file_of(row) -> str:
@@ -106,39 +110,31 @@ def file_of(row) -> str:
     return ""
 
 
-def builder_from_text(text: str, names: dict) -> str:
-    if not text:
-        return ""
-    low = re.sub(r"[^a-z ]", " ", text.lower())
-    for key, proper in names.items():
-        if key and key in low:
-            return proper
-    return ""
-
-
 def main():
     # Constructing the database applies the column migration, so a newly declared field
     # (state_source) exists before the raw sqlite3 connection below tries to write it.
     ResearchDatabase()
     geo = SuburbGeoIndex()
-    reg = BuilderRegistry()
-    # match on the distinctive part of a builder name ("creation", "gdev", "avia")
-    names = {}
-    for b in reg.get_all_builders():
-        n = b["builder_name"].strip()
-        if len(n) < 3:
-            continue
-        key = re.sub(r"\b(homes?|group|living|living|pty|ltd|au|com)\b", " ", n.lower())
-        key = re.sub(r"[^a-z ]", " ", key).strip()
-        key = " ".join(key.split()[:2])
-        if len(key) >= 4:
-            names.setdefault(key, n)
+    # The builder name-key map that used to live here is GONE, along with
+    # builder_from_text and builder_from_filename. It stripped \b(au|com)\b out of every
+    # registry name, so `hattan.com.au` and `Hattan Homes` both collapsed onto the key
+    # "hattan" and `names.setdefault` handed that key to whichever the sheet listed
+    # first -- the website, on line 21. That map is what named the builder
+    # "hattan.com.au" on 192 rows.
+    #
+    # Its write was disarmed on 7 Aug but the guess itself was left computing, feeding
+    # nothing but a `builder backfilled:` line in this report. Live code that works out
+    # a wrong name and only almost writes it is how the write got re-added once already,
+    # so the guess is removed rather than muted, and the report below counts blanks
+    # truthfully instead of counting an attribution nothing stores. Builder names are
+    # resolved at WRITE time by builder_names.py, before the hash, which is the only
+    # place it is safe to do.
 
     conn = sqlite3.connect(str(config.DATABASE_PATH))
     conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM buildings").fetchall()
 
-    fixed_state = fixed_builder = fixed_suburb = 0
+    fixed_state = fixed_suburb = 0
     by_signal, clashes = {}, []
     cleared_postcodes = cleared_states = corrected_states = retraced_states = 0
     still_no_state = still_no_builder = 0
@@ -194,7 +190,6 @@ def main():
         suburb, mine, why = proven[rid]
         state = (r["state"] or "").strip().upper()
         builder = (r["builder_name"] or "").strip()
-        addr = r["lot_address"] or ""
         url = r["source_url"] or ""
 
         # --- state ---
@@ -232,8 +227,7 @@ def main():
             if new_state != state or (signal or None) != r["state_source"]:
                 # NULL, never '': an empty string would sort and group as a second kind of
                 # blank beside the rows that never had a state at all.
-                conn.execute("UPDATE buildings SET state=?, state_source=? WHERE id=?",
-                             (new_state or None, signal or None, rid))
+                _write(conn, rid, state=new_state or None, state_source=signal or None)
                 if new_state == state:
                     retraced_states += 1
                 elif not new_state:
@@ -255,27 +249,8 @@ def main():
                 # Leaving it in the column would poison any later run that happens to have
                 # nothing else to go on. Cleared, not corrected: we do not know the real one.
                 if state and clash["postcode_state"] != state:
-                    conn.execute("UPDATE buildings SET postcode=NULL WHERE id=?", (rid,))
+                    _write(conn, rid, postcode=None)
                     cleared_postcodes += 1
-
-        # --- builder ---
-        if not builder:
-            # IN MEMORY ONLY -- this used to also
-            #     conn.execute("UPDATE buildings SET builder_name=? WHERE id=?", ...)
-            # and builder_name is one of the eight inputs to building_content_hash. The
-            # suburb write a few lines up was disarmed for exactly this reason; this one
-            # survived. Writing it re-identifies the row, so the next harvest INSERTs a
-            # duplicate instead of updating in place -- the mechanism behind 777
-            # duplicate captures, which was itself a builder_name rewrite.
-            #
-            # It had already fired: 319 live rows carried builder_name='Proxima', and
-            # not one of them reproduced its own stored content_hash until the column was
-            # put back to blank. builder_names.py fills this correctly at WRITE time,
-            # before the hash is computed, which is the only safe place for it.
-            cand = builder_from_text(addr, names) or builder_from_filename(url, names)
-            if cand:
-                builder = cand
-                fixed_builder += 1
 
         if not state:
             still_no_state += 1
@@ -348,14 +323,47 @@ def main():
                   f"{c['page_state']}  suburb={c['suburb'] or '-'}")
         print(f"      {cleared_postcodes} of them had a postcode that was never a postcode "
               f"— cleared so it cannot mislead a later run")
-    print(f"  builder backfilled: {fixed_builder}   still blank: {still_no_builder}")
+    # Always 0, kept visible for the same reason the suburb line above is: this step
+    # wrote builder_name on 192 rows and the number never appeared as an alarm, because
+    # the line it printed counted a guess rather than a write. The blank count is now the
+    # true one -- a bigger number, and an honest one.
+    print(f"  builder backfilled: 0   still blank: {still_no_builder}"
+          f"   (never written -- part of content_hash)")
     print()
     for row in conn.execute("SELECT state, COUNT(*) n FROM buildings GROUP BY state ORDER BY n DESC"):
         print(f"    state {row['state'] or '(blank)':<10} {row['n']:>4}")
     print()
     for row in conn.execute("SELECT builder_name, COUNT(*) n FROM buildings GROUP BY builder_name ORDER BY n DESC LIMIT 12"):
         print(f"    {row['builder_name'] or '(blank — E-Agent pooled)':<32} {row['n']:>4}")
+    _report_non_canonical_names(conn)
     conn.close()
+
+
+def _report_non_canonical_names(conn):
+    """Which stored builder names are not the canonical spelling of themselves.
+
+    A REPORT, not a gate. A fail-closed check on this column would raise
+    sqlite3.IntegrityError, and record_building catches exactly that at database.py:523
+    and turns it into "unchanged" — so an over-strict rule would silently DROP live
+    listings down the same path that once lost 160 of them. All the alarm value, none of
+    that risk.
+
+    Zero is the healthy reading. It went to 192 while `hattan.com.au` sat in this column
+    and nobody saw it for eight days, because nothing counted it.
+    """
+    from builder_names import BuilderNameCanonicaliser
+    counts = {r[0]: r[1] for r in conn.execute(
+        "SELECT builder_name, COUNT(*) FROM buildings "
+        "WHERE TRIM(COALESCE(builder_name,'')) <> '' GROUP BY builder_name")}
+    canon = BuilderNameCanonicaliser(counts)
+    odd = {n: c for n, c in counts.items() if canon.canonical(n) != n}
+    print()
+    print(f"  {sum(odd.values())} row(s) hold a builder name that is not its own canonical "
+          f"spelling ({len(odd)} name(s)):")
+    for n, c in sorted(odd.items(), key=lambda kv: -kv[1]):
+        print(f"        {n!r:<34} {c:>5}  ->  {canon.canonical(n)!r}")
+    if not odd:
+        print(f"        none — every stored name is the one name for that builder")
 
 
 if __name__ == "__main__":

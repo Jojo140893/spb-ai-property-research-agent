@@ -186,8 +186,76 @@ def test_the_superseded_flag_is_read_from_both_snapshot_readers():
     assert "superseded_by" in _candidates.SNAPSHOT_FIELDS
 
 
+def test_every_duplicate_found_is_actually_retired():
+    """A duplicate that is IDENTIFIED and then dropped is worse than one never found.
+
+    The three-pass rule first shipped as one winner per pass plus a loser->winner chain
+    walk. Three passes disagree far more than two, the chains closed into cycles, and
+    when a cycle led back to the row it started from the pair was silently discarded.
+    Measured on the real 11,257 rows: 6,933 duplicates identified, 3,272 thrown away,
+    5,116 retirements down to 3,661 -- a pass added to REMOVE double counting published
+    1,455 MORE duplicates as sellable stock, and the run printed a smaller superseded
+    figure as though the database had got cleaner.
+
+    The suite did not catch it, because every existing test asserts on small hand-built
+    groups where no cycle can form. This one asserts the invariant instead: whatever is
+    grouped together must leave exactly one row live, and every other row must be
+    retired against a survivor that is NOT itself retired.
+    """
+    # The construction matters, so it is spelled out. lot_key compares state, suburb,
+    # address and the five spec fields; _detail ALSO counts postcode, estate_name and
+    # builder_name, which lot_key ignores. So two captures can be identical to lot_key
+    # while _detail ranks them differently -- and that is precisely when the freshness
+    # pass and the cross-channel pass elect OPPOSITE winners and point at each other.
+    rows = [
+        # older, but the better-described capture: knows the postcode, estate and builder
+        dict(_row(1, 989_900, "29/07/2026"), source_text=_LINE,
+             postcode="4306", estate_name="Tallow", builder_name="Hattan Homes"),
+        # newer, same lot and same line, arrived by email knowing much less
+        dict(_row(2, 989_900, "06/08/2026", channel="digital email"), source_text=_LINE,
+             postcode=None, estate_name=None, builder_name=None),
+    ]
+    pairs = find_superseded(rows)
+
+    retired = {loser["id"] for loser, _ in pairs}
+    survivors = {w["id"] for _, w in pairs}
+    live = {r["id"] for r in rows} - retired
+
+    assert len(live) == 1, f"two captures of one listing must leave one live, left {sorted(live)}"
+    assert len(retired) == 1, f"expected 1 retirement, got {sorted(retired)}"
+    # No row may be retired against a row that is itself retired -- that is the orphan
+    # a chain walk creates, and it leaves the group with no readable survivor.
+    assert not (survivors & retired), (
+        f"a survivor is itself superseded: {sorted(survivors & retired)}")
+
+
+def test_a_row_is_never_superseded_against_itself():
+    """The cycle, reduced to its smallest form.
+
+    Two captures that each 'win' under a different pass pointed at each other; the chain
+    walk then resolved both back to themselves and dropped both pairs, so a plain
+    duplicate stayed live. Cheap to assert, and it is the shape that cost 1,455 rows.
+    """
+    rows = [
+        dict(_row(1, 989_900, "29/07/2026"), source_text=_LINE,
+             postcode="4306", estate_name="Tallow", builder_name="Hattan Homes"),
+        dict(_row(2, 989_900, "06/08/2026", channel="digital email"), source_text=_LINE,
+             postcode=None, estate_name=None, builder_name=None),
+    ]
+    pairs = find_superseded(rows)
+    assert len(pairs) == 1, (
+        f"one duplicate must be retired, got {len(pairs)} -- 0 means both pairs were "
+        f"dropped by a cycle and BOTH copies stayed live")
+    loser, winner = pairs[0]
+    assert loser["id"] != winner["id"], "a row was superseded against itself"
+    # The better-described capture survives, not merely the newest one.
+    assert winner["id"] == 1, f"the row that knows postcode/estate/builder must win, got {winner['id']}"
+
+
 def run_all():
     tests = [
+        ("every duplicate found is retired", test_every_duplicate_found_is_actually_retired),
+        ("no row supersedes itself", test_a_row_is_never_superseded_against_itself),
         ("identical source line collapses", test_the_same_source_line_is_one_listing),
         ("a price difference is left alone", test_two_captures_that_disagree_on_price_are_left_alone),
         ("freshest capture wins", test_the_freshest_capture_wins),

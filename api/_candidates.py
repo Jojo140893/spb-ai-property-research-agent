@@ -59,6 +59,12 @@ SNAPSHOT_FIELDS = [
     # carry stocklist_file / source_url -- both are capability URLs and this deployment
     # is public. The SQLite reader still has the raw columns and recomputes.
     "source_link_url", "source_link_label", "source_link_opens", "source_link_search",
+    # "Compare on realestate.com.au" — same derived-at-build-time shape as
+    # source_link_*, built by rea_link.py from the RESOLVED suburb. Listed here because
+    # this list claims above to mirror stock.json exactly; leaving it stale is precisely
+    # the silent divergence between the JSON reader and the SQLite reader that the
+    # comment exists to prevent.
+    "rea_search_url", "rea_search_label", "rea_search_opens", "rea_search_search",
     "benchmark_median", "benchmark_variance_pct",
     "benchmark_classification", "benchmark_basis",
     # Required, not optional: build_packages skips superseded captures, and without

@@ -40,7 +40,9 @@ CHANNEL = "realestate.com.au"
 # Bulk extraction is a quota event. Capped per run and logged, because a surprise bill
 # stalls a project as surely as a bug does.
 DEFAULT_PAGE_SIZE = 100
-MAX_PAGES_PER_SUBURB = 10
+# One call per suburb. The old MAX_PAGES_PER_SUBURB=10 loop could not actually paginate
+# — CompQuery has no page or offset field — so it re-sent the same query and paid for
+# it. See _suburb().
 PAUSE_BETWEEN_CALLS_S = 0.4
 
 
@@ -113,34 +115,41 @@ class RealestateSource(PropertySource):
 
         rows: List[Dict[str, Any]] = []
         seen = set()
-        for page in range(MAX_PAGES_PER_SUBURB):
-            q = CompQuery(suburb=suburb, state=state,
-                          price_kind=price_kind.DWELLING, limit=self.page_size)
-            try:
-                comps = self.provider.search_comps(q)
-            except Exception as exc:                                  # noqa: BLE001
-                # Never raise into a harvest: one bad suburb must not cost the run.
-                logger.warning("%s: %s %s page %d failed: %s",
-                               CHANNEL, suburb, state, page + 1, exc)
-                self._bump("provider error")
-                break
-            self.calls = getattr(self.provider, "calls", self.calls)
-            if not comps:
-                break
-            fresh = 0
-            for c in comps:
-                key = c.provider_listing_id or c.provider_url
-                if key and key in seen:
-                    continue
-                if key:
-                    seen.add(key)
-                row = self._row(c, suburb, state)
-                if row:
-                    rows.append(row)
-                    fresh += 1
-            if fresh == 0 or len(comps) < self.page_size:
-                break                                  # no more pages worth asking for
-            time.sleep(PAUSE_BETWEEN_CALLS_S)
+        # ONE call per suburb, deliberately — and this used to be a loop of up to
+        # MAX_PAGES_PER_SUBURB that could not paginate. CompQuery (comp_provider.py:41)
+        # carries suburb, state, price_kind, bedrooms, land bounds, neighbours and limit;
+        # it has no page and no offset, so every iteration re-issued an IDENTICAL query.
+        # The `seen` set then made iteration 2 contribute nothing and break — one
+        # duplicate BILLED call per suburb that filled a page, for zero extra listings.
+        #
+        # Not replaced with a guessed page parameter. PropTrack is sales-gated, its
+        # response contract has never been checked against a real key, and inventing a
+        # parameter name it may ignore would spend money to re-read page 1 while looking
+        # like it was working. The truncation is COUNTED instead (below), so a suburb
+        # that has more than page_size listings says so rather than silently capping.
+        q = CompQuery(suburb=suburb, state=state,
+                      price_kind=price_kind.DWELLING, limit=self.page_size)
+        try:
+            comps = self.provider.search_comps(q)
+        except Exception as exc:                                      # noqa: BLE001
+            # Never raise into a harvest: one bad suburb must not cost the run.
+            logger.warning("%s: %s %s failed: %s", CHANNEL, suburb, state, exc)
+            self._bump("provider error")
+            return rows
+        self.calls = getattr(self.provider, "calls", self.calls)
+        for c in comps or []:
+            key = c.provider_listing_id or c.provider_url
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            row = self._row(c, suburb, state)
+            if row:
+                rows.append(row)
+        if comps and len(comps) >= self.page_size:
+            self._bump("suburb had more listings than one page returns "
+                       "(pagination needs a confirmed PropTrack parameter)")
+        time.sleep(PAUSE_BETWEEN_CALLS_S)
         return rows
 
     def _row(self, comp, suburb: str, state: str) -> Optional[Dict[str, Any]]:

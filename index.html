@@ -594,6 +594,10 @@
         <button class="tab-btn active" onclick="showTab('researchTab', this)">Research & Scoring</button>
         <button class="tab-btn" onclick="showTab('buildersTab', this)">Approved Builder Directory</button>
         <button class="tab-btn" onclick="showTab('buildingsTab', this); loadBuildings();">Building Stock</button>
+        <!-- Directly after Building Stock so the comparison sits beside the thing being
+             compared. The .nav-tab-label-full hook already existed and was unused; it
+             drops the qualifier below 480px, where nav-tabs wraps anyway. -->
+        <button class="tab-btn" onclick="showTab('benchmarksTab', this); loadBenchmarks();">Benchmarks<span class="nav-tab-label-full"> (realestate.com.au)</span></button>
         <button class="tab-btn" onclick="showTab('vendorAssetsTab', this); loadVendorAssets();">Vendor Brochures & Details</button>
         <button class="tab-btn" onclick="showTab('kommoTab', this)">CRM Integration Payload</button>
     </nav>
@@ -800,6 +804,27 @@
 
         <div id="buildingsContent" style="font-size:0.9rem; overflow-x:auto;">Loading building stock…</div>
         <button type="button" class="btn-ghost btn-more" id="bMore" hidden></button>
+    </div>
+</div>
+
+<!-- BENCHMARKS — market comparables from realestate.com.au.
+     Coleen: "the realestate.com.au ones are a totally another category named BENCHMARKS".
+     Deliberately NO promotion tick column, no "Mark all filtered", no CSV export. A
+     benchmark row has a blank builder and an "Established" product type — exactly the
+     shape of a row that could be pasted into a client email as sellable stock. Not
+     offering the affordance is the cheapest way to make that impossible. -->
+<div id="benchmarksTab" class="view-pane">
+    <div class="panel-card">
+        <div class="panel-header">
+            <span>Benchmarks &mdash; the market on realestate.com.au</span>
+            <span id="benchmarksBadge" class="pill pill-recommend">0 market listings</span>
+        </div>
+        <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">
+            Live for-sale listings from realestate.com.au. These are the market that builder
+            stock is compared <em>against</em> &mdash; they are <strong>not</strong> stock you
+            can sell, they carry no builder, and they are not counted in Building Stock.
+        </p>
+        <div id="benchmarksContent" style="font-size:0.9rem; overflow-x:auto;">Loading benchmarks…</div>
     </div>
 </div>
 
@@ -1022,6 +1047,15 @@
         { k: 'benchmark_median',    t: 'Comp median',    cls: 'num', money: true },
         { k: 'benchmark_classification', t: 'Vs comps' },
         { k: 'benchmark_basis',     t: 'Benchmark basis' },
+        // Immediately after the benchmark columns, because it answers the same question
+        // they do — "is this price sane here?" — with the market rather than with our
+        // own other stock. Built at build time by rea_link.py; no key, no API call, and
+        // the request is made by this browser when Coleen clicks. Only 2,927 of 6,141
+        // live rows can carry one (the suburb has to be a locality we can vouch for), so
+        // blankReason is not decoration: without it two of every three E-Agent rows show
+        // an empty cell and the column reads as broken instead of as a data fact.
+        { k: 'rea_search_url', t: 'Compare on REA', trace: 'rea_search',
+          blankReason: 'suburb_source' },
         { k: 'listing_url',         t: 'PDF',            link: 'open' },
         { k: 'floorplan_url',       t: 'Floorplan',      link: 'plan' },
         { k: 'brochure_url',        t: 'Brochure',       link: 'file' },
@@ -1442,26 +1476,42 @@
             if (c.titleFrom && b[c.titleFrom] && b[c.titleFrom] !== v)
                 return `<td class="${c.cls || ''}" title="${esc(b[c.titleFrom])}">${esc(v ?? '')}</td>`;
             if (c.trace) {
+                // `trace` is a FIELD PREFIX, not a flag. It used to read
+                // b.source_link_* by name, so a second column with the same shape —
+                // "Compare on REA", backed by rea_search_* — would have silently
+                // rendered the first column's label and tooltip on every row. `true`
+                // keeps meaning source_link so nothing about the Source doc column moves.
+                const pfx = c.trace === true ? 'source_link' : c.trace;
                 // No URL, but we may still know WHERE it came from. 2,027 rows have
                 // only a shared-folder link as their provenance, and a folder link is a
                 // capability -- it opens the whole folder to anyone holding it -- so the
                 // build drops the URL and keeps the label. Rendering an empty cell would
                 // throw away the half that is safe and useful.
                 if (!v) {
-                    const lbl = b.source_link_label || b.source_link_opens || '';
-                    if (!lbl) return '<td></td>';
-                    const t = b.source_link_search
-                        ? `${lbl} — search there for: ${b.source_link_search}`
+                    const lbl = b[pfx + '_label'] || b[pfx + '_opens'] || '';
+                    // Fall through to the column's own blankReason where it has one.
+                    // The branch order below is trace-before-blankReason, so without
+                    // this the "Compare on REA" cell would be blank on 3,214 live rows
+                    // with nothing saying why — and the reason (the source never stated
+                    // a suburb; the value it stated is not a locality) is already on
+                    // the row in suburb_source.
+                    if (!lbl) {
+                        const why = c.blankReason ? String(b[c.blankReason] || '').trim() : '';
+                        return `<td style="color:var(--text-muted);"
+                            ${why ? `title="${esc(why)}"` : ''}>${why ? '&mdash;' : ''}</td>`;
+                    }
+                    const t = b[pfx + '_search']
+                        ? `${lbl} — search there for: ${b[pfx + '_search']}`
                         : `${lbl} — no direct link published`;
                     return `<td style="color:var(--text-muted);"
                         title="${esc(t)}">${esc(lbl)}</td>`;
                 }
-                const opens = b.source_link_opens || 'source';
-                const label = b.source_link_label || 'source';
+                const opens = b[pfx + '_opens'] || 'source';
+                const label = b[pfx + '_label'] || 'source';
                 // The term the destination will actually match on, in the tooltip, so a
                 // lot can be found without guessing which of our fields the source indexes.
-                const term = b.source_link_search
-                    ? ` — search there for: ${b.source_link_search}` : '';
+                const term = b[pfx + '_search']
+                    ? ` — search there for: ${b[pfx + '_search']}` : '';
                 return `<td><a href="${esc(v)}" target="_blank" rel="noopener noreferrer"
                     title="${esc(label)} — opens the ${esc(opens)}${esc(term)}"
                     style="color:var(--accent-blue);">${esc(opens)}</a></td>`;
@@ -1526,6 +1576,135 @@
         const more = document.getElementById('bMore');
         more.hidden = stockView.length <= stockShown;
         more.textContent = `Show ${Math.min(STOCK_PAGE, stockView.length - stockShown).toLocaleString()} more`;
+    }
+
+    /* ------------------------------------------------------------------ benchmarks
+       Market comparables from realestate.com.au. Loaded LAZILY on first tab open, like
+       every other tab: stock.json is already 6.98 MB and the columnar shape exists
+       because 3 MB once cost 18 seconds of blank table — benchmarks must not be paid
+       for by someone who never opens this tab.
+
+       With zero stored listings this pane must be EMPTY, never BROKEN, and must never
+       be a spinner or a "coming soon". build_web.py writes benchmarks.json on every
+       run whether or not there are rows, precisely so getJSON cannot 404 into the error
+       branch and make an expected state look like a fault. What fills the pane instead
+       is the half that needs no key at all: every suburb we hold located stock in, with
+       our own lot count and median, and a working realestate.com.au search per row.  */
+    let BENCH_LOADED = false;
+
+    async function loadBenchmarks() {
+        if (BENCH_LOADED) return;
+        const el = document.getElementById('benchmarksContent');
+        el.innerHTML = '<p style="color:var(--text-muted);">Loading benchmarks…</p>';
+        let data;
+        try {
+            data = await getJSON('/api/benchmarks', 'benchmarks.json');
+        } catch (e) {
+            el.innerHTML = `<p style="color:var(--rose-red);">Could not load benchmarks. Build the
+                static snapshot with <code>python build_web.py</code>.</p>`;
+            console.error('benchmarks:', e);
+            return;
+        }
+        BENCH_LOADED = true;
+        const rows = asBuildings(data);
+        const sub = data.suburbs || { keys: [], rows: [] };
+        const subs = (sub.rows || []).map(r => {
+            const o = {}; (sub.keys || []).forEach((k, i) => o[k] = r[i]); return o;
+        });
+        const p = data.provider || {};
+        document.getElementById('benchmarksBadge').textContent =
+            `${(rows.length).toLocaleString()} market listings`;
+
+        /* The status card distinguishes the two states that need different actions,
+           because "0" on its own tells nobody whether to buy a subscription or fix a
+           harvest. Today it is the first: no key stored, which is a commercial decision
+           and not a failure — so it says that in as many words. */
+        const stale = p.oldest_last_seen ? `<div style="margin-top:0.5rem;">Oldest listing last
+            re-read ${esc(p.oldest_last_seen)}.</div>` : '';
+        const status = !p.configured
+            ? `<strong>No market listings are stored yet.</strong> ${esc(p.reason || '')}`
+            : (rows.length
+                ? `<strong>${rows.length.toLocaleString()} comparable(s) stored.</strong>
+                   ${(p.open_the_listing || 0).toLocaleString()} open the exact listing;
+                   ${(p.open_a_suburb_search || 0).toLocaleString()} open a suburb search
+                   because the provider returned no listing URL for them.${stale}`
+                : `<strong>A PropTrack key is stored, but the last read returned nothing.</strong>
+                   ${esc(p.last_read_skipped || 'No reason was recorded.')} This does not stop the
+                   nightly run — building stock is unaffected — but the comparables below are
+                   not being refreshed.${stale}`);
+        const card = `<div class="offline-note" style="margin-bottom:1rem;">${status}
+            <div style="margin-top:0.5rem;">Every suburb below still opens the live market on
+            realestate.com.au, because your browser makes that request, not us.</div></div>`;
+
+        /* SUBURBS WE HOLD STOCK IN. Six of these columns are full today and three say
+           plainly that they are waiting on a key. This is the tab's working half. */
+        const money = v => (v === null || v === undefined || v === '') ? ''
+            : '$' + Math.round(Number(v)).toLocaleString();
+        const waiting = '<td style="color:var(--text-muted);" title="Waiting on a PropTrack key — no market listings are stored for this suburb yet.">&mdash;</td>';
+        const subHead = ['Suburb', 'State', 'Our lots', 'Our median', 'Our bed mix',
+                         'Benchmarks stored', 'Market median', 'Ours vs market',
+                         'Open on realestate.com.au']
+            .map(h => `<th>${h}</th>`).join('');
+        const subBody = subs.map(s => {
+            const n = Number(s.benchmarks_stored) || 0;
+            const mkt = s.market_median;
+            const vs = (n && mkt && s.our_median)
+                ? `<td class="num">${(((s.our_median / mkt) - 1) * 100).toFixed(1)}%</td>`
+                : waiting;
+            return `<tr>
+                <td>${esc(s.suburb)}</td><td>${esc(s.state)}</td>
+                <td class="num">${Number(s.our_lots || 0).toLocaleString()}</td>
+                <td class="num">${money(s.our_median)}</td>
+                <td>${esc(s.our_beds || '')}</td>
+                ${n ? `<td class="num">${n.toLocaleString()}</td>` : waiting}
+                ${n && mkt ? `<td class="num">${money(mkt)}</td>` : waiting}
+                ${vs}
+                <td>${s.search_url ? `<a href="${esc(s.search_url)}" target="_blank"
+                    rel="noopener noreferrer" style="color:var(--accent-blue);"
+                    title="Opens a realestate.com.au search for ${esc(s.suburb)}, ${esc(s.state)}"
+                    >open</a>` : ''}</td></tr>`;
+        }).join('');
+
+        /* STORED LISTINGS. Empty today, and it says so in one line rather than
+           rendering a headed grid with no rows under it. */
+        const listHead = ['Suburb', 'State', 'Bed', 'Land m²', 'Price', 'Basis',
+                          'Price covers', 'Product', 'First seen', 'Last seen',
+                          'Open on realestate.com.au']
+            .map(h => `<th>${h}</th>`).join('');
+        const listBody = rows.map(r => {
+            const url = r.listing_url || r.search_url || '';
+            // The label must not over-promise. A row whose provider gave us no listing
+            // URL opens a suburb SEARCH, and saying so is the difference between a link
+            // that disappoints and one that behaves as labelled.
+            const opens = r.listing_url ? 'listing' : (r.search_url ? 'market search' : '');
+            return `<tr>
+                <td>${esc(r.suburb || '')}</td><td>${esc(r.state || '')}</td>
+                <td class="num">${esc(r.bedrooms ?? '')}</td>
+                <td class="num">${esc(r.land_sqm ?? '')}</td>
+                <td class="num">${money(r.price)}</td>
+                <td>${esc(r.price_basis || '')}</td>
+                <td>${esc(r.price_kind || '')}</td>
+                <td>${esc(r.product_type || '')}</td>
+                <td>${esc((r.first_seen || '').slice(0, 10))}</td>
+                <td>${esc((r.last_seen || '').slice(0, 10))}</td>
+                <td>${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer"
+                    style="color:var(--accent-blue);"
+                    title="${esc(r.attribution || '')} — opens the ${esc(opens)}"
+                    >${esc(opens)}</a>` : ''}</td></tr>`;
+        }).join('');
+
+        el.innerHTML = snapshotNote('Benchmarks') + card
+            + `<h3 style="font-size:0.95rem; margin:1.2rem 0 0.4rem;">Suburbs we hold stock in
+                 <span style="color:var(--text-muted); font-weight:400;">(${subs.length})</span></h3>`
+            + `<div class="stock-table-wrap"><table class="builder-table">
+                 <thead><tr>${subHead}</tr></thead><tbody>${subBody}</tbody></table></div>`
+            + `<h3 style="font-size:0.95rem; margin:1.4rem 0 0.4rem;">Stored market listings</h3>`
+            + (rows.length
+                ? `<div class="stock-table-wrap"><table class="builder-table">
+                     <thead><tr>${listHead}</tr></thead><tbody>${listBody}</tbody></table></div>
+                   <p style="font-size:0.8rem; color:var(--text-muted); margin-top:0.6rem;">
+                     ${esc(data.attribution || '')}</p>`
+                : `<p style="color:var(--text-muted);">No individual listings stored yet.</p>`);
     }
 
     async function loadVendorAssets() {

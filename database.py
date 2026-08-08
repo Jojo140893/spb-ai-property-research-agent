@@ -606,8 +606,24 @@ class ResearchDatabase:
                         "WHERE TRIM(COALESCE(builder_name,'')) <> ''") if r[0]]
                 self._canon = BuilderNameCanonicaliser(names)
             except Exception as e:  # pragma: no cover - never block a harvest
-                logger.debug("builder canonicaliser unavailable: %s", e)
-                self._canon = False
+                # NOT LATCHED, and not silent. This used to set self._canon = False,
+                # which `return self._canon or None` turned into None for the LIFE of
+                # the instance — and harvest_buildings.py uses ONE ResearchDatabase for
+                # all four channels. So a single transient "database is locked" during
+                # the E-Agent pass disabled name resolution for the digital-email sweep
+                # that ran after it, and every builder from that point on was stored
+                # exactly as it arrived: "hattan.com.au" beside "Hattan Homes".
+                #
+                # It was also unfalsifiable. This line was logger.debug and
+                # harvest_buildings.py:47 configures logging at INFO, so nothing was
+                # ever written — 949 KB of _daily.log contains zero DEBUG records. We
+                # could neither confirm nor rule out that it had fired. Leaving _canon
+                # unset means the NEXT write retries once the database is healthy, and
+                # WARNING means a run that degraded says so.
+                logger.warning("builder canonicaliser unavailable (%s) — this write "
+                               "stores the builder name as it arrived; retrying on the "
+                               "next one.", e)
+                return None
         return self._canon or None
 
     # ---------- Best-deals selection (Colin, 30 Jul) ----------

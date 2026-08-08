@@ -11,6 +11,10 @@ param([switch]$Force)
 $ErrorActionPreference = 'Continue'
 $Scope = 'digitalx-solutions-projects'
 $Alias = 'spb-live-stock.vercel.app'
+# The URL to hand a human. Kept separate from $Alias because they are not the same
+# thing: spb-live-stock is SSO-protected (see the verification block at the bottom),
+# and for ten days this script printed it as the live link every single night.
+$PublicUrl = 'vercelsite-three-psi.vercel.app'
 
 $app = $PSScriptRoot
 Set-Location $app
@@ -83,19 +87,80 @@ if ($m.Success) {
 Set-Location $app
 Set-Content -Path (Join-Path $app '.last_deploy_rows') -Value $rows -Encoding ascii
 
-# The alias is the URL an operator should open; the per-deployment URL sits behind
-# Vercel SSO and reads as broken. Confirm the alias actually serves the site rather than
-# just printing it -- a failed alias move otherwise looks identical to a good publish.
+# Confirm the site is actually SERVED, not merely that something answered.
+#
+# WHAT THIS USED TO DO, AND WHY IT LIED FOR TEN DAYS. It sent a HEAD to
+# https://spb-live-stock.vercel.app/stock.json and accepted StatusCode 200.
+# Invoke-WebRequest FOLLOWS REDIRECTS by default, and that host answers
+#
+#     302 -> https://vercel.com/sso-api?url=... -> 200 (the Vercel login page)
+#
+# so the probe saw 200, and every nightly run printed "(11257 listings, verified)"
+# while the URL served a login wall to anyone outside the Vercel team. Verified on
+# 2026-08-08 by fetching it: Content-Type text/html, <title>Login - Vercel</title>,
+# and /stock.json returning HTML instead of JSON.
+#
+# So the probe now (a) refuses to follow redirects, (b) rejects any hop to vercel.com,
+# and (c) PARSES the payload and checks the listing count, because the only proof that
+# a dashboard is being served is the dashboard's own data coming back.
 Write-Host ""
-try {
-    $probe = Invoke-WebRequest -Uri "https://$Alias/stock.json" -Method Head -TimeoutSec 30 -UseBasicParsing
-    if ($probe.StatusCode -eq 200) {
-        Write-Host "Live: https://$Alias  ($rows listings, verified)" -ForegroundColor Green
-    } else {
-        Write-Host "[warn] https://$Alias answered $($probe.StatusCode) - check the alias." -ForegroundColor Yellow
-        exit 1
+
+function Test-ServesDashboard {
+    param([string]$Host_)
+    # HttpWebRequest rather than Invoke-WebRequest: on PowerShell 5.1, -MaximumRedirection 0
+    # raises InvalidOperationException ("Operation is not valid due to the current state of
+    # the object") and hides the response, so the run reports "unreachable" for a host that
+    # is answering perfectly well with a redirect to a login page. This way the status line
+    # and the Location header are both readable, and the message names the real cause.
+    $u = "https://$Host_/stock.json"
+    try {
+        $req = [System.Net.HttpWebRequest]::Create($u)
+        $req.AllowAutoRedirect = $false
+        $req.Timeout = 30000
+        $req.UserAgent = 'spb-deploy-verify'
+        $resp = $req.GetResponse()
+    } catch [System.Net.WebException] {
+        if ($_.Exception.Response) {
+            $r2 = $_.Exception.Response
+            return @{ ok = $false; why = "HTTP $([int]$r2.StatusCode)" }
+        }
+        return @{ ok = $false; why = "unreachable: $($_.Exception.Message)" }
+    } catch {
+        return @{ ok = $false; why = "unreachable: $($_.Exception.Message)" }
     }
-} catch {
-    Write-Host "[warn] could not reach https://$Alias - the alias may not have moved." -ForegroundColor Yellow
+
+    $code = [int]$resp.StatusCode
+    if ($code -in 301, 302, 303, 307, 308) {
+        $loc = $resp.Headers['Location']
+        $resp.Close()
+        $where = if ($loc -match 'vercel\.com/sso') { 'the Vercel SSO login (Deployment Protection is on)' } else { $loc }
+        return @{ ok = $false; why = "redirects ($code) to $where" }
+    }
+    $body = (New-Object System.IO.StreamReader($resp.GetResponseStream())).ReadToEnd()
+    $resp.Close()
+    if ($code -ne 200) { return @{ ok = $false; why = "HTTP $code" } }
+    if ($body -match '^\s*<') { return @{ ok = $false; why = 'served HTML, not JSON (a login wall answers 200)' } }
+    try { $j = $body | ConvertFrom-Json } catch { return @{ ok = $false; why = 'body is not valid JSON' } }
+    if (-not $j.rows) { return @{ ok = $false; why = 'JSON carries no rows' } }
+    return @{ ok = $true; count = $j.rows.Count }
+}
+
+$pub = Test-ServesDashboard $PublicUrl
+$ali = Test-ServesDashboard $Alias
+
+if ($pub.ok) {
+    Write-Host "Live: https://$PublicUrl  ($($pub.count) listings, content verified)" -ForegroundColor Green
+} else {
+    Write-Host "[abort] https://$PublicUrl does not serve the dashboard - $($pub.why)" -ForegroundColor Red
     exit 1
+}
+
+if ($ali.ok) {
+    Write-Host "Also:  https://$Alias  ($($ali.count) listings)" -ForegroundColor Green
+} else {
+    # Not fatal: the public URL above is verified and is the link to hand out. But it
+    # must be SAID, every run, because a silent failure here is what hid this for ten days.
+    Write-Host "[warn] https://$Alias does NOT serve the dashboard - $($ali.why)" -ForegroundColor Yellow
+    Write-Host "       Do not give this link to the client. Turn off Deployment Protection" -ForegroundColor Yellow
+    Write-Host "       for that domain in the Vercel project settings, or hand out the URL above." -ForegroundColor Yellow
 }

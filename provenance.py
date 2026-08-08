@@ -143,7 +143,17 @@ def source_links(row: Dict[str, Any]) -> list:
             out.append(_kind(label, url, opens, term))
 
     # A per-lot document is the closest thing to "the building" that exists.
-    add("Lot PDF", row.get("listing_url"), "lot")
+    #
+    # ...except on realestate.com.au, where listing_url is a live market LISTING PAGE,
+    # not a PDF. Benchmark comparables are stored outside `buildings` (see benchmarks.py)
+    # and the Benchmarks tab renders its own link column, so no row should reach here
+    # with that channel today — but "Lot PDF" is what this file would have called it,
+    # and a label that misdescribes what opens is the exact complaint provenance.py was
+    # written to fix.
+    if channel == "realestate.com.au":
+        add("realestate.com.au listing", row.get("listing_url"), "lot")
+    else:
+        add("Lot PDF", row.get("listing_url"), "lot")
     add("Floorplan", row.get("floorplan_url"), "lot")
     add("Brochure", row.get("brochure_url"), "document")
 

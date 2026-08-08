@@ -133,7 +133,20 @@ class EmailStocklistSource(PropertySource):
         dom = _sender_domain(from_hdr)
         builder = self.domain_map.get(dom, "")
         if builder:
-            return True, builder
+            # Canonicalised, not returned raw. This short-circuit hands back whatever the
+            # builder directory says, and the directory is where the Hattan split was
+            # seeded: line 21 of the sheet put `hattan.com.au` in the BUILDER column, so
+            # mail from that domain named the builder "hattan.com.au" and skipped the
+            # resolution _builder_from_sender_domain does twenty lines below. It only
+            # ever looked harmless because record_building canonicalises again at write
+            # time — a mask that lifts the moment "Hattan Homes" is absent from the
+            # stock table, since the canonicaliser learns from stored rows.
+            #
+            # This must stay a no-op for names that are already correct: a builder_name
+            # that changes here changes builder_key, changes content_hash, and re-inserts
+            # every row behind that sender instead of updating it. Pinned by
+            # test_resolving_the_domain_map_does_not_re_identify_the_original_email.
+            return True, self._canonical(builder)
         if has_data_attachment and STOCK_SUBJECT.search(f"{subject or ''} {attachment_names}"):
             # try to name the builder from the sender's domain or the filenames
             stem = dom.split(".")[0].replace("-", " ")
@@ -174,17 +187,32 @@ class EmailStocklistSource(PropertySource):
             this, "hattan.com.au" is stored as a SECOND builder alongside "Hattan
             Homes" — which is exactly how 105 listings ended up split from 64.
         """
-        d = (dom or "").strip().lower().lstrip("www.")
+        # re.sub, not lstrip("www."): lstrip strips a character SET, so it eats the
+        # leading letters of any domain built from w/./: "wilsonhomes.com.au" came out
+        # as "ilsonhomes.com.au" and "westbuild.com.au" as "estbuild.com.au". A mangled
+        # domain matches no known builder, so it was stored corrupted as a brand new
+        # supplier — the same failure as the Hattan split, arriving by a different door.
+        d = re.sub(r"^www\.", "", (dom or "").strip().lower())
         if not d or "." not in d:
             return ""
         if any(d == bad or d.endswith("." + bad) for bad in self.NON_BUILDER_DOMAINS):
             return ""
+        return self._canonical(d) or d
+
+    def _canonical(self, name: str) -> str:
+        """Resolve a builder name against the builders this app already knows.
+
+        One place, so every path out of _relevant answers the same name for the same
+        builder. Failure returns the name UNCHANGED rather than blanking it: a blank
+        would re-key the row and the next harvest would insert a second copy.
+        """
         try:
             from builder_names import BuilderNameCanonicaliser
-            canon = BuilderNameCanonicaliser(self._known_builders())
-            return canon.canonical(d)
-        except Exception:                                        # pragma: no cover
-            return d
+            return BuilderNameCanonicaliser(self._known_builders()).canonical(name)
+        except Exception as e:                                   # pragma: no cover
+            logger.warning("email: builder canonicaliser unavailable (%s) — "
+                           "storing %r as it arrived.", e, name)
+            return name
 
     def _builder_in_text(self, text: str) -> str:
         """A builder named in the subject line or an attachment's file name.
@@ -224,9 +252,21 @@ class EmailStocklistSource(PropertySource):
                 "WHERE TRIM(COALESCE(builder_name,'')) <> ''") if r[0]}
             conn.close()
         except Exception as e:                                   # pragma: no cover
-            logger.debug("email: could not read known builders: %s", e)
-        self._known_cache = sorted(names, key=len, reverse=True)
-        return self._known_cache
+            # WARNING, not debug: harvest_buildings configures logging at INFO, so a
+            # debug line here is unreachable — 949 KB of _daily.log holds zero DEBUG
+            # records of any kind. This failure silently drops every DB-learned builder
+            # name, "Hattan Homes" among them, which is what turns a domain into a
+            # second supplier. A fix that can switch itself off without leaving a trace
+            # is not falsifiable, and that is worse than the leak.
+            logger.warning("email: could not read known builders (%s) — falling back to "
+                           "registry names only for this sweep.", e)
+        # Not cached when it came back empty: _known_cache lives for the whole sweep, so
+        # caching one transient failure would disable name resolution for every message
+        # after it.
+        resolved = sorted(names, key=len, reverse=True)
+        if resolved:
+            self._known_cache = resolved
+        return resolved
 
     # ---------- extraction ----------
     def _from_message(self, msg, builder: str, subject: str, when: str) -> List[Dict[str, Any]]:

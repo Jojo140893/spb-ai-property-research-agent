@@ -66,6 +66,7 @@ from tests.test_competitive_benchmark import run_all as _competitive_suite
 from tests.test_market_and_exposure import run_all as _market_suite
 from tests.test_estimates_never_reject import run_all as _estimates_suite
 from tests.test_suburb_quality import run_all as _suburb_suite
+from tests.test_benchmarks import run_all as _benchmarks_suite
 from tests.test_adaptive_extract import test_adaptive_extracts_from_unknown_layouts
 
 
@@ -118,6 +119,7 @@ def run_all_tests():
         ("Benchmark B + catalogue exposure", lambda: (_ for _ in ()).throw(AssertionError("market suite failed")) if _market_suite() else None),
         ("Estimates inform, evidence rejects", lambda: (_ for _ in ()).throw(AssertionError("estimates suite failed")) if _estimates_suite() else None),
         ("Suburb column: a value is not a place", lambda: (_ for _ in ()).throw(AssertionError("suburb suite failed")) if _suburb_suite() else None),
+        ("Benchmarks: the market never becomes stock", lambda: (_ for _ in ()).throw(AssertionError("benchmarks suite failed")) if _benchmarks_suite() else None),
     ]
 
     passed = 0

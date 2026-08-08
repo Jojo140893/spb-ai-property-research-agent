@@ -27,9 +27,11 @@ page (save that page's HTML and they can be mapped exactly).
 
 import argparse
 import sys
+from datetime import datetime
 from typing import Dict
 import logging
 
+import benchmarks
 from builder_registry import BuilderRegistry
 from sources.e_agent import EAgentSource
 from sources.builder_portals import BuilderPortalSource
@@ -108,26 +110,62 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
         # Suburb-scoped because PropTrack bills per call: the suburbs we actually hold
         # stock in are the ones a comparison needs, and asking for the rest is someone
         # else's money.
+        #
+        # THE ROUTING LINE IS BELOW, AND IT IS THE WHOLE SEPARATION. These rows go to
+        # benchmarks.record_listing, NOT db.record_building. Coleen's instruction is that
+        # realestate.com.au listings are "a totally another category named BENCHMARKS" —
+        # market comparables, not stock she can sell. Every consumer of `buildings`
+        # selects it with no source_channel predicate (measured: api/_candidates.py:213,
+        # build_web.py:339 and :410, benchmark_buildings.py:326, supersede_duplicates
+        # lot_key, database.get_buildings feeding the CSV and the Excel workbook,
+        # cohorts, catalogue_exposure, recover_pooled_builders, server.py, the promo
+        # selection). Putting a resale with a blank builder into that table would put it
+        # in the client shortlist as a purchasable package, into the "By source"
+        # dropdown beside E-Agent, and into the internal peer median that builder stock
+        # is scored against. A row that is not in the table cannot reach any of them.
+        # See benchmarks.py; tests/test_benchmarks.py pins this at zero.
         rea_src = RealestateSource()
+        rea_read = None                   # deliberately NOT in `read` — see below
         if not rea_src.configured:
             print("[i] realestate.com.au: no PropTrack key stored — skipped. "
                   "Run: python setup_credentials.py proptrack_api")
         else:
             suburbs = db.distinct_suburbs() if hasattr(db, "distinct_suburbs") else []
             print(f"[+] realestate.com.au: reading listings for {len(suburbs)} suburb(s)...")
-            listings = rea_src.search({"primary_suburbs": [s for s, _st in suburbs],
-                                       "state": ""})
-            read["realestate.com.au"] = len(listings)
+            # PER STATE, not one stateless sweep. distinct_suburbs returns (suburb,
+            # state) pairs and the state used to be thrown away, so every PropTrack query
+            # went out with state="" — and 'Logan' is a locality in two states, so two
+            # different places collapsed into one query whose answer belonged to neither.
+            by_state: Dict[str, list] = {}
+            for _sub, _st in suburbs:
+                by_state.setdefault(str(_st or "").strip().upper(), []).append(_sub)
+            listings = []
+            for _st, _subs in sorted(by_state.items()):
+                listings.extend(rea_src.search({"primary_suburbs": _subs, "state": _st}))
+            rea_read = len(listings)
             if not listings:
                 print("    realestate.com.au: nothing read.")
                 for why, n in sorted(rea_src.skipped.items()):
                     print(f"      {n} x {why}")
             else:
-                outcomes = [db.record_building(L) for L in listings]
-                new, updated = outcomes.count("new"), outcomes.count("updated")
-                total_new += new
-                print(f"    realestate.com.au: {len(listings)} listing(s), {new} new, "
-                      f"{updated} updated, {rea_src.calls} API call(s).")
+                outcomes = [benchmarks.record_listing(L) for L in listings]
+                new = outcomes.count("new")
+                updated = outcomes.count("updated")
+                refused = outcomes.count("refused")
+                # NOT added to total_new: that number is "new building stock stored",
+                # and a comparable is not stock. Conflating them is how the headline
+                # count starts drifting away from what Coleen can actually sell.
+                print(f"    realestate.com.au -> BENCHMARKS: {len(listings)} listing(s), "
+                      f"{new} new, {updated} updated, {rea_src.calls} API call(s).")
+                if refused:
+                    print(f"      {refused} refused: no listing id and no URL, so there "
+                          f"would be nothing to identify them by on the next run.")
+            benchmarks.set_meta("last_read", datetime.now().isoformat(timespec="seconds"))
+            benchmarks.set_meta("last_read_count", rea_read)
+            benchmarks.set_meta("last_read_skipped",
+                                "; ".join(f"{n} x {why}"
+                                          for why, n in sorted(rea_src.skipped.items())))
+        _report_benchmark_health(rea_src.configured, rea_read)
 
     if proxima:
         # Colin's #1 ask from 30 July. Not part of the BuilderPortalSource loop: the
@@ -228,6 +266,40 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
     return 1 if (dead or collapsed) else 0
 
 
+def _report_benchmark_health(configured: bool, read) -> None:
+    """Say how the comparables are doing, and NEVER change the exit code.
+
+    realestate.com.au is deliberately absent from the `read` dict above, and that is not
+    an oversight. _dead_channels and _collapsed_channels compare `read` against
+    db.building_counts_by_channel(), which reads `buildings` — a table benchmark rows are
+    never in. So if the channel were left in `read` the guard would either be silent
+    forever (stored is 0, and _dead_channels requires stored > 0) or, wired the other
+    way, would abort the whole nightly run at step 1/7 the first time a PropTrack key
+    lapsed. Freezing the dashboard — E-Agent, Proxima, the portals, the client
+    shortlist — over a comparables outage is the wrong trade by a wide margin.
+
+    The cost of taking it out of the guard is that nothing watches it, and an unwatched
+    channel going quietly stale is exactly the 3 Aug Proxima incident. So it is watched
+    HERE and reported out loud, and benchmarks.status() carries the same facts into
+    benchmarks.json for the tab's stale banner. Visible, never blocking.
+    """
+    try:
+        stored = benchmarks.count()
+    except Exception as exc:                                          # noqa: BLE001
+        print(f"    Benchmarks (realestate.com.au): unreadable ({exc})")
+        return
+    if not configured:
+        print(f"    Benchmarks (realestate.com.au): {stored} stored, nothing read — "
+              f"no PropTrack key. Expected, not a fault; the dashboard says so too.")
+        return
+    if read == 0 and stored > 0:
+        print(f"    Benchmarks (realestate.com.au): READ 0 against {stored} stored. "
+              f"The comparables on the Benchmarks tab are going stale. This does NOT "
+              f"stop the run — building stock is unaffected — but it needs looking at.")
+        return
+    print(f"    Benchmarks (realestate.com.au): {read} read, {stored} stored.")
+
+
 def _dead_channels(read: Dict[str, int], stored: Dict[str, int]):
     """Channels that were attempted, read nothing, and yet hold stock.
 
@@ -303,16 +375,24 @@ if __name__ == "__main__":
     ap.add_argument("--portals-only", action="store_true")
     ap.add_argument("--email-only", action="store_true")
     ap.add_argument("--proxima-only", action="store_true")
+    ap.add_argument("--rea-only", action="store_true",
+                    help="only the realestate.com.au comparables (Benchmarks)")
     ap.add_argument("--email-days", type=int, default=90,
                     help="how far back to sweep the inbox (default 90)")
     args = ap.parse_args()
     only = (args.eagent_only or args.portals_only or args.email_only
-            or args.proxima_only)
+            or args.proxima_only or args.rea_only)
     # Non-zero when a channel that holds stock read nothing, OR read so much less than
     # usual that the run is a partial, so run_daily stops and the operator is told,
     # instead of publishing a stale snapshot as if it were fresh.
+    #
+    # `rea=` was declared on harvest() and never passed from here, so --proxima-only and
+    # every other single-channel run still executed the PropTrack step. Harmless while
+    # there is no key; the day one is stored it means a targeted Proxima re-run quietly
+    # spends metered quota on somebody else's question.
     sys.exit(harvest(eagent=args.eagent_only or not only,
                      portals=args.portals_only or not only,
                      email=args.email_only or not only,
                      proxima=args.proxima_only or not only,
+                     rea=args.rea_only or not only,
                      email_days=args.email_days))

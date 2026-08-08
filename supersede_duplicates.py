@@ -28,6 +28,14 @@ address label, and an IDENTICAL spec (beds, baths, cars, house size, land size).
 genuinely different packages on one lot differ in spec and are left alone — 36 groups
 did, and they are not touched.
 
+AND THE SAME LINE ARRIVING TWICE. Added 8 Aug 2026 while unpicking the Hattan split.
+The same builder stocklist reaches us as E-Agent's pooled PDF and as the builder's own
+email, and BOTH copies were live: 62 of Hattan's 180 live rows were surplus, $46.1m of
+$129.8m. That is not a naming problem — renaming the rows would have left every one of
+them standing — so it is fixed here, in the rule, and not by a script writing
+superseded_by directly. main() below CLEARS superseded_by table-wide on every nightly
+run and re-derives it, so a hand-set mark evaporates at 03:27 with no error.
+
 MARKED, NOT DELETED. The older capture is real history and its price is what was
 advertised then. It keeps its row and gains a pointer to the row that replaced it.
 
@@ -120,52 +128,120 @@ def text_key(row):
             round(float(row.get("price") or 0), 2))
 
 
+def cross_channel_text_key(row):
+    """The same source line, arriving through two different channels.
+
+    text_key deliberately includes source_channel, because source_channel is the first
+    element of database._HASH_FIELDS and two channels are two identities by design. That
+    is right for identity and wrong for counting stock. Hattan's stocklist reaches us
+    twice — once as E-Agent's pooled PDF, once as the builder's own email — and both
+    copies stayed live: 46 lots were counted twice under two spellings of one builder,
+    and 16 more under the single correct spelling. $46.1m of $129.8m of live Hattan
+    stock was the same houses, twice.
+
+    The evidence is stronger here than in text_key, not weaker: the two rows carry
+    BYTE-IDENTICAL source text at the SAME price. A line that names the lot, the estate,
+    the spec and the price cannot describe two different houses because it was forwarded
+    down a different pipe.
+
+    Measured before shipping, over all 6,141 live rows: 122 groups, 122 surplus rows,
+    122 of them cross-channel (121 E-Agent vs digital email, 1 Portal vs E-Agent). The
+    same-channel pass already catches everything else, so this adds nothing outside the
+    gap it exists to close.
+    """
+    k = text_key(row)
+    return None if k is None else k[1:]          # drop the channel, keep text + price
+
+
+def _detail(row):
+    """How much this capture actually knows. The survivor rule for the cross-channel
+    pass, and NOT plain freshness.
+
+    Measured: under _freshness alone the sparse digital-email copy wins 68 of the 122
+    groups and 60 of those are decided by nothing but the id tie-break, which would
+    destroy the suburb, the spec and the benchmark on 56 lots that have them — the two
+    copies of a Hattan lot are 'Weir Views, 4/2/2, benchmarked' against a row whose
+    suburb is NULL. Freshness is still the last word, so a tie between two equally
+    detailed captures resolves exactly as the other two passes resolve it.
+    """
+    filled = sum(1 for c in ("suburb", "state", "bedrooms", "bathrooms", "car_spaces",
+                             "house_sqm", "land_sqm", "postcode", "estate_name",
+                             "builder_name")
+                 if row.get(c) not in (None, "", 0))
+    benchmarked = 1 if row.get("benchmark_median") not in (None, "", 0) else 0
+    return (filled, benchmarked) + _freshness(row)
+
+
 def find_superseded(rows):
     """[(loser_row, winner_row)] for every surplus capture.
 
-    Two independent groupings, because either can catch what the other misses: lot_key
+    Three independent groupings, because each catches what the others miss: lot_key
     matches the same lot across DIFFERENT source lines, text_key matches the same source
-    line whose extracted spec came out differently. A row caught by both is recorded once.
+    line whose extracted spec came out differently, cross_channel_text_key matches the
+    same source line that arrived down two pipes. A row caught by more than one is
+    recorded once, and a row that has already lost is never reconsidered — so the
+    cross-channel pass can only ADD retirements, never move an existing one.
     """
-    losers = {}                       # loser id -> winner row, so the passes cannot double up
-    for key_fn in (lot_key, text_key):
+    # ONE COMPONENT, ONE SURVIVOR — and why the obvious version of this was wrong.
+    #
+    # The first version of the three-pass rule assigned a winner per pass and then walked
+    # a loser->winner chain to find who finally survived. Three passes disagree far more
+    # often than two, so winners became losers elsewhere and the chains closed into
+    # cycles. When a cycle sent a winner's chain back to the loser it started from, the
+    # pair was dropped and the row simply stayed live. Measured on the 11,257 stored rows:
+    # 6,933 duplicates were correctly identified, 3,272 of them were then discarded by the
+    # chain walk, and the run retired 3,661 where the two-pass rule had retired 5,116.
+    # A pass added to REMOVE double counting would have published 1,455 more duplicates as
+    # sellable stock — the precise harm it exists to prevent, and invisible in the output,
+    # which reported a smaller number as though it were a cleaner database.
+    #
+    # Grouping is transitive — if two rows are duplicates under ANY key they belong to one
+    # group — so the honest structure is connected components, not per-pass winners. Each
+    # component elects exactly one survivor and everything else points straight at it.
+    # A cycle cannot form, because no row is ever both a survivor and a loser.
+    parent = {r["id"]: r["id"] for r in rows}
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]        # path halving, so deep chains stay cheap
+            i = parent[i]
+        return i
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for key_fn in (lot_key, text_key, cross_channel_text_key):
         groups = defaultdict(list)
         for r in rows:
             k = key_fn(r)
             if k is not None:
                 groups[k].append(r)
         for members in groups.values():
-            if len(members) < 2:
-                continue
-            ordered = sorted(members, key=_freshness, reverse=True)
-            winner = ordered[0]
-            for loser in ordered[1:]:
-                # Never let a row that already lost become someone's winner, and never
-                # supersede the row that is winning elsewhere: both would orphan a group.
-                if loser["id"] == winner["id"] or loser["id"] in losers:
-                    continue
-                losers[loser["id"]] = winner
-    by_id = {r["id"]: r for r in rows}
+            for other in members[1:]:
+                union(members[0]["id"], other["id"])
 
-    # A winner can itself lose to a fresher capture in the other grouping, so follow the
-    # chain to the row that actually survives. Dropping those pairs instead left 86
-    # duplicates live; pointing them at the end of the chain retires all of them.
-    # Bounded by the number of rows, so a cycle cannot spin here.
-    def survivor(row):
-        seen = {row["id"]}
-        while row["id"] in losers:
-            nxt = losers[row["id"]]
-            if nxt["id"] in seen:
-                break                    # defensive: a cycle keeps the row it is on
-            seen.add(nxt["id"])
-            row = nxt
-        return row
+    by_id = {r["id"]: r for r in rows}
+    components = defaultdict(list)
+    for r in rows:
+        components[find(r["id"])].append(r)
 
     out = []
-    for lid, w in losers.items():
-        final = survivor(w)
-        if final["id"] != lid:
-            out.append((by_id[lid], final))
+    for members in components.values():
+        if len(members) < 2:
+            continue
+        # The cross-channel case keeps the better-described capture rather than the newest
+        # one (see _detail): the two copies of a Hattan lot are "Weir Views, 4/2/2,
+        # benchmarked" against a row whose suburb is NULL, and freshness alone would keep
+        # the empty one. Within a single channel, detail is stable and freshness is the
+        # whole question, so the original rule is preserved there untouched.
+        spans_channels = len({_norm(m.get("source_channel")) for m in members}) > 1
+        rank = _detail if spans_channels else _freshness
+        ordered = sorted(members, key=rank, reverse=True)
+        winner = ordered[0]
+        for loser in ordered[1:]:
+            out.append((by_id[loser["id"]], winner))
     return out
 
 
@@ -210,6 +286,30 @@ def main(argv=None):
         print(f"    of those, {len(moved)} had a price different from the fresher row")
         print(f"    and {cheaper_stale} were CHEAPER — the stale prices that would have been")
         print(f"    surfaced as 'deals' if superseded rows were left in the running")
+
+        # The cross-channel retirements are named, not folded into the total. They are the
+        # only ones where the row disappearing is not an older capture of the same feed —
+        # it is the same listing arriving down a different pipe, so the per-channel daily
+        # figures move ('digital email' drops by 121) and a reader who is not told will
+        # reasonably think stock went missing overnight.
+        cross = [(l, w) for l, w in pairs
+                 if _norm(l["source_channel"]) != _norm(w["source_channel"])]
+        if cross:
+            seen = {}
+            for l, w in cross:
+                pair = " vs ".join(sorted({str(l["source_channel"]), str(w["source_channel"])}))
+                seen[pair] = seen.get(pair, 0) + 1
+            print()
+            print(f"    {len(cross)} of them are the SAME source line arriving through two")
+            print(f"    channels — one listing counted twice, not an older capture:")
+            for pair, n in sorted(seen.items(), key=lambda kv: -kv[1]):
+                print(f"        {n:>5}  {pair}")
+            by_builder = {}
+            for l, _w in cross:
+                by_builder[l["builder_name"] or "(blank)"] = \
+                    by_builder.get(l["builder_name"] or "(blank)", 0) + 1
+            for name, n in sorted(by_builder.items(), key=lambda kv: -kv[1])[:6]:
+                print(f"        {n:>5}  retired from {name}")
 
     if not args.dry_run and pairs:
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
