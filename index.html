@@ -2308,8 +2308,16 @@
                         <div class="metrics-grid">
                             <div class="metric-item"><span>Bed / Bath / Car</span><strong>${spec(prop.bedrooms, 'Bed')} | ${spec(prop.bathrooms, 'Bath')} | ${spec(prop.car_spaces, 'Car')}</strong></div>
                             <div class="metric-item"><span>Land / House SQM</span><strong>${sqm(prop.land_size_sqm)} / ${sqm(prop.house_size_sqm)}</strong></div>
-                            <div class="metric-item"><span>Advertised Price</span><strong>$${prop.advertised_package_price.toLocaleString()}</strong></div>
-                            <div class="metric-item"><span>Realistic Cost</span><strong style="color:var(--accent-blue);">$${prop.realistic_total_price.toLocaleString()}</strong></div>
+                            <!-- ADVERTISED PRICE IS THE PRICE. A second figure beside it
+                                 ("Realistic Cost" — advertised plus our allowance for
+                                 unclear inclusions) was removed on request 9 Aug: two
+                                 prices on one card makes a consultant decide which to
+                                 quote, and the one the builder actually advertises is the
+                                 one a client will see. The allowance has not been hidden —
+                                 it is stated on the Turnkey Classification line directly
+                                 below, where it reads as what it is: an estimate we added,
+                                 not a price anyone is charging. -->
+                            <div class="metric-item"><span>Advertised Price</span><strong style="color:var(--accent-blue);">$${prop.advertised_package_price.toLocaleString()}</strong></div>
                         </div>
 
                         <div style="font-size:0.86rem; margin-bottom:1rem;">
