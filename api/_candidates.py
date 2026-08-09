@@ -424,6 +424,8 @@ def build_packages(brief_dict, rows, today=None):
     read here. Everything else stays the pipeline's job.
     """
     state = str(brief_dict.get("state") or "").strip().upper()
+    # What the client is buying. Blank means no preference and nothing is filtered.
+    want_product = str(brief_dict.get("product_type") or "").strip().lower()
     budget_max = _num(brief_dict.get("budget_max")) or 0.0
     ceiling = budget_max + BUDGET_HEADROOM if budget_max else None
     # storeys_max < 2 is the only brief that a missing storey figure could slip past,
@@ -445,7 +447,7 @@ def build_packages(brief_dict, rows, today=None):
         "incomplete_facts": 0, "storey_unknown_and_binding": 0, "scored": 0,
         "truncated": 0, "stale_unverified": 0, "same_listing_collapsed": 0,
         "suburb_not_a_locality": 0, "superseded": 0, "availability_unstated": 0,
-        "price_unverified": 0,
+        "price_unverified": 0, "other_product_type": 0,
     }
     missing_field_counts = {}
     unstated_but_scored = {}
@@ -466,6 +468,21 @@ def build_packages(brief_dict, rows, today=None):
         if state and row_state != state:
             counts["other_state"] += 1
             continue
+
+        # A row that STATES a different product is rejected; a row that states none is
+        # not. That asymmetry is the same rule the bedroom, bathroom and house-size gates
+        # already follow, and it exists because inventing a requirement is the more
+        # expensive error here: 1,826 of 5,879 live rows record no product_type at all,
+        # so rejecting the unstated ones would discard a third of the catalogue to
+        # enforce a preference their source never contradicted.
+        #
+        # It still does the job Colin needed on 5 Aug — "Land" is stated on the 145 rows
+        # that are vacant blocks, so a house brief no longer ranks one of them first.
+        if want_product:
+            row_product = str(row.get("product_type") or "").strip().lower()
+            if row_product and row_product != want_product:
+                counts["other_product_type"] += 1
+                continue
 
         if str(row.get("source_channel") or "").strip().lower() in PRICES_UNVERIFIED_CHANNELS:
             counts["price_unverified"] += 1
@@ -676,6 +693,17 @@ def coverage_sentence(counts, source_path, state):
         "Those rows are NOT guessed into the shortlist: the pipeline would otherwise "
         "default a missing bedroom count to 4 and a missing house size to 180 m².",
     ]
+    # Said separately and only when it applies, because it is the one filter the client
+    # sets that can silently remove a large slice — and a consultant who narrowed to
+    # "Apartment" should be told how many House & Land lots that cost, not left wondering
+    # why the shortlist shrank.
+    if counts.get("other_product_type"):
+        parts.append(
+            "%d listing(s) were a different property type from the one requested. "
+            "Listings whose source never stated a type were still scored — 1,826 of the "
+            "catalogue record none, and excluding them would drop a third of the stock "
+            "over a preference their source never contradicted."
+            % counts["other_product_type"])
     unstated = counts.get("unstated_but_scored") or {}
     if unstated:
         parts.append(

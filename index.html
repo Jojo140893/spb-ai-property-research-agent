@@ -667,6 +667,23 @@
                          border-radius:6px; box-shadow:0 6px 18px rgba(15,23,42,.12); min-width:260px;"></div>
                 </div>
 
+                <!-- Colin, 5 Aug: a $700k / NSW / 3-bedroom search returned a vacant block
+                     as Rank #1 — "this one is a lot, it's land, it's not a house". Building
+                     Stock could already filter by product; the brief could not. Blank = no
+                     preference, and a listing whose source never stated a type is NOT
+                     excluded (see api/_candidates.py) — 1,826 of 5,879 rows record none. -->
+                <div class="form-group" style="margin-top: 0.5rem;">
+                    <label>Property Type <span class="hint-opt">optional</span></label>
+                    <select id="productType">
+                        <option value="" selected>Any type</option>
+                        <option value="House &amp; Land">House &amp; Land</option>
+                        <option value="Apartment">Apartment</option>
+                        <option value="Townhouse">Townhouse</option>
+                        <option value="Land">Land only</option>
+                        <option value="Commercial">Commercial</option>
+                    </select>
+                </div>
+
                 <div class="form-group" style="margin-top: 0.5rem;">
                     <label>Search Radius (km from target suburbs &mdash; 0 = exact suburbs only)</label>
                     <input type="number" id="searchRadius" value="0" min="0" max="100">
@@ -2248,7 +2265,8 @@
             storeys_max: numField('storeys', 3),
             land_size_min_sqm: numField('landSize', 0),
             house_size_min_sqm: numField('houseSize', 0),
-            search_radius_km: numField('searchRadius', 0)
+            search_radius_km: numField('searchRadius', 0),
+            product_type: (document.getElementById('productType') || {}).value || ''
         };
 
         const resultsDiv = document.getElementById('resultsContent');

@@ -74,6 +74,14 @@ class ClientBrief:
     target_gross_yield_pct: Optional[float] = None
     build_timeframe_months: Optional[int] = None
     search_radius_km: Optional[float] = None  # distance search: include suburbs within N km of primary suburbs
+    # What the client is actually buying: "House & Land", "Apartment", "Townhouse",
+    # "Land", "Commercial". Blank means no preference.
+    #
+    # Colin, 5 Aug: he searched $700k / NSW / 3 bedrooms and the #1 recommendation was a
+    # vacant block — "this one is a lot, it's land, it's not a house... but how come they
+    # have bedrooms and baths?" Building Stock could already filter by product; the brief
+    # could not, so nothing stopped land being ranked first for someone buying a house.
+    product_type: str = ""
     additional_notes: str = ""
 
 

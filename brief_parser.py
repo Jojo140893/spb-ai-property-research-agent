@@ -127,5 +127,6 @@ class ClientBriefParser:
             target_gross_yield_pct=_f(raw_data, 'target_gross_yield_pct', None),
             build_timeframe_months=_i(raw_data, 'build_timeframe_months', None),
             search_radius_km=_f(raw_data, 'search_radius_km', None),
+            product_type=str(raw_data.get('product_type') or '').strip(),
             additional_notes=raw_data.get('additional_notes') or ''
         )
