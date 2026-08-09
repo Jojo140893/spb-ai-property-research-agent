@@ -785,6 +785,16 @@
                  the filter for price, right? Because it's easy, right?" -->
             <input type="number" id="bMinPrice" class="filter-num" placeholder="Min $" step="10000" min="0">
             <input type="number" id="bMaxPrice" class="filter-num" placeholder="Max $" step="10000" min="0">
+            <!-- Coleen, 9 Aug: "can we add in the filter whether there are any discounts or
+                 rebates available?" 80 of 5,879 live rows carry one — landscaping bonuses,
+                 FIRB fee cover, cash rebates up to $65,000. At 1.4% it is a needle nobody
+                 finds by scrolling, which is exactly what a filter is for. Matches on either
+                 a stated amount OR incentive text, because plenty are worded without a
+                 figure ("bonus front lot landscaping") and dropping those would quietly
+                 hide real offers. -->
+            <label class="pick-toggle" title="Only lots where the source states a discount, rebate, bonus or incentive — by amount or in words.">
+                <input type="checkbox" id="bHasIncentive"> Discount / rebate
+            </label>
             <label class="pick-toggle" title="An older capture of a lot that is also stored fresher — same address, same spec, earlier date. Hidden by default because its price may have moved since.">
                 <input type="checkbox" id="bShowSuperseded"> Show superseded
             </label>
@@ -1323,7 +1333,7 @@
         fill('bSource', uniq('source_channel'));
 
         ['bSearch', 'bBuilder', 'bState', 'bAvail', 'bProduct', 'bSource',
-         'bMinPrice', 'bMaxPrice', 'bShowSuperseded'].forEach(id => {
+         'bMinPrice', 'bMaxPrice', 'bShowSuperseded', 'bHasIncentive'].forEach(id => {
             const e2 = document.getElementById(id);
             e2.oninput = e2.onchange = () => renderStock();
         });
@@ -1340,6 +1350,8 @@
             if (only) only.checked = false;
             const sup = document.getElementById('bShowSuperseded');
             if (sup) sup.checked = false;
+            const inc = document.getElementById('bHasIncentive');
+            if (inc) inc.checked = false;
             stockSort = null;
             renderStock();
         };
@@ -1385,6 +1397,11 @@
         const lo = priceBound('bMinPrice'), hi = priceBound('bMaxPrice');
         const pickedOnly = (document.getElementById('bPickedOnly') || {}).checked;
         const showSuperseded = (document.getElementById('bShowSuperseded') || {}).checked;
+        // Coleen, 9 Aug: find the lots that carry a discount or rebate. EITHER a stated
+        // amount OR words, because many are worded without a figure ("bonus front lot
+        // landscaping worth up to $6,500", "FIRB fee covered") and requiring a number
+        // would hide real offers behind a parsing gap.
+        const hasIncentive = (document.getElementById('bHasIncentive') || {}).checked;
         // lot_number and postcode were missing, which is why Colin's own attempt on the
         // 5 Aug call failed: he pasted a lot number, said "that's it, remove everything
         // else", and got "no, it doesn't come out". A consultant identifies a listing to
@@ -1423,6 +1440,10 @@
             if (lo !== null && !(Number(b.price) >= lo)) return false;
             if (hi !== null && !(Number(b.price) <= hi)) return false;
             if (pickedOnly && !PICKED.has(rowKey(b))) return false;
+            // A stated amount OR words. Both are real offers and only 80 rows carry
+            // either, so requiring both would return almost nothing.
+            if (hasIncentive && !(Number(b.incentive_amount) > 0
+                                  || String(b.incentive_text || '').trim())) return false;
             if (!q) return true;
             if (lotExact) return String(b.lot_number ?? '').toLowerCase() === lotQuery;
             return fields.some(f => String(b[f] ?? '').toLowerCase().includes(q));
