@@ -114,7 +114,13 @@ BENCHMARK_FIELDS = list(benchmarks.EXPORT_FIELDS)
 # with no key at all: our lots, our median, our bedroom mix and a working realestate.com.au
 # search per suburb, so the tab is a usable comparison tool tonight rather than an empty
 # grid promising one later. The market columns fill when a key arrives.
-BENCHMARK_SUBURB_FIELDS = ["suburb", "state", "our_lots", "our_median", "our_beds",
+# Suburb rows in benchmarks.json. `our_lots`, `our_median` and `our_beds` were HERE and
+# have been removed: they are Coleen's own builder stock, and this payload feeds a tab
+# defined as realestate.com.au listings and nothing else (Ahsan, 9 Aug). Carrying her
+# stock in it — even unrendered — is how the 223 rows came to be read as market
+# properties. What remains is the suburb, whatever REA data exists for it, and the
+# search link, which is used by the "Check the benchmark" button.
+BENCHMARK_SUBURB_FIELDS = ["suburb", "state",
                            "benchmarks_stored", "market_median", "search_url"]
 
 # builders: NOTE the deliberate omission of portal_login_email / portal_login_password.
@@ -557,9 +563,6 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         market = _bench_by_place.get((suburb.lower(), state)) or {}
         _suburb_rows.append({
             "suburb": suburb, "state": state,
-            "our_lots": len(slot["prices"]),
-            "our_median": _median(slot["prices"]),
-            "our_beds": " / ".join(f"{n}x{b} bed" for b, n in slot["beds"].most_common(3)),
             "benchmarks_stored": market.get("n") or 0,
             "market_median": market.get("median"),
             # The suburb's own search link, from the same builder as the row-level one,

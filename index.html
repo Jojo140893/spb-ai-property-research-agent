@@ -1798,34 +1798,20 @@
             <div style="margin-top:0.5rem;">Every suburb below still opens the live market on
             realestate.com.au, because your browser makes that request, not us.</div></div>`;
 
-        /* SUBURBS WE HOLD STOCK IN. Six of these columns are full today and three say
-           plainly that they are waiting on a key. This is the tab's working half. */
+        /* The "Suburbs we hold stock in" table USED TO SIT HERE and has been removed.
+           It listed our lot count, our median and our bed mix per suburb — Coleen's own
+           builder stock, in a tab whose whole definition is "realestate.com.au listings
+           only" (Ahsan, 9 Aug: "remove buildings from the benchmark tab if they are not
+           from the realestate.com.au"). It was put there to give the tab something to
+           show while no market data exists, and that was the wrong trade: a benchmark
+           tab filled with the thing being benchmarked invites exactly the misreading it
+           produced, which was that those 223 rows were market properties.
+
+           Nothing is lost. The per-suburb realestate.com.au search links live on the
+           Building Stock rows already, in the "Compare on REA" column, which is where a
+           consultant looking at a specific lot actually is. */
         const money = v => (v === null || v === undefined || v === '') ? ''
             : '$' + Math.round(Number(v)).toLocaleString();
-        const waiting = '<td style="color:var(--text-muted);" title="Waiting on a PropTrack key — no market listings are stored for this suburb yet.">&mdash;</td>';
-        const subHead = ['Suburb', 'State', 'Our lots', 'Our median', 'Our bed mix',
-                         'Benchmarks stored', 'Market median', 'Ours vs market',
-                         'Open on realestate.com.au']
-            .map(h => `<th>${h}</th>`).join('');
-        const subBody = subs.map(s => {
-            const n = Number(s.benchmarks_stored) || 0;
-            const mkt = s.market_median;
-            const vs = (n && mkt && s.our_median)
-                ? `<td class="num">${(((s.our_median / mkt) - 1) * 100).toFixed(1)}%</td>`
-                : waiting;
-            return `<tr>
-                <td>${esc(s.suburb)}</td><td>${esc(s.state)}</td>
-                <td class="num">${Number(s.our_lots || 0).toLocaleString()}</td>
-                <td class="num">${money(s.our_median)}</td>
-                <td>${esc(s.our_beds || '')}</td>
-                ${n ? `<td class="num">${n.toLocaleString()}</td>` : waiting}
-                ${n && mkt ? `<td class="num">${money(mkt)}</td>` : waiting}
-                ${vs}
-                <td>${s.search_url ? `<a href="${esc(s.search_url)}" target="_blank"
-                    rel="noopener noreferrer" style="color:var(--accent-blue);"
-                    title="Opens a realestate.com.au search for ${esc(s.suburb)}, ${esc(s.state)}"
-                    >open</a>` : ''}</td></tr>`;
-        }).join('');
 
         /* STORED LISTINGS. Empty today, and it says so in one line rather than
            rendering a headed grid with no rows under it. */
@@ -1856,10 +1842,6 @@
         }).join('');
 
         el.innerHTML = snapshotNote('Benchmarks') + card
-            + `<h3 style="font-size:0.95rem; margin:1.2rem 0 0.4rem;">Suburbs we hold stock in
-                 <span style="color:var(--text-muted); font-weight:400;">(${subs.length})</span></h3>`
-            + `<div class="stock-table-wrap"><table class="builder-table">
-                 <thead><tr>${subHead}</tr></thead><tbody>${subBody}</tbody></table></div>`
             + `<h3 style="font-size:0.95rem; margin:1.4rem 0 0.4rem;">Stored market listings</h3>`
             + (rows.length
                 ? `<div class="stock-table-wrap"><table class="builder-table">
