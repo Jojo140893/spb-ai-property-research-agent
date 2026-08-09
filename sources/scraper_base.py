@@ -15,6 +15,7 @@ Requires: playwright (pip install playwright && playwright install chromium).
 """
 
 import logging
+import os
 import re
 import time
 from contextlib import contextmanager
@@ -90,6 +91,27 @@ def browser_user_agent(browser=None, pw=None) -> str:
     global _UA_CACHE
     if _UA_CACHE:
         return _UA_CACHE
+
+    # AN EXPLICIT PIN WINS OVER DERIVATION, and it exists for one specific move: taking
+    # the harvest off this Windows laptop. Proxima's "remember this device" trust is a
+    # 180-day cookie (otp_authentication) issued against the browser that completed 2FA,
+    # and this function derives its string from whatever Chromium is INSTALLED — so the
+    # same session file replayed on a Linux runner would present "X11; Linux x86_64"
+    # where the trust was granted to "Windows NT 10.0". Whether Proxima binds device
+    # trust to the UA is not established; the rest of this file already treats it as a
+    # live hazard, and a re-challenge costs a human with Colin's inbox. Pinning is the
+    # cheap side of that bet.
+    #
+    #     setx SPB_USER_AGENT "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ..."
+    #
+    # Normalised like any other value, so a pin carrying "HeadlessChrome" — the one token
+    # Proxima's WAF actually 403s — is corrected rather than obeyed.
+    pinned = os.getenv("SPB_USER_AGENT", "").strip()
+    if pinned:
+        _UA_CACHE = normalize_user_agent(pinned)
+        logger.info("user agent pinned by SPB_USER_AGENT")
+        return _UA_CACHE
+
     ua, throwaway, probe = "", None, None
     try:
         if browser is None and pw is not None:
