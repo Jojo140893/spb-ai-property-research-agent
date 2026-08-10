@@ -691,10 +691,20 @@
                      5,879 rows state an incentive — and unlike every other filter here,
                      a row that states nothing is EXCLUDED: "show me the ones with a
                      rebate" is a request for rows that positively carry one. -->
-                <div class="form-group" style="margin-top: 0.5rem;">
-                    <label class="pick-toggle" style="font-weight:600; cursor:pointer;">
-                        <input type="checkbox" id="requiresIncentive">
-                        Only packages with a rebate / discount
+                <!-- Styled explicitly rather than with .pick-toggle. That class belongs to
+                     the Building Stock filter BAR; dropped into this form it inherited the
+                     form's `input { width: 100% }` and rendered as an orphaned checkbox
+                     with the caption wrapping beside it — present, visible to a DOM query,
+                     and invisible to the person looking for it. Ahsan reported it missing
+                     twice while it was on screen the whole time. -->
+                <div class="form-group" style="margin-top: 0.75rem;">
+                    <label>Rebate / discount</label>
+                    <label style="display:flex; align-items:center; gap:0.55rem;
+                                  cursor:pointer; font-weight:500; margin-top:0.15rem;">
+                        <input type="checkbox" id="requiresIncentive"
+                               style="width:auto; min-width:0; flex:0 0 auto; margin:0;
+                                      accent-color:var(--accent-blue); transform:scale(1.15);">
+                        <span>Only show packages with a rebate or discount</span>
                     </label>
                 </div>
 
