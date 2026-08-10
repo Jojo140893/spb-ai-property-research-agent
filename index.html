@@ -599,7 +599,6 @@
              drops the qualifier below 480px, where nav-tabs wraps anyway. -->
         <button class="tab-btn" onclick="showTab('benchmarksTab', this); loadBenchmarks();">Benchmarks<span class="nav-tab-label-full"> (realestate.com.au)</span></button>
         <button class="tab-btn" onclick="showTab('vendorAssetsTab', this); loadVendorAssets();">Vendor Brochures & Details</button>
-        <button class="tab-btn" onclick="showTab('kommoTab', this)">CRM Integration Payload</button>
     </nav>
 </header>
 
@@ -895,17 +894,6 @@
     </div>
 </div>
 
-<div id="kommoTab" class="view-pane">
-    <div class="panel-card">
-        <div class="panel-header">
-            <span>CRM Integration Payload Data</span>
-            <button id="copyPayloadBtn" class="btn-submit" style="width:auto; padding:0.4rem 0.9rem; font-size:0.8rem; margin:0;" onclick="copyPayloadJSON()">Copy JSON Payload</button>
-        </div>
-        <div class="json-code" id="jsonPayloadView">
-            Execute search to generate CRM payload...
-        </div>
-    </div>
-</div>
 
 <script>
     let currentPayload = null;
@@ -2573,8 +2561,18 @@
 
                 COMPARISONS = data.comparisons || {};
                 paintCompareBar();
+                // The CRM Integration Payload TAB was removed on request (9 Aug); the
+                // payload itself is untouched — api/research.py still builds it and
+                // kommo_agent.py still sends it. Only the raw-JSON viewer is gone.
+                //
+                // The write below used to be unguarded, so deleting the panel without
+                // this would have thrown on `.textContent` of null INSIDE the results
+                // renderer — taking out every search result with it, not just the tab.
                 currentPayload = data.kommo_payload;
-                document.getElementById('jsonPayloadView').textContent = JSON.stringify(data.kommo_payload, null, 2);
+                const _payloadView = document.getElementById('jsonPayloadView');
+                if (_payloadView) {
+                    _payloadView.textContent = JSON.stringify(data.kommo_payload, null, 2);
+                }
             }
         } catch (e) {
             // Reached only if rendering the results throws — the fetch itself is
