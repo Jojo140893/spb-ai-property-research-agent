@@ -128,5 +128,6 @@ class ClientBriefParser:
             build_timeframe_months=_i(raw_data, 'build_timeframe_months', None),
             search_radius_km=_f(raw_data, 'search_radius_km', None),
             product_type=str(raw_data.get('product_type') or '').strip(),
+            requires_incentive=bool(raw_data.get('requires_incentive')),
             additional_notes=raw_data.get('additional_notes') or ''
         )

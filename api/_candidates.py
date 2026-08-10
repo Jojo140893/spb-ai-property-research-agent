@@ -426,6 +426,7 @@ def build_packages(brief_dict, rows, today=None):
     state = str(brief_dict.get("state") or "").strip().upper()
     # What the client is buying. Blank means no preference and nothing is filtered.
     want_product = str(brief_dict.get("product_type") or "").strip().lower()
+    want_incentive = bool(brief_dict.get("requires_incentive"))
     budget_max = _num(brief_dict.get("budget_max")) or 0.0
     ceiling = budget_max + BUDGET_HEADROOM if budget_max else None
     # storeys_max < 2 is the only brief that a missing storey figure could slip past,
@@ -447,7 +448,7 @@ def build_packages(brief_dict, rows, today=None):
         "incomplete_facts": 0, "storey_unknown_and_binding": 0, "scored": 0,
         "truncated": 0, "stale_unverified": 0, "same_listing_collapsed": 0,
         "suburb_not_a_locality": 0, "superseded": 0, "availability_unstated": 0,
-        "price_unverified": 0, "other_product_type": 0,
+        "price_unverified": 0, "other_product_type": 0, "no_incentive": 0,
     }
     missing_field_counts = {}
     unstated_but_scored = {}
@@ -482,6 +483,22 @@ def build_packages(brief_dict, rows, today=None):
             row_product = str(row.get("product_type") or "").strip().lower()
             if row_product and row_product != want_product:
                 counts["other_product_type"] += 1
+                continue
+
+        # UNLIKE every other filter here, an unstated value is EXCLUDED — and the
+        # asymmetry is deliberate. "Show me packages with a rebate" is a request for rows
+        # that positively carry one; a row whose source never mentioned an incentive is
+        # not a maybe, it is a no. Including the silent ones would return the whole
+        # catalogue and answer nothing.
+        #
+        # Only 80 of 5,879 live rows carry one, so this narrows hard on purpose. That is
+        # the point — Colin was hunting value-driven packages for the Farirais and had no
+        # way to find them.
+        if want_incentive:
+            has_inc = ((_num(row.get("incentive_amount")) or 0) > 0
+                       or str(row.get("incentive_text") or "").strip())
+            if not has_inc:
+                counts["no_incentive"] += 1
                 continue
 
         if str(row.get("source_channel") or "").strip().lower() in PRICES_UNVERIFIED_CHANNELS:
@@ -697,6 +714,12 @@ def coverage_sentence(counts, source_path, state):
     # sets that can silently remove a large slice — and a consultant who narrowed to
     # "Apartment" should be told how many House & Land lots that cost, not left wondering
     # why the shortlist shrank.
+    if counts.get("no_incentive"):
+        parts.append(
+            "%d listing(s) were set aside because their source states no rebate, "
+            "discount or bonus. Only 80 of the catalogue state one at all, so this "
+            "filter narrows hard — untick it to search the full stock."
+            % counts["no_incentive"])
     if counts.get("other_product_type"):
         parts.append(
             "%d listing(s) were a different property type from the one requested. "

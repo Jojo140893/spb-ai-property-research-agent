@@ -82,6 +82,13 @@ class ClientBrief:
     # have bedrooms and baths?" Building Stock could already filter by product; the brief
     # could not, so nothing stopped land being ranked first for someone buying a house.
     product_type: str = ""
+    # Only packages the source says carry a rebate, discount or bonus.
+    #
+    # Colin, 10 Aug, demoing live to Mr & Mrs Farirai: the tool "lacks a rebate/discount
+    # filter, preventing users from easily finding and prioritizing value-driven
+    # packages". Building Stock got one the same day; the SEARCH did not, and the search
+    # is where he was sitting with a client on the call.
+    requires_incentive: bool = False
     additional_notes: str = ""
 
 

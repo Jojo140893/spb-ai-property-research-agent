@@ -684,6 +684,20 @@
                     </select>
                 </div>
 
+                <!-- Colin, 10 Aug, live with Mr & Mrs Farirai: the tool "lacks a
+                     rebate/discount filter, preventing users from easily finding and
+                     prioritizing value-driven packages". Building Stock got one; the
+                     SEARCH is where he actually was. Narrows hard on purpose — 80 of
+                     5,879 rows state an incentive — and unlike every other filter here,
+                     a row that states nothing is EXCLUDED: "show me the ones with a
+                     rebate" is a request for rows that positively carry one. -->
+                <div class="form-group" style="margin-top: 0.5rem;">
+                    <label class="pick-toggle" style="font-weight:600; cursor:pointer;">
+                        <input type="checkbox" id="requiresIncentive">
+                        Only packages with a rebate / discount
+                    </label>
+                </div>
+
                 <div class="form-group" style="margin-top: 0.5rem;">
                     <label>Search Radius (km from target suburbs &mdash; 0 = exact suburbs only)</label>
                     <input type="number" id="searchRadius" value="0" min="0" max="100">
@@ -2266,7 +2280,8 @@
             land_size_min_sqm: numField('landSize', 0),
             house_size_min_sqm: numField('houseSize', 0),
             search_radius_km: numField('searchRadius', 0),
-            product_type: (document.getElementById('productType') || {}).value || ''
+            product_type: (document.getElementById('productType') || {}).value || '',
+            requires_incentive: !!(document.getElementById('requiresIncentive') || {}).checked
         };
 
         const resultsDiv = document.getElementById('resultsContent');

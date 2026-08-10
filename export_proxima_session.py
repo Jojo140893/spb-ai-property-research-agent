@@ -34,6 +34,7 @@ might disturb has already happened.
 import argparse
 import shutil
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -91,17 +92,50 @@ def check_existing(pw, ua):
         browser.close()
 
 
-def export(pw, ua):
+def export(pw, ua, wait_minutes=12):
+    """Waits for the CONDITION, not for a keypress.
+
+    An `input()` prompt cannot be answered from a non-interactive shell, and it is the
+    weaker design regardless: pressing Enter a moment early exports exactly the narrowed
+    session this script exists to refuse. Polling for "signed in AND >= 40 projects" means
+    the good state is what triggers the save, so it cannot be confirmed too soon.
+    """
     print("Opening Proxima in a VISIBLE browser.")
     print("  1. Sign in (complete 2FA if it asks — it should not).")
     print("  2. Clear every Quick Filter / keyword so ALL projects are listed.")
-    print("  3. Come back here and press Enter.\n")
+    print(f"  3. Leave it. This saves ITSELF the moment it sees >= {MIN_PROJECTS} projects")
+    print(f"     and >= {MIN_AVAILABILITY} availability views. Giving up after {wait_minutes} min.\n")
     browser = pw.chromium.launch(headless=False, args=["--start-maximized"])
     try:
         ctx = browser.new_context(user_agent=ua, viewport=None)
         page = ctx.new_page()
         page.goto(PROJECTS_URL, wait_until="domcontentloaded", timeout=90000)
-        input("    press Enter once you are signed in with no filters applied… ")
+
+        deadline = time.time() + wait_minutes * 60
+        last = None
+        while time.time() < deadline:
+            time.sleep(5)
+            try:
+                url = page.url
+                if "twofactor" in url:
+                    state = "waiting: 2FA screen — enter the code Proxima emailed"
+                elif "/login" in url or "customer/account/login" in url:
+                    state = "waiting: sign-in screen"
+                else:
+                    p, a = _counts(page)
+                    if p >= MIN_PROJECTS and a >= MIN_AVAILABILITY:
+                        print(f"\n    signed in, {p} projects / {a} availability views — saving.")
+                        break
+                    state = (f"waiting: signed in, {p} projects / {a} views "
+                             f"— need {MIN_PROJECTS}/{MIN_AVAILABILITY}, clear the filters")
+            except Exception as e:                                    # noqa: BLE001
+                state = f"waiting: page busy ({type(e).__name__})"
+            if state != last:
+                print(f"    {state}")
+                last = state
+        else:
+            print("\n    Timed out. Nothing saved — the existing session file is untouched.")
+            return 1
 
         page.goto(PROJECTS_URL, wait_until="networkidle", timeout=90000)
         page.wait_for_timeout(4000)
