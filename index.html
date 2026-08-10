@@ -2334,7 +2334,36 @@
 
                 LAST_SHORTLIST = data.shortlist || [];
                 BENCH_CACHE = null;      // a fresh search re-reads the market, not a stale copy
-                data.shortlist.forEach((prop, idx) => {
+
+                /* PAINTED IN BATCHES, because the shortlist is no longer capped at 5.
+                   Ahsan's Wyndham Vale brief scores 475 qualifying properties, and each
+                   card carries a 7-bar scoring matrix, a benchmark line and a benchmark
+                   button — building 475 of those synchronously locks the tab for seconds
+                   on the one screen a consultant uses in front of a client. Same approach
+                   as the Building Stock table, which has painted in pages for this reason
+                   since it was written. */
+                const SHORTLIST_PAGE = 25;
+                let shortlistShown = 0;
+                const paintShortlist = () => {
+                    const slice = data.shortlist.slice(shortlistShown,
+                                                       shortlistShown + SHORTLIST_PAGE);
+                    slice.forEach((prop, i) => renderShortlistCard(prop, shortlistShown + i));
+                    shortlistShown += slice.length;
+                    const more = document.getElementById('shortlistMore');
+                    if (more) {
+                        const left = data.shortlist.length - shortlistShown;
+                        if (left > 0) {
+                            more.textContent = `Show ${Math.min(left, SHORTLIST_PAGE)} more `
+                                             + `(${left} remaining of ${data.shortlist.length})`;
+                            // Cards were just appended after it, so put it back at the end.
+                            resultsDiv.appendChild(more);
+                        } else {
+                            more.remove();
+                        }
+                    }
+                };
+
+                const renderShortlistCard = (prop, idx) => {
                     const isRank1 = idx === 0;
                     const pillStyle = prop.recommendation.includes('Conditions') ? 'pill-conditions' : 'pill-recommend';
 
@@ -2462,7 +2491,23 @@
                     `;
 
                     resultsDiv.appendChild(card);
-                });
+                };
+
+                // The button is created FIRST so the single paint below can label it and
+                // move it to the end. Creating it after meant calling paintShortlist()
+                // twice just to set the text — which painted a second batch as a side
+                // effect and quietly showed 50.
+                if (data.shortlist.length > SHORTLIST_PAGE) {
+                    const more = document.createElement('button');
+                    more.id = 'shortlistMore';
+                    more.type = 'button';
+                    more.className = 'btn-ghost';
+                    more.style.cssText = 'display:block; width:100%; margin:0.75rem 0 1rem; '
+                                       + 'padding:0.6rem; font-weight:600; cursor:pointer;';
+                    more.onclick = () => paintShortlist();
+                    resultsDiv.appendChild(more);
+                }
+                paintShortlist();
 
                 // Client report + search coverage summary bar
                 if (data.shortlist.length > 0) {

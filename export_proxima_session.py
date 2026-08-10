@@ -129,6 +129,15 @@ def export(pw, ua, wait_minutes=12):
                     state = (f"waiting: signed in, {p} projects / {a} views "
                              f"— need {MIN_PROJECTS}/{MIN_AVAILABILITY}, clear the filters")
             except Exception as e:                                    # noqa: BLE001
+                # A CLOSED WINDOW IS NOT A BUSY PAGE. Playwright raises the same class
+                # for "the page is mid-navigation" and "you closed the browser", and
+                # treating both as transient meant a closed window looped silently until
+                # something upstream killed the process — which is what produced a bare
+                # "exit code 4" and no explanation on the 9 Aug run.
+                if not browser.is_connected() or page.is_closed():
+                    print("\n    Browser window was closed. Nothing saved — the existing "
+                          "session file is untouched.")
+                    return 1
                 state = f"waiting: page busy ({type(e).__name__})"
             if state != last:
                 print(f"    {state}")

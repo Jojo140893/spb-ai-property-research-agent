@@ -5,6 +5,7 @@ Step 6 Turnkey Auditor, Step 15 QA Checklist, and Kommo CRM v4 REST Integration.
 """
 
 import json
+import os
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
@@ -272,14 +273,28 @@ class KommoPropertyResearchAgent:
         # Rank candidates by Total Score descending
         processed_candidates.sort(key=lambda x: x.scoring.total_score if x.scoring else 0, reverse=True)
 
-        # Select Top 3-5 Shortlisted Properties.
         # SOP Step 5: Pending Confirmation packages stay out of the final list
         # unless a consultant explicitly approves their inclusion.
         final_pool = [
             c for c in processed_candidates
             if c.verification_status == VerificationStatus.VERIFIED or c.consultant_approved
         ]
-        shortlist = final_pool[:5]
+        # EVERY qualifying property, ranked — not the top 5.
+        #
+        # This was `final_pool[:5]`, from the original SOP's "select top 3-5 shortlisted
+        # properties". The cap was invisible and actively misleading: the badge reads
+        # "5 QUALIFIED", which a consultant reads as "five exist". Ahsan's Wyndham Vale
+        # brief (VIC, $800k, 4 bed, 300 m² min) scores 475 candidates and showed him 5.
+        # He asked the obvious question — "are there maximum 5 buildings or are there
+        # more?" — which is the question a hidden cap always eventually produces.
+        #
+        # Ranking is unchanged, so rank #1 is still rank #1; what changes is that #6
+        # onwards now exist. The page renders them in batches (see index.html) so a
+        # 475-result brief does not build 475 scoring matrices at once.
+        #
+        # The env var is a safety valve, not a default: unset means no cap.
+        _cap = int(os.environ.get("SPB_SHORTLIST_MAX", "0") or 0)
+        shortlist = final_pool[:_cap] if _cap > 0 else list(final_pool)
         pending_awaiting = [c for c in processed_candidates if c not in final_pool]
         for c in pending_awaiting:
             rejected_candidates.append({
