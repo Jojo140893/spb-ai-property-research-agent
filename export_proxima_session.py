@@ -55,8 +55,27 @@ PROJECT_SEL = "label.tab-label[data-project_id]"
 AVAIL_SEL = "a.availability-view-btn[data-project_id]"
 
 
-def _counts(page):
-    return page.locator(PROJECT_SEL).count(), page.locator(AVAIL_SEL).count()
+def _counts(page, settle_seconds=60):
+    """(projects, availability views) once the accordion has STOPPED growing.
+
+    The project list arrives by AJAX after the document loads, so counting at a fixed
+    delay counts whatever happened to have rendered. That produced 0, then 8, then 40,
+    then 0 again from the same profile within minutes — and I read those as a filtered
+    session and said so, twice. They were a race, not a filter.
+
+    So: poll until the number is the same three reads running, or the budget runs out.
+    Returns the last reading either way; the caller still applies the >= 40 bar.
+    """
+    last, stable, waited = -1, 0, 0
+    while waited < settle_seconds:
+        n = page.locator(PROJECT_SEL).count()
+        stable = stable + 1 if n == last else 0
+        last = n
+        if n and stable >= 2:
+            break
+        page.wait_for_timeout(1000)
+        waited += 1
+    return last, page.locator(AVAIL_SEL).count()
 
 
 def _report(projects, avail):
@@ -78,8 +97,15 @@ def check_existing(pw, ua):
         ctx = browser.new_context(storage_state=str(SESSION_FILE), user_agent=ua,
                                   viewport={"width": 1500, "height": 950})
         page = ctx.new_page()
-        page.goto(PROJECTS_URL, wait_until="networkidle", timeout=90000)
-        page.wait_for_timeout(4000)
+        page.goto(PROJECTS_URL, wait_until="domcontentloaded", timeout=90000)
+        # Wait for the project accordion itself rather than for the network to fall
+        # silent: this portal polls in the background, so `networkidle` can never be
+        # reached and the check timed out at 90s against a page that had loaded fine.
+        try:
+            page.wait_for_selector(PROJECT_SEL, timeout=30000)
+        except Exception:                                             # noqa: BLE001
+            pass
+        page.wait_for_timeout(3000)
         print(f"    landed on            : {page.url}")
         if "twofactor" in page.url:
             print("    -> bounced to 2FA: the device-trust cookie did not carry.")
@@ -189,10 +215,70 @@ def export(pw, ua, wait_minutes=12):
         browser.close()
 
 
+def from_profile(pw, ua):
+    """Export a portable session OUT OF the profile the nightly harvest already uses.
+
+    This is the route that should have been tried first. The interactive export asks a
+    human to sign in and clear filters, and three attempts produced nothing — the window
+    opened behind other windows, or the page the script watched was not the page the
+    person was looking at. Meanwhile `.browser_profiles/portal_proxima` has been signing
+    itself in every night and pulled 40/40 projects and 1,293 lots this morning.
+
+    So: open THAT profile, confirm it still sees the full project list, and write its
+    cookies out as a portable storage_state. No sign-in, no filters to clear, no human.
+
+    Must not run while a harvest is in flight — Chromium locks a profile directory to one
+    process, and the launch below would simply fail rather than corrupt anything.
+    """
+    from sources.scraper_base import PROFILE_DIR
+    profile = PROFILE_DIR / "portal_proxima"
+    if not profile.exists():
+        print(f"!! no profile at {profile}")
+        return 2
+    print(f"opening the harvest's own profile: {profile.name}")
+    ctx = pw.chromium.launch_persistent_context(
+        str(profile), headless=True, user_agent=ua,
+        viewport={"width": 1500, "height": 950})
+    try:
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        page.goto(PROJECTS_URL, wait_until="networkidle", timeout=90000)
+        page.wait_for_timeout(5000)
+        print(f"    landed on            : {page.url}")
+        if "twofactor" in page.url:
+            print("    -> the PROFILE itself is being asked for 2FA. Nothing saved.")
+            return 1
+        if "/login" in page.url:
+            print("    -> the profile's server session has expired. Run the nightly "
+                  "harvest (it signs in with the stored password), then try again.")
+            return 1
+        if not _report(*_counts(page)):
+            print("\n    NOT SAVED — the profile itself is currently filtered. Whatever "
+                  "narrowed it would be exported verbatim.")
+            return 1
+        if SESSION_FILE.exists():
+            backup = SESSION_FILE.with_suffix(
+                f".backup-{datetime.now():%Y%m%d-%H%M%S}.json")
+            shutil.copy2(SESSION_FILE, backup)
+            print(f"\n    previous session backed up to {backup.name}")
+        SESSION_DIR.mkdir(exist_ok=True)
+        ctx.storage_state(path=str(SESSION_FILE))
+        print(f"    saved {SESSION_FILE.name}  ({SESSION_FILE.stat().st_size:,} bytes)")
+        import json as _json
+        names = {c.get("name") for c in
+                 _json.loads(SESSION_FILE.read_text(encoding="utf-8")).get("cookies", [])}
+        print(f"    device-trust cookie  : "
+              f"{'present' if 'otp_authentication' in names else 'MISSING'}")
+        return 0
+    finally:
+        ctx.close()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--check", action="store_true",
                     help="verify the saved session in a fresh context; save nothing")
+    ap.add_argument("--from-profile", action="store_true",
+                    help="export out of the harvest's own browser profile — no sign-in")
     args = ap.parse_args()
 
     from playwright.sync_api import sync_playwright
@@ -202,7 +288,11 @@ def main():
         # sign-in silently fails to stay done.
         ua = browser_user_agent(pw=pw)
         print(f"user agent: {ua}\n")
-        return check_existing(pw, ua) if args.check else export(pw, ua)
+        if args.check:
+            return check_existing(pw, ua)
+        if getattr(args, "from_profile", False):
+            return from_profile(pw, ua)
+        return export(pw, ua)
 
 
 if __name__ == "__main__":
