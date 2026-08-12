@@ -18,6 +18,18 @@ Usage:
 
 import sys
 import re
+
+# THIS SCRIPT IS RUN BY HAND, FROM POWERSHELL, AND THAT IS WHERE IT CRASHED.
+# run_daily.py launches every step with `-X utf8`, so the arrows and ellipses in the
+# prompts below never hit a problem there. Typed directly, Python uses the console's
+# code page — cp1252 on this machine — and the first "→" raised
+# UnicodeEncodeError from inside input(), before the operator could type anything.
+# A sign-in tool that cannot print its own prompt is a sign-in tool nobody can use.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:                                                 # noqa: BLE001
+        pass
 import time
 from datetime import datetime
 from pathlib import Path
