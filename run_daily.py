@@ -215,8 +215,43 @@ def main() -> int:
     ap.add_argument("--email-days", type=int, default=7,
                     help="how far back to sweep the inbox on a daily run (default 7)")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--state-sync", action="store_true",
+                    help="pull the database from Supabase first and push it back after")
     args = ap.parse_args()
 
+    # SHARED STATE IS OPT-IN, AND OFF BY DEFAULT ON THIS MACHINE.
+    #
+    # A runner elsewhere must pull the database before it can harvest anything — it has
+    # no copy of its own. But on Ahsan's laptop the LOCAL file is the source of truth
+    # today, and pulling on every local run would overwrite it with whatever the bucket
+    # last received. Turning that on silently is how a good local database gets replaced
+    # by a stale one. So the runner sets SPB_STATE_SYNC=1 (or --state-sync) and says so.
+    sync = args.state_sync or os.environ.get(
+        "SPB_STATE_SYNC", "").strip().lower() in ("1", "true", "yes", "on")
+
+    if sync and not args.dry_run:
+        if not _run("0/8  Pull the shared database from Supabase",
+                    ["state_sync.py", "pull"], optional=False):
+            print("")
+            print("[ABORT] could not pull the shared database. Harvesting now would")
+            print("        either start from an empty file or fight another runner for")
+            print("        the lock — both worse than not running.")
+            return 1
+
+    try:
+        return _chain(args)
+    finally:
+        # ALWAYS, even when the chain failed or raised. Rows already harvested are worth
+        # keeping, and more importantly the push is what RELEASES THE LOCK — leaving it
+        # held would block every future run until someone breaks it by hand at 4am.
+        # Optional, so a push failure cannot turn a good run into a reported failure;
+        # state_sync itself refuses to push a 0-row database over a real one.
+        if sync and not args.dry_run:
+            _run("8/8  Push the database back to Supabase",
+                 ["state_sync.py", "push"], optional=True)
+
+
+def _chain(args) -> int:
     harvest = ["harvest_buildings.py", "--email-days", str(args.email_days)]
     if args.email_only:
         harvest.append("--email-only")
