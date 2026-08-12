@@ -144,7 +144,20 @@ jobs:
         run: |
           npm i -g vercel@latest
           cd vercel_site
-          vercel deploy --prod --yes --token "$VERCEL_TOKEN"
+          # --scope, because the project lives under the TEAM
+          # digitalx-solutions-projects and vercel_site/ is gitignored — so the runner
+          # has no .vercel/project.json and nothing tells the CLI which account to look
+          # in. The 12 Aug run supplied both IDs and still got
+          # "Error: Project not found ({VERCEL_PROJECT_ID, VERCEL_ORG_ID})", which is
+          # what that failure looks like: the token authenticated fine, it just could
+          # not see a team project.
+          #
+          # If this still fails with the same message, the TOKEN is personal-scope. A
+          # team-scoped one has to be created at
+          # vercel.com/account/tokens with the scope set to digitalx-solutions-projects.
+          vercel deploy --prod --yes \
+            --scope digitalx-solutions-projects \
+            --token "$VERCEL_TOKEN"
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
