@@ -143,6 +143,23 @@ jobs:
         if: success()
         run: |
           npm i -g vercel@latest
+          # SAY WHAT THE TOKEN CAN SEE BEFORE TRYING TO DEPLOY WITH IT.
+          #
+          # "Error: Project not found ({VERCEL_PROJECT_ID, VERCEL_ORG_ID})" has two very
+          # different causes and reads identically for both: wrong IDs, or a token that
+          # cannot see the team those IDs belong to. Guessing between them costs a
+          # 21-minute harvest per attempt, because this step only runs after the harvest
+          # succeeds. These two commands separate them in seconds:
+          #   whoami fails      -> the token is invalid or expired
+          #   whoami works but
+          #   project ls fails  -> the token is PERSONAL-scope and cannot see the team;
+          #                        reissue it at vercel.com/account/tokens with the scope
+          #                        set to digitalx-solutions-projects
+          echo "--- who does this token belong to? ---"
+          vercel whoami --token "$VERCEL_TOKEN" || echo "whoami FAILED — token invalid or expired"
+          echo "--- can it see the team's projects? ---"
+          vercel project ls --scope digitalx-solutions-projects --token "$VERCEL_TOKEN" 2>&1 | head -15 \
+            || echo "project ls FAILED — the token cannot see team digitalx-solutions-projects"
           cd vercel_site
           # --scope, because the project lives under the TEAM
           # digitalx-solutions-projects and vercel_site/ is gitignored — so the runner
