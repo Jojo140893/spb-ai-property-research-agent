@@ -95,25 +95,45 @@ NOT_AVAILABLE = {"sold", "under offer", "reserved", "leased", "on hold", "withdr
 IS_AVAILABLE = {"available", "for sale", "in stock", "released", "selling",
                 "titled", "now selling", "open"}
 
-# Channels whose stored PRICES cannot currently be trusted, and are therefore kept out
-# of recommendations until a fresh harvest re-reads them. They stay fully visible in the
-# Building Stock table — this hides them from a client-facing shortlist, not from Coleen.
+# THE ROW, NOT THE CHANNEL. This was `PRICES_UNVERIFIED_CHANNELS = {"proxima"}` — every
+# Proxima row excluded from every recommendation, because on 6 Aug the harvest had stored
+# the LAND component as the package price (Lot 2, 275 Twelfth Ave Austral published at
+# $675,000 against a real package of $1,127,000).
 #
-# Proxima, 6 Aug 2026. Colin opened the portal against our own card:
+# sources/proxima.py was fixed the same day, and the note left here said the block was "a
+# one-word change once a harvest confirms the prices". The harvest confirmed them and
+# nobody came back to it. Measured 12 Aug: that same Austral lot now reads $1,127,000 with
+# land_price $675,000 stored separately, 1,294 of 1,390 live Proxima rows were re-read
+# today, and ZERO still show the bug's signature.
 #
-#     Lot 2 Unit 2, 275 Twelfth Avenue, AUSTRAL    we published $675,000
-#     Proxima "Package Price"                      $1,127,000
+# Meanwhile the blanket block was hiding 1,084 rows from every NSW search — which is the
+# bug Colin and Sel hit on 12 Aug: Bathla units in Box Hill at $719,990-$729,990, sitting
+# in the database, "For Sale", and invisible to a $900k Box Hill search.
 #
-# The harvest preferred `data-rop` over `data-packageprice`, and rop is the LAND
-# component: across that project our figure tracked land area (250.1 m2 -> $675,000,
-# 300.1 m2 -> $740,000) at ~58% of the package every time. All 1,212 stored Proxima
-# rows carry land dimensions and no house area, so every one of them is priced off that
-# field. sources/proxima.py now prefers the package price, but a stored row can only be
-# corrected by re-harvesting, and Proxima's sign-in expired on 3 Aug.
-#
-# Quoting a buyer $675,000 for a $1,127,000 property is the worst thing this system can
-# do. Removing the line below is a one-word change once a harvest confirms the prices.
-PRICES_UNVERIFIED_CHANNELS = {"proxima"}
+# So the test is now per row, and it is the bug's own fingerprint: a stored price that IS
+# the land figure. Plus anything captured before the fix landed, which cannot be vouched
+# for either way.
+# The day AFTER the fix, not the day of it. sources/proxima.py was corrected on 6 Aug, so
+# a row captured at some point during the 6th cannot be attributed to before or after the
+# change — and the pre-fix shape stored the land figure in `price` with NO land_price
+# column, so the fingerprint check above cannot catch it either. Anything captured on or
+# before the 6th is therefore treated as unverified. That is 15 live rows.
+PROXIMA_PRICE_FIX_DATE = datetime(2026, 8, 7)
+
+
+def _price_unverified(row):
+    """True when this row's price cannot be trusted — not "came from Proxima"."""
+    if str(row.get("source_channel") or "").strip().lower() != "proxima":
+        return False
+    price = _num(row.get("price"))
+    land = _num(row.get("land_price"))
+    # The signature: the package price and the land price are the same number.
+    if price and land and abs(price - land) < 1:
+        return True
+    # _fresh already parses this module's two date formats and returns the datetime;
+    # reusing it means one place understands "12/08/2026" rather than two that can drift.
+    _verified, seen, _raw = _fresh(row)
+    return bool(seen and seen < PROXIMA_PRICE_FIX_DATE)
 
 # Same headroom the live sources apply before handing a package to scoring
 # (sources/e_agent.py:524, sources/builder_portals.py:204).
@@ -501,7 +521,7 @@ def build_packages(brief_dict, rows, today=None):
                 counts["no_incentive"] += 1
                 continue
 
-        if str(row.get("source_channel") or "").strip().lower() in PRICES_UNVERIFIED_CHANNELS:
+        if _price_unverified(row):
             counts["price_unverified"] += 1
             continue
         avail = str(row.get("availability_status") or "").strip().lower()

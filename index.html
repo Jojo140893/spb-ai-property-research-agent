@@ -835,6 +835,17 @@
             <label class="pick-toggle" title="Only lots where the source states a discount, rebate, bonus or incentive — by amount or in words.">
                 <input type="checkbox" id="bHasIncentive"> Discount / rebate
             </label>
+            <!-- Colin, 5 Aug: "it's not available, but it came as available from your end
+                 ... you should only see what's available and nothing else." That was fixed
+                 for RECOMMENDATIONS then; the stock table still showed everything, so 180
+                 Sold / 597 Not Available / 207 On Hold / 10 Under Offer / 7 Reserved /
+                 4 Leased rows — 1,005 in all — sat in the catalogue a consultant scrolls.
+                 Hidden by default now, with the count stated and a toggle, because they
+                 are still worth SEEING (what sold, and at what price) just not by default
+                 while hunting something to sell. -->
+            <label class="pick-toggle" title="Sold, on hold, under offer, reserved, leased or otherwise not purchasable. Hidden by default — tick to include them.">
+                <input type="checkbox" id="bShowUnavailable"> Show sold / unavailable
+            </label>
             <label class="pick-toggle" title="An older capture of a lot that is also stored fresher — same address, same spec, earlier date. Hidden by default because its price may have moved since.">
                 <input type="checkbox" id="bShowSuperseded"> Show superseded
             </label>
@@ -1362,7 +1373,8 @@
         fill('bSource', uniq('source_channel'));
 
         ['bSearch', 'bBuilder', 'bState', 'bAvail', 'bProduct', 'bSource',
-         'bMinPrice', 'bMaxPrice', 'bShowSuperseded', 'bHasIncentive'].forEach(id => {
+         'bMinPrice', 'bMaxPrice', 'bShowSuperseded', 'bHasIncentive',
+         'bShowUnavailable'].forEach(id => {
             const e2 = document.getElementById(id);
             e2.oninput = e2.onchange = () => renderStock();
         });
@@ -1381,6 +1393,8 @@
             if (sup) sup.checked = false;
             const inc = document.getElementById('bHasIncentive');
             if (inc) inc.checked = false;
+            const unav = document.getElementById('bShowUnavailable');
+            if (unav) unav.checked = false;
             stockSort = null;
             renderStock();
         };
@@ -1431,6 +1445,7 @@
         // landscaping worth up to $6,500", "FIRB fee covered") and requiring a number
         // would hide real offers behind a parsing gap.
         const hasIncentive = (document.getElementById('bHasIncentive') || {}).checked;
+        const showUnavailable = (document.getElementById('bShowUnavailable') || {}).checked;
         // lot_number and postcode were missing, which is why Colin's own attempt on the
         // 5 Aug call failed: he pasted a lot number, said "that's it, remove everything
         // else", and got "no, it doesn't come out". A consultant identifies a listing to
@@ -1473,6 +1488,9 @@
             // either, so requiring both would return almost nothing.
             if (hasIncentive && !(Number(b.incentive_amount) > 0
                                   || String(b.incentive_text || '').trim())) return false;
+            // A lot that cannot be bought is not what a consultant is scrolling for.
+            // An UNSTATED availability is not hidden — that is a gap, not a sale.
+            if (!showUnavailable && unpurchasable(b)) return false;
             if (!q) return true;
             if (lotExact) return String(b.lot_number ?? '').toLowerCase() === lotQuery;
             return fields.some(f => String(b[f] ?? '').toLowerCase().includes(q));
@@ -1629,9 +1647,17 @@
         // without mentioning it would be its own small lie.
         const hiddenStale = (document.getElementById('bShowSuperseded') || {}).checked
             ? 0 : STOCK.filter(b => b.superseded_by).length;
+        // Read from the DOM, like hiddenStale directly above, because this function is
+        // paintStock() and the filter's `showUnavailable` lives in renderStock(). Reaching
+        // across those two scopes threw "not defined" and silently blanked this whole
+        // count line — twice, because I patched the symptom the first time.
+        const showUnavail = (document.getElementById('bShowUnavailable') || {}).checked;
+        const hiddenSold = showUnavail
+            ? 0 : STOCK.filter(b => !b.superseded_by && unpurchasable(b)).length;
         document.getElementById('bCount').textContent =
             `${stockView.length.toLocaleString()} of ${(STOCK.length - hiddenStale).toLocaleString()} shown`
             + (hiddenStale ? ` · ${hiddenStale.toLocaleString()} superseded hidden` : '')
+            + (hiddenSold ? ` · ${hiddenSold.toLocaleString()} sold/unavailable hidden` : '')
             + (stockView.length > stockShown ? ` · first ${stockShown.toLocaleString()}` : '');
         const pc = document.getElementById('pickCount');
         if (pc) pc.textContent = PICKED.size ? `${PICKED.size.toLocaleString()} marked` : 'none marked';
@@ -1957,6 +1983,18 @@
        the cost for each, and the strengths by category". Every pairing is pre-rendered
        by the API (see comparison_report.py), so switching between them is instant and
        needs no second round trip. */
+    /* Shared by the row filter AND the "N hidden" count, which live in different
+       functions — defining it inside the filter left the count line throwing
+       "unpurchasable is not defined" and rendering blank. Same words as
+       api/_candidates.NOT_AVAILABLE, so the table and the recommendation engine cannot
+       disagree about what "sold" means. */
+    const NOT_PURCHASABLE = new Set(['sold', 'under offer', 'reserved', 'leased',
+        'on hold', 'withdrawn', 'not available', 'unavailable', 'not avail',
+        'no longer available', 'off market', 'settled', 'deposit taken',
+        'contract pending']);
+    const unpurchasable = b => NOT_PURCHASABLE.has(
+        String(b.availability_status || '').trim().toLowerCase());
+
     let COMPARISONS = {};
 
     /* The shortlist as last rendered, so a per-card action can find its own property by
@@ -2402,8 +2440,19 @@
                         </div>
 
                         <div style="font-size:0.86rem; margin-bottom:1rem;">
+                            <!-- "(Allowance Added: +$15,000)" was here and was removed on
+                                 request 12 Aug. It is OUR estimate for inclusions the
+                                 stocklist does not mention, and beside the builder's own
+                                 advertised price it read as part of the quote — a second
+                                 number on a card that is now deliberately down to one.
+                                 Same reason "Realistic Cost" came off on 9 Aug.
+                                 The estimate itself still exists on the property and still
+                                 feeds the client report and the comparison; what is gone is
+                                 a figure a consultant could accidentally quote as a price.
+                                 "Full Turnkey Verified" stays — it states what IS confirmed
+                                 rather than adding a cost. -->
                             <strong>Turnkey Classification:</strong> ${prop.turnkey_status}
-                            ${prop.missing_inclusions.length > 0 ? `<span style="color:var(--amber-yellow); font-weight:600;">(Allowance Added: +$${prop.estimated_additional_costs.toLocaleString()})</span>` : '<span style="color:var(--emerald-green); font-weight:600;">(Full Turnkey Verified)</span>'}
+                            ${prop.missing_inclusions.length > 0 ? '' : '<span style="color:var(--emerald-green); font-weight:600;">(Full Turnkey Verified)</span>'}
                         </div>
 
                         <div style="font-size:0.86rem; margin-bottom:1rem;">
