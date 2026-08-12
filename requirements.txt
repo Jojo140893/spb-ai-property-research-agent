@@ -7,3 +7,12 @@ google-api-python-client>=2.90.0
 google-auth-httplib2>=0.1.0
 google-auth-oauthlib>=1.0.0
 keyring>=24.0.0
+
+# Both of these were imported everywhere and listed nowhere. They are installed on
+# Ahsan's laptop from some forgotten ad-hoc `pip install`, so nothing surfaced it until
+# the first GitHub Actions run on 12 Aug — where openpyxl's absence did NOT stop the
+# harvest, it silently reduced it: "openpyxl not installed — cannot read xlsx
+# stocklists", logged as an ERROR and carried on, so every .xlsx stocklist was skipped
+# and the run reported success at step 1 having read almost nothing.
+openpyxl>=3.1.0
+requests>=2.31.0

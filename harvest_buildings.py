@@ -44,9 +44,47 @@ from database import ResearchDatabase
 ALL_STOCK_FILTERS = {"budget_max": 100_000_000, "primary_suburbs": []}
 
 
+def _require_readers():
+    """Stop before harvesting if a reader this run depends on is not installed.
+
+    On 12 Aug the first GitHub Actions run had no openpyxl — it is imported all over this
+    codebase and was listed in requirements.txt nowhere, surviving only because Ahsan's
+    laptop had it from a forgotten pip install. sources/spreadsheet_extract.py logs
+    "openpyxl not installed — cannot read xlsx stocklists" and CARRIES ON, so the harvest
+    skipped every .xlsx stocklist, stored almost nothing new, and reported step 1 as done.
+    Most of E-Agent's stock is xlsx.
+
+    That is the failure this project keeps meeting: a run that is degraded rather than
+    broken, on a machine nobody is watching, publishing a thinner catalogue that looks
+    healthy. A missing reader is now fatal at the start, where it costs one clear error
+    instead of a quiet 4am shortfall nobody notices for a week.
+    """
+    missing = []
+    try:
+        import openpyxl                                              # noqa: F401
+    except ImportError:
+        missing.append("openpyxl  (.xlsx stocklists — most of E-Agent's stock)")
+    try:
+        import pdfplumber                                            # noqa: F401
+    except ImportError:
+        missing.append("pdfplumber  (.pdf price lists — 2,799 live rows come from these)")
+    if missing:
+        print("=" * 70)
+        print("  CANNOT HARVEST — a reader is missing, and without it this run would")
+        print("  quietly skip those files and report success:")
+        for m in missing:
+            print(f"    - {m}")
+        print("\n  Fix: pip install -r requirements.txt")
+        print("=" * 70)
+        return False
+    return True
+
+
 def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
             email_days=90):
     logging.basicConfig(level=logging.INFO, format='    %(levelname)s %(message)s')
+    if not _require_readers():
+        return 1
     registry = BuilderRegistry()
     db = ResearchDatabase()
 
