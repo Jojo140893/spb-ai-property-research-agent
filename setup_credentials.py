@@ -37,6 +37,17 @@ def _slug(name: str) -> str:
 _API_KEYS = (
     ("domain_api", "Domain API (market comparables for the benchmark)"),
     ("proptrack_api", "PropTrack API (realestate.com.au data, via REA Group)"),
+    # The digital@ inbox, which sources/email_inbox.py reads with
+    # get_credentials("email_inbox"). It was never listed here, so its password lived
+    # ONLY in the vendor CSV — and when SPB moved that mailbox to Google Workspace on
+    # 12 Aug the stored Hostinger password stopped working with no way to replace it
+    # except editing a spreadsheet full of other people's passwords.
+    #
+    # On Google Workspace this is an APP PASSWORD, not the account password: Gmail
+    # refuses a normal password over IMAP. Generate one at
+    # myaccount.google.com/apppasswords (needs 2-Step Verification on that account),
+    # and set IMAP_HOST=imap.gmail.com.
+    ("email_inbox", "digital@ inbox (Gmail app password, not the account password)"),
 )
 
 

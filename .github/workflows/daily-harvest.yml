@@ -58,10 +58,15 @@ jobs:
       # digital@ inbox. NOTE: this was failing IMAP auth on 12 Aug against
       # imap.hostinger.com, mid Outlook->Gmail migration. Fix the mailbox before trusting
       # this channel here.
-      IMAP_HOST: ${{ secrets.IMAP_HOST }}
-      IMAP_PORT: ${{ secrets.IMAP_PORT }}
-      IMAP_USERNAME: ${{ secrets.IMAP_USERNAME }}
-      IMAP_PASSWORD: ${{ secrets.IMAP_PASSWORD }}
+      # EMAIL_INBOX_*, not IMAP_USERNAME/IMAP_PASSWORD. secrets_store maps
+      # get_credentials("email_inbox") to EMAIL_INBOX_USERNAME / EMAIL_INBOX_PASSWORD;
+      # the IMAP_* names I first wrote here would have been read by nothing at all and
+      # the channel would have failed on the runner exactly as it does locally, for a
+      # different reason, with the same message.
+      IMAP_HOST: imap.gmail.com
+      IMAP_PORT: "993"
+      EMAIL_INBOX_USERNAME: ${{ secrets.EMAIL_INBOX_USERNAME }}
+      EMAIL_INBOX_PASSWORD: ${{ secrets.EMAIL_INBOX_PASSWORD }}
 
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SPB_STATE_SYNC: "1"
