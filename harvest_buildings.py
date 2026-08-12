@@ -263,7 +263,22 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
         got = "" if n_read is None else f"   (read {n_read} this run)"
         print(f"    - {row['source_channel']}: {row['n']}{got}")
     print("=" * 70)
-    return 1 if (dead or collapsed) else 0
+    if not (dead or collapsed):
+        return 0
+    # 2 = PARTIAL: something failed, but other channels read normally this run.
+    # 1 = nothing came back at all.
+    #
+    # The distinction exists because "abort the whole chain" was costing more than it
+    # saved. Proxima's sign-in expires every few days; when it does, this returned 1,
+    # run_daily stopped at step 1/7, and E-Agent's 4,261 freshly-read rows never reached
+    # the dashboard either. Refusing to deploy does not make the stale Proxima rows
+    # fresher — they are ALREADY on the live site from the previous deploy. It only
+    # withholds the channels that worked. Strictly worse, in every direction.
+    #
+    # The guard that matters is unchanged: a run where nothing was read still aborts, and
+    # a partial run is reported loudly rather than passed off as success.
+    any_read = any(v for v in read.values())
+    return 2 if any_read else 1
 
 
 def _report_benchmark_health(configured: bool, read) -> None:

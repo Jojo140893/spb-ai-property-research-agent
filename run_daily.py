@@ -42,6 +42,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+_PARTIAL = []          # steps that partly succeeded (exit 2)
 APP = Path(__file__).resolve().parent
 # Portals that cannot be signed into without a human. Their saved session is the whole
 # mechanism, so its age is the thing worth reporting.
@@ -70,7 +71,17 @@ def _run(label: str, args: list, optional: bool = False) -> bool:
     try:
         proc = subprocess.run([sys.executable, "-X", "utf8", *args], cwd=str(APP),
                               timeout=limit)
-        ok = proc.returncode == 0
+        # 2 means PARTIAL — some channels failed, others read normally. The chain
+        # continues so the channels that DID refresh reach the dashboard; the failure is
+        # still reported and still ends the run non-zero.
+        ok = proc.returncode in (0, 2)
+        if proc.returncode == 2:
+            _PARTIAL.append(label)
+            # Also feed the EXISTING degraded channel, so the "finished but something
+            # failed" email fires. That mechanism was written for exactly this shape —
+            # a run nobody looks at because it completed — and a second parallel one
+            # would just be a second thing to forget to wire up.
+            _DEGRADED.append(label + " (some channels returned nothing)")
     except subprocess.TimeoutExpired:
         ok = False
         print(f"  -> TIMED OUT after {limit}s", flush=True)
@@ -233,6 +244,7 @@ def main() -> int:
     _session_report()
     _benchmark_basis_report()
     failed = []
+    _PARTIAL.clear()
     for label, cmd, optional in steps:
         if not _run(label, cmd, optional):
             failed.append(label)
@@ -243,6 +255,13 @@ def main() -> int:
                 break
 
     print(f"\n{'=' * 70}")
+    if _PARTIAL:
+        # Said before the failure line, because this is the case where the run kept going:
+        # some channels failed, the rest refreshed and WERE published. Reporting it as a
+        # flat failure would train everyone to ignore the word.
+        print(f"  PARTIAL: {', '.join(_PARTIAL)} — one or more channels returned nothing.")
+        print("  The channels that did read were refreshed and published; fix the failing")
+        print("  one and its rows catch up on the next run. See the [FAILED] lines above.")
     if failed:
         print(f"  DAILY RUN FAILED at: {', '.join(failed)}")
         print(f"{'=' * 70}")
