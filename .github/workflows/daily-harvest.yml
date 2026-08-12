@@ -109,9 +109,26 @@ jobs:
         # says nothing about the real cause.
         run: python -m playwright install --with-deps chromium
 
-      - uses: supabase/setup-cli@v1
-        with:
-          version: latest
+      - name: Install the Supabase CLI
+        # NOT supabase/setup-cli@v1. The first run died on it in 63 seconds with a bare
+        # "##[error]fetch failed" — the action resolves `version: latest` by calling the
+        # GitHub releases API, and that call failed. A nightly job that cannot start
+        # because a version lookup was rate-limited is a nightly job that fails on
+        # someone else's schedule, and the error says nothing about why.
+        #
+        # The release tarball is a fixed URL, so there is no lookup to fail. Pinned
+        # deliberately: an unattended run should not pick up a new CLI overnight, given
+        # this integration already depends on four undocumented CLI behaviours
+        # (--experimental, --yes, no-overwrite, relative paths only).
+        run: |
+          set -euo pipefail
+          VER=2.113.0
+          curl -fsSL --retry 3 --retry-delay 5 \
+            "https://github.com/supabase/cli/releases/download/v${VER}/supabase_linux_amd64.tar.gz" \
+            -o /tmp/supabase.tar.gz
+          tar -xzf /tmp/supabase.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/supabase /usr/local/bin/supabase
+          supabase --version
 
       - name: Link the Supabase project
         run: supabase link --project-ref ${{ secrets.SUPABASE_PROJECT_REF }}
