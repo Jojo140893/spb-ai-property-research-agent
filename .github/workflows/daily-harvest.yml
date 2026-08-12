@@ -1,0 +1,133 @@
+# The nightly harvest, on GitHub's machines instead of Ahsan's laptop.
+#
+# WHY THIS EXISTS. The Windows Task Scheduler job fired on time 3 days in 5 and ran ~6
+# hours late twice, because the laptop is off overnight. Coleen's dashboard was only ever
+# as fresh as the last time that machine happened to be awake.
+#
+# WHAT MADE IT POSSIBLE. Two things that were believed impossible and were measured
+# instead, on 12 Aug 2026:
+#   * Proxima's session is PORTABLE — replayed in a fresh browser context with no profile
+#     it reached the full portal, 40 projects, no 2FA. The device-trust cookie runs to
+#     28 Jan 2027. PROJECT_PLAN.md's "can never run unattended" was wrong about the reason.
+#   * The database can leave the laptop. state_sync.py keeps spb_research_audit.db in a
+#     private Supabase bucket with a lock, so a runner pulls it, harvests, and pushes back.
+#
+# SESSIONS ARE NOT SECRETS HERE. They travel in the bucket beside the database, because
+# they expire — Proxima's died twice in nine days — and putting them in repo settings would
+# mean a human editing GitHub every few days. The laptop refreshes them with
+# portal_login.py / export_proxima_session.py and this run picks them up on its pull.
+
+name: Daily harvest
+
+on:
+  schedule:
+    # 23:00 UTC = 09:00 Melbourne (AEST, UTC+10). Colin asked for 9am after a 5:28am
+    # listing was missed; anything earlier risks the same gap. GitHub's scheduler is
+    # best-effort and can lag under load, which is still far better than "whenever the
+    # laptop next boots".
+    - cron: "0 23 * * *"
+  workflow_dispatch:        # so a failed night can be re-run by hand without waiting
+
+concurrency:
+  # The bucket lock already stops two runs corrupting the database — this stops the second
+  # run even starting, so it fails fast rather than sitting on a refused pull.
+  group: spb-daily-harvest
+  cancel-in-progress: false
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    # A full run is ~30 minutes; three times that is a hang, not a slow day.
+    timeout-minutes: 90
+
+    env:
+      # Portal credentials. secrets_store resolves portal+field to an env name
+      # (portal_bathla + password -> PORTAL_BATHLA_PASSWORD) and falls back to env when no
+      # OS vault exists, which is exactly the case on a Linux runner.
+      E_AGENT_USERNAME: ${{ secrets.E_AGENT_USERNAME }}
+      E_AGENT_PASSWORD: ${{ secrets.E_AGENT_PASSWORD }}
+      PORTAL_BATHLA_USERNAME: ${{ secrets.PORTAL_BATHLA_USERNAME }}
+      PORTAL_BATHLA_PASSWORD: ${{ secrets.PORTAL_BATHLA_PASSWORD }}
+      PORTAL_HERMITAGE_HOMES_USERNAME: ${{ secrets.PORTAL_HERMITAGE_HOMES_USERNAME }}
+      PORTAL_HERMITAGE_HOMES_PASSWORD: ${{ secrets.PORTAL_HERMITAGE_HOMES_PASSWORD }}
+      PORTAL_PARAMOUNT_LIVING_USERNAME: ${{ secrets.PORTAL_PARAMOUNT_LIVING_USERNAME }}
+      PORTAL_PARAMOUNT_LIVING_PASSWORD: ${{ secrets.PORTAL_PARAMOUNT_LIVING_PASSWORD }}
+      PORTAL_PROXIMA_USERNAME: ${{ secrets.PORTAL_PROXIMA_USERNAME }}
+      PORTAL_PROXIMA_PASSWORD: ${{ secrets.PORTAL_PROXIMA_PASSWORD }}
+
+      # digital@ inbox. NOTE: this was failing IMAP auth on 12 Aug against
+      # imap.hostinger.com, mid Outlook->Gmail migration. Fix the mailbox before trusting
+      # this channel here.
+      IMAP_HOST: ${{ secrets.IMAP_HOST }}
+      IMAP_PORT: ${{ secrets.IMAP_PORT }}
+      IMAP_USERNAME: ${{ secrets.IMAP_USERNAME }}
+      IMAP_PASSWORD: ${{ secrets.IMAP_PASSWORD }}
+
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SPB_STATE_SYNC: "1"
+
+      # PINNED, and this is load-bearing. browser_user_agent() derives the UA from the
+      # installed Chromium, so a Linux runner would present "X11; Linux x86_64" where
+      # Proxima granted device trust to "Windows NT 10.0". Whether it binds trust to the UA
+      # is not established; a re-challenge costs a human with Colin's inbox, so this takes
+      # the cheap side of that bet.
+      SPB_USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fail early if the secrets are not set
+        # Without this the run gets 25 minutes in and reports a harvest failure, which
+        # reads as "the portals broke" rather than "nobody added the credentials".
+        run: |
+          missing=""
+          for v in SUPABASE_ACCESS_TOKEN E_AGENT_USERNAME E_AGENT_PASSWORD; do
+            [ -z "${!v}" ] && missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Required secrets are not set:$missing"
+            echo "Add them under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          echo "Required secrets present."
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Install Chromium
+        # --with-deps pulls the system libraries headless Chromium needs on ubuntu-latest;
+        # without it Playwright launches and dies on a missing .so with a stack trace that
+        # says nothing about the real cause.
+        run: python -m playwright install --with-deps chromium
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Link the Supabase project
+        run: supabase link --project-ref ${{ secrets.SUPABASE_PROJECT_REF }}
+
+      - name: Harvest
+        # --no-deploy: publishing is its own step below, so a data failure can never push a
+        # partial snapshot over a good one. That rule predates this workflow and is kept.
+        run: python run_daily.py --state-sync --no-deploy --email-days 7
+
+      - name: Publish to Vercel
+        # Only when the harvest succeeded — same guarantee run_daily.cmd gives on Windows.
+        if: success()
+        run: |
+          npm i -g vercel@latest
+          cd vercel_site
+          vercel deploy --prod --yes --token "$VERCEL_TOKEN"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Log tail on failure
+        if: failure()
+        run: tail -120 _daily.log || echo "no _daily.log written"

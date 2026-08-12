@@ -47,6 +47,21 @@ REMOTE_LOCK = f"ss:///{BUCKET}/harvest.lock.json"
 # A harvest takes ~30 minutes. Well beyond that means the holder died rather than is busy.
 LOCK_STALE_HOURS = int(os.environ.get("SPB_LOCK_STALE_HOURS", "4"))
 
+# PORTAL SESSIONS TRAVEL IN THE BUCKET, NOT IN REPO SECRETS.
+#
+# A runner cannot sign in to E-Agent or Proxima — those need a human, and Proxima's 2FA
+# needs Colin's inbox. So it has to be handed a session that a human already established.
+# The obvious place is GitHub secrets, and that is the wrong one: these files EXPIRE
+# (Proxima's Magento session died twice in nine days), so every refresh would mean a human
+# editing repo settings. In the bucket, the laptop refreshes them with the tools that
+# already exist and the runner picks them up on its next pull, with nobody touching
+# GitHub.
+#
+# They are session cookies, so the bucket is private and they are never written anywhere
+# the repo can see. .sessions/ is gitignored and stays that way.
+SESSION_DIR = APP / ".sessions"
+REMOTE_SESSIONS = f"ss:///{BUCKET}/sessions"
+
 
 def _staged(name):
     r"""A path INSIDE the app directory, handed to the CLI as a relative name.
@@ -189,6 +204,8 @@ def cmd_pull(args):
     finally:
         staged.unlink(missing_ok=True)
     print(f"   pulled {DB.stat().st_size:,} bytes, {rows:,} building row(s)")
+    SESSION_DIR.mkdir(exist_ok=True)
+    _sync_sessions("pull")
     return 0
 
 
@@ -229,8 +246,41 @@ def cmd_push(args):
         print(f"     supabase storage mv {incoming} {REMOTE_DB} --linked --experimental --yes")
         return 1
     print(f"   pushed {DB.stat().st_size:,} bytes, {rows:,} building row(s)")
+    _sync_sessions("push")
     print("   lock released" if _clear_lock() else "   !! could not release the lock")
     return 0
+
+
+def _sync_sessions(direction):
+    """Copy .sessions/*.json between here and the bucket. Never fatal.
+
+    A missing or stale session costs one channel on one run and says so in the log; a
+    failure here must not cost the whole harvest, which is why nothing this returns is
+    checked. Files are copied one at a time because `cp -r` on the CLI takes a directory
+    and this only ever wants the JSON.
+    """
+    if not SESSION_DIR.exists():
+        return
+    if direction == "push":
+        for f in sorted(SESSION_DIR.glob("*.json")):
+            # Backups and aborted captures are local debris, not sessions a runner wants.
+            if any(t in f.name for t in (".backup-", ".aborted", ".expired")):
+                continue
+            rel = f"{SESSION_DIR.name}/{f.name}"
+            _cli("storage", "rm", f"{REMOTE_SESSIONS}/{f.name}", timeout=60)
+            _cli("storage", "cp", rel, f"{REMOTE_SESSIONS}/{f.name}", timeout=120)
+        print(f"   sessions pushed: {len(list(SESSION_DIR.glob('*.json')))} file(s)")
+    else:
+        p = _cli("storage", "ls", f"{REMOTE_SESSIONS}/", timeout=120)
+        if p is None or p.returncode != 0:
+            return
+        names = [l.strip() for l in (p.stdout or "").splitlines()
+                 if l.strip().endswith(".json")]
+        for name in names:
+            _cli("storage", "cp", f"{REMOTE_SESSIONS}/{name}",
+                 f"{SESSION_DIR.name}/{name}", timeout=120)
+        if names:
+            print(f"   sessions pulled: {len(names)} file(s)")
 
 
 def _row_count(path):
