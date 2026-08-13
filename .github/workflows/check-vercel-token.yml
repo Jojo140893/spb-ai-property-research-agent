@@ -1,0 +1,53 @@
+# Answer one question in under a minute: can VERCEL_TOKEN publish the dashboard?
+#
+# The daily workflow only reaches its publish step AFTER a ~21 minute harvest, so every
+# guess about that token cost 21 minutes to test — and the first three attempts were all
+# spent on the same step failing three different ways ("Project not found", then "Not able
+# to load teams", then "You are not authorized"). A token question should not cost half an
+# hour to ask.
+#
+# Deliberately read-only: whoami, then list the team's projects. It never deploys, so it
+# cannot publish a half-built snapshot while trying to prove a credential works.
+#
+# Run it from the Actions tab, or:
+#   gh workflow run "Check Vercel token" -R Jojo140893/spb-ai-property-research-agent
+
+name: Check Vercel token
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Can this token see the project?
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then
+            echo "::error::VERCEL_TOKEN is not set at all."
+            exit 1
+          fi
+          npm i -g vercel@latest >/dev/null 2>&1
+
+          echo "=== 1. is the token valid? ==="
+          if ! vercel whoami --token "$VERCEL_TOKEN"; then
+            echo "::error::The token is invalid, expired, or revoked (whoami says 'You are not authorized')."
+            echo "Create a new one at https://vercel.com/account/tokens and set it with:"
+            echo "  gh secret set VERCEL_TOKEN -R Jojo140893/spb-ai-property-research-agent"
+            exit 1
+          fi
+
+          echo "=== 2. can it see the team? ==="
+          if ! vercel project ls --scope digitalx-solutions-projects --token "$VERCEL_TOKEN" 2>&1 | head -20; then
+            echo "::error::The token is valid but cannot see team digitalx-solutions-projects."
+            echo "Reissue it with the SCOPE set to that team rather than a personal account."
+            exit 1
+          fi
+
+          echo ""
+          echo "Token is valid and can see the team. The nightly publish should work."
