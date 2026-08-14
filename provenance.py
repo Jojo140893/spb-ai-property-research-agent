@@ -13,11 +13,12 @@ the label, not by the data.
   E-Agent      the exact price-list file on e-agent.com.au (100% of rows), plus the
                per-lot PDF where the row carries one. E-Agent publishes FILES, not
                per-listing pages, so there is no lot page in existence to link to.
-  Proxima      the project page, built from the project id the harvest already reads.
-               Without that id it can only reach the agent projects index, so the label
-               carries the PROJECT NAME to search for — Proxima indexes lots inside
-               project accordions, never by address, so looking up a lot address there
-               returns nothing.
+  Proxima      the agent projects index, with the PROJECT NAME to search for. Proxima
+               has NO stable per-project URL: the plain id the harvest reads (e.g. 776)
+               is only a DOM handle for the accordion tab, and the real project key is an
+               encrypted per-session token, so a saved deep link 404s — Cel hit exactly
+               that on 14 Aug. Proxima indexes lots inside project accordions, never by
+               address, so the project name is the one thing that makes the index usable.
   Email        a Gmail search for the exact subject, so the price list itself opens.
   Portals      whatever real URL the row already carries.
 
@@ -29,7 +30,11 @@ import re
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 
-PROXIMA_PROJECT_URL = "https://portal.proxima.com.au/agent/projects/view/id/%s"
+# NO PROXIMA_PROJECT_URL. There used to be a "…/agent/projects/view/id/%s" here, built
+# from the plain data-project_id. It was never a route the harvest actually loads — it was
+# assumed to exist — and it 404s: Proxima keys a project by an encrypted per-session id
+# (sources/proxima.py _AVAILABILITY_POST_JS), not by that number. The index below, plus
+# the project name to search, is the only durable way in.
 PROXIMA_INDEX_URL = "https://portal.proxima.com.au/agent/projects/index/"
 GMAIL_SEARCH_URL = "https://mail.google.com/mail/u/0/#search/%s"
 
@@ -187,26 +192,22 @@ def source_links(row: Dict[str, Any]) -> list:
     add("Brochure", row.get("brochure_url"), "document")
 
     if channel == "Proxima":
-        pid = str(row.get("source_project_id") or "").strip()
-        if pid.isdigit():
-            # The project page opens directly; the lot is one row inside its accordion,
-            # and this is what that row is called there.
-            add("Open in Proxima", PROXIMA_PROJECT_URL % pid, "project")
-        else:
-            # No project id stored, so this can only reach the index. Say the PROJECT
-            # NAME, because that is the one thing that makes the index usable.
-            #
-            # Proxima does not index a lot by its address: every lot lives inside a
-            # project accordion, so searching "Lot 2 Unit 2, 275 Twelfth Avenue, AUSTRAL"
-            # returns nothing at all — which is exactly what Colin hit. The project is
-            # "275 Twelfth Ave Austral"; find that, expand it, and the lot is inside.
-            # Labelling this "opens the project" was an over-promise.
-            project = _project_name(row)
-            add(f'Proxima - find the project "{project}"' if project
-                else "Proxima projects list", PROXIMA_INDEX_URL, "portal",
-                # The project name, NOT the lot address on the card. This is the whole
-                # point: searching the address is what returned an error.
-                search=project)  # the project name, never the lot address
+        # ALWAYS the index + project name — never a per-project deep link, because Proxima
+        # has none that survives a session (see the note on PROXIMA_INDEX_URL above). We
+        # used to emit "…/view/id/<data-project_id>" whenever a numeric id was stored, on
+        # the belief it opened the project; it does not, and 95% of Proxima rows carried
+        # it, so Cel got Proxima's own 404 on 14 Aug opening id 776 from the app.
+        #
+        # Proxima does not index a lot by its address either: every lot lives inside a
+        # project accordion, so searching "Lot 2 Unit 2, 275 Twelfth Avenue, AUSTRAL"
+        # returns nothing — which is what Colin hit on 6 Aug. The project is
+        # "275 Twelfth Ave Austral"; find THAT, expand it, and the lot is inside. So the
+        # link opens the "portal" (an honest label) and hands over the project name to
+        # paste into Proxima's own search — never the lot address on the card.
+        project = _project_name(row)
+        add(f'Proxima - find the project "{project}"' if project
+            else "Proxima projects list", PROXIMA_INDEX_URL, "portal",
+            search=project)  # the project name, never the lot address
 
     # The file the row was read out of. For E-Agent this is the price list itself and
     # it is the only e-agent destination that exists.

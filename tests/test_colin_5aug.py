@@ -127,11 +127,24 @@ def test_level_33_resolves_to_the_builder_the_client_named():
 
 # ------------------------------------------------- provenance links
 
-def test_proxima_links_to_its_project_page_when_the_id_is_known():
+def test_proxima_never_builds_a_dead_project_deep_link_even_with_an_id():
+    """A stored project id must NOT become a /agent/projects/view/id/<id> link.
+
+    That route was assumed, never loaded by the harvest, and 404s: Proxima keys a project
+    by an encrypted per-session id, not by the plain data-project_id we store, so no saved
+    deep link resolves. Cel opened id 776 from the app on 14 Aug and got Proxima's own 404,
+    and 95% of live Proxima rows carried that same dead link. The durable destination is
+    the index + the project name to search — the same behaviour as the no-id case.
+    """
     link = primary_source_link({"source_channel": "Proxima", "source_project_id": "305",
+                                "estate_name": "Some Project (3/8)",
                                 "source_url": "https://portal.proxima.com.au/agent/projects/index/"})
-    assert link and link["opens"] == "project"
-    assert link["url"].endswith("/305"), link
+    assert link and link["opens"] == "portal", link
+    assert link["url"].rstrip("/").endswith("/agent/projects/index"), link
+    assert "/view/id/" not in link["url"], "the /view/id/ deep link 404s — it must be gone"
+    assert "305" not in link["url"], "the plain project id is a DOM handle, not a URL key"
+    assert "Some Project" in link["label"], link
+    assert link["search"] == "Some Project", "search term is the project name, counter stripped"
 
 
 def test_proxima_without_a_project_id_says_so_rather_than_promising_the_lot():
