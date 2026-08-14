@@ -47,16 +47,34 @@ def _digest(value: str) -> str:
     return hashlib.sha256(value.strip().encode("utf-8")).hexdigest()
 
 
+def _exposed_bytes():
+    """The leaked file's bytes — from git history if it is still there, else from disk.
+
+    ORIGINALLY this only read `git show e0b3a76:...`. That stopped working on 2026-08-14
+    when the dangling object was finally pruned from the local clone (the last step of the
+    history scrub), and a verifier that dies the moment the scrub succeeds is a verifier
+    that is useless exactly when you want to confirm a rotation. The on-disk copy
+    (gitignored, still present as a live harvest input) carries the same exposed values,
+    so fall back to it. The point of the check is unchanged: does a value that WAS public
+    still open the portal?
+    """
+    out = subprocess.run(["git", "show", f"{EXPOSED_AT}:{EXPOSED_PATH}"], capture_output=True)
+    if out.returncode == 0:
+        return out.stdout
+    on_disk = Path(__file__).resolve().parent / EXPOSED_PATH
+    if on_disk.exists():
+        return on_disk.read_bytes()
+    raise SystemExit(
+        f"[!] the exposed values are no longer readable — {EXPOSED_AT} is pruned from "
+        f"history AND {EXPOSED_PATH} is not on disk. Nothing to compare against; if the "
+        f"scrub and rotation are both done, that is the desired end state.")
+
+
 def _exposed_rows():
     """Every row of the leaked file that carried a password."""
-    out = subprocess.run(["git", "show", f"{EXPOSED_AT}:{EXPOSED_PATH}"],
-                         capture_output=True)
-    if out.returncode != 0:
-        raise SystemExit(f"[!] cannot read {EXPOSED_PATH} at {EXPOSED_AT} — "
-                         f"is this a clone of the right repository?")
     # The sheet is not clean UTF-8; replace rather than fail, since only the PASSWORD
     # and BUILDER columns are read and a mangled byte elsewhere is irrelevant.
-    text = out.stdout.decode("utf-8", "replace")
+    text = _exposed_bytes().decode("utf-8", "replace")
     for row in csv.DictReader(io.StringIO(text)):
         password = (row.get("PASSWORD") or "").strip()
         if password:

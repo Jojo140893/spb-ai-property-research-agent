@@ -1,7 +1,18 @@
-# Builder-portal passwords are in public git history
+# Builder-portal passwords were in public git history
 
-**Status: one password still live (Bathla). Two of the three are already rotated.**
-Verified 2026-08-07 against this repository.
+**Status (2026-08-14): the history is scrubbed and the repo is private. One portal
+password — Bathla — is STILL the exposed value and must be rotated on Bathla's portal.**
+Paramount Living and Hermitage Homes were already rotated.
+
+Update log:
+- **2026-08-14** — the repo is now **private** (anonymous `raw.githubusercontent.com` access
+  to dangling objects returns 404). The local clone's dangling object was pruned
+  (`git reflog expire --expire=now --all && git gc --prune=now` after deleting the
+  filter-repo leftover `refs/original/refs/heads/main`); `git show e0b3a76:"Book1(Builders) List.csv"`
+  now fails locally. Reachable history is clean on `main` and `origin/main` (synced).
+  A full-history sweep found **no other committed secret** — no keys, tokens, or `.env`
+  with real values. Bathla confirmed still live by digest. **Rotation is the one open item.**
+- **2026-08-07** — first documented; scrub run and force-pushed (see below).
 
 ## What is exposed
 
@@ -53,13 +64,35 @@ on, but they no longer open those two portals.
 ### 1. Rotate Bathla — the one that is still live
 
 Do this before anything else, and treat all three as already compromised — the repository
-has been public since 22 July, and you cannot know whether anyone cloned it. History
-rewriting does not undo a password that has already been read.
+was public from 22 July to 13 Aug, and a proxy vendor's prospecting email on 14 Aug
+(automated GitHub scraping) is direct evidence outsiders were watching it while public.
+History rewriting does not undo a password that has already been read.
 
-Change them on each builder's own portal, then store the new ones in the OS vault:
+**The Bathla password lives in FOUR places, and run-time precedence is vault → env → CSV**
+(`sources/builder_portals.py:86`). Rotate in this order so the harvest is never left
+authenticating with a dead password:
+
+1. Change it on **Bathla's own portal** (a human at a keyboard; an agent must not type it).
+2. **GitHub Actions secret** `PORTAL_BATHLA_PASSWORD` — this is what the nightly runner
+   reads, because a Linux runner has no OS vault. Without this the harvest keeps using the
+   old password tonight:
+   ```bash
+   gh secret set PORTAL_BATHLA_PASSWORD -R Jojo140893/spb-ai-property-research-agent
+   ```
+3. **OS vault** — only used when the harvest runs on the laptop:
+   ```bash
+   python setup_credentials.py portal_bathla
+   ```
+4. **The vendor CSVs** — `drive_input/vendors.csv` (active) and `Book1(Builders) List.csv`
+   (fallback) both still hold the old value in their `PASSWORD` column. Once 2–3 above
+   carry the new value, blank Bathla's `PASSWORD` cell in both so no stale secret sits on
+   disk and nothing silently falls back to a dead password.
+
+Then confirm — it reads the exposed value (now from the on-disk CSV, since the git object
+is pruned) and compares by digest, printing nothing:
 
 ```bash
-python setup_credentials.py portal_bathla
+python check_exposed_credentials.py     # Bathla should flip to "already rotated"
 ```
 
 Paramount Living and Hermitage Homes have already been rotated and need nothing. If you
@@ -94,14 +127,14 @@ schedule, if ever.
 So the rewrite was necessary and is not sufficient. What actually closes it, in order of
 how fast it works:
 
-1. **Rotate the password.** Already the top item, and now clearly the only step that
-   ends the risk on your side of the wire. Bathla is the one still live.
-2. **Make the repository private** — 30 seconds, reversible, and it stops anonymous
-   access to every dangling object immediately. NOTE: the GitHub account authenticated
-   on this machine (`ahsan-arch`) has push but **not admin** (`"admin": false`); the
-   owner account `Jojo140893` has to do this one.
-3. **Ask GitHub Support to garbage-collect** the unreachable objects, citing the commit
-   SHAs `e0b3a76` and `0130fb7`. There is no API for this; it is a support request.
+1. **Rotate the password.** — **OUTSTANDING (Bathla).** Still the only step that ends the
+   risk on your side of the wire. See section 1 above for all four storage locations.
+2. **Make the repository private** — **DONE (by 14 Aug).** Anonymous access to dangling
+   objects now returns 404. This is what neutralised the "GitHub still serves it by SHA"
+   problem below, short of a GC.
+3. **Ask GitHub Support to garbage-collect** the unreachable objects, citing SHAs
+   `e0b3a76` and `0130fb7` — *optional now the repo is private.* There is no API for it;
+   it is a support request. Worth doing only if the repo may go public again.
 
 ### 3. If you want the old advice anyway
 
