@@ -14,7 +14,11 @@ $Alias = 'spb-live-stock.vercel.app'
 # The URL to hand a human. Kept separate from $Alias because they are not the same
 # thing: spb-live-stock is SSO-protected (see the verification block at the bottom),
 # and for ten days this script printed it as the live link every single night.
-$PublicUrl = 'vercelsite-three-psi.vercel.app'
+#
+# The custom domain, not vercelsite-three-psi: both are production aliases of the same
+# deployment, but this is the one Coleen has bookmarked, so it is the one whose failure
+# would actually be noticed by her rather than by nobody.
+$PublicUrl = 'app.smartpropertybuying.com.au'
 
 $app = $PSScriptRoot
 Set-Location $app
@@ -105,16 +109,15 @@ Set-Content -Path (Join-Path $app '.last_deploy_rows') -Value $rows -Encoding as
 # a dashboard is being served is the dashboard's own data coming back.
 Write-Host ""
 
-function Test-ServesDashboard {
-    param([string]$Host_)
+function Invoke-Probe {
     # HttpWebRequest rather than Invoke-WebRequest: on PowerShell 5.1, -MaximumRedirection 0
     # raises InvalidOperationException ("Operation is not valid due to the current state of
     # the object") and hides the response, so the run reports "unreachable" for a host that
     # is answering perfectly well with a redirect to a login page. This way the status line
     # and the Location header are both readable, and the message names the real cause.
-    $u = "https://$Host_/stock.json"
+    param([string]$Url)
     try {
-        $req = [System.Net.HttpWebRequest]::Create($u)
+        $req = [System.Net.HttpWebRequest]::Create($Url)
         $req.AllowAutoRedirect = $false
         $req.Timeout = 30000
         $req.UserAgent = 'spb-deploy-verify'
@@ -122,45 +125,79 @@ function Test-ServesDashboard {
     } catch [System.Net.WebException] {
         if ($_.Exception.Response) {
             $r2 = $_.Exception.Response
-            return @{ ok = $false; why = "HTTP $([int]$r2.StatusCode)" }
+            $b = (New-Object System.IO.StreamReader($r2.GetResponseStream())).ReadToEnd()
+            return @{ code = [int]$r2.StatusCode; body = $b; location = $r2.Headers['Location'] }
         }
-        return @{ ok = $false; why = "unreachable: $($_.Exception.Message)" }
+        return @{ code = 0; why = "unreachable: $($_.Exception.Message)" }
     } catch {
-        return @{ ok = $false; why = "unreachable: $($_.Exception.Message)" }
+        return @{ code = 0; why = "unreachable: $($_.Exception.Message)" }
     }
-
+    $b = (New-Object System.IO.StreamReader($resp.GetResponseStream())).ReadToEnd()
     $code = [int]$resp.StatusCode
-    if ($code -in 301, 302, 303, 307, 308) {
-        $loc = $resp.Headers['Location']
-        $resp.Close()
-        $where = if ($loc -match 'vercel\.com/sso') { 'the Vercel SSO login (Deployment Protection is on)' } else { $loc }
-        return @{ ok = $false; why = "redirects ($code) to $where" }
-    }
-    $body = (New-Object System.IO.StreamReader($resp.GetResponseStream())).ReadToEnd()
+    $loc = $resp.Headers['Location']
     $resp.Close()
-    if ($code -ne 200) { return @{ ok = $false; why = "HTTP $code" } }
-    if ($body -match '^\s*<') { return @{ ok = $false; why = 'served HTML, not JSON (a login wall answers 200)' } }
-    try { $j = $body | ConvertFrom-Json } catch { return @{ ok = $false; why = 'body is not valid JSON' } }
-    if (-not $j.rows) { return @{ ok = $false; why = 'JSON carries no rows' } }
-    return @{ ok = $true; count = $j.rows.Count }
+    return @{ code = $code; body = $b; location = $loc }
 }
 
-$pub = Test-ServesDashboard $PublicUrl
-$ali = Test-ServesDashboard $Alias
+# WHAT "WORKING" MEANS CHANGED ON 14 AUG, AND SO DID THIS CHECK.
+#
+# Until the login gate, proof of a good publish was /stock.json answering 200 with rows in
+# it. That is now the DEFINITION OF FAILURE: the catalogue must not be readable without
+# signing in. The old assertion would have failed every deploy from here on and read as
+# "the deploy broke" -- or, far worse, would have been "fixed" by deleting it, leaving
+# nothing watching whether the gate is actually up.
+#
+# So it is inverted rather than removed. Two things are asserted, and between them they
+# distinguish all three states that matter:
+#   /stock.json -> 401          the gate is up            (200 = CATALOGUE IS PUBLIC)
+#   /login      -> 200 + form   the app is being served   (vercel.com/sso = SSO wall)
+function Test-GateIsUp {
+    param([string]$Host_)
+
+    $stock = Invoke-Probe "https://$Host_/stock.json"
+    if ($stock.code -eq 0) { return @{ ok = $false; why = $stock.why } }
+    if ($stock.location -match 'vercel\.com/sso') {
+        return @{ ok = $false; why = 'redirects to the Vercel SSO login (Deployment Protection is on)' }
+    }
+    if ($stock.code -eq 200) {
+        return @{ ok = $false; ALARM = $true
+                  why = 'stock.json is being served to ANYONE - the login gate is NOT running' }
+    }
+    if ($stock.code -eq 503 -and $stock.body -match 'SITE_PASSWORD is not set') {
+        return @{ ok = $false; why = 'SITE_PASSWORD is not set on the Vercel project (site is refusing to serve)' }
+    }
+    if ($stock.code -ne 401) { return @{ ok = $false; why = "stock.json answered HTTP $($stock.code), expected 401" } }
+
+    $login = Invoke-Probe "https://$Host_/login"
+    if ($login.location -match 'vercel\.com/sso') {
+        return @{ ok = $false; why = 'the login page redirects to the Vercel SSO wall' }
+    }
+    if ($login.code -ne 200) { return @{ ok = $false; why = "/login answered HTTP $($login.code), expected 200" } }
+    if ($login.body -notmatch 'name="password"') { return @{ ok = $false; why = '/login served no sign-in form' } }
+
+    return @{ ok = $true }
+}
+
+$pub = Test-GateIsUp $PublicUrl
+$ali = Test-GateIsUp $Alias
 
 if ($pub.ok) {
-    Write-Host "Live: https://$PublicUrl  ($($pub.count) listings, content verified)" -ForegroundColor Green
+    Write-Host "Live: https://$PublicUrl  ($rows listings published, sign-in required)" -ForegroundColor Green
 } else {
-    Write-Host "[abort] https://$PublicUrl does not serve the dashboard - $($pub.why)" -ForegroundColor Red
+    if ($pub.ALARM) {
+        Write-Host "[ALARM] https://$PublicUrl - $($pub.why)" -ForegroundColor Red
+        Write-Host "        Check that build_web.py still writes middleware.js into vercel_site." -ForegroundColor Red
+    } else {
+        Write-Host "[abort] https://$PublicUrl is not serving correctly - $($pub.why)" -ForegroundColor Red
+    }
     exit 1
 }
 
 if ($ali.ok) {
-    Write-Host "Also:  https://$Alias  ($($ali.count) listings)" -ForegroundColor Green
+    Write-Host "Also:  https://$Alias  (sign-in required)" -ForegroundColor Green
 } else {
     # Not fatal: the public URL above is verified and is the link to hand out. But it
     # must be SAID, every run, because a silent failure here is what hid this for ten days.
-    Write-Host "[warn] https://$Alias does NOT serve the dashboard - $($ali.why)" -ForegroundColor Yellow
-    Write-Host "       Do not give this link to the client. Turn off Deployment Protection" -ForegroundColor Yellow
-    Write-Host "       for that domain in the Vercel project settings, or hand out the URL above." -ForegroundColor Yellow
+    Write-Host "[warn] https://$Alias is not serving correctly - $($ali.why)" -ForegroundColor Yellow
+    Write-Host "       Do not give this link to the client; hand out the URL above." -ForegroundColor Yellow
 }

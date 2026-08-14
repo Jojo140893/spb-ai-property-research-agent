@@ -985,6 +985,19 @@
        tab can say honestly whether it is looking at live data.                       */
     let DATA_MODE = null;              // 'live' | 'snapshot'
 
+    /* The deployed site sits behind an edge login (see MIDDLEWARE_JS in build_web.py),
+       and the session lasts 12 hours. A tab left open overnight therefore wakes up with
+       every fetch answering 401 — which without this reads as "Could not load building
+       stock", sending someone to check the harvest when all they need to do is sign in
+       again. The middleware answers data requests with 401 rather than the login HTML
+       precisely so this can tell the difference.                                        */
+    let REDIRECTING = false;
+    function sessionExpired() {
+        if (REDIRECTING) return;       // 3 tabs load at once; don't race 3 redirects
+        REDIRECTING = true;
+        location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
+    }
+
     async function getJSON(apiPath, staticPath) {
         // Both are attempted CONCURRENTLY and the first usable answer wins. Trying the
         // API first and waiting cost 10 seconds of dead time on every load of the static
@@ -997,12 +1010,14 @@
         const live = window.SPB_STATIC_BUILD
             ? Promise.reject(new Error('static build: no local API'))
             : fetch(apiPath, { cache: 'no-store' }).then(async res => {
+                if (res.status === 401) sessionExpired();
                 if (!res.ok) throw new Error(`api ${res.status}`);
                 if (!(res.headers.get('Content-Type') || '').includes('json'))
                     throw new Error('api did not return json');
                 return { mode: 'live', data: await res.json() };
             });
         const snap = fetch(staticPath, { cache: 'no-store' }).then(async res => {
+            if (res.status === 401) sessionExpired();
             if (!res.ok) throw new Error(`snapshot ${res.status}`);
             return { mode: 'snapshot', data: await res.json() };
         });

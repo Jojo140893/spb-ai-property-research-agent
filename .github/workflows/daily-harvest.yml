@@ -180,6 +180,36 @@ jobs:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
 
+      - name: Check the login gate is still up
+        # THE FAILURE THIS CATCHES IS SILENT. middleware.js is written by build_web.py into
+        # a gitignored folder; a refactor that stops writing it produces a completely
+        # healthy-looking green run that publishes the entire catalogue to the open web,
+        # and nothing anywhere would say so. 401 is the PASS here.
+        if: success()
+        run: |
+          set -uo pipefail
+          URL=https://app.smartpropertybuying.com.au
+          code=$(curl -s -o /tmp/body -w "%{http_code}" "$URL/stock.json")
+          echo "GET /stock.json -> $code"
+          if [ "$code" = "200" ]; then
+            echo "::error::stock.json is being served to anyone — the login gate is NOT running."
+            exit 1
+          fi
+          if [ "$code" = "503" ] && grep -q "SITE_PASSWORD is not set" /tmp/body; then
+            echo "::error::SITE_PASSWORD is not set on the Vercel project; the dashboard is refusing to serve."
+            exit 1
+          fi
+          if [ "$code" != "401" ]; then
+            echo "::error::stock.json answered $code, expected 401."
+            exit 1
+          fi
+          login=$(curl -s -o /tmp/login -w "%{http_code}" "$URL/login")
+          if [ "$login" != "200" ] || ! grep -q 'name="password"' /tmp/login; then
+            echo "::error::/login answered $login without a sign-in form — the dashboard is unreachable."
+            exit 1
+          fi
+          echo "Gate is up: stock.json 401, login page served."
+
       - name: Log tail on failure
         if: failure()
         run: tail -120 _daily.log || echo "no _daily.log written"
