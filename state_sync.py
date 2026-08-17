@@ -206,11 +206,19 @@ def cmd_pull(args):
     print(f"   pulled {DB.stat().st_size:,} bytes, {rows:,} building row(s)")
     SESSION_DIR.mkdir(exist_ok=True)
     _sync_sessions("pull")
+    _sync_builder_csv("pull")
     return 0
 
 
 def cmd_push(args):
     """Local -> bucket, then release the lock."""
+    if getattr(args, "files_only", False):
+        # No database, and NO LOCK RELEASE: this can run while a harvest holds the lock,
+        # and releasing someone else's lock would let a second runner start on top of it.
+        _sync_sessions("push")
+        _sync_builder_csv("push")
+        print("   files only — database and lock untouched")
+        return 0
     if not DB.exists():
         print("!! no local database to push")
         return 1
@@ -223,6 +231,26 @@ def cmd_push(args):
         print("   bucket with it — this is what an empty runner looks like, and pushing")
         print("   it would destroy the real catalogue. Use --force if this is deliberate.")
         return 1
+
+    # AND REFUSE A STALE ONE, not just an empty one.
+    #
+    # 0 rows was the only shape guarded against, and it is not the shape that actually
+    # happens. On 17 Aug 2026 a `push` intended only to send the builder CSV also sent the
+    # database — because push sends everything — and a 12 Aug local copy (11,474 rows)
+    # overwrote the bucket's 11,693, discarding that day's harvest: 174 new E-Agent rows,
+    # the recovered Denman lot, the lot Coleen's consultant had just been told was back.
+    # Nothing refused it, because 11,474 is not 0.
+    #
+    # The nightly runner is unaffected either way (it pulls, harvests, pushes more than it
+    # pulled). This guard exists for the laptop, which is where a stale copy lives.
+    if not args.force:
+        remote_rows = _remote_row_count()
+        if remote_rows is not None and remote_rows > rows:
+            print(f"!! the bucket holds MORE rows than this machine: {remote_rows:,} vs {rows:,}.")
+            print("   Pushing would discard a harvest that has already run. Refresh first:")
+            print("     python state_sync.py pull")
+            print("   Use --force only if losing those rows is genuinely intended.")
+            return 1
     # UPLOAD, THEN SWAP. `storage cp` will not overwrite — it answers 409
     # KeyAlreadyExists — so the object has to be removed first. Removing the live
     # database and then uploading would leave a window with NO database in the bucket,
@@ -247,6 +275,7 @@ def cmd_push(args):
         return 1
     print(f"   pushed {DB.stat().st_size:,} bytes, {rows:,} building row(s)")
     _sync_sessions("push")
+    _sync_builder_csv("push")
     print("   lock released" if _clear_lock() else "   !! could not release the lock")
     return 0
 
@@ -283,6 +312,84 @@ def _sync_sessions(direction):
             print(f"   sessions pulled: {len(names)} file(s)")
 
 
+def _sync_builder_csv(direction):
+    """Carry the builder directory CSV between here and the bucket. Never fatal.
+
+    WITHOUT IT A RUNNER HAS NO BUILDERS AT ALL, and says so only in a line nobody reads:
+    "0 registry builders". BuilderRegistry loads from config.BUILDER_CSV_PATH
+    (drive_input/vendors.csv, else Book1(Builders) List.csv) and BOTH are gitignored — they
+    have to be, that file has a PASSWORD column and leaking it once is what
+    SECURITY_CREDENTIAL_EXPOSURE.md is about. So since the harvest moved to GitHub Actions
+    on 12 Aug 2026 the runner has loaded an EMPTY directory, and two things followed that
+    nobody connected:
+
+      * "Direct portals: 0 unique listing(s) seen" every single night —
+        BuilderPortalSource iterates the registry, and an empty registry visits no portals.
+        Its 388 stored listings are the ones the laptop read on 12 Aug, going stale since.
+      * The published Approved Builder Directory tab was built with 0 rows on any nightly
+        publish, and 33 whenever a human published from the laptop.
+
+    Same channel as the sessions, and for the same reason: private bucket, never the repo.
+    build_web.py already strips credentials from what it publishes
+    (_export_builders / "credentials blanked"), so the deployed copy stays safe — this only
+    puts the file where the HARVEST can read it.
+    """
+    import config
+    local = config.BUILDER_CSV_PATH
+    remote = f"ss:///{BUCKET}/builders/{local.name}"
+    if direction == "push":
+        if not local.exists():
+            print("   builder csv: nothing local to push")
+            return
+        # Relative name: the CLI rejects an absolute local path on Windows (see _staged).
+        try:
+            rel = str(local.relative_to(APP))
+        except ValueError:
+            print(f"   builder csv: {local} is outside {APP}, not pushed")
+            return
+        _cli("storage", "rm", remote, timeout=60)
+        p = _cli("storage", "cp", rel, remote, timeout=180)
+        print(f"   builder csv pushed: {local.name}"
+              if p is not None and p.returncode == 0 else
+              "   builder csv: push FAILED (the runner will have no builders)")
+    else:
+        local.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            rel = str(local.relative_to(APP))
+        except ValueError:
+            return
+        p = _cli("storage", "cp", remote, rel, timeout=180)
+        if p is not None and p.returncode == 0 and local.exists():
+            print(f"   builder csv pulled: {local.name}")
+        else:
+            # Loud, because the run will otherwise succeed while visiting no portals and
+            # publishing an empty builder directory.
+            print("   !! builder csv NOT pulled — this run will see 0 builders, visit no "
+                  "direct portals, and publish an empty builder directory.")
+            print("      Push it once from the laptop:  python state_sync.py push")
+
+
+def _remote_row_count():
+    """Building rows in the bucket's copy, or None if it cannot be read.
+
+    Downloads 13 MB to answer a question that decides whether to DESTROY that copy. The
+    push already moves the same volume the other way, so the cost is symmetric — and it is
+    the only honest way to know: object size does not track row count (a supersede pass
+    grows the file while the live count falls).
+
+    None means "could not tell", and the caller must treat that as permission to proceed
+    rather than as a block: a network blip must not make the laptop unable to push at all.
+    """
+    local = _staged(".remote_check.db")
+    try:
+        p = _cli("storage", "cp", REMOTE_DB, local.name, timeout=600)
+        if p is None or p.returncode != 0 or not local.exists():
+            return None
+        return _row_count(local)
+    finally:
+        local.unlink(missing_ok=True)
+
+
 def _row_count(path):
     """Building rows, or None when the file is not a readable SQLite database."""
     import sqlite3
@@ -302,7 +409,13 @@ def main():
     for name, fn in (("pull", cmd_pull), ("push", cmd_push), ("status", cmd_status)):
         s = sub.add_parser(name)
         s.add_argument("--force", action="store_true",
-                       help="break a stale lock (pull) / push an empty database (push)")
+                       help="break a stale lock (pull) / push a stale or empty database (push)")
+        # Sending a refreshed session or an updated builder list should not require
+        # sending a 13 MB database with it. It did, and on 17 Aug that took a day's
+        # harvest with it — the database is simply what `push` happened to send first.
+        s.add_argument("--files-only", action="store_true",
+                       help="push/pull only the sessions and the builder CSV, "
+                            "leaving the database and the lock alone")
         s.set_defaults(fn=fn)
     args = ap.parse_args()
     return args.fn(args)
