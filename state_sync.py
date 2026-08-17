@@ -335,11 +335,27 @@ def _sync_builder_csv(direction):
     puts the file where the HARVEST can read it.
     """
     import config
-    local = config.BUILDER_CSV_PATH
-    remote = f"ss:///{BUCKET}/builders/{local.name}"
+    # ONE FIXED REMOTE NAME, never the local file's own. config.BUILDER_CSV_PATH resolves
+    # to drive_input/vendors.csv where that exists and "Book1(Builders) List.csv" where it
+    # does not — so keying the bucket on local.name meant the laptop stored
+    # builders/vendors.csv while the runner asked for builders/Book1(Builders) List.csv,
+    # missed, reported "0 builders", and then pushed an empty file back under the name it
+    # had guessed. Measured on the 17 Aug restore run.
+    remote = f"ss:///{BUCKET}/builders/vendors.csv"
+    # PULL LANDS ON THE PREFERRED PATH, not on BUILDER_CSV_PATH. That constant is fixed at
+    # import time by which file existed THEN — on a fresh runner, before this pull, that is
+    # the fallback name. Every later step is a separate process that re-imports config, so
+    # writing the preferred path is what makes them pick it up.
+    dest = config.DRIVE_INPUT_DIR / "vendors.csv"
+    local = config.BUILDER_CSV_PATH if direction == "push" else dest
     if direction == "push":
         if not local.exists():
             print("   builder csv: nothing local to push")
+            return
+        # A runner that failed its pull must not push its empty guess over the real file.
+        if local.stat().st_size < 512:
+            print(f"   builder csv: {local.name} is only {local.stat().st_size} bytes — "
+                  "refusing to push it over the real directory")
             return
         # Relative name: the CLI rejects an absolute local path on Windows (see _staged).
         try:
