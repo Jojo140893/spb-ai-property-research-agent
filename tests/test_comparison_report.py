@@ -21,12 +21,18 @@ INDEX = APP / "index.html"
 CHECKS = Path(__file__).resolve().parent / "comparison_report_checks.mjs"
 
 START = "const EFFECTIVE = p =>"
-END = "function openComparisonReport()"
+END = "    function openComparisonReport()"
 
 # index.html's own escaper, copied verbatim so the harness escapes exactly as the page
 # does. If these ever diverge the injection checks would pass here and fail in a browser.
 ESC = ("const esc = s => String(s ?? '').replace(/[&<>\"]/g, c => "
        "({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]));\n")
+
+# clientReportDocument reads the client's name off the brief form. Under Node there is no
+# DOM, so stub the one call it makes — the name still flows through esc(), which is what
+# the escaping check below actually exercises.
+STUB_DOC = ("globalThis.document = { getElementById: () => "
+            "({ value: 'Test Client' }) };\n")
 
 
 def _generator_source():
@@ -40,6 +46,7 @@ def test_the_generator_is_still_in_index_html():
     """A rename that silently skipped the checks would be worse than a failing test."""
     body = _generator_source()
     assert "function comparisonDocument(" in body
+    assert "function clientReportDocument(" in body
     assert "SPB PREFERRED" in body
 
 
@@ -71,7 +78,8 @@ def test_the_comparison_document(tmp_path):
     if not node:
         pytest.skip("node is not installed; the browser-side generator cannot be run here")
     (tmp_path / "generator.mjs").write_text(
-        ESC + _generator_source() + "\nexport { comparisonDocument };\n", encoding="utf-8")
+        ESC + STUB_DOC + _generator_source()
+        + "\nexport { comparisonDocument, clientReportDocument };\n", encoding="utf-8")
     shutil.copy(CHECKS, tmp_path / "checks.mjs")
     p = subprocess.run([node, "checks.mjs"], cwd=str(tmp_path),
                        capture_output=True, text=True, timeout=120)

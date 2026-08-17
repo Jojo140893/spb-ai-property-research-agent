@@ -2114,7 +2114,15 @@
         'house_design', 'bedrooms', 'bathrooms', 'car_spaces', 'storeys', 'land_size_sqm',
         'house_size_sqm', 'advertised_package_price', 'realistic_total_price',
         'incentive_amount', 'incentive_text', 'estate_context', 'score', 'recommendation',
-        'title_status', 'date_checked', 'source_link', 'benchmark'];
+        'title_status', 'date_checked', 'source_link', 'benchmark',
+        // Added 14 Aug for the client report, which is a richer document than the
+        // comparison: it carries the buyer-facing reasoning and the market check Coleen
+        // asked for on 22 Jul ("your purchase price is this, but the average house price
+        // is this ... so that they can see that they are doing a good buy"). `benchmark`
+        // above holds that comparison and its comparables.
+        'recommendation_reason', 'estimated_rent_min', 'estimated_rent_max',
+        'amenities_summary', 'distance_km_from_target', 'expected_title_date',
+        'advisories', 'builder_confidence_rating'];
 
     const slim = p => Object.fromEntries(
         SELECT_FIELDS.filter(k => p[k] !== undefined).map(k => [k, p[k]]));
@@ -2146,6 +2154,19 @@
         const clear = document.getElementById('clearComparison');
         const n = SELECTED.size;
         if (clear) clear.style.display = n ? '' : 'none';
+
+        // Say which document the button will produce. It silently switched between "the
+        // top 3 of this search" and "the 3 you picked" with identical wording, which is
+        // how Coleen came to click it expecting her selection and get the ranking.
+        const rep = document.getElementById('openClientReport');
+        if (rep) {
+            rep.textContent = n ? `Client Report (${n} selected)` : 'Client Report (top 3)';
+            rep.title = n
+                ? `A client-facing report covering the ${n} option(s) you have selected.`
+                : 'A client-facing report covering the top 3 ranked options. Tick "compare" '
+                  + 'on the options you want and this will cover those instead.';
+        }
+
         if (!btn) return;
         btn.disabled = n < 2;
         btn.textContent = n === 0 ? 'Compare selected (none yet)'
@@ -2750,7 +2771,17 @@
                             alert('Your browser blocked the report window. Allow pop-ups for this site and try again.');
                             return;
                         }
-                        w.document.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>SPB Client Report</title></head><body>' + (data.client_report_html || '<p>No report generated.</p>') + '</body></html>');
+                        // THE SELECTION WINS. Coleen ticked three options and got the top
+                        // three ranks instead, because this opened the document the server
+                        // renders at search time over one search's top 3 — it cannot see a
+                        // selection, still less one spanning several searches. When
+                        // something is ticked, that IS the report; the server's automatic
+                        // document is the fallback for when nothing is.
+                        if (SELECTED.size) {
+                            w.document.write(clientReportDocument([...SELECTED.values()]));
+                        } else {
+                            w.document.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>SPB Client Report</title></head><body>' + (data.client_report_html || '<p>No report generated.</p>') + '</body></html>');
+                        }
                         w.document.close();
                     };
                     const cmpBtn = document.getElementById('openComparison');
@@ -3008,6 +3039,167 @@ ${blocks}
   against each option and are not a valuation or an offer. A dash means the source did not
   state that figure &mdash; it has not been estimated. Confirm all inclusions, titles and
   rebate conditions with the builder before a client acts.</div>
+</body></html>`;
+    }
+
+    /* The client-facing document, over the consultant's OWN selection.
+     *
+     * Coleen, 14 Aug: "I have selected three different properties from research scoring,
+     * and it's not implementing in open client report ... I'm still seeing first three
+     * ranks, not the ones that I selected." She was right: the button opened
+     * client_report_html, which the server renders at search time over the top 3 of one
+     * search, and it cannot know about a selection that spans several.
+     *
+     * DELIBERATELY A SECOND IMPLEMENTATION of client_report.py, and that is a cost worth
+     * naming: two renderers can drift, and this codebase has already been bitten by
+     * exactly that (server.py's shortlist entry silently lost three fields that
+     * api/research.py sends). It is done here because the alternative is worse — the
+     * selection spans searches, so no single server request holds all of it, and asking
+     * the server to re-derive properties for arbitrary hashes means re-running the
+     * pipeline against a brief that may since have changed and may now REJECT a property
+     * the consultant deliberately chose. Everything below comes from the record stored
+     * when the option was ticked, so what she picked is what she gets.
+     *
+     * Same rule as the comparison: a figure the source never stated is a dash. Rent and
+     * yield rows are OMITTED rather than shown as zero — stored stock carries no rent, and
+     * "$0/week, 0.00% yield" does not read as "not captured" to a buyer, it reads as
+     * "this earns nothing".
+     */
+    function clientReportDocument(props) {
+        const dash = '<span class="na">&mdash;</span>';
+        const m = v => (Number(v) > 0) ? '$' + Math.round(Number(v)).toLocaleString() : dash;
+        const sq = v => (Number(v) > 0) ? Math.round(Number(v)).toLocaleString() + ' m&sup2;' : dash;
+        const t = v => { const s = String(v ?? '').trim(); return s ? esc(s) : dash; };
+        const client = (document.getElementById('clientName') || {}).value || '';
+
+        const cards = props.map((p, i) => {
+            const bm = p.benchmark || {};
+            const price = Number(p.realistic_total_price) || Number(p.advertised_package_price) || 0;
+            const avg = Number(bm.avg_market_price) || 0;
+            const saving = avg && price ? avg - price : 0;
+            // An internal comparison is against other stock we hold, NOT the market, and
+            // this document goes to a buyer — so it is never called a market price.
+            const what = bm.basis === 'internal' ? 'comparable listings' : 'average market price';
+            let valueLine;
+            if (saving > 0) {
+                valueLine = `<span class="good">${m(price)}</span> vs ${what} ${m(avg)}
+                             &mdash; a saving of <strong>${m(saving)}</strong>`;
+            } else if (avg) {
+                valueLine = `${m(price)} vs ${what} ${m(avg)}
+                             ${bm.classification ? '(' + esc(bm.classification) + ')' : ''}`;
+            } else {
+                valueLine = m(price);
+            }
+
+            const comps = (bm.comparables || []).map(c =>
+                `<tr><td>${t(c.suburb)}${c.state ? ', ' + esc(c.state) : ''}</td>
+                     <td>${t(c.bedrooms)} bed</td><td>${m(c.price)}</td>
+                     <td>${t(c.source)}</td></tr>`).join('');
+            const compTable = comps
+                ? `<table class="comps"><tr><th>Comparable</th><th>Beds</th><th>Price</th>
+                   <th>Source</th></tr>${comps}</table>`
+                : `<p class="pending">${bm.data_note ? esc(bm.data_note)
+                     : 'Market comparables to be confirmed.'}</p>`;
+
+            const rentMin = Number(p.estimated_rent_min) || 0;
+            const rentMax = Number(p.estimated_rent_max) || 0;
+            const rentRow = (rentMin || rentMax)
+                ? `<div class="row"><span class="label">Estimated rent</span>
+                   <span>${m(rentMin)}&ndash;${m(rentMax)} / week</span></div>` : '';
+            const mid = (rentMin + rentMax) / 2;
+            const gy = (mid && price) ? (mid * 52 / price * 100) : 0;
+            const yieldRow = gy
+                ? `<div class="row"><span class="label">Estimated gross yield</span>
+                   <span>${gy.toFixed(2)}%</span></div>` : '';
+
+            let titleText = String(p.title_status || 'Not stated in source').trim();
+            if (String(p.expected_title_date || '').trim()) {
+                titleText += ' (' + String(p.expected_title_date).trim() + ')';
+            }
+            // Only print the location note when it says something. "No amenity assessment
+            // captured" under a heading called Location reads, to a buyer, as though the
+            // area is a problem.
+            const am = String(p.amenities_summary || '').trim();
+            const amenityLine = (am && !am.toLowerCase().startsWith('no amenity'))
+                ? `<p class="why"><em>Location:</em> ${esc(am)}</p>` : '';
+            const why = String(p.recommendation_reason || '').trim();
+
+            const reb = Number(p.incentive_amount) > 0
+                ? `<div class="row"><span class="label">Rebate / incentive</span>
+                   <span>${m(p.incentive_amount)}</span></div>`
+                : (String(p.incentive_text || '').trim()
+                    ? `<div class="row"><span class="label">Rebate / incentive</span>
+                       <span>${esc(p.incentive_text)}</span></div>` : '');
+
+            return `
+              <section class="opt">
+                <h3>Option ${i + 1} &mdash; ${t(p.lot_address)}</h3>
+                <p class="loc">${t(p.suburb)}${p.state ? ', ' + esc(p.state) : ''}
+                   &middot; Builder: <strong>${t(p.builder_name)}</strong>
+                   ${p.house_design ? '(' + esc(p.house_design) + ')' : ''}</p>
+                <p class="value">${valueLine}</p>
+                <div class="rows">
+                  <div class="row"><span class="label">Bed / Bath / Car</span>
+                    <span>${t(p.bedrooms)} / ${t(p.bathrooms)} / ${t(p.car_spaces)}</span></div>
+                  <div class="row"><span class="label">Land / House</span>
+                    <span>${sq(p.land_size_sqm)} / ${sq(p.house_size_sqm)}</span></div>
+                  ${reb}${rentRow}${yieldRow}
+                  <div class="row"><span class="label">Title</span><span>${esc(titleText)}</span></div>
+                  <div class="row"><span class="label">Last checked</span><span>${t(p.date_checked)}</span></div>
+                </div>
+                ${compTable}
+                ${why ? `<p class="why"><em>Why this option:</em> ${esc(why)}</p>` : ''}
+                ${amenityLine}
+              </section>`;
+        }).join('');
+
+        return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<title>SPB Property Recommendations</title>
+<style>
+ :root{--ink:#0f172a;--body:#334155;--muted:#64748b;--line:#e2e8f0;--accent:#1e40af;
+       --bg:#f8fafc;--good:#047857}
+ *{box-sizing:border-box}
+ body{margin:0;padding:30px;background:#fff;color:var(--body);
+      font:13.5px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+ h1{margin:0;font-size:21px;color:var(--ink);letter-spacing:-.01em}
+ .meta{margin:5px 0 6px;color:var(--muted);font-size:12px}
+ .intro{margin:0 0 20px}
+ .opt{border:1px solid var(--line);border-radius:7px;padding:14px 16px;margin:0 0 14px;
+      break-inside:avoid}
+ .opt h3{margin:0 0 3px;font-size:15px;color:var(--ink)}
+ .loc{margin:0 0 9px;color:var(--muted);font-size:12.5px}
+ .value{margin:0 0 10px;font-size:14px;color:var(--ink)}
+ .good{color:var(--good);font-weight:600}
+ .rows{margin:0 0 10px}
+ .row{display:flex;justify-content:space-between;gap:12px;padding:4px 0;
+      border-bottom:1px solid var(--line)}
+ .row:last-child{border-bottom:0}
+ .label{color:var(--muted)}
+ .comps{border-collapse:collapse;width:100%;margin:8px 0;font-size:12px}
+ .comps th,.comps td{border:1px solid var(--line);padding:5px 7px;text-align:left}
+ .comps th{background:var(--bg);color:var(--ink)}
+ .pending{color:var(--muted);font-style:italic;font-size:12px;margin:8px 0}
+ .why{margin:8px 0 0;font-size:12.5px}
+ .na{color:#94a3b8}
+ .foot{margin-top:20px;padding-top:12px;border-top:1px solid var(--line);
+       color:var(--muted);font-size:11px}
+ .bar{margin:0 0 16px}
+ .bar button{font:inherit;padding:7px 14px;border:0;border-radius:6px;
+             background:var(--accent);color:#fff;cursor:pointer}
+ @media print{.bar{display:none} .opt{break-inside:avoid}}
+</style></head><body>
+<div class="bar"><button onclick="window.print()">Print / Save as PDF</button></div>
+<h1>Property Recommendations</h1>
+<div class="meta">${client ? 'Prepared for <strong>' + esc(client) + '</strong> &middot; ' : ''}
+  Smart Property Buying &middot; ${esc(new Date().toLocaleDateString('en-AU'))}</div>
+<p class="intro">Following your requirements, we reviewed available stock and shortlisted
+  the following ${props.length} option(s) for you.</p>
+${cards}
+<div class="foot">Prices are as published by the builder or developer at the date shown
+  against each option and are not a valuation or an offer. Rental estimates and price
+  comparisons are indicative only. A dash means the source did not state that figure &mdash;
+  it has not been estimated. Confirm all inclusions, titles and rebate conditions with the
+  builder before acting.</div>
 </body></html>`;
     }
 

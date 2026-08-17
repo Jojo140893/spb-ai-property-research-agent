@@ -1,7 +1,7 @@
 // Behaviour of the N-option comparison document. The generator is extracted from
 // index.html by test_comparison_report.py and written beside this file as generator.mjs,
 // so these checks always run against the code that actually ships rather than a copy.
-import { comparisonDocument } from './generator.mjs';
+import { comparisonDocument, clientReportDocument } from './generator.mjs';
 
 const full = {
   content_hash: 'h1', lot_address: '12 Banksia Way', suburb: 'Armstrong Creek', state: 'VIC',
@@ -82,6 +82,71 @@ check('every option gets an empty notes field',
   (h4.match(/<textarea/g) || []).length === 4);
 check('no suburb/infrastructure commentary is pre-filled',
   !/growth area|infrastructure:|investment strengths:/i.test(body.replace(/placeholder="[^"]*"/g, '')));
+
+// ---------------------------------------------------------------- the client report
+//
+// Coleen, 14 Aug: "I have selected three different properties from research scoring, and
+// it's not implementing in open client report ... I'm still seeing first three ranks, not
+// the ones that I selected." The button opened the document the SERVER renders at search
+// time, which covers one search's top 3 and cannot see a selection — still less one made
+// across several searches. These pin that the selection drives it.
+const withMarket = {
+  content_hash: 'c1', lot_address: '12 Banksia Way', suburb: 'Armstrong Creek', state: 'VIC',
+  builder_name: 'Banksia Homes', bedrooms: 4, bathrooms: 2, car_spaces: 2,
+  land_size_sqm: 350, house_size_sqm: 167.22, advertised_package_price: 728500,
+  realistic_total_price: 728500, incentive_amount: 10000, score: 88,
+  estimated_rent_min: 520, estimated_rent_max: 560,
+  recommendation_reason: 'Best balance of price and land in the target suburb.',
+  benchmark: {
+    avg_market_price: 790000, basis: 'market', classification: 'below market',
+    comparables: [{ suburb: 'Armstrong Creek', state: 'VIC', bedrooms: 4,
+                    price: 795000, source: 'REA' }],
+  },
+};
+// Stored stock usually carries no rent and no benchmark. This is the normal case.
+const bare = {
+  content_hash: 'c2', lot_address: '5 Warralily Blvd', suburb: '', state: 'VIC',
+  builder_name: '', land_size_sqm: 398, house_size_sqm: null,
+  advertised_package_price: 775160, realistic_total_price: 775160, score: 81,
+  estimated_rent_min: 0, estimated_rent_max: 0,
+  amenities_summary: 'No amenity assessment captured for this listing.',
+};
+
+console.log('\n--- the client report follows the selection, not the ranking ---');
+for (const n of [1, 3, 7]) {
+  const props = Array.from({ length: n }, (_, i) => ({ ...bare, content_hash: 'c' + i }));
+  const h = clientReportDocument(props);
+  check(`${n} selected -> ${n} cards`,
+    (h.match(/class="opt"/g) || []).length === n, (h.match(/class="opt"/g) || []).length);
+  check(`${n} selected -> the document says ${n}`, h.includes(`following ${n} option(s)`));
+}
+const cr = clientReportDocument([withMarket, bare]);
+check('no rank wording leaks into a selection-driven report', !/Rank #/.test(cr));
+
+console.log('\n--- the market check (Coleen, 22 Jul) ---');
+check('purchase price against the market', cr.includes('average market price'));
+check('the saving is computed ($61,500)', cr.includes('$61,500'));
+check('comparables are tabulated', cr.includes('<table class="comps"'));
+check('absent comparables are stated, not faked',
+  cr.includes('Market comparables to be confirmed'));
+
+console.log('\n--- the client report invents nothing ---');
+check('no $0-$0 rent row for stock with no rent', !/\$0&ndash;\$0/.test(cr));
+check('no 0.00% yield', !cr.includes('0.00%'));
+check('a yield IS shown when rent is known', /\d\.\d\d%/.test(cr));
+check('boilerplate amenity line suppressed', !cr.includes('No amenity assessment'));
+check('no undefined / NaN', !/undefined|NaN/.test(cr));
+
+console.log('\n--- the client report escapes untrusted text ---');
+const nasty = clientReportDocument([{
+  ...bare, lot_address: '<scr' + 'ipt>alert(1)</scr' + 'ipt>',
+  suburb: '"><img src=x onerror=alert(2)>', builder_name: 'A & B Homes',
+  recommendation_reason: '<scr' + 'ipt>alert(3)</scr' + 'ipt>',
+}]);
+const nb = nasty.slice(nasty.indexOf('<body>'));
+check('no raw <script survives', !nb.includes('<scr' + 'ipt'), 'SCRIPT INJECTED');
+check('no raw <img survives', !nb.includes('<img'), 'IMG INJECTED');
+check('an ampersand survives as text', nb.includes('A &amp; B Homes'));
 
 console.log(bad === 0 ? '\nALL CHECKS PASSED' : '\n' + bad + ' FAILED');
 process.exit(bad ? 1 : 0);
