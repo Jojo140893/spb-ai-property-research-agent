@@ -66,6 +66,37 @@ if ($previous -gt 0 -and $rows -lt ($previous * 0.8)) {
 }
 Write-Host "        $rows listing(s) (last publish: $previous)"
 
+# IS THIS DATABASE THE CURRENT ONE?
+#
+# The nightly harvest runs on GitHub and pushes the database to Supabase; this script
+# builds from the LOCAL copy. Those diverge the moment the laptop misses a pull, and
+# nothing said so: on 17 Aug every deploy from this machine republished a 12 Aug database
+# over the nightly's, quietly dropping 45 listings each time.
+#
+# It also makes the new Settings tab lie in the worst direction. That tab reports how
+# recently each source sent stock, so publishing a stale copy paints EVERY source as
+# "signed out" — crying wolf about a real alarm is how the alarm stops being read.
+# Read it from the BUILT snapshot, not the database file: the build honours
+# SPB_DATABASE_PATH, so a check against a hard-coded path would report on a database the
+# build never opened. stock.json is definitionally what is about to be published.
+$newest = python -X utf8 -c "import json;d=json.load(open(r'$site\stock.json',encoding='utf-8'));i=d['keys'].index('date_checked');s=d['keys'].index('superseded_by');v=[r[i] for r in d['rows'] if not r[s] and r[i]];print(max((x[6:10]+x[3:5]+x[0:2]) for x in v) if v else '')" 2>$null
+if ($LASTEXITCODE -eq 0 -and $newest -match '^\d{8}$') {
+    $newestDate = [datetime]::ParseExact($newest, 'yyyyMMdd', $null)
+    $ageDays = [int]((Get-Date).Date - $newestDate.Date).TotalDays
+    if ($ageDays -gt 2) {
+        Write-Host "[warn] the newest stock in the LOCAL database is $ageDays days old ($($newestDate.ToString('dd/MM/yyyy')))." -ForegroundColor Yellow
+        Write-Host "       The nightly harvest may have newer data in Supabase. Publishing this would" -ForegroundColor Yellow
+        Write-Host "       overwrite it and make every source read as 'signed out' in Settings." -ForegroundColor Yellow
+        Write-Host "       Refresh first:  python state_sync.py pull   (then re-run this script)" -ForegroundColor Yellow
+        if (-not $Force) {
+            Write-Host "[abort] use -Force to publish this copy anyway." -ForegroundColor Red
+            exit 1
+        }
+    } else {
+        Write-Host "        newest stock: $($newestDate.ToString('dd/MM/yyyy')) ($ageDays day(s) old)"
+    }
+}
+
 Set-Location $site
 
 Write-Host "[2/3] deploying to Vercel production..."

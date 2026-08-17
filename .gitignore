@@ -68,3 +68,4 @@ supabase/.temp/
 # state_sync.py staging files. They exist only between a CLI call and its cleanup,
 # but a crashed run leaves one behind and a lock file in a public repo is noise at best.
 .harvest.lock.*.json
+_harvest_partial

@@ -210,6 +210,33 @@ jobs:
           fi
           echo "Gate is up: stock.json 401, login page served."
 
+      - name: Fail the run if a channel died
+        # DELIBERATELY THE LAST STEP, after the publish above. A dead channel must not
+        # withhold the channels that DID read — their rows are fresh and stale rows are
+        # already live from last night, so refusing to publish helps nobody. But the run
+        # has to go RED, because printing it did not work: E-Agent's sign-in broke on
+        # 13 Aug and the next three nightly runs logged
+        #   [FAILED] a channel that has stock returned nothing this run
+        #     - E-Agent: read 0 tonight, 8773 listing(s) already stored
+        # and reported SUCCESS to GitHub. Three green ticks over ~4,500 stale listings,
+        # found only when a consultant could not find stock he was looking at directly
+        # in E-Agent.
+        if: always()
+        run: |
+          if [ -f _harvest_partial ]; then
+            echo "::error::A channel returned nothing tonight: $(tr '\n' ' ' < _harvest_partial)"
+            echo "Its stored rows are going stale while the dashboard serves them as current."
+            echo "The usual cause is an expired sign-in. On the laptop:"
+            echo "    python portal_login.py e_agent"
+            echo "    python portal_login.py portal_proxima --profile"
+            echo "then push the refreshed session:  python state_sync.py push"
+            echo ""
+            echo "--- harvest summary ---"
+            grep -E "^\[FAILED\]|read 0 tonight|read .* this run" _daily.log | head -20 || true
+            exit 1
+          fi
+          echo "Every channel that holds stock read something tonight."
+
       - name: Log tail on failure
         if: failure()
         run: tail -120 _daily.log || echo "no _daily.log written"

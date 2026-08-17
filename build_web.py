@@ -695,6 +695,11 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         "benchmarks": len(_bench_rows),
         "with_suburb": sum(1 for b in buildings if (b.get("suburb") or "").strip()),
     }
+    # Which sources are still producing stock — the Settings tab, and the banner that
+    # would have shown E-Agent had signed out three nights before anyone noticed. Before
+    # conn.close(), obviously, but worth saying why it is HERE and not beside the other
+    # exports further down: those run after the connection is closed.
+    meta["channel_health"] = _export_channel_health(out_dir, conn)
     conn.close()
 
     # the app's own frontend, unmodified
@@ -1088,6 +1093,88 @@ __REPORT_JS__
 </script>
 </body></html>
 """
+
+
+# A channel that reads nightly and has not produced a row in this many days is not
+# "quiet", it is broken. E-Agent, Proxima and the direct portals all run every night, so
+# two days covers one missed run plus the clock. Beyond a week it is not a blip.
+CHANNEL_STALE_DAYS = 2
+CHANNEL_DEAD_DAYS = 7
+
+
+def _export_channel_health(out_dir: Path, conn) -> dict:
+    """When each source last actually produced stock, for the Settings tab.
+
+    WHY THIS EXISTS. E-Agent's sign-in expired on 13 Aug 2026. The harvest kept running,
+    logged "[FAILED] ... E-Agent: read 0 tonight" for three consecutive nights, reported
+    SUCCESS to GitHub, and published a dashboard that went on serving ~4,500 E-Agent
+    listings as current. Nothing on screen said so. It surfaced only when a consultant
+    could not find, in the app, stock he was looking straight at in E-Agent.
+
+    The run-side hole is closed separately (run_daily now alerts and CI fails the run),
+    but that tells ME, not Coleen — and she is the one who notices a suburb has gone
+    quiet. So the same fact is published: per channel, the day it last produced a row.
+
+    DERIVED FROM THE STOCK ITSELF, not from a session file's timestamp. A saved session
+    can look perfectly healthy while the portal has quietly stopped honouring it, which is
+    exactly what E-Agent did — .sessions/e_agent.json still sat there, 4 KB, dated 31 Jul.
+    "Rows arrived" is the only claim worth making, and it is the one a consultant cares
+    about. Session files are never published: they are live credentials.
+    """
+    from datetime import date
+
+    today = date.today()
+    # REORDERED TO YYYYMMDD IN SQL, and this is the point of doing it here rather than
+    # with MAX(date_checked). date_checked is stored DD/MM/YYYY, so a plain MAX() is a
+    # STRING comparison that puts '29/07/2026' above '13/08/2026' — it reads the leading
+    # digit and stops. That mistake made a channel four days stale look nineteen days
+    # stale during the 17 Aug investigation and pointed it at the wrong incident.
+    rows = conn.execute("""
+        SELECT source_channel,
+               COUNT(*) AS stored,
+               SUM(CASE WHEN superseded_by IS NULL OR superseded_by = ''
+                        THEN 1 ELSE 0 END) AS live,
+               MAX(CASE WHEN superseded_by IS NULL OR superseded_by = ''
+                        THEN substr(date_checked, 7, 4) || substr(date_checked, 4, 2)
+                             || substr(date_checked, 1, 2) END) AS newest_iso
+        FROM buildings GROUP BY source_channel
+    """).fetchall()
+
+    channels = []
+    for row in rows:
+        row = dict(row) if not isinstance(row, dict) else row
+        name = str(row["source_channel"] or "").strip() or "(unnamed)"
+        live = row["live"] or 0
+        iso = row["newest_iso"] or ""
+        newest = None
+        if len(iso) == 8 and iso.isdigit():
+            try:
+                newest = date(int(iso[0:4]), int(iso[4:6]), int(iso[6:8]))
+            except ValueError:
+                newest = None
+        age = (today - newest).days if newest else None
+        if age is None:
+            state = "unknown"
+        elif age >= CHANNEL_DEAD_DAYS:
+            state = "dead"
+        elif age > CHANNEL_STALE_DAYS:
+            state = "stale"
+        else:
+            state = "ok"
+        channels.append({
+            "channel": name, "live": live, "stored": row["stored"],
+            "last_stock": newest.strftime("%d/%m/%Y") if newest else "",
+            "days_ago": age, "state": state,
+        })
+    channels.sort(key=lambda c: (-(c["days_ago"] or 0), -c["live"]))
+    payload = {
+        "generated": datetime.now().strftime("%d/%m/%Y %H:%M"),
+        "stale_after_days": CHANNEL_STALE_DAYS, "dead_after_days": CHANNEL_DEAD_DAYS,
+        "channels": channels,
+        "needs_signin": [c["channel"] for c in channels if c["state"] in ("stale", "dead")],
+    }
+    (out_dir / "channels.json").write_text(json.dumps(payload), encoding="utf-8")
+    return payload
 
 
 def _write_share_page(app: Path, out_dir: Path):

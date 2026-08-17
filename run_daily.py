@@ -44,6 +44,10 @@ from pathlib import Path
 
 _PARTIAL = []          # steps that partly succeeded (exit 2)
 APP = Path(__file__).resolve().parent
+# Written when a channel read nothing, so CI can fail the run AFTER it has published.
+# A file rather than an exit code: the publish step is gated on the run succeeding, and
+# the channels that DID read must still reach the dashboard. See _chain().
+_PARTIAL_MARKER = APP / "_harvest_partial"
 # Portals that cannot be signed into without a human. Their saved session is the whole
 # mechanism, so its age is the thing worth reporting.
 INTERACTIVE_PORTALS = {"paramount": "invisible reCAPTCHA", "proxima": "2FA"}
@@ -280,6 +284,10 @@ def _chain(args) -> int:
     _benchmark_basis_report()
     failed = []
     _PARTIAL.clear()
+    # Clear last night's marker before the run, not after: left behind, it would fail a
+    # perfectly healthy run and train everyone to ignore the signal — which is the same
+    # way the [FAILED] line came to be ignored for three nights.
+    _PARTIAL_MARKER.unlink(missing_ok=True)
     for label, cmd, optional in steps:
         if not _run(label, cmd, optional):
             failed.append(label)
@@ -297,6 +305,29 @@ def _chain(args) -> int:
         print(f"  PARTIAL: {', '.join(_PARTIAL)} — one or more channels returned nothing.")
         print("  The channels that did read were refreshed and published; fix the failing")
         print("  one and its rows catch up on the next run. See the [FAILED] lines above.")
+        # AND TELL SOMEONE. Until 17 Aug this printed and nothing else: no alert, no
+        # non-zero exit, no marker. E-Agent's sign-in broke on 13 Aug and the next three
+        # nightly runs printed "[FAILED] ... E-Agent: read 0 tonight" and reported SUCCESS
+        # to GitHub — three green ticks over the largest channel, ~4,500 listings, going
+        # stale. Coleen found it when a consultant could not find stock he was looking at
+        # in E-Agent. A degraded step already alerted; a dead CHANNEL, which is worse, did
+        # not.
+        _alert("SPB harvest PARTIAL — a channel returned nothing",
+               "These channels read nothing tonight:\n\n  - "
+               + "\n  - ".join(_PARTIAL)
+               + "\n\nTheir stored rows are now going stale while the dashboard keeps\n"
+                 "serving them as current. The usual cause is an expired sign-in:\n\n"
+                 "  python portal_login.py e_agent\n"
+                 "  python portal_login.py portal_proxima --profile\n\n"
+                 "Last 40 lines of the log:\n\n" + _log_tail())
+        # A marker the CI job can see. The run must still exit 0 here so the publish step
+        # runs — the channels that did read have fresh rows and withholding them helps
+        # nobody — but the job is failed AFTER publishing, so the run goes red and is
+        # noticed. See "Fail the run if a channel died" in daily-harvest.yml.
+        try:
+            _PARTIAL_MARKER.write_text("\n".join(_PARTIAL), encoding="utf-8")
+        except Exception as exc:                                       # noqa: BLE001
+            print(f"  (could not write the partial marker: {exc})")
     if failed:
         print(f"  DAILY RUN FAILED at: {', '.join(failed)}")
         print(f"{'=' * 70}")

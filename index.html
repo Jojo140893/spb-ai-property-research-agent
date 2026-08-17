@@ -647,8 +647,15 @@
              drops the qualifier below 480px, where nav-tabs wraps anyway. -->
         <button class="tab-btn" onclick="showTab('benchmarksTab', this); loadBenchmarks();">Benchmarks<span class="nav-tab-label-full"> (realestate.com.au)</span></button>
         <button class="tab-btn" onclick="showTab('vendorAssetsTab', this); loadVendorAssets();">Vendor Brochures & Details</button>
+        <button class="tab-btn" onclick="showTab('settingsTab', this); loadSettings();">Settings<span id="settingsAlertDot"></span></button>
     </nav>
 </header>
+
+<!-- Shown on EVERY tab, not just Settings. The failure this exists for is silent by
+     nature: the dashboard looks completely normal while a source has stopped sending
+     stock, so a banner that only appears where you already went looking is no banner at
+     all. Hidden entirely when every source is healthy. -->
+<div id="channelBanner" style="display:none;"></div>
 
 <!-- TAB 1: RESEARCH & SCORING -->
 <div id="researchTab" class="view-pane active">
@@ -962,6 +969,28 @@
     </div>
 </div>
 
+<!-- TAB: SETTINGS — where the stock actually comes from, and whether it is still arriving.
+     E-Agent's sign-in expired on 13 Aug 2026 and nothing on screen said so: the dashboard
+     kept serving ~4,500 E-Agent listings as current for three days, and it surfaced only
+     when a consultant could not find, in the app, stock he was looking straight at in
+     E-Agent. The harvest knew — it logged "[FAILED] ... read 0 tonight" every night — but
+     the only person who could see that was whoever opened the CI logs. -->
+<div id="settingsTab" class="view-pane">
+    <div class="panel-card">
+        <div class="panel-header">
+            <span>Data Sources &amp; Sign-in Status</span>
+            <span id="channelsBadge" class="pill pill-recommend">checking…</span>
+        </div>
+        <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">
+            Every listing in this dashboard comes from one of the sources below. A source
+            signs you out from time to time &mdash; when that happens it stops sending new
+            stock, and what is already here quietly goes out of date. This page says when
+            each one last actually delivered a listing.
+        </p>
+        <div id="settingsContent" style="font-size:0.9rem;">Loading…</div>
+    </div>
+</div>
+
 
 <script>
     let currentPayload = null;
@@ -971,6 +1000,146 @@
         document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
         document.getElementById(tabId).classList.add('active');
         btn.classList.add('active');
+    }
+
+    /* ------------------------------------------------ data-source health (Settings)
+     *
+     * A scraped source signs you out eventually — Proxima's session died twice in nine
+     * days, E-Agent's on 13 Aug — and when it does the harvest keeps running, reads
+     * nothing, and the dashboard goes on serving that source's stored listings as though
+     * they were fresh. Nothing looks wrong, which is precisely the problem.
+     *
+     * The signal is "did this source produce a listing recently", taken from the stock
+     * itself (see _export_channel_health). NOT from whether a session file exists: E-Agent's
+     * sat on disk looking valid the whole time the portal was refusing it.
+     */
+    let CHANNELS = null;
+
+    async function loadChannelHealth() {
+        if (CHANNELS) return CHANNELS;
+        try {
+            const res = await fetch('channels.json', { cache: 'no-store' });
+            if (res.status === 401) { sessionExpired(); return null; }
+            if (!res.ok) throw new Error('channels ' + res.status);
+            CHANNELS = await res.json();
+        } catch (e) {
+            console.error('channel health:', e);
+            CHANNELS = null;
+        }
+        return CHANNELS;
+    }
+
+    function paintChannelBanner() {
+        const banner = document.getElementById('channelBanner');
+        const dot = document.getElementById('settingsAlertDot');
+        if (!banner) return;
+        const bad = (CHANNELS && CHANNELS.channels || []).filter(
+            c => c.state === 'stale' || c.state === 'dead');
+        if (!bad.length) {
+            banner.style.display = 'none';
+            if (dot) dot.textContent = '';
+            return;
+        }
+        if (dot) {
+            dot.textContent = ' ●';
+            dot.style.color = bad.some(c => c.state === 'dead') ? '#b91c1c' : '#b45309';
+            dot.title = `${bad.length} data source(s) need attention`;
+        }
+        const worst = bad.some(c => c.state === 'dead') ? 'dead' : 'stale';
+        const names = bad.map(c => `${esc(c.channel)} (${c.days_ago}d)`).join(', ');
+        banner.style.display = '';
+        banner.style.cssText = 'margin:0 0 1rem; padding:0.7rem 1rem; border-radius:8px;'
+            + 'font-size:0.85rem; border:1px solid '
+            + (worst === 'dead' ? '#fecaca; background:#fef2f2; color:#b91c1c'
+                                : '#fed7aa; background:#fffbeb; color:#b45309');
+        banner.innerHTML = `<strong>${bad.length} data source(s) have stopped sending new stock:</strong>
+            ${names}. Their listings are still shown but may be out of date.
+            <a href="#" onclick="document.querySelectorAll('.tab-btn').forEach(b=>{
+                 if(b.textContent.trim().startsWith('Settings')) b.click();}); return false;"
+               style="color:inherit; font-weight:600;">Open Settings</a>`;
+    }
+
+    async function loadSettings() {
+        const el = document.getElementById('settingsContent');
+        const badge = document.getElementById('channelsBadge');
+        await loadChannelHealth();
+        paintChannelBanner();
+        if (!CHANNELS) {
+            el.innerHTML = '<p style="color:var(--text-muted);">Could not read the source status.</p>';
+            if (badge) badge.textContent = 'unknown';
+            return;
+        }
+        const chans = CHANNELS.channels || [];
+        const bad = chans.filter(c => c.state === 'stale' || c.state === 'dead');
+        if (badge) {
+            badge.textContent = bad.length ? `${bad.length} need attention` : 'all sources OK';
+            badge.className = 'pill ' + (bad.length ? 'pill-conditions' : 'pill-recommend');
+        }
+        const pill = s => s === 'ok'
+            ? '<span class="pill pill-recommend">sending stock</span>'
+            : s === 'stale'
+                ? '<span class="pill pill-conditions">signed out?</span>'
+                : s === 'dead'
+                    ? '<span class="pill pill-reject">not sending</span>'
+                    : '<span class="pill pill-muted">unknown</span>';
+        el.innerHTML = `
+          <table style="width:100%; border-collapse:collapse;">
+            <thead><tr style="text-align:left; color:var(--text-muted); font-size:0.8rem;">
+              <th style="padding:0.45rem 0.5rem;">Source</th>
+              <th style="padding:0.45rem 0.5rem;">Status</th>
+              <th style="padding:0.45rem 0.5rem;">Last sent stock</th>
+              <th style="padding:0.45rem 0.5rem; text-align:right;">Listings held</th>
+            </tr></thead>
+            <tbody>${chans.map(c => `
+              <tr style="border-top:1px solid var(--border-light);">
+                <td style="padding:0.55rem 0.5rem;"><strong>${esc(c.channel)}</strong></td>
+                <td style="padding:0.55rem 0.5rem;">${pill(c.state)}</td>
+                <td style="padding:0.55rem 0.5rem;">${c.last_stock ? esc(c.last_stock) : '&mdash;'}
+                  ${c.days_ago === null ? '' :
+                    `<span style="color:var(--text-muted);"> (${c.days_ago} day${c.days_ago === 1 ? '' : 's'} ago)</span>`}</td>
+                <td style="padding:0.55rem 0.5rem; text-align:right;">${(c.live || 0).toLocaleString()}</td>
+              </tr>`).join('')}</tbody>
+          </table>
+          <p style="margin-top:1rem; font-size:0.8rem; color:var(--text-muted);">
+            Checked ${esc(CHANNELS.generated || '')}. A source is flagged after
+            ${CHANNELS.stale_after_days} days without sending anything.
+          </p>
+          ${bad.length ? `
+          <div style="margin-top:1rem; padding:0.9rem 1.1rem; border:1px solid var(--border-light);
+                      border-radius:8px; background:var(--bg-page);">
+            <strong style="color:var(--text-heading);">Signing back in</strong>
+            <p style="margin:0.5rem 0 0; font-size:0.85rem; color:var(--text-body);">
+              Signing in has to happen on the machine that runs the nightly harvest &mdash;
+              it drives a real browser against the builder's own portal, which this
+              dashboard cannot do from here. Send this to Ahsan, or run it on that machine:
+            </p>
+            <pre style="margin:0.6rem 0 0; padding:0.6rem 0.8rem; background:var(--surface-white);
+                        border:1px solid var(--border-light); border-radius:6px;
+                        font-size:0.78rem; overflow-x:auto;">${
+              bad.map(c => fixCommandFor(c.channel)).filter(Boolean).map(esc).join('\n')
+            }
+python state_sync.py push</pre>
+            <p style="margin:0.6rem 0 0; font-size:0.8rem; color:var(--text-muted);">
+              Once signed in, that source starts sending again on the next nightly run and
+              this page clears itself.
+            </p>
+          </div>` : ''}`;
+    }
+
+    /* The actual command that fixes each source, so the instructions are copy-pasteable
+       rather than something to go and look up.
+
+       NOT one command with the channel name substituted in. The mailbox is not a portal
+       and has no saved browser session — `portal_login.py email_inbox` is not a real
+       command, and printing it would send someone to run something that cannot work.
+       Returns null where there is no single command, and the caller drops the line. */
+    function fixCommandFor(channel) {
+        const c = String(channel || '').toLowerCase();
+        if (c.includes('e-agent') || c.includes('e agent')) return 'python portal_login.py e_agent';
+        if (c.includes('proxima')) return 'python portal_login.py portal_proxima --profile';
+        if (c.includes('email')) return '# digital@ mailbox: re-check IMAP with  python setup_credentials.py email_inbox';
+        if (c.includes('portal')) return 'python portal_login.py            # then pick the builder from the list';
+        return null;
     }
 
     async function loadBuilderDirectory() {
@@ -3387,6 +3556,11 @@ ${cards}
 
     loadBuilderDirectory();
     runResearchAgent();
+
+    // On load, on whatever tab happens to be open. The whole point is that a source
+    // going quiet is invisible — waiting for someone to open Settings would reproduce
+    // the failure it exists to catch.
+    loadChannelHealth().then(paintChannelBanner);
 </script>
 
 </body>
