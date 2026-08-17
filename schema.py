@@ -203,3 +203,9 @@ class CandidateProperty:
     # invented from prose.
     incentive_amount: float = 0.0
     incentive_text: str = ""
+
+    # The estate/development the lot sits in — "Denman – Highfields Estate". A row of its
+    # own on the comparison Coleen's team actually sends. NOT developer_name, which for
+    # builder-scope rows holds a BUILDER, and no client document may name one (Colin,
+    # 17 Aug).
+    estate_context: str = ""

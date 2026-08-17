@@ -247,6 +247,7 @@ class KommoPropertyResearchAgent:
                 # The rebate, for the comparison one-pager's Rebate / Effective Price.
                 incentive_amount=coerce_number(raw_pkg.get('incentive_amount'), 0.0) or 0.0,
                 incentive_text=str(raw_pkg.get('incentive_text') or ''),
+                estate_context=str(raw_pkg.get('estate_context') or ''),
                 amenities_summary=raw_pkg.get('amenities_summary', 'Close to schools, train station & town centre.'),
                 builder_confidence_rating=b_rating,
                 source_channel=raw_pkg.get('source_channel', 'E-Agent / Builder Portal'),

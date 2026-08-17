@@ -42,14 +42,19 @@ for (const [name, props] of [
 ]) {
   const h = comparisonDocument(props);
   check(name + ' renders a document', h.length > 500, h.length);
-  check(name + ' one table row per option',
-    (h.match(/<tr/g) || []).length === props.length + 1, (h.match(/<tr/g) || []).length);
+  // The table is TRANSPOSED — features down the side, options across the top — to match
+  // the document Coleen's team sends. So rows count FEATURES and columns count options.
+  check(name + ' one column per option',
+    (h.match(/OPTION \d+/g) || []).length === props.length,
+    (h.match(/OPTION \d+/g) || []).length);
   check(name + ' one detail block per option',
     (h.match(/class="opt[ "]/g) || []).length === props.length);
   check(name + ' exactly one preferred tag',
     (h.match(/class="tag"/g) || []).length === 1, (h.match(/class="tag"/g) || []).length);
-  check(name + ' exactly one highlighted row',
-    (h.match(/tr class="best"/g) || []).length === 1);
+  // One highlighted CELL per feature row: the preferred option's whole column.
+  check(name + ' the preferred column is highlighted throughout',
+    (h.match(/td class="best"/g) || []).length === (h.match(/th class="feat"/g) || []).length,
+    (h.match(/td class="best"/g) || []).length);
 }
 
 const h4 = comparisonDocument([full, sparse, hostile, full]);
@@ -65,10 +70,10 @@ check('a missing price is never rendered as $0', !/\$0\b/.test(body));
 
 console.log('\n--- rebate and effective price ---');
 check('effective price = package - rebate ($718,500)', h4.includes('$718,500'));
-check('rebate columns appear when any option has one', h4.includes('<th>Rebate</th>'));
+check('a Rebate row appears when any option has one', h4.includes('>Rebate<'));
 const noReb = comparisonDocument([{ ...full, incentive_amount: 0, incentive_text: '' }, sparse]);
-check('rebate columns are omitted when none does',
-  !noReb.includes('<th>Rebate</th>') && !noReb.includes('Effective Price'));
+check('the Rebate row is omitted when none does',
+  !noReb.includes('>Rebate<') && !noReb.includes('>Effective Price<'));
 
 console.log('\n--- untrusted vendor text cannot execute ---');
 check('no raw <script survives', !body.includes('<scr' + 'ipt'), 'SCRIPT INJECTED');

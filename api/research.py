@@ -60,6 +60,10 @@ def _shortlist_entry(p):
         # so the document can say what was offered without inventing a figure.
         'incentive_amount': getattr(p, 'incentive_amount', 0.0) or 0.0,
         'incentive_text': getattr(p, 'incentive_text', '') or '',
+        # Rows on the comparison Coleen's team sends: Estate, Land Price, Build Price.
+        'estate_context': getattr(p, 'estate_context', '') or '',
+        'land_price': p.price_breakdown.land_price,
+        'build_price': p.price_breakdown.build_price,
         'lot_address': p.lot_address,
         'suburb': p.suburb,
         'state': p.state,
