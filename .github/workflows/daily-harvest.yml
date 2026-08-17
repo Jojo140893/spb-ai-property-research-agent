@@ -224,7 +224,16 @@ jobs:
         if: always()
         run: |
           if [ -f _harvest_partial ]; then
-            echo "::error::A channel returned nothing tonight: $(tr '\n' ' ' < _harvest_partial)"
+            # NAME THE CHANNEL, not the step. The marker carries run_daily's STEP labels
+            # ("1/7  Harvest stock (E-Agent + portals + digital email)"), because that is
+            # all run_daily sees — harvest_buildings knows which channel died but only
+            # signals it through an exit code. The first run of this alert therefore said
+            # a channel called "1/7 Harvest stock..." had died, which names every channel
+            # and so names none. harvest_buildings prints the real thing to the log:
+            #     - Direct Builder Portal (live): read 0 tonight, 388 listing(s) already stored
+            DEAD=$(grep -oE "^ +- [^:]+: read 0 tonight" _daily.log 2>/dev/null \
+                   | sed -E 's/^ +- //; s/: read 0 tonight//' | sort -u | paste -sd', ' -)
+            echo "::error::A channel returned nothing tonight: ${DEAD:-see the harvest summary below}"
             echo "Its stored rows are going stale while the dashboard serves them as current."
             echo "The usual cause is an expired sign-in. On the laptop:"
             echo "    python portal_login.py e_agent"
