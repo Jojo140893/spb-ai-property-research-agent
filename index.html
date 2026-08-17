@@ -2016,32 +2016,106 @@
        index without re-running the search. "Check the benchmark" reads this. */
     let LAST_SHORTLIST = [];
 
-    function comparisonKey() {
-        const picked = [...document.querySelectorAll('.cmp-box:checked')]
-            .map(el => parseInt(el.dataset.idx, 10)).sort((a, b) => a - b);
-        if (picked.length !== 2) return null;
-        return `${picked[0]}-${picked[1]}`;
+    /* ------------------------------------------------ the comparison selection
+     *
+     * Coleen, 14 Aug: "when i filter buildings then i select the building i like and then
+     * i reset the filter and apply another filter and select the building both buildings
+     * should compare ... also i can select more then 2 buildings to compare not just 2".
+     *
+     * That is three requirements the previous design could not meet, and each broke it in
+     * a different way:
+     *
+     *   MORE THAN TWO — the old picker physically un-ticked a third box, and the API
+     *   pre-rendered one HTML document per PAIR. Pairs do not generalise: a 4-option
+     *   one-pager is not six two-option ones.
+     *
+     *   ACROSS SEARCHES — selection was keyed on the row's position in the results
+     *   (data-idx), so "option 3" meant a different building the moment the brief
+     *   changed. It is keyed on content_hash now, and the RECORD is stored beside the
+     *   key: after a second search the first search's rows are gone from memory, so a
+     *   key alone would name a building whose data we could no longer render.
+     *
+     *   AT ALL — the API pre-rendered at most MAX_COMPARISON_PAIRS (10) documents, and
+     *   the shortlist is no longer capped at 5. On a 37-option search that is 10 of 666
+     *   pairs, all of them "rank 1 vs something", so almost every pairing a consultant
+     *   ticked found nothing and the button sat dead reading "Comparison unavailable".
+     *   That is the bug Coleen reported. Nothing is pre-rendered now — the document is
+     *   built here, from data the browser already has, so N options cost one render.
+     *
+     * localStorage, like the Building Stock tab's marked set (see PICK_STORE): the
+     * deployed site is a static snapshot with no per-user server state, and a selection
+     * that did not survive a reload would not survive the workflow either.
+     */
+    const SELECT_STORE = 'spb.compare.v1';
+    /* hash -> the shortlist record, so a selection outlives the search that made it. */
+    let SELECTED = new Map();
+
+    /* Only what the comparison document renders. Storing the whole record would carry
+     * the rejection log, every risk and the scoring breakdown into localStorage for each
+     * pick, and localStorage is a few MB shared with the marked-listings set. */
+    const SELECT_FIELDS = ['content_hash', 'lot_address', 'suburb', 'state', 'builder_name',
+        'house_design', 'bedrooms', 'bathrooms', 'car_spaces', 'storeys', 'land_size_sqm',
+        'house_size_sqm', 'advertised_package_price', 'realistic_total_price',
+        'incentive_amount', 'incentive_text', 'estate_context', 'score', 'recommendation',
+        'title_status', 'date_checked', 'source_link', 'benchmark'];
+
+    const slim = p => Object.fromEntries(
+        SELECT_FIELDS.filter(k => p[k] !== undefined).map(k => [k, p[k]]));
+
+    function loadSelected() {
+        try {
+            const raw = JSON.parse(localStorage.getItem(SELECT_STORE) || 'null');
+            if (raw && typeof raw === 'object') SELECTED = new Map(Object.entries(raw));
+        } catch (e) { SELECTED = new Map(); }
     }
+
+    function saveSelected() {
+        try {
+            localStorage.setItem(SELECT_STORE, JSON.stringify(Object.fromEntries(SELECTED)));
+        } catch (e) {
+            // Quota. Say so rather than silently dropping a pick the consultant can see
+            // ticked on screen.
+            alert('Could not save the selection — this browser’s storage is full. '
+                + 'Clear the selection or the marked listings and try again.');
+        }
+    }
+
+    // At load, not on first search: the selection is the consultant's, and it has to be
+    // there when the page reopens, exactly as the marked-listings set is.
+    loadSelected();
 
     function paintCompareBar() {
         const btn = document.getElementById('openComparison');
+        const clear = document.getElementById('clearComparison');
+        const n = SELECTED.size;
+        if (clear) clear.style.display = n ? '' : 'none';
         if (!btn) return;
-        const n = document.querySelectorAll('.cmp-box:checked').length;
-        const key = comparisonKey();
-        const have = key && COMPARISONS[key];
-        btn.disabled = !have;
-        btn.textContent = n === 2 ? (have ? 'Compare these two' : 'Comparison unavailable')
-                                  : `Compare two (${n} of 2 ticked)`;
+        btn.disabled = n < 2;
+        btn.textContent = n === 0 ? 'Compare selected (none yet)'
+                        : n === 1 ? 'Compare selected (1 — pick another)'
+                                  : `Compare selected (${n})`;
+        btn.title = n < 2
+            ? 'Tick "compare" on two or more options. Picks are kept when you run another search.'
+            : `Build one comparison report across these ${n} options.`;
     }
 
     document.addEventListener('change', e => {
-        if (e.target && e.target.classList && e.target.classList.contains('cmp-box')) {
-            // Three ticks is ambiguous, so the oldest gives way rather than the click
-            // being silently ignored.
-            const boxes = [...document.querySelectorAll('.cmp-box:checked')];
-            if (boxes.length > 2) boxes[0].checked = false;
-            paintCompareBar();
+        const el = e.target;
+        if (!el || !el.classList || !el.classList.contains('cmp-box')) return;
+        const hash = el.dataset.hash || '';
+        if (!hash) return;                       // no identity: cannot be carried, see render
+        if (el.checked) {
+            const prop = (LAST_SHORTLIST || []).find(p => p.content_hash === hash);
+            // Re-ticking something already held keeps the stored copy rather than
+            // dropping it: the record is only in LAST_SHORTLIST while its own search is
+            // on screen.
+            if (prop) SELECTED.set(hash, slim(prop));
+            else if (!SELECTED.has(hash)) return;
+        } else {
+            SELECTED.delete(hash);
         }
+        saveSelected();
+        paintCompareBar();
     });
 
     /* Colin, 5 Aug: "The idea is to avoid all that extra, because then I have to go back
@@ -2427,8 +2501,10 @@
                         <div class="card-top-row">
                             <div>
                                 <div class="prop-title-text">
-                                  <label class="cmp-pick" title="Tick two options to compare them side by side">
-                                    <input type="checkbox" class="cmp-box" data-idx="${idx}"> compare
+                                  <label class="cmp-pick" title="Tick any number of options — from this search or an earlier one — then use 'Compare selected' to build one report.">
+                                    <input type="checkbox" class="cmp-box" data-hash="${esc(prop.content_hash || '')}"
+                                           ${prop.content_hash && SELECTED.has(prop.content_hash) ? 'checked' : ''}
+                                           ${prop.content_hash ? '' : 'disabled title="This listing has no stable identifier, so it cannot be carried between searches."'}> compare
                                   </label>
                                   Rank #${idx+1}: ${prop.lot_address}</div>
                                 <div class="prop-subtitle-text">${prop.suburb}, ${prop.state} | Builder: <strong>${prop.builder_name || NOT_STATED}</strong>${prop.house_design ? ` (${prop.house_design})` : ''}</div>
@@ -2588,16 +2664,37 @@
                         <button id="openClientReport" class="btn-submit" style="width:auto; padding:0.5rem 1rem; margin:0;">Open Client Report</button>
                         <button id="openComparison" class="btn-submit" disabled
                                 style="width:auto; padding:0.5rem 1rem; margin:0 0 0 0.5rem;"
-                                title="Tick 'compare' on exactly two options above">Compare two</button>
+                                title="Tick 'compare' on two or more options above">Compare selected</button>
+                        <button id="clearComparison" type="button"
+                                style="width:auto; padding:0.5rem 0.8rem; margin:0 0 0 0.4rem; display:none;
+                                       background:none; border:1px solid var(--border-strong, #cbd5e1);
+                                       border-radius:6px; cursor:pointer; font:inherit; color:var(--text-muted);"
+                                title="Forget every option ticked for comparison, including ones from earlier searches">Clear selection</button>
                     `;
                     resultsDiv.appendChild(bar);
                     document.getElementById('openClientReport').onclick = () => {
                         const w = window.open('', '_blank');
+                        // Same null guard as the comparison: a blocked popup made this
+                        // throw into the void, so the button looked simply dead.
+                        if (!w) {
+                            alert('Your browser blocked the report window. Allow pop-ups for this site and try again.');
+                            return;
+                        }
                         w.document.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>SPB Client Report</title></head><body>' + (data.client_report_html || '<p>No report generated.</p>') + '</body></html>');
                         w.document.close();
                     };
                     const cmpBtn = document.getElementById('openComparison');
                     if (cmpBtn) cmpBtn.onclick = openComparisonReport;
+                    const clrBtn = document.getElementById('clearComparison');
+                    if (clrBtn) clrBtn.onclick = () => {
+                        SELECTED.clear();
+                        saveSelected();
+                        document.querySelectorAll('.cmp-box:checked').forEach(b => { b.checked = false; });
+                        paintCompareBar();
+                    };
+                    // Re-tick anything still selected from an earlier search, and paint the
+                    // count — the cards were just rebuilt, so their checked state is stale.
+                    paintCompareBar();
                 }
 
                 // Filtered Rejection Log.
@@ -2693,13 +2790,168 @@
         }
     }
 
+    /* The one-page comparison, laid out like the example Coleen sent on 14 Aug:
+     * options as ROWS with Location / Land / House / Package / Rebate / Effective Price,
+     * a preferred-option banner, then a block per option.
+     *
+     * Built in the browser, not on the server, for three reasons that all came out of the
+     * 14 Aug diagnosis: the shortlist is uncapped so pre-rendering every combination is
+     * unbounded (a measured 544-option search already returns a 2.55 MB response); the
+     * selection spans searches, so no single request has all the data; and the deployed
+     * site is static behind an edge login, where adding an endpoint means another thing
+     * to authenticate. Everything below is already in the browser.
+     *
+     * NOTHING HERE IS INVENTED. A field the source never stated renders as an em dash.
+     * The example report carries suburb infrastructure prose ("major planned growth area
+     * with town centres, schools ... transport/road planning") and per-option verdicts;
+     * we hold no such data, and a fabricated infrastructure claim in a document a buyer
+     * acts on is not a formatting shortcut, it is a false statement about a purchase. So
+     * those are consultant-written: the document opens with editable notes fields and a
+     * print button, and what Coleen types is what appears.
+     */
+    const EFFECTIVE = p => {
+        const price = Number(p.advertised_package_price) || 0;
+        const reb = Number(p.incentive_amount) || 0;
+        return price ? price - reb : 0;
+    };
+
+    function comparisonDocument(props) {
+        const dash = '<span class="na">&mdash;</span>';
+        const m = v => (Number(v) > 0) ? '$' + Math.round(Number(v)).toLocaleString() : dash;
+        const sq = v => (Number(v) > 0) ? Math.round(Number(v)).toLocaleString() + ' m&sup2;' : dash;
+        const t = v => { const s = String(v ?? '').trim(); return s ? esc(s) : dash; };
+
+        // "Preferred" is the top SCORE — the engine's own ranking, not a new judgement
+        // invented for this document. Ties keep the earlier pick rather than reordering.
+        //
+        // Tracked by INDEX, not by object identity. `p === best` marked every card when
+        // the same record appeared twice, which a Map-backed selection cannot produce
+        // today but which any future caller passing a plain array could — and the failure
+        // is silent: eight cards all badged "SPB PREFERRED".
+        let bestIdx = 0;
+        props.forEach((p, i) => {
+            if ((Number(p.score) || 0) > (Number(props[bestIdx].score) || 0)) bestIdx = i;
+        });
+        const best = props[bestIdx];
+        const anyRebate = props.some(p => Number(p.incentive_amount) > 0);
+
+        const head = ['Option', 'Location', 'Builder', 'Land', 'House', 'Package']
+            .concat(anyRebate ? ['Rebate', 'Effective Price'] : []);
+
+        const rows = props.map((p, i) => {
+            const cells = [
+                `<strong>${i + 1}</strong>`,
+                t(p.suburb || '') + (p.state ? ', ' + esc(p.state) : ''),
+                t(p.builder_name),
+                sq(p.land_size_sqm),
+                sq(p.house_size_sqm),
+                m(p.advertised_package_price),
+            ].concat(anyRebate ? [
+                Number(p.incentive_amount) > 0 ? m(p.incentive_amount)
+                    : (String(p.incentive_text || '').trim() ? esc(p.incentive_text) : dash),
+                m(EFFECTIVE(p)),
+            ] : []);
+            return `<tr${i === bestIdx ? ' class="best"' : ''}>` +
+                cells.map(c => `<td>${c}</td>`).join('') + '</tr>';
+        }).join('');
+
+        const blocks = props.map((p, i) => `
+          <section class="opt${i === bestIdx ? ' opt-best' : ''}">
+            <h3>Option ${i + 1} &mdash; ${t(p.lot_address)}
+              ${i === bestIdx ? '<span class="tag">SPB PREFERRED</span>' : ''}</h3>
+            <div class="facts">
+              <span><b>Location</b> ${t(p.suburb)}${p.state ? ', ' + esc(p.state) : ''}</span>
+              <span><b>Builder</b> ${t(p.builder_name)}</span>
+              <span><b>Design</b> ${t(p.house_design)}</span>
+              <span><b>Bed / Bath / Car</b> ${t(p.bedrooms)} / ${t(p.bathrooms)} / ${t(p.car_spaces)}</span>
+              <span><b>Land / House</b> ${sq(p.land_size_sqm)} / ${sq(p.house_size_sqm)}</span>
+              <span><b>Package</b> ${m(p.advertised_package_price)}</span>
+              ${Number(p.incentive_amount) > 0 || String(p.incentive_text || '').trim()
+                  ? `<span><b>Rebate</b> ${Number(p.incentive_amount) > 0
+                        ? m(p.incentive_amount) : esc(p.incentive_text)}</span>` : ''}
+              <span><b>Title</b> ${t(p.title_status)}</span>
+              <span><b>SPB score</b> ${t(p.score)} / 100</span>
+              <span><b>Last checked</b> ${t(p.date_checked)}</span>
+            </div>
+            <label class="note"><b>Consultant notes</b>
+              <textarea rows="3" placeholder="Investment strengths, infrastructure, trade-offs — your words. Nothing is pre-filled, because the system holds no suburb commentary and will not invent any."></textarea>
+            </label>
+          </section>`).join('');
+
+        return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<title>SPB Home &amp; Land Package Comparison</title>
+<style>
+ :root{--ink:#0f172a;--body:#334155;--muted:#64748b;--line:#e2e8f0;--accent:#1e40af;--bg:#f8fafc}
+ *{box-sizing:border-box}
+ body{margin:0;padding:28px;background:#fff;color:var(--body);
+      font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+ h1{margin:0;font-size:20px;color:var(--ink);letter-spacing:-.01em}
+ .sub{margin:4px 0 16px;color:var(--muted);font-size:12px}
+ .banner{background:var(--bg);border:1px solid var(--line);border-left:4px solid var(--accent);
+         border-radius:6px;padding:11px 14px;margin:0 0 18px}
+ .banner b{color:var(--accent)}
+ table{border-collapse:collapse;width:100%;margin:0 0 20px;font-size:12.5px}
+ th,td{border:1px solid var(--line);padding:7px 9px;text-align:left}
+ th{background:var(--bg);color:var(--ink);font-weight:600}
+ tr.best td{background:#f0f7ff}
+ .na{color:#94a3b8}
+ .opt{border:1px solid var(--line);border-radius:6px;padding:12px 14px;margin:0 0 12px;
+      break-inside:avoid}
+ .opt-best{border-color:var(--accent)}
+ .opt h3{margin:0 0 8px;font-size:14px;color:var(--ink)}
+ .tag{background:var(--accent);color:#fff;font-size:10px;padding:2px 7px;border-radius:3px;
+      margin-left:6px;vertical-align:middle;letter-spacing:.03em}
+ .facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:5px 16px;
+        margin:0 0 9px}
+ .facts b{color:var(--muted);font-weight:600;display:block;font-size:10.5px;
+          text-transform:uppercase;letter-spacing:.03em}
+ .note{display:block;margin-top:8px}
+ .note b{color:var(--muted);font-size:10.5px;text-transform:uppercase;letter-spacing:.03em}
+ textarea{width:100%;margin-top:4px;padding:7px;border:1px solid var(--line);border-radius:5px;
+          font:inherit;color:var(--body);resize:vertical}
+ .foot{margin-top:18px;padding-top:11px;border-top:1px solid var(--line);
+       color:var(--muted);font-size:11px}
+ .bar{margin:0 0 16px}
+ .bar button{font:inherit;padding:7px 14px;border:0;border-radius:6px;background:var(--accent);
+             color:#fff;cursor:pointer}
+ @media print{.bar{display:none}
+   textarea{border:0;padding:0;resize:none;height:auto}
+   .opt{break-inside:avoid}}
+</style></head><body>
+<div class="bar"><button onclick="window.print()">Print / Save as PDF</button></div>
+<h1>HOME &amp; LAND PACKAGE COMPARISON</h1>
+<div class="sub">Smart Property Buying &middot; ${props.length} option(s) compared &middot;
+  prepared ${esc(new Date().toLocaleDateString('en-AU'))}</div>
+<div class="banner"><b>SPB PREFERRED OPTION:</b> Option ${bestIdx + 1} &mdash;
+  ${esc(best.lot_address || '')}${best.suburb ? ', ' + esc(best.suburb) : ''}
+  &middot; ${m(best.advertised_package_price)}${Number(best.incentive_amount) > 0
+    ? ' less ' + m(best.incentive_amount) + ' rebate = ' + m(EFFECTIVE(best)) + ' effective' : ''}
+  <div style="color:var(--muted);font-size:11px;margin-top:3px">Highest SPB score
+    (${esc(best.score)}/100) of the ${props.length} selected. Scores weigh budget fit,
+    requirement match, value, location and builder confidence.</div></div>
+<h2 style="font-size:14px;color:var(--ink);margin:0 0 7px">Package Comparison</h2>
+<table><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead>
+<tbody>${rows}</tbody></table>
+<h2 style="font-size:14px;color:var(--ink);margin:0 0 7px">Option Detail</h2>
+${blocks}
+<div class="foot">Figures are as published by the builder or developer at the date shown
+  against each option and are not a valuation or an offer. A dash means the source did not
+  state that figure &mdash; it has not been estimated. Confirm all inclusions, titles and
+  rebate conditions with the builder before a client acts.</div>
+</body></html>`;
+    }
+
     function openComparisonReport() {
-        const key = comparisonKey();
-        const html = key && COMPARISONS[key];
-        if (!html) return;
+        if (SELECTED.size < 2) return;
+        const props = [...SELECTED.values()];
         const w = window.open('', '_blank');
-        w.document.write('<!DOCTYPE html><html><head><meta charset="utf-8">'
-            + '<title>SPB Builder Comparison</title></head><body>' + html + '</body></html>');
+        // A blocked popup returns null, and the old code went straight to w.document —
+        // a TypeError swallowed by the event loop, so the button visibly did nothing.
+        if (!w) {
+            alert('Your browser blocked the report window. Allow pop-ups for this site and try again.');
+            return;
+        }
+        w.document.write(comparisonDocument(props));
         w.document.close();
     }
 

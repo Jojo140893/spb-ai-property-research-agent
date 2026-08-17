@@ -50,6 +50,16 @@ def _shortlist_entry(p):
     """Identical field-for-field to server.py's shortlist serialisation."""
     return {
         'property_id': p.property_id,
+        # NOT property_id — that is "PROP-{n}" assigned per search, so it names a
+        # different building in every run. The browser keys its selection on this so a
+        # consultant can mark a lot, change the brief, search again, and still be holding
+        # the same lot. See SNAPSHOT_FIELDS in api/_candidates.py.
+        'content_hash': getattr(p, 'content_hash', '') or '',
+        # The Rebate / Effective Price columns of the comparison one-pager. Amount is 0
+        # when the source only described an incentive in words; the text travels with it
+        # so the document can say what was offered without inventing a figure.
+        'incentive_amount': getattr(p, 'incentive_amount', 0.0) or 0.0,
+        'incentive_text': getattr(p, 'incentive_text', '') or '',
         'lot_address': p.lot_address,
         'suburb': p.suburb,
         'state': p.state,

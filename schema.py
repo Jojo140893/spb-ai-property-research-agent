@@ -188,3 +188,18 @@ class CandidateProperty:
     # price list / email — because a link labelled "the lot" that opens a spreadsheet
     # is worse than no link. Built by provenance.py; None when the row has nothing.
     source_link: Optional[Dict[str, str]] = None
+
+    # The listing's durable identity, carried through from the snapshot so a consultant's
+    # selection survives the search that produced it. property_id above is "PROP-{n}",
+    # assigned per run, so it CANNOT be used for this: PROP-1 means a different building
+    # in every search. Optional because a candidate built by hand (tests, a brief with no
+    # stored row behind it) legitimately has none — a missing hash means "not selectable",
+    # never "selects everything".
+    content_hash: str = ""
+
+    # The rebate/incentive exactly as the source stated it, for the Rebate and Effective
+    # Price columns of the comparison one-pager. Amount is 0.0 when the source named an
+    # incentive in words only, so the text is kept beside it rather than a number being
+    # invented from prose.
+    incentive_amount: float = 0.0
+    incentive_text: str = ""

@@ -163,6 +163,12 @@ class PropertyAgentRequestHandler(http.server.SimpleHTTPRequestHandler):
                     'shortlist': [
                         {
                             'property_id': p.property_id,
+                            # Durable identity for the browser's selection — property_id
+                            # is per-run. Kept in step with api/research.py's
+                            # _shortlist_entry; see the note at the foot of this dict.
+                            'content_hash': getattr(p, 'content_hash', '') or '',
+                            'incentive_amount': getattr(p, 'incentive_amount', 0.0) or 0.0,
+                            'incentive_text': getattr(p, 'incentive_text', '') or '',
                             'lot_address': p.lot_address,
                             'suburb': p.suburb,
                             'state': p.state,

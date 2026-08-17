@@ -87,12 +87,28 @@ def _market_section(p) -> str:
 class ClientReportGenerator:
     @staticmethod
     def generate_html(brief: ClientBrief, shortlist: List[CandidateProperty],
-                      date_str: str = "") -> str:
+                      date_str: str = "", limit: int = 3) -> str:
+        """`limit` options, best first. Pass limit=0 to render every one given.
+
+        WAS a hard `shortlist[:3]`. That was written when the shortlist itself was capped
+        at 5 (kommo_agent's old `final_pool[:5]`), so "top 3 of 5" was a deliberate
+        editorial choice. The cap was lifted on 13 Aug and nothing here changed, so it
+        silently became "top 3 of 544" — and the sentence below still printed the
+        TRUNCATED count, telling a client we had reviewed 3 options when the search had
+        ranked hundreds. Coleen, 14 Aug: "the reporting feature is restricted to the top 3
+        identified properties. We require the ability to generate reports for any specific
+        property selected."
+
+        The decision now belongs to the caller, which is the only place that knows whether
+        this is the automatic post-search document (3 is a sensible default for something
+        nobody asked for) or a consultant's own selection (render exactly what was
+        picked). Default unchanged so the existing document is byte-identical.
+        """
         date_str = date_str or datetime.now().strftime("%d/%m/%Y")
-        top3 = shortlist[:3]
+        selected = list(shortlist) if not limit or limit <= 0 else shortlist[:limit]
 
         cards = []
-        for rank, p in enumerate(top3, 1):
+        for rank, p in enumerate(selected, 1):
             pb = p.price_breakdown
             bm = getattr(p, 'benchmark', None) or {}
             avg_market = bm.get('avg_market_price')
@@ -252,7 +268,7 @@ class ClientReportGenerator:
 </header>
 <p>Based on your requirements ({brief.bedrooms_min}+ bedrooms, {brief.bathrooms_min}+ bathrooms,
 {brief.car_spaces_min}+ car spaces{', ' + ', '.join(_esc(s) for s in brief.primary_suburbs) if brief.primary_suburbs else ''}),
-we reviewed available stock and shortlisted the following {len(top3)} option(s) for you.</p>
+we reviewed available stock and shortlisted the following {len(selected)} option(s) for you.</p>
 {''.join(cards)}
 <footer>
   <strong>Disclaimer.</strong>

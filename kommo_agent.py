@@ -240,6 +240,13 @@ class KommoPropertyResearchAgent:
                 # Carried through so a recommendation can be traced to its source in one
                 # click — Colin lost eight minutes of the 5 Aug call to not having it.
                 source_link=raw_pkg.get('source_link'),
+                # Durable identity, so a consultant can mark this lot in one search and
+                # still have it marked in the next. property_id above is per-run and
+                # cannot do this. Empty string when the candidate has no stored row.
+                content_hash=str(raw_pkg.get('content_hash') or ''),
+                # The rebate, for the comparison one-pager's Rebate / Effective Price.
+                incentive_amount=coerce_number(raw_pkg.get('incentive_amount'), 0.0) or 0.0,
+                incentive_text=str(raw_pkg.get('incentive_text') or ''),
                 amenities_summary=raw_pkg.get('amenities_summary', 'Close to schools, train station & town centre.'),
                 builder_confidence_rating=b_rating,
                 source_channel=raw_pkg.get('source_channel', 'E-Agent / Builder Portal'),
@@ -319,9 +326,19 @@ class KommoPropertyResearchAgent:
                 'summary_markdown': summary_md
             })
 
-        # Step 12b: Client-facing report (2026-07-22 requirement) — top 3 options
+        # Step 12b: Client-facing report (2026-07-22 requirement) — the leading options
         # with purchase price vs market average, rent, yield, and reasons.
-        client_report_html = ClientReportGenerator.generate_html(brief, shortlist) if shortlist else ""
+        #
+        # The count is stated HERE rather than hidden inside the generator, because it is
+        # an editorial decision about a client-facing document and it went wrong once by
+        # being invisible: it was `shortlist[:3]` against a shortlist capped at 5, and
+        # when that cap was lifted it quietly became "top 3 of 544". This is the automatic
+        # document produced for every search, so a short default is right; a consultant
+        # comparing a hand-picked set uses the comparison report instead, which renders
+        # exactly what was selected.
+        _report_options = int(os.environ.get("SPB_REPORT_OPTIONS", "3") or 3)
+        client_report_html = ClientReportGenerator.generate_html(
+            brief, shortlist, limit=_report_options) if shortlist else ""
         client_report_path = ""
         if client_report_html:
             # Sanitised AND bounded. Stripping unsafe characters was not enough: a long

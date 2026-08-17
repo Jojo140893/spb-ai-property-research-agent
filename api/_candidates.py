@@ -46,6 +46,16 @@ from provenance import primary_source_link
 # Exactly the fields build_web.py exports to stock.json, so both readers agree and
 # neither can reach an internal column (content_hash, dedup_key, source_text).
 SNAPSHOT_FIELDS = [
+    # THE ONE IDENTIFIER A SELECTION CAN BE KEYED ON. Everything else about a listing
+    # moves: price is repriced, availability flips, the address is re-parsed, and the
+    # shortlist's own property_id is "PROP-1, PROP-2, ..." assigned per search
+    # (kommo_agent.py), so PROP-1 in one search and PROP-1 in the next are DIFFERENT
+    # buildings. Coleen's workflow is to filter, mark, change the filter, mark again, then
+    # compare across both — which silently compares the wrong properties on any per-run id.
+    # content_hash survives a re-harvest, which is exactly why the Building Stock tab has
+    # keyed its marked-listings set on it since 30 Jul. Selected here so the SQLite reader
+    # returns it too; stock.json has always carried it.
+    "content_hash",
     "builder_name", "lot_address", "street_address", "lot_number",
     # suburb_source travels with the blank so the coverage sentence can still separate
     # "the source never gave one" from "the source gave something that is not a place".
@@ -629,6 +639,18 @@ def build_packages(brief_dict, rows, today=None):
         listing_ref = (str(row.get("listing_url") or "").strip()
                        or str(row.get("brochure_url") or "").strip())
         entries.append((seen_at, {
+            # Carried so a consultant's selection can outlive the search that produced it
+            # — see the note on SNAPSHOT_FIELDS. Never rendered; it is an identity, not a
+            # fact about the property.
+            "content_hash": str(row.get("content_hash") or "").strip(),
+            # The rebate, as the source stated it. Coleen's target one-pager has a "Rebate"
+            # and an "Effective Price" column ($728,500 package - $10,000 rebate =
+            # $718,500), and neither could be filled because these two never left the
+            # snapshot reader — the pipeline used incentives only to FILTER
+            # (want_incentive), never to report. Effective price is derived at render time
+            # rather than stored, so it cannot drift from the two numbers behind it.
+            "incentive_amount": _num(row.get("incentive_amount")) or 0.0,
+            "incentive_text": str(row.get("incentive_text") or "").strip(),
             "builder_name": builder,
             # The label a client reads. Prefer the street address recovered from the
             # row's own text (stocklist_reparse), because on 47% of stock lot_address is
