@@ -245,11 +245,42 @@ class EAgentSource(PropertySource):
     def channel_name(self) -> str:
         return "E-Agent Portal (live)"
 
+    def _authenticated(self, scraper: PlaywrightScraper) -> bool:
+        """Signed in iff the stocklist files are actually reachable.
+
+        NOT scraper.is_logged_in(). E-Agent renders no "Log Out", "My Account", "My
+        Profile" or "Dashboard" anywhere, signed in or out — so the configured
+        `logged_in_selector` ("text=Log Out, text=My Account", portal_config.py) and the
+        shared LOGGED_IN_JS marker list both match nothing on a perfectly authenticated
+        page. search() below has always known this and judges authentication functionally
+        (see the comment at "E-Agent shows no reliable Log Out marker"); _login did not,
+        and used the marker check instead.
+
+        The cost of that split was measured on 17 Aug 2026. E-Agent's saved session lapsed
+        mid-August, so for the first time the login path actually ran — and every night
+        since it signed in SUCCESSFULLY and then threw the result away here, logging
+        "login did not reach an authenticated state (check credentials/selectors)". The
+        credentials were fine and E-Agent was not blocking anything: a live headless test
+        signed in first try and 8 stocklist files became visible, the same 8 that produced
+        the last good run's "248 pooled listing(s) from 8 stocklist file(s)". Meanwhile
+        ~4,500 E-Agent listings sat on the dashboard going stale, and a consultant could
+        not find stock in the app that he was looking straight at in E-Agent.
+
+        Deliberately per-portal rather than loosening is_logged_in for everyone: other
+        portals DO render a real marker, and weakening the shared check would trade this
+        bug for a silent one where a failed login reads as success.
+        """
+        scraper.goto(self.cfg.listings_url)
+        return bool(self._stocklist_links(scraper))
+
     def _login(self, scraper: PlaywrightScraper) -> bool:
         page = scraper.page
+        # Checked here as well as by the caller so _login is correct when called on its
+        # own (portal_login.py does). One extra page load against being wrong about
+        # whether we are signed in.
+        if self._authenticated(scraper):
+            return True  # a saved session is still good
         scraper.goto(self.cfg.login_url)
-        if scraper.is_logged_in(self.cfg.logged_in_selector):
-            return True  # reused a saved session (created by portal_login.py)
         if not (self.username and self.password):
             logger.error("E-Agent: no saved session and no credentials. "
                          "Run: python portal_login.py e_agent")
@@ -284,9 +315,14 @@ class EAgentSource(PropertySource):
         except Exception as e:
             logger.error("E-Agent login interaction failed: %s", e)
             return False
-        if not scraper.is_logged_in(self.cfg.logged_in_selector):
-            logger.error("E-Agent login did not reach an authenticated state (check credentials/selectors).")
+        if not self._authenticated(scraper):
+            # Reached only when the stocklists are still unreachable after a submit — a
+            # real failure (wrong password, changed form, a challenge), not the marker
+            # mismatch that made every night since mid-August read as one.
+            logger.error("E-Agent: signed in but no stocklist files are reachable — "
+                         "credentials may be wrong, or the site's layout has changed.")
             return False
+        logger.info("E-Agent: signed in (stocklist files reachable).")
         return True
 
     # JS, not Python: the builder name is only recoverable from the DOM position of
@@ -681,6 +717,12 @@ class EAgentSource(PropertySource):
             return []
         try:
             scraper = PlaywrightScraper(session_name="e_agent")
+            # So the session file is actually ROLLED FORWARD at the end of a good
+            # run. save_session defaults to the Log Out / My Account marker check,
+            # which is permanently False here, so E-Agent's session was never once
+            # refreshed by a harvest — it simply aged out and took the channel with
+            # it. See PlaywrightScraper.save_session.
+            scraper.auth_check = lambda: self._authenticated(scraper)
             with scraper.session():
                 # E-Agent shows no reliable "Log Out" marker, so authentication is
                 # judged FUNCTIONALLY: if the stocklist files are reachable we are in.
@@ -735,6 +777,12 @@ class EAgentSource(PropertySource):
             return {"verified": False, "status": "Pending Confirmation", "price_change": 0.0}
         try:
             scraper = PlaywrightScraper(session_name="e_agent")
+            # So the session file is actually ROLLED FORWARD at the end of a good
+            # run. save_session defaults to the Log Out / My Account marker check,
+            # which is permanently False here, so E-Agent's session was never once
+            # refreshed by a harvest — it simply aged out and took the channel with
+            # it. See PlaywrightScraper.save_session.
+            scraper.auth_check = lambda: self._authenticated(scraper)
             with scraper.session():
                 if not self._login(scraper):
                     return {"verified": False, "status": "Pending Confirmation", "price_change": 0.0}

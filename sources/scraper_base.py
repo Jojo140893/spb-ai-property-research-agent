@@ -350,6 +350,15 @@ class PlaywrightScraper:
         Coleen had just created. A degraded write-back is strictly worse than no
         write-back, so a context that cannot prove it is signed in leaves the file
         alone.
+
+        WHAT "PROVE IT" MEANS IS PER-PORTAL. LOGGED_IN_JS looks for a Log Out / My Account
+        marker, and E-Agent renders none — signed in or out — so its check was permanently
+        False and its session was therefore NEVER refreshed by any run. It aged out in
+        mid-August and took the channel down with it: ~4,500 listings went stale while the
+        harvest reported success. A portal that knows a better test (E-Agent: are the
+        stocklist files reachable?) sets `auth_check` and that is used instead. The guard
+        is unchanged for every other portal, deliberately — loosening it globally would
+        trade this bug for the Proxima one above.
         """
         if self.read_only or self._using_profile:
             # A persistent profile writes its own cookies to disk; there is nothing to
@@ -359,7 +368,20 @@ class PlaywrightScraper:
         try:
             if not (self._context and self.session_file.exists()):
                 return
-            if not self.page or not self.page.evaluate(LOGGED_IN_JS):
+            if not self.page:
+                return
+            probe = getattr(self, "auth_check", None)
+            try:
+                authenticated = bool(probe()) if callable(probe) \
+                    else bool(self.page.evaluate(LOGGED_IN_JS))
+            except Exception as exc:                                  # noqa: BLE001
+                # An unusable probe must not silently fall back to the marker check —
+                # that is how E-Agent's session quietly stopped being refreshed. Refuse
+                # the write-back and say why.
+                logger.warning("[%s] auth check failed (%s) — leaving the saved session untouched.",
+                               self.session_name, exc)
+                return
+            if not authenticated:
                 logger.info("[%s] not authenticated at close — leaving the saved session untouched.",
                             self.session_name)
                 return
