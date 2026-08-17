@@ -291,6 +291,9 @@ we reviewed available stock and shortlisted the following {len(selected)} option
 # last — a stand-in must never outrank the real thing.
 LOGO_CANDIDATES = ("brand/spb-logo.png", "brand/spb-logo.svg",
                    "brand/logo.png", "brand/logo.svg",
+                   # The artwork actually supplied. Ahead of the fallback, behind the
+                   # explicit spb-logo.* names so dropping one of those still wins.
+                   "brand/logo.webp",
                    "brand/spb-logo-fallback.svg")
 
 _LOGO_CACHE = None

@@ -127,7 +127,16 @@ class ClientBriefParser:
             target_gross_yield_pct=_f(raw_data, 'target_gross_yield_pct', None),
             build_timeframe_months=_i(raw_data, 'build_timeframe_months', None),
             search_radius_km=_f(raw_data, 'search_radius_km', None),
-            product_type=str(raw_data.get('product_type') or '').strip(),
+            # A list now that the brief can name several types (Colin, 17 Aug: "townhouse
+            # and house both"). Joined for the ClientBrief, whose value is read as display
+            # text and by e_agent.py's `cat.product_type in ("House & Land", "")` category
+            # test — str() on a list would hand that a literal "['House & Land']" and the
+            # test would silently stop matching. The FILTER reads the raw list off the
+            # brief dict, so nothing is lost by flattening here.
+            product_type=', '.join(
+                str(p).strip() for p in raw_data['product_type'] if str(p).strip())
+            if isinstance(raw_data.get('product_type'), (list, tuple))
+            else str(raw_data.get('product_type') or '').strip(),
             requires_incentive=bool(raw_data.get('requires_incentive')),
             additional_notes=raw_data.get('additional_notes') or ''
         )

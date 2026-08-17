@@ -131,6 +131,58 @@ IS_AVAILABLE = {"available", "for sale", "in stock", "released", "selling",
 PROXIMA_PRICE_FIX_DATE = datetime(2026, 8, 7)
 
 
+# The five types Proxima's own filter offers, which Colin read out on 17 Aug as the list
+# ours should match: "apartment, land, townhouse, villas, house and land". Commercial is
+# kept because 40 stored rows say it.
+PRODUCT_TYPES = ("House & Land", "Apartment", "Townhouse", "Villa", "Land", "Commercial")
+
+# A LOT NUMBER IS NOT A HOUSE. Colin, 17 Aug, reading a result aloud: "that's a lot unit
+# number ... the lot is a unit, it's not a house and land, it's not doing the right thing."
+# Stocklists write apartments as "Lot 31 Unit 31, 148-154 Bridge Street", so the word "Lot"
+# says nothing about the product and "Unit" says everything. Checked in this order for that
+# reason: the unit/townhouse/villa words WIN over the presence of a land size, because an
+# apartment row can carry a land figure (its share of the site) and 1,319 of them do.
+_UNIT_WORDS = re.compile(r"\bunit\b|\bapt\b|\bapartment\b|\blevel\s*\d|\blvl\s*\d|\bdual\s*key\b", re.I)
+_TOWNHOUSE_WORDS = re.compile(r"\btown\s*house(s)?\b|\bth\b", re.I)
+_VILLA_WORDS = re.compile(r"\bvilla(s)?\b", re.I)
+
+
+def product_type_of(row):
+    """The row's product type — stated if the source stated one, inferred if not.
+
+    WHY INFER AT ALL. 1,853 of 6,127 live rows record no product_type, and the filter
+    passed anything unstated (deliberately: rejecting them discarded a third of the
+    catalogue). The result was that every choice returned the same rows — measured on
+    17 Aug, "House & Land" returned 55 of which 53 were blank, "Townhouse" returned 50 of
+    which 50 were blank, "Apartment" the same 50. Colin: "it's still giving us the same
+    options regardless of what you write."
+
+    Inference settles 92% of the blanks from the row's own words and numbers. It never
+    overrides a source that stated a type, and it returns "" rather than guessing when the
+    evidence is thin — 8% stay unknown, and those are still passed by the filter, because
+    the old asymmetry was right about the cost of inventing a requirement.
+    """
+    stated = str(row.get("product_type") or "").strip()
+    if stated:
+        return stated
+    text = " ".join(str(row.get(k) or "") for k in
+                    ("lot_address", "street_address", "estate_name"))
+    if _VILLA_WORDS.search(text):
+        return "Villa"
+    if _TOWNHOUSE_WORDS.search(text):
+        return "Townhouse"
+    if _UNIT_WORDS.search(text):
+        return "Apartment"
+    # Land with a build price or a dwelling size is a package; land alone is land. Neither
+    # is asserted without a land figure, which is the one number that separates them.
+    land = _num(row.get("land_sqm")) or 0
+    if land > 0:
+        if (_num(row.get("build_price")) or 0) > 0 or (_num(row.get("house_sqm")) or 0) > 0:
+            return "House & Land"
+        return "House & Land" if re.search(r"\blot\b", text, re.I) else "Land"
+    return ""
+
+
 def _price_unverified(row):
     """True when this row's price cannot be trusted — not "came from Proxima"."""
     if str(row.get("source_channel") or "").strip().lower() != "proxima":
@@ -454,8 +506,16 @@ def build_packages(brief_dict, rows, today=None):
     read here. Everything else stays the pipeline's job.
     """
     state = str(brief_dict.get("state") or "").strip().upper()
-    # What the client is buying. Blank means no preference and nothing is filtered.
-    want_product = str(brief_dict.get("product_type") or "").strip().lower()
+    # What the client is buying, as a SET — Colin, 17 Aug: "if I choose townhouse and
+    # house both as a property type and then let's search". A single value could not
+    # express the brief he actually had. Accepts a list or one string so an older caller
+    # (server.py, a saved brief) keeps working.
+    _raw_product = brief_dict.get("product_type")
+    if isinstance(_raw_product, (list, tuple, set)):
+        want_product = {str(p).strip().lower() for p in _raw_product if str(p).strip()}
+    else:
+        _one = str(_raw_product or "").strip().lower()
+        want_product = {_one} if _one else set()
     want_incentive = bool(brief_dict.get("requires_incentive"))
     budget_max = _num(brief_dict.get("budget_max")) or 0.0
     ceiling = budget_max + BUDGET_HEADROOM if budget_max else None
@@ -510,8 +570,8 @@ def build_packages(brief_dict, rows, today=None):
         # It still does the job Colin needed on 5 Aug — "Land" is stated on the 145 rows
         # that are vacant blocks, so a house brief no longer ranks one of them first.
         if want_product:
-            row_product = str(row.get("product_type") or "").strip().lower()
-            if row_product and row_product != want_product:
+            row_product = product_type_of(row).lower()
+            if row_product and row_product not in want_product:
                 counts["other_product_type"] += 1
                 continue
 

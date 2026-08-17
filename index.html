@@ -494,6 +494,35 @@
             font-size: 0.82rem;
             cursor: pointer;
         }
+        /* WIDTH AND APPEARANCE STATED EXPLICITLY. The form sets `input { width: 100% }`,
+           and on 13 Aug the rebate checkbox inherited it and rendered as a full-width bar
+           with no visible box — Coleen reported it missing twice while it was on screen.
+           These boxes must not repeat that. */
+        .product-type-picker {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+            gap: 0.3rem 0.9rem;
+            margin-top: 0.15rem;
+        }
+        .product-type-picker label {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            font-size: 0.85rem;
+            font-weight: 400;
+            cursor: pointer;
+            margin: 0;
+        }
+        .product-type-picker input[type="checkbox"] {
+            width: 1rem;
+            min-width: 1rem;
+            height: 1rem;
+            margin: 0;
+            padding: 0;
+            flex: 0 0 auto;
+            accent-color: var(--accent-blue);
+            cursor: pointer;
+        }
         .pick-col { width: 2.2rem; text-align: center; }
         .pick-col input { cursor: pointer; }
         tr.picked { background: var(--blue-light); }
@@ -728,14 +757,29 @@
                      excluded (see api/_candidates.py) — 1,826 of 5,879 rows record none. -->
                 <div class="form-group" style="margin-top: 0.5rem;">
                     <label>Property Type <span class="hint-opt">optional</span></label>
-                    <select id="productType">
-                        <option value="" selected>Any type</option>
-                        <option value="House &amp; Land">House &amp; Land</option>
-                        <option value="Apartment">Apartment</option>
-                        <option value="Townhouse">Townhouse</option>
-                        <option value="Land">Land only</option>
-                        <option value="Commercial">Commercial</option>
-                    </select>
+                    <!-- TICK BOXES, NOT A DROP-DOWN. Colin, 17 Aug: "I want to be able to
+                         select, to tick which ones I want. If I want multiples" — a single
+                         select could not express "house or townhouse", which was the brief
+                         he actually had in front of him. He also spent two minutes of that
+                         call asking to see the available options; boxes show all of them
+                         at once instead of hiding them behind an arrow.
+
+                         Villa is here because Colin read Proxima's own list aloud as the
+                         one ours should match: "apartment, land, townhouse, villas, house
+                         and land". "Unit" is not a separate box — he settled that in the
+                         same breath: "units is apartments, apartment is fine" — so the
+                         label says so rather than adding a type that means the same thing. -->
+                    <div id="productType" class="product-type-picker">
+                        <label><input type="checkbox" value="House &amp; Land"> House &amp; Land</label>
+                        <label><input type="checkbox" value="Townhouse"> Townhouse</label>
+                        <label><input type="checkbox" value="Apartment"> Apartment / Unit</label>
+                        <label><input type="checkbox" value="Villa"> Villa</label>
+                        <label><input type="checkbox" value="Land"> Land only</label>
+                        <label><input type="checkbox" value="Commercial"> Commercial</label>
+                    </div>
+                    <div style="font-size:0.75rem; color:var(--text-muted); margin-top:0.3rem;">
+                        Leave all unticked for any type.
+                    </div>
                 </div>
 
                 <!-- Colin, 10 Aug, live with Mr & Mrs Farirai: the tool "lacks a
@@ -2788,7 +2832,11 @@ python state_sync.py push</pre>
             land_size_min_sqm: numField('landSize', 0),
             house_size_min_sqm: numField('houseSize', 0),
             search_radius_km: numField('searchRadius', 0),
-            product_type: (document.getElementById('productType') || {}).value || '',
+            // A LIST now, not one value. Empty list = any type. Sent as an array; the
+            // backend accepts either shape so a saved brief from before this change
+            // still parses.
+            product_type: [...document.querySelectorAll('#productType input:checked')]
+                .map(el => el.value),
             requires_incentive: !!(document.getElementById('requiresIncentive') || {}).checked
         };
 
@@ -3314,6 +3362,34 @@ python state_sync.py push</pre>
           </div>`;
     }
 
+    /* The letterhead every client document carries. Colin, 17 Aug: "every report by
+       default should add the logo and our details to show that it's us who have created
+       that report." Not an option and not a setting — a report that leaves without it is
+       the failure he described.
+
+       window.SPB_LOGO is an inline data URI stamped in by build_web.py (see the
+       SPB_STATIC_BUILD marker), because these documents are written into a blank window
+       with no base URL and are then emailed on or opened from a share link — a relative
+       <img src> would be a broken icon on the client's screen. Falls back to the wordmark
+       alone when absent, so a report still generates rather than showing a gap. */
+    const SPB_BRAND = () => `
+      <header class="spb-head">
+        ${window.SPB_LOGO || ''}
+        <div class="spb-id">
+          <div class="spb-name">Smart Property Buying</div>
+          <div class="spb-tag">Property research &amp; buyer advocacy &middot;
+            smartpropertybuying.com.au</div>
+        </div>
+      </header>`;
+
+    const BRAND_CSS = `
+ .spb-head{display:flex;align-items:center;gap:14px;padding:0 0 12px;margin:0 0 18px;
+           border-bottom:2px solid var(--accent)}
+ .spb-head .logo{height:46px;width:auto;display:block}
+ .spb-name{font-size:15px;font-weight:700;color:var(--ink);letter-spacing:-.01em}
+ .spb-tag{font-size:11px;color:var(--muted);margin-top:1px}
+ @media print{.spb-head{break-inside:avoid}}`;
+
     const SHARE_CSS = `
  .bar{margin:0 0 16px}
  .bar button{font:inherit;padding:7px 14px;border:0;border-radius:6px;background:var(--accent);
@@ -3356,14 +3432,17 @@ python state_sync.py push</pre>
         const best = props[bestIdx];
         const anyRebate = props.some(p => Number(p.incentive_amount) > 0);
 
-        const head = ['Option', 'Location', 'Builder', 'Land', 'House', 'Package']
+        // NO BUILDER COLUMN. Colin, 17 Aug: "Normally we don't like putting the Builder ...
+        // We know the Builder ourselves, but when we give them, we don't give them that
+        // information." It stays on the shortlist card inside the app, where the
+        // consultant needs it; it comes off everything a client receives.
+        const head = ['Option', 'Location', 'Land', 'House', 'Package']
             .concat(anyRebate ? ['Rebate', 'Effective Price'] : []);
 
         const rows = props.map((p, i) => {
             const cells = [
                 `<strong>${i + 1}</strong>`,
                 t(p.suburb || '') + (p.state ? ', ' + esc(p.state) : ''),
-                t(p.builder_name),
                 sq(p.land_size_sqm),
                 sq(p.house_size_sqm),
                 m(p.advertised_package_price),
@@ -3391,7 +3470,6 @@ python state_sync.py push</pre>
               ${i === bestIdx ? '<span class="tag">SPB PREFERRED</span>' : ''}</h3>
             <div class="facts">
               <span><b>Location</b> ${t(p.suburb)}${p.state ? ', ' + esc(p.state) : ''}</span>
-              <span><b>Builder</b> ${t(p.builder_name)}</span>
               <span><b>Design</b> ${t(p.house_design)}</span>
               <span><b>Bed / Bath / Car</b> ${t(p.bedrooms)} / ${t(p.bathrooms)} / ${t(p.car_spaces)}</span>
               <span><b>Land / House</b> ${sq(p.land_size_sqm)} / ${sq(p.house_size_sqm)}</span>
@@ -3440,12 +3518,13 @@ python state_sync.py push</pre>
           font:inherit;color:var(--body);resize:vertical}
  .foot{margin-top:18px;padding-top:11px;border-top:1px solid var(--line);
        color:var(--muted);font-size:11px}
-${SHARE_CSS}
+${SHARE_CSS}${BRAND_CSS}
  @media print{textarea{border:0;padding:0;resize:none;height:auto}
    .opt{break-inside:avoid}}
 </style></head><body>
 <div class="bar"><button onclick="window.print()">Print / Save as PDF</button></div>
 ${shareBar(shareUrl)}
+${SPB_BRAND()}
 <h1>HOME &amp; LAND PACKAGE COMPARISON</h1>
 <div class="sub">Smart Property Buying &middot; ${props.length} option(s) compared &middot;
   prepared ${esc(new Date().toLocaleDateString('en-AU'))}</div>
@@ -3564,8 +3643,7 @@ ${blocks}
               <section class="opt">
                 <h3>Option ${i + 1} &mdash; ${t(p.lot_address)}</h3>
                 <p class="loc">${t(p.suburb)}${p.state ? ', ' + esc(p.state) : ''}
-                   &middot; Builder: <strong>${t(p.builder_name)}</strong>
-                   ${p.house_design ? '(' + esc(p.house_design) + ')' : ''}</p>
+                   ${p.house_design ? '&middot; ' + esc(p.house_design) : ''}</p>
                 <p class="value">${valueLine}</p>
                 <div class="rows">
                   <div class="row"><span class="label">Bed / Bath / Car</span>
@@ -3612,11 +3690,12 @@ ${blocks}
  .na{color:#94a3b8}
  .foot{margin-top:20px;padding-top:12px;border-top:1px solid var(--line);
        color:var(--muted);font-size:11px}
-${SHARE_CSS}
+${SHARE_CSS}${BRAND_CSS}
  @media print{.opt{break-inside:avoid}}
 </style></head><body>
 <div class="bar"><button onclick="window.print()">Print / Save as PDF</button></div>
 ${shareBar(shareUrl)}
+${SPB_BRAND()}
 <h1>Property Recommendations</h1>
 <div class="meta">${client ? 'Prepared for <strong>' + esc(client) + '</strong> &middot; ' : ''}
   Smart Property Buying &middot; ${esc(new Date().toLocaleDateString('en-AU'))}</div>

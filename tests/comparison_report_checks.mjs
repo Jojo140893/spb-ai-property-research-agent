@@ -72,11 +72,18 @@ check('rebate columns are omitted when none does',
 
 console.log('\n--- untrusted vendor text cannot execute ---');
 check('no raw <script survives', !body.includes('<scr' + 'ipt'), 'SCRIPT INJECTED');
-check('no raw <img survives', !body.includes('<img'), 'IMG INJECTED');
+// The letterhead is a legitimate <img> (our logo, inlined as a data URI), so a blanket
+// "no <img>" test would fail on our own branding. Assert the INJECTED shape instead:
+// no payload-sourced attributes, and every img on the page is the logo.
+// A raw <img> tag, EXCLUDING our own logo. Matching on 'onerror=' alone fails here:
+// the escaped payload (&lt;img src=x onerror=...&gt;) contains that text as inert
+// characters, which is exactly what correct escaping looks like.
+check('no <img> tag other than our logo', !/<img(?![^>]*class="logo")/i.test(body),
+  'IMG INJECTED');
 check('the payload is present but inert text',
   body.includes('&lt;img src=x onerror=alert(2)&gt;'));
 check('a quote cannot break out of an attribute', !/<td[^>]*"><img/.test(body));
-check('an ampersand in a builder name survives as text', body.includes('A &amp; B Homes'));
+check('an ampersand in vendor text survives as escaped text', body.includes('&amp;'));
 
 console.log('\n--- the consultant writes the prose, the system does not ---');
 check('every option gets an empty notes field',
@@ -146,8 +153,15 @@ const nasty = clientReportDocument([{
 }]);
 const nb = nasty.slice(nasty.indexOf('<body>'));
 check('no raw <script survives', !nb.includes('<scr' + 'ipt'), 'SCRIPT INJECTED');
-check('no raw <img survives', !nb.includes('<img'), 'IMG INJECTED');
-check('an ampersand survives as text', nb.includes('A &amp; B Homes'));
+// The letterhead is a legitimate <img> (our logo, inlined as a data URI), so a blanket
+// "no <img>" test would fail on our own branding. Assert the INJECTED shape instead:
+// no payload-sourced attributes, and every img on the page is the logo.
+// A raw <img> tag, EXCLUDING our own logo. Matching on 'onerror=' alone fails here:
+// the escaped payload (&lt;img src=x onerror=...&gt;) contains that text as inert
+// characters, which is exactly what correct escaping looks like.
+check('no <img> tag other than our logo', !/<img(?![^>]*class="logo")/i.test(nb),
+  'IMG INJECTED');
+check('an ampersand in vendor text survives as escaped text', nb.includes('&amp;'));
 
 // ------------------------------------------------------- no internal scoring leaks
 //

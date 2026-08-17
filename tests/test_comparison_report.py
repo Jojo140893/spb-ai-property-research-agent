@@ -34,7 +34,12 @@ ESC = ("const esc = s => String(s ?? '').replace(/[&<>\"]/g, c => "
 STUB_DOC = ("globalThis.document = { getElementById: () => "
             "({ value: 'Test Client' }) };\n"
             "globalThis.location = "
-            "{ origin: 'https://app.smartpropertybuying.com.au' };\n")
+            "{ origin: 'https://app.smartpropertybuying.com.au' };\n"
+            # SPB_LOGO is stamped into the built page by build_web.py, so under Node it is
+            # absent. Stubbed with a real (empty) data URI rather than left undefined, so
+            # the letterhead checks exercise the branch a client actually receives.
+            "globalThis.window = { SPB_LOGO: '<img class=\"logo\" "
+            "alt=\"Smart Property Buying\" src=\"data:image/svg+xml;base64,PHN2Zy8+\">' };\n")
 
 # What the checks import. buildShareLink/unpackShare/shareBar are here because the share
 # link is the one part a CLIENT touches: it must round-trip exactly, refuse rather than

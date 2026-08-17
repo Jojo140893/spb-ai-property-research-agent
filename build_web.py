@@ -716,7 +716,16 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     # A marker rather than a separate deployed index.html: one frontend still serves
     # both, and locally the flag is simply absent so the live API is used as before.
     html = (app / "index.html").read_text(encoding="utf-8")
-    marker = "<script>window.SPB_STATIC_BUILD = true;</script>\n"
+    # THE LOGO TRAVELS WITH THE DOCUMENT. Colin, 17 Aug: "every report by default should
+    # add the logo and our details to show that it's us who have created that report."
+    # The browser builds those reports and writes them into a blank window — which has no
+    # base URL, so a relative <img src> resolves to nothing — and they are then emailed on
+    # or opened from a share link. Inlined as a data URI, reusing client_report's own
+    # resolution so the Python and browser documents cannot end up wearing different marks.
+    import client_report as _cr
+    _logo = _cr._logo_html()
+    marker = ("<script>window.SPB_STATIC_BUILD = true;"
+              "window.SPB_LOGO = %s;</script>\n" % json.dumps(_logo))
     if "</head>" in html:
         html = html.replace("</head>", marker + "</head>", 1)
     else:                                    # no head: put it before the first script
