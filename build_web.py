@@ -722,6 +722,9 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
 
     vercel = {
         "$schema": "https://openapi.vercel.sh/vercel.json",
+        # /r is the client-facing share page. A rewrite rather than relying on Vercel's
+        # extension stripping, so the link Coleen sends is a fixed, documented path.
+        "rewrites": [{"source": "/r", "destination": "/r.html"}],
         "headers": [
             {"source": "/(.*)", "headers": [
                 {"key": "X-Robots-Tag", "value": "noindex, nofollow"},
@@ -752,6 +755,7 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         }}
     (out_dir / "vercel.json").write_text(json.dumps(vercel, indent=2), encoding="utf-8")
     _write_auth_middleware(out_dir)
+    meta["share_page_js"] = _write_share_page(app, out_dir)
     # Belt and braces if anyone ever deploys from the repo root instead of vercel_site.
     (out_dir / ".vercelignore").write_text("\n".join((
         "requirements.txt", "Book1(Builders) List.csv", "drive_input/", ".sessions/",
@@ -840,6 +844,20 @@ export default async function middleware(request) {
       "rather than serving to everyone.\n",
       { status: 503, headers: { "content-type": "text/plain; charset=utf-8" } });
   }
+
+  // THE ONE PUBLIC ROUTE, and the only one there should ever be.
+  //
+  // Coleen has to send a buyer their report, and she must not send them this app: it
+  // holds every builder, every wholesale price and the log of what was rejected, so
+  // sharing the login would expose all 11,474 listings to a client. /r is a static shell
+  // that renders a report out of the URL FRAGMENT — and a fragment is never transmitted
+  // in an HTTP request, so this route serves the same bytes to everyone and can leak
+  // nothing. It reads no database, calls no API, and has no access to stock.json, which
+  // the check below still gates.
+  //
+  // Exact matches only. A prefix test (startsWith("/r")) would have opened /research,
+  // /reports and anything else beginning with those characters.
+  if (path === "/r" || path === "/r.html") return;
 
   if (path === "/logout") {
     return new Response(null, { status: 303, headers: {
@@ -1024,6 +1042,79 @@ function loginPage(next, error) {
 </body></html>`;
 }
 """
+
+
+# The slice of index.html that renders a report. Kept as constants because
+# tests/test_comparison_report.py extracts the same range to exercise it under Node — the
+# share page and the tests must both be looking at the code that actually ships.
+_REPORT_JS_START = "const SHARE_PATH = "
+_REPORT_JS_END = "    async function openGeneratedReport("
+
+SHARE_PAGE_SHELL = """<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Smart Property Buying &mdash; Property Report</title>
+</head><body style="margin:0;font:14px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#334155">
+<div id="msg" style="padding:2.5rem;max-width:34rem">Loading report&hellip;</div>
+<script>
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+__REPORT_JS__
+(async function () {
+  const fail = m => { document.getElementById('msg').textContent = m; };
+  try {
+    const frag = decodeURIComponent(location.hash.slice(1));
+    if (!frag) return fail('This link has no report in it. Ask for a new link.');
+    // A fragment never reaches a server, so this cap is only about not handing the
+    // decompressor an unbounded input from whoever holds the link.
+    if (frag.length > 400000) return fail('This report link is too large to open.');
+    const data = await unpackShare(frag);
+    if (!data || !Array.isArray(data.p) || !data.p.length) {
+      return fail('This report link is not valid. Ask for a new link.');
+    }
+    // Every value below is rendered through esc() by the generators, which is what makes
+    // it safe to render a document out of whatever the URL happened to contain.
+    const html = data.k === 'compare'
+      ? comparisonDocument(data.p, null)
+      : clientReportDocument(data.p, null, data.c || '');
+    document.open(); document.write(html); document.close();
+  } catch (e) {
+    fail('This report link could not be opened \\u2014 it may have been cut short when it '
+       + 'was copied or forwarded. Ask for a fresh link.');
+  }
+})();
+</script>
+</body></html>
+"""
+
+
+def _write_share_page(app: Path, out_dir: Path):
+    """Emit /r, the page a client's link opens.
+
+    WHY A SEPARATE PAGE, AND WHY IT IS PUBLIC. Coleen has to send a buyer their report.
+    She must not send them the app: it holds every builder, every wholesale price and the
+    log of what was rejected, and one shared password would expose all of it. So this page
+    is exempt from the login gate — and it can be, because it contains no data. The report
+    travels in the URL FRAGMENT, which browsers never transmit, so nothing about a client
+    or our stock is stored here, sent here, or written to any log.
+
+    BUILT FROM index.html rather than hand-written, because a second copy of the renderers
+    is a second thing to keep in step, and this repo has already been bitten by exactly
+    that (server.py's shortlist entry silently lost three fields api/research.py sends).
+    """
+    src = (app / "index.html").read_text(encoding="utf-8")
+    if _REPORT_JS_START not in src or _REPORT_JS_END not in src:
+        # Loud, because the alternative is publishing a share page whose links all fail
+        # on the client's phone with nothing on our side saying so.
+        raise SystemExit(
+            "[abort] cannot find the report renderers in index.html "
+            f"({_REPORT_JS_START!r} .. {_REPORT_JS_END!r}) — /r would be broken.")
+    js = src[src.index(_REPORT_JS_START):src.index(_REPORT_JS_END)]
+    (out_dir / "r.html").write_text(
+        SHARE_PAGE_SHELL.replace("__REPORT_JS__", js), encoding="utf-8")
+    return len(js)
 
 
 def _write_auth_middleware(out_dir):

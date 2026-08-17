@@ -2764,13 +2764,6 @@
                         </div>
                     `;
                     document.getElementById('openClientReport').onclick = () => {
-                        const w = window.open('', '_blank');
-                        // Same null guard as the comparison: a blocked popup made this
-                        // throw into the void, so the button looked simply dead.
-                        if (!w) {
-                            alert('Your browser blocked the report window. Allow pop-ups for this site and try again.');
-                            return;
-                        }
                         // THE SELECTION WINS. Coleen ticked three options and got the top
                         // three ranks instead, because this opened the document the server
                         // renders at search time over one search's top 3 — it cannot see a
@@ -2778,10 +2771,19 @@
                         // something is ticked, that IS the report; the server's automatic
                         // document is the fallback for when nothing is.
                         if (SELECTED.size) {
-                            w.document.write(clientReportDocument([...SELECTED.values()]));
-                        } else {
-                            w.document.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>SPB Client Report</title></head><body>' + (data.client_report_html || '<p>No report generated.</p>') + '</body></html>');
+                            openGeneratedReport('client', [...SELECTED.values()], clientReportDocument);
+                            return;
                         }
+                        // The server's document is a finished HTML blob with no structured
+                        // properties behind it, so there is nothing to pack into a link —
+                        // it opens without one. Selecting the options gives a shareable
+                        // version, which is the flow to be in anyway.
+                        const w = window.open('', '_blank');
+                        if (!w) {
+                            alert('Your browser blocked the report window. Allow pop-ups for this site and try again.');
+                            return;
+                        }
+                        w.document.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>SPB Client Report</title></head><body>' + (data.client_report_html || '<p>No report generated.</p>') + '</body></html>');
                         w.document.close();
                     };
                     const cmpBtn = document.getElementById('openComparison');
@@ -2910,13 +2912,126 @@
      * those are consultant-written: the document opens with editable notes fields and a
      * print button, and what Coleen types is what appears.
      */
+    /* ------------------------------------------------- shareable client links
+     *
+     * Coleen needs to send a client the report. The catalogue behind this app is
+     * commercially sensitive — every builder, every wholesale price, and the log of what
+     * was rejected — so a client must never be handed the app itself, and the login must
+     * never be shared: one password would expose all 11,474 listings to a buyer.
+     *
+     * So the report travels in the LINK, not on a server. It is packed into the URL
+     * FRAGMENT (after the #), and a fragment is never transmitted in an HTTP request —
+     * browsers strip it before sending. The page at /r is a static shell that carries no
+     * data of its own; it unpacks whatever the recipient's own browser already holds and
+     * renders it. Nothing about the client, and nothing about our stock, is stored
+     * anywhere or reaches any server log.
+     *
+     * MEASURED before choosing this: 3 properties pack to ~1,400 characters and 8 to
+     * ~2,000, which every mail client handles. Beyond that the link gets unwieldy, so
+     * SHARE_MAX_PROPS refuses rather than producing a link that silently truncates.
+     *
+     * The trade-off, stated plainly to Coleen before building it: a link like this cannot
+     * be revoked or expired, exactly like a PDF once emailed. The alternative — hosting
+     * the report and handing out a short URL — buys revocation at the price of storing
+     * clients' names and pricing in a bucket, and she chose not to.
+     */
+    const SHARE_PATH = '/r';
+    const SHARE_MAX_PROPS = 8;
+
+    function _b64u(bytes) {
+        // Chunked: String.fromCharCode(...bytes) blows the call stack on a report of any
+        // size, and it does it as a RangeError at the moment of sharing.
+        let s = '';
+        for (let i = 0; i < bytes.length; i += 0x8000) {
+            s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+        }
+        return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+
+    function _unb64u(s) {
+        const b = atob(s.replace(/-/g, '+').replace(/_/g, '/'));
+        const out = new Uint8Array(b.length);
+        for (let i = 0; i < b.length; i++) out[i] = b.charCodeAt(i);
+        return out;
+    }
+
+    /* "1." compressed, "0." plain. The prefix is a version marker AND the fallback
+     * switch: CompressionStream is absent on older Safari, and a link that silently
+     * failed to open on the client's phone would be worse than a longer one. */
+    async function packShare(obj) {
+        const bytes = new TextEncoder().encode(JSON.stringify(obj));
+        if (typeof CompressionStream === 'undefined') return '0.' + _b64u(bytes);
+        const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+        return '1.' + _b64u(new Uint8Array(await new Response(stream).arrayBuffer()));
+    }
+
+    async function unpackShare(frag) {
+        const dot = frag.indexOf('.');
+        if (dot < 0) throw new Error('malformed link');
+        const kind = frag.slice(0, dot), data = _unb64u(frag.slice(dot + 1));
+        if (kind === '0') return JSON.parse(new TextDecoder().decode(data));
+        const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+        return JSON.parse(new TextDecoder().decode(await new Response(stream).arrayBuffer()));
+    }
+
+    async function buildShareLink(kind, props, client) {
+        if (props.length > SHARE_MAX_PROPS) return '';
+        const packed = await packShare({ v: 1, k: kind, c: client || '', p: props });
+        return location.origin + SHARE_PATH + '#' + packed;
+    }
+
+    /* The link goes in a readonly field with a Copy button rather than straight to the
+     * clipboard: this markup is written into a new window with document.write, where
+     * clipboard permission is inconsistent, and a Copy button that silently does nothing
+     * is the failure this codebase keeps meeting. The field is always selectable. */
+    function shareBar(url) {
+        // null means "deliberately no bar" — the shared copy itself, where the recipient
+        // has no app to share from. '' means "a link could not be built", which is a
+        // different thing and has to say so.
+        if (url === null) return '';
+        if (!url) {
+            return `<div class="sharebar sharenote">This report covers more than
+                ${SHARE_MAX_PROPS} options, which is too many to fit in a shareable link.
+                Use Print / Save as PDF to send it, or share fewer options.</div>`;
+        }
+        return `<div class="sharebar">
+            <label for="shareUrl">Client link &mdash; opens without a login, and shows only these options:</label>
+            <div class="sharerow">
+              <input id="shareUrl" readonly value="${esc(url)}" onclick="this.select()">
+              <button type="button" onclick="
+                var f=document.getElementById('shareUrl'); f.select();
+                (navigator.clipboard? navigator.clipboard.writeText(f.value): Promise.reject())
+                  .then(function(){this.textContent='Copied';}.bind(this))
+                  .catch(function(){ try{document.execCommand('copy'); this.textContent='Copied';}
+                                     catch(e){ this.textContent='Press Ctrl+C'; } }.bind(this));
+              ">Copy link</button>
+            </div>
+          </div>`;
+    }
+
+    const SHARE_CSS = `
+ .bar{margin:0 0 16px}
+ .bar button{font:inherit;padding:7px 14px;border:0;border-radius:6px;background:var(--accent);
+             color:#fff;cursor:pointer}
+ .sharebar{margin:0 0 18px;padding:11px 13px;background:var(--bg);border:1px solid var(--line);
+           border-radius:7px;font-size:12px}
+ .sharebar label{display:block;color:var(--muted);margin-bottom:6px}
+ .sharerow{display:flex;gap:7px}
+ .sharerow input{flex:1 1 auto;min-width:0;font:inherit;font-family:ui-monospace,Menlo,Consolas,monospace;
+                 font-size:11px;padding:6px 8px;border:1px solid var(--line);border-radius:5px;
+                 background:#fff;color:var(--body)}
+ .sharerow button{font:inherit;padding:6px 12px;border:0;border-radius:5px;background:var(--accent);
+                  color:#fff;cursor:pointer;white-space:nowrap}
+ .sharenote{color:var(--muted)}
+ @media print{.bar,.sharebar{display:none}}`;
+
     const EFFECTIVE = p => {
         const price = Number(p.advertised_package_price) || 0;
         const reb = Number(p.incentive_amount) || 0;
         return price ? price - reb : 0;
     };
 
-    function comparisonDocument(props) {
+    function comparisonDocument(props, shareUrl) {
         const dash = '<span class="na">&mdash;</span>';
         const m = v => (Number(v) > 0) ? '$' + Math.round(Number(v)).toLocaleString() : dash;
         const sq = v => (Number(v) > 0) ? Math.round(Number(v)).toLocaleString() + ' m&sup2;' : dash;
@@ -2956,6 +3071,15 @@
                 cells.map(c => `<td>${c}</td>`).join('') + '</tr>';
         }).join('');
 
+        // NO SPB SCORE in the option blocks. It ranks stock for a consultant; to a buyer
+        // holding the document "88/100" invites a negotiation about our scoring rather
+        // than about the property, and Coleen's own example one-pager carries none.
+        // Dropped 14 Aug at her request — it still decides which option is marked
+        // preferred, and it is still on screen inside the app.
+        //
+        // A JS comment, deliberately, not an HTML one: this template is the document the
+        // client receives, and an HTML comment explaining our scoring would travel with
+        // it and be readable in View Source. Caught by the test that greps the OUTPUT.
         const blocks = props.map((p, i) => `
           <section class="opt${i === bestIdx ? ' opt-best' : ''}">
             <h3>Option ${i + 1} &mdash; ${t(p.lot_address)}
@@ -2971,7 +3095,6 @@
                   ? `<span><b>Rebate</b> ${Number(p.incentive_amount) > 0
                         ? m(p.incentive_amount) : esc(p.incentive_text)}</span>` : ''}
               <span><b>Title</b> ${t(p.title_status)}</span>
-              <span><b>SPB score</b> ${t(p.score)} / 100</span>
               <span><b>Last checked</b> ${t(p.date_checked)}</span>
             </div>
             <label class="note"><b>Consultant notes</b>
@@ -3012,14 +3135,12 @@
           font:inherit;color:var(--body);resize:vertical}
  .foot{margin-top:18px;padding-top:11px;border-top:1px solid var(--line);
        color:var(--muted);font-size:11px}
- .bar{margin:0 0 16px}
- .bar button{font:inherit;padding:7px 14px;border:0;border-radius:6px;background:var(--accent);
-             color:#fff;cursor:pointer}
- @media print{.bar{display:none}
-   textarea{border:0;padding:0;resize:none;height:auto}
+${SHARE_CSS}
+ @media print{textarea{border:0;padding:0;resize:none;height:auto}
    .opt{break-inside:avoid}}
 </style></head><body>
 <div class="bar"><button onclick="window.print()">Print / Save as PDF</button></div>
+${shareBar(shareUrl)}
 <h1>HOME &amp; LAND PACKAGE COMPARISON</h1>
 <div class="sub">Smart Property Buying &middot; ${props.length} option(s) compared &middot;
   prepared ${esc(new Date().toLocaleDateString('en-AU'))}</div>
@@ -3027,9 +3148,9 @@
   ${esc(best.lot_address || '')}${best.suburb ? ', ' + esc(best.suburb) : ''}
   &middot; ${m(best.advertised_package_price)}${Number(best.incentive_amount) > 0
     ? ' less ' + m(best.incentive_amount) + ' rebate = ' + m(EFFECTIVE(best)) + ' effective' : ''}
-  <div style="color:var(--muted);font-size:11px;margin-top:3px">Highest SPB score
-    (${esc(best.score)}/100) of the ${props.length} selected. Scores weigh budget fit,
-    requirement match, value, location and builder confidence.</div></div>
+  <div style="color:var(--muted);font-size:11px;margin-top:3px">Best overall of the
+    ${props.length} option(s) compared, weighing budget fit, requirement match, value,
+    location and builder confidence.</div></div>
 <h2 style="font-size:14px;color:var(--ink);margin:0 0 7px">Package Comparison</h2>
 <table><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead>
 <tbody>${rows}</tbody></table>
@@ -3065,12 +3186,15 @@ ${blocks}
      * "$0/week, 0.00% yield" does not read as "not captured" to a buyer, it reads as
      * "this earns nothing".
      */
-    function clientReportDocument(props) {
+    function clientReportDocument(props, shareUrl, clientName) {
         const dash = '<span class="na">&mdash;</span>';
         const m = v => (Number(v) > 0) ? '$' + Math.round(Number(v)).toLocaleString() : dash;
         const sq = v => (Number(v) > 0) ? Math.round(Number(v)).toLocaleString() + ' m&sup2;' : dash;
         const t = v => { const s = String(v ?? '').trim(); return s ? esc(s) : dash; };
-        const client = (document.getElementById('clientName') || {}).value || '';
+        // Passed explicitly when rendering a shared link, where there is no brief form to
+        // read it from; undefined inside the app means "take it from the form".
+        const client = clientName !== undefined ? (clientName || '')
+            : ((document.getElementById('clientName') || {}).value || '');
 
         const cards = props.map((p, i) => {
             const bm = p.benchmark || {};
@@ -3183,12 +3307,11 @@ ${blocks}
  .na{color:#94a3b8}
  .foot{margin-top:20px;padding-top:12px;border-top:1px solid var(--line);
        color:var(--muted);font-size:11px}
- .bar{margin:0 0 16px}
- .bar button{font:inherit;padding:7px 14px;border:0;border-radius:6px;
-             background:var(--accent);color:#fff;cursor:pointer}
- @media print{.bar{display:none} .opt{break-inside:avoid}}
+${SHARE_CSS}
+ @media print{.opt{break-inside:avoid}}
 </style></head><body>
 <div class="bar"><button onclick="window.print()">Print / Save as PDF</button></div>
+${shareBar(shareUrl)}
 <h1>Property Recommendations</h1>
 <div class="meta">${client ? 'Prepared for <strong>' + esc(client) + '</strong> &middot; ' : ''}
   Smart Property Buying &middot; ${esc(new Date().toLocaleDateString('en-AU'))}</div>
@@ -3203,9 +3326,11 @@ ${cards}
 </body></html>`;
     }
 
-    function openComparisonReport() {
-        if (SELECTED.size < 2) return;
-        const props = [...SELECTED.values()];
+    /* Opens the window BEFORE the await, and this ordering is load-bearing: building the
+     * share link is asynchronous (compression), and a window opened after an await is no
+     * longer attributable to the click that started it, so browsers block it as a popup.
+     * Open first, show a holding line, then replace it. */
+    async function openGeneratedReport(kind, props, render) {
         const w = window.open('', '_blank');
         // A blocked popup returns null, and the old code went straight to w.document —
         // a TypeError swallowed by the event loop, so the button visibly did nothing.
@@ -3213,8 +3338,26 @@ ${cards}
             alert('Your browser blocked the report window. Allow pop-ups for this site and try again.');
             return;
         }
-        w.document.write(comparisonDocument(props));
+        w.document.write('<!doctype html><meta charset="utf-8"><title>Preparing…</title>'
+            + '<p style="font:14px -apple-system,sans-serif;padding:2rem;color:#334155">'
+            + 'Preparing report…</p>');
+        let url = '';
+        try {
+            const client = (document.getElementById('clientName') || {}).value || '';
+            url = await buildShareLink(kind, props, client);
+        } catch (e) {
+            // A failed link must not cost the report itself; shareBar() renders the
+            // "too many options" note for an empty url and the document still opens.
+            console.error('share link:', e);
+        }
+        w.document.open();
+        w.document.write(render(props, url));
         w.document.close();
+    }
+
+    function openComparisonReport() {
+        if (SELECTED.size < 2) return;
+        openGeneratedReport('compare', [...SELECTED.values()], comparisonDocument);
     }
 
     function copyPayloadJSON() {

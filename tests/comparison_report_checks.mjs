@@ -1,7 +1,8 @@
 // Behaviour of the N-option comparison document. The generator is extracted from
 // index.html by test_comparison_report.py and written beside this file as generator.mjs,
 // so these checks always run against the code that actually ships rather than a copy.
-import { comparisonDocument, clientReportDocument } from './generator.mjs';
+import { comparisonDocument, clientReportDocument, buildShareLink,
+         unpackShare, shareBar } from './generator.mjs';
 
 const full = {
   content_hash: 'h1', lot_address: '12 Banksia Way', suburb: 'Armstrong Creek', state: 'VIC',
@@ -147,6 +148,58 @@ const nb = nasty.slice(nasty.indexOf('<body>'));
 check('no raw <script survives', !nb.includes('<scr' + 'ipt'), 'SCRIPT INJECTED');
 check('no raw <img survives', !nb.includes('<img'), 'IMG INJECTED');
 check('an ampersand survives as text', nb.includes('A &amp; B Homes'));
+
+// ------------------------------------------------------- no internal scoring leaks
+//
+// These documents go to a buyer. The SPB score ranks stock for a consultant; in a client's
+// hands "88/100" invites a negotiation about our scoring rather than about the property,
+// and Coleen's own example one-pager carries none. Greps the OUTPUT, not the source —
+// the first attempt at removing it left an HTML comment explaining the scoring inside the
+// document, readable in View Source.
+console.log('\n--- no internal scoring reaches a client document ---');
+for (const [label, d] of [['comparison', comparisonDocument([withMarket, bare], null)],
+                          ['client report', clientReportDocument([withMarket, bare], null)]]) {
+  check(label + ': no "/ 100"', !d.includes('/ 100'));
+  check(label + ': no "SPB score"', !d.includes('SPB score'), 'leaked into the document');
+  check(label + ': no HTML comment about scoring', !/<!--[^>]*[Ss]core/.test(d), 'comment leaked');
+}
+check('the comparison keeps its SPB PREFERRED banner',
+  comparisonDocument([withMarket, bare], null).includes('SPB PREFERRED'));
+
+// ------------------------------------------------------------- the shareable link
+//
+// The report travels in the URL fragment, which browsers never transmit, so a client can
+// open it with no login and nothing about them or our stock is stored or sent anywhere.
+console.log('\n--- shareable client links ---');
+{
+  const P = n => Array.from({ length: n }, (_, i) => ({ ...withMarket, content_hash: 'k' + i }));
+  for (const n of [2, 3, 8]) {
+    const url = await buildShareLink('client', P(n), 'Jane Buyer');
+    check(`${n} options: a link is produced`, url.startsWith('https://') && url.includes('/r#'));
+    const back = await unpackShare(url.slice(url.indexOf('#') + 1));
+    check(`${n} options: round-trips unchanged`,
+      back.p.length === n && back.c === 'Jane Buyer' && back.k === 'client');
+  }
+  check('beyond the limit it refuses rather than truncating',
+    (await buildShareLink('client', P(9), 'x')) === '');
+  check('and the document says why', shareBar('').includes('too many to fit'));
+  check('the shared copy carries no share bar of its own', shareBar(null) === '');
+
+  const url = await buildShareLink('client', P(3), 'Jane Buyer');
+  const back = await unpackShare(url.slice(url.indexOf('#') + 1));
+  const shared = clientReportDocument(back.p, null, back.c);
+  check('the shared document renders every option', (shared.match(/class="opt"/g) || []).length === 3);
+  check('the shared document names the client', shared.includes('Jane Buyer'));
+  check('the shared document has no Copy-link bar', !shared.includes('Client link'));
+
+  // A recipient can edit the fragment. It must fail visibly, not render nonsense.
+  let threw = false;
+  try { await unpackShare('1.not-valid-base64!!'); } catch (e) { threw = true; }
+  check('a corrupted link throws so the page can say so', threw);
+  threw = false;
+  try { await unpackShare('nodot'); } catch (e) { threw = true; }
+  check('a malformed fragment throws', threw);
+}
 
 console.log(bad === 0 ? '\nALL CHECKS PASSED' : '\n' + bad + ' FAILED');
 process.exit(bad ? 1 : 0);

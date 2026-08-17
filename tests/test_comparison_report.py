@@ -20,24 +20,32 @@ APP = Path(__file__).resolve().parent.parent
 INDEX = APP / "index.html"
 CHECKS = Path(__file__).resolve().parent / "comparison_report_checks.mjs"
 
-START = "const EFFECTIVE = p =>"
-END = "    function openComparisonReport()"
+START = "const SHARE_PATH = "
+END = "    async function openGeneratedReport("
 
 # index.html's own escaper, copied verbatim so the harness escapes exactly as the page
 # does. If these ever diverge the injection checks would pass here and fail in a browser.
 ESC = ("const esc = s => String(s ?? '').replace(/[&<>\"]/g, c => "
        "({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]));\n")
 
-# clientReportDocument reads the client's name off the brief form. Under Node there is no
-# DOM, so stub the one call it makes — the name still flows through esc(), which is what
-# the escaping check below actually exercises.
+# clientReportDocument reads the client's name off the brief form, and buildShareLink
+# reads location.origin. Under Node there is no DOM, so stub the two lookups they make —
+# the name still flows through esc(), which is what the escaping checks exercise.
 STUB_DOC = ("globalThis.document = { getElementById: () => "
-            "({ value: 'Test Client' }) };\n")
+            "({ value: 'Test Client' }) };\n"
+            "globalThis.location = "
+            "{ origin: 'https://app.smartpropertybuying.com.au' };\n")
+
+# What the checks import. buildShareLink/unpackShare/shareBar are here because the share
+# link is the one part a CLIENT touches: it must round-trip exactly, refuse rather than
+# truncate, and fail visibly when a recipient's mail client mangles the URL.
+EXPORTS = ("\nexport { comparisonDocument, clientReportDocument, buildShareLink,"
+           " unpackShare, shareBar };\n")
 
 
 def _generator_source():
     src = INDEX.read_text(encoding="utf-8")
-    assert START in src, "the comparison generator moved — update START"
+    assert START in src, "the report renderers moved — update START (build_web.py too)"
     assert END in src, "openComparisonReport moved — update END"
     return src[src.index(START):src.index(END)]
 
@@ -78,8 +86,7 @@ def test_the_comparison_document(tmp_path):
     if not node:
         pytest.skip("node is not installed; the browser-side generator cannot be run here")
     (tmp_path / "generator.mjs").write_text(
-        ESC + STUB_DOC + _generator_source()
-        + "\nexport { comparisonDocument, clientReportDocument };\n", encoding="utf-8")
+        ESC + STUB_DOC + _generator_source() + EXPORTS, encoding="utf-8")
     shutil.copy(CHECKS, tmp_path / "checks.mjs")
     p = subprocess.run([node, "checks.mjs"], cwd=str(tmp_path),
                        capture_output=True, text=True, timeout=120)

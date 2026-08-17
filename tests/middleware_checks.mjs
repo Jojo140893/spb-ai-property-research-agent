@@ -185,6 +185,32 @@ console.log("\n--- open redirect / injection ---");
         "SCRIPT INJECTED INTO LOGIN PAGE");
 }
 
+console.log("\n--- /r is public, and NOTHING else is ---");
+{
+  // Coleen has to send a buyer their report without handing them this app, which holds
+  // every builder and every wholesale price. /r is a static shell that renders a report
+  // out of the URL FRAGMENT — never transmitted — so it can serve the same bytes to
+  // everyone and leak nothing. That makes it the one deliberate hole in the gate, and its
+  // scope has to stay exactly this size.
+  for (const p of ["/r", "/r.html"]) {
+    const res = await call(req(p, { accept: "text/html" }));
+    check(`${p} is served without a login`, res === undefined,
+          res && "status " + res.status);
+  }
+  // A prefix test would have opened all of these. This is the check that catches a
+  // startsWith("/r") refactor.
+  for (const p of ["/research", "/reports", "/r/../stock.json", "/rstock.json",
+                   "/r.html.json", "/reports/client.pdf"]) {
+    const res = await call(req(p));
+    check(`${p} still requires a login`, res && res.status === 401,
+          res ? "status " + res.status : "SERVED WITHOUT AUTH");
+  }
+  // The gate's whole purpose.
+  const stock = await call(req("/stock.json"));
+  check("stock.json is still gated alongside the public /r",
+        stock && stock.status === 401, "CATALOGUE EXPOSED");
+}
+
 console.log("\n--- signing out ---");
 {
   const res = await call(req("/logout", { cookie, accept: "text/html" }));
