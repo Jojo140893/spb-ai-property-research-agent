@@ -104,6 +104,48 @@
             gap: 2rem;
         }
 
+        /* The brief follows the results down the page, so the filters and the
+           "Compare selected" action stay reachable while scrolling a few hundred cards.
+           Coleen, 14 Aug: "make the filter part sticky".
+
+           max-height + overflow are not optional here. The brief is taller than a laptop
+           viewport (14 fields, then the Execute button, then the action bar beneath it),
+           and a sticky element taller than the screen simply pins its TOP — the bottom,
+           which is where both buttons live, becomes permanently unreachable. Its own
+           scrollbar keeps the whole panel usable at any window height.
+
+           overscroll-behavior stops a scroll that reaches the end of this panel from
+           carrying on into the page behind it, which reads as the results jumping. */
+        .brief-panel {
+            position: sticky;
+            top: 1rem;
+            max-height: calc(100vh - 2rem);
+            /* A column, so the FORM scrolls and the action bar underneath it does not.
+               Scrolling the whole panel instead was measured and is worse than doing
+               nothing: the bar landed at y=1045 with the panel's visible box ending at
+               1026, so "Compare selected" sat permanently below the fold of an inner
+               scrollbar — the button is the one thing that had to stay in view. */
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* min-height:0 is load-bearing. A flex child defaults to min-height:auto, which
+           refuses to shrink below its content, so the form would push the action bar out
+           of the panel again and overflow-y would never engage. */
+        .brief-panel > form {
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow-y: auto;
+            overscroll-behavior: contain;
+        }
+
+        .brief-panel > #actionBar { flex: 0 0 auto; }
+
+        /* Sticky needs the grid item to be its own top-aligned box; the default `stretch`
+           makes it full-column height, and a full-height box has nothing left to stick. */
+        .grid-layout { align-items: start; }
+
         .panel-card {
             background: var(--surface-white);
             border: 1px solid var(--border-light);
@@ -526,6 +568,12 @@
         @media (max-width: 1024px) {
             body { padding: 1.25rem 1.5rem; }
             .grid-layout { grid-template-columns: 1fr; gap: 1.5rem; }
+            /* One column: the brief sits ABOVE the results rather than beside them, so
+               pinning it would cover the very cards it filters, and capping its height
+               would put a second scrollbar inside the page scroll. */
+            .brief-panel { position: static; max-height: none; overflow: visible;
+                           display: block; }
+            .brief-panel > form { overflow-y: visible; min-height: auto; }
         }
 
         /* Landscape phone / small tablet */
@@ -606,7 +654,7 @@
 <div id="researchTab" class="view-pane active">
     <div class="grid-layout">
         <!-- Form Panel -->
-        <div class="panel-card">
+        <div class="panel-card brief-panel">
             <div class="panel-header">
                 <span>Client Requirements Brief</span>
                 <span class="panel-header-tag">SOP Step 2</span>
@@ -756,6 +804,15 @@
                     Execute Property Research & Benchmarking
                 </button>
             </form>
+
+            <!-- Coverage line and the report/compare actions. Beneath the brief rather
+                 than on top of the results (Coleen, 14 Aug: "i want this block under the
+                 filter part so its easier to see"): the selection spans searches, so
+                 "Compare selected (2)" has to stay in view while she scrolls a few
+                 hundred cards looking for the next one to tick. Sitting at the top of
+                 the results column it scrolled away immediately. Empty until a search
+                 returns; filled by runResearchAgent. -->
+            <div id="actionBar"></div>
         </div>
 
         <!-- Results Panel -->
@@ -2411,6 +2468,12 @@
 
         const resultsDiv = document.getElementById('resultsContent');
         resultsDiv.innerHTML = '<div style="text-align:center; padding:3rem; color:var(--accent-blue); font-weight:600;">Processing Property Evaluation & Benchmarking...</div>';
+        // The action bar lives OUTSIDE resultsContent now, so clearing the results no
+        // longer clears it. Left alone it would keep the previous search's coverage line
+        // on screen, and its "Open Client Report" button would still be bound to that
+        // search's data — a report for a brief the consultant has already moved on from.
+        const actionBar = document.getElementById('actionBar');
+        if (actionBar) actionBar.innerHTML = '';
 
         try {
             // Retried once. /api/research is a serverless function, so a cold start or
@@ -2651,27 +2714,34 @@
 
                 // Client report + search coverage summary bar
                 if (data.shortlist.length > 0) {
-                    const bar = document.createElement('div');
-                    bar.style.cssText = 'display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:0.9rem 1.1rem; border:1px solid var(--border-color, #ccc); border-radius:8px; margin:0.5rem 0 1rem; font-size:0.85rem;';
+                    // Into the brief panel, not the results column — see #actionBar. The
+                    // buttons stack instead of sitting in a row: this column is 420px, and
+                    // three side by side wrapped into an unreadable jumble.
+                    const bar = document.getElementById('actionBar');
                     const cov = data.builder_coverage || {};
                     const areaCount = (data.search_area || []).length;
                     bar.innerHTML = `
-                        <div>
-                            <strong>Search coverage:</strong> ${areaCount} suburb(s) in search area &middot;
-                            ${cov.in_scope_for_state ?? '?'} of ${cov.total_in_directory ?? '?'} approved builders in scope for this state
-                            (${(cov.e_agent_channel || []).length} via E-Agent, ${(cov.direct_portal_channel || []).length} direct portals, ${(cov.email_or_drive_channel || []).length} email/drive)
+                        <div style="border-top:1px solid var(--border-light); margin-top:1rem; padding-top:1rem;">
+                            <div style="font-size:0.8rem; color:var(--text-muted); line-height:1.5;">
+                                <strong style="color:var(--text-heading);">Search coverage:</strong>
+                                ${areaCount} suburb(s) in search area &middot;
+                                ${cov.in_scope_for_state ?? '?'} of ${cov.total_in_directory ?? '?'} approved builders in scope for this state
+                                (${(cov.e_agent_channel || []).length} via E-Agent, ${(cov.direct_portal_channel || []).length} direct portals, ${(cov.email_or_drive_channel || []).length} email/drive)
+                            </div>
+                            <div style="display:flex; flex-wrap:wrap; gap:0.5rem; margin-top:0.85rem;">
+                                <button id="openClientReport" class="btn-submit"
+                                        style="width:auto; flex:1 1 auto; padding:0.55rem 1rem; margin:0;">Open Client Report</button>
+                                <button id="openComparison" class="btn-submit" disabled
+                                        style="width:auto; flex:1 1 auto; padding:0.55rem 1rem; margin:0;"
+                                        title="Tick 'compare' on two or more options">Compare selected</button>
+                                <button id="clearComparison" type="button"
+                                        style="width:auto; padding:0.55rem 0.8rem; margin:0; display:none;
+                                               background:none; border:1px solid var(--border-strong, #cbd5e1);
+                                               border-radius:6px; cursor:pointer; font:inherit; color:var(--text-muted);"
+                                        title="Forget every option ticked for comparison, including ones from earlier searches">Clear selection</button>
+                            </div>
                         </div>
-                        <button id="openClientReport" class="btn-submit" style="width:auto; padding:0.5rem 1rem; margin:0;">Open Client Report</button>
-                        <button id="openComparison" class="btn-submit" disabled
-                                style="width:auto; padding:0.5rem 1rem; margin:0 0 0 0.5rem;"
-                                title="Tick 'compare' on two or more options above">Compare selected</button>
-                        <button id="clearComparison" type="button"
-                                style="width:auto; padding:0.5rem 0.8rem; margin:0 0 0 0.4rem; display:none;
-                                       background:none; border:1px solid var(--border-strong, #cbd5e1);
-                                       border-radius:6px; cursor:pointer; font:inherit; color:var(--text-muted);"
-                                title="Forget every option ticked for comparison, including ones from earlier searches">Clear selection</button>
                     `;
-                    resultsDiv.appendChild(bar);
                     document.getElementById('openClientReport').onclick = () => {
                         const w = window.open('', '_blank');
                         // Same null guard as the comparison: a blocked popup made this
