@@ -987,6 +987,26 @@
             stock, and what is already here quietly goes out of date. This page says when
             each one last actually delivered a listing.
         </p>
+        <!-- Fetch stock now, from anywhere, without the developer's laptop. The work
+             happens on the harvest runner; this only asks it to start. See
+             api/refresh.py for why it cannot happen in the browser. -->
+        <div id="refreshBox" style="margin:0 0 1.2rem; padding:0.9rem 1.1rem;
+             border:1px solid var(--border-light); border-radius:8px;
+             background:var(--bg-page); display:flex; align-items:center;
+             justify-content:space-between; gap:1rem; flex-wrap:wrap;">
+            <div style="font-size:0.85rem; color:var(--text-body);">
+                <strong style="color:var(--text-heading);">Fetch stock now</strong><br>
+                <span style="color:var(--text-muted);">Signs the sources back in where their
+                    session has lapsed and pulls the latest listings. Takes about 20 minutes
+                    and runs on our servers &mdash; you can close this page.</span>
+            </div>
+            <div style="text-align:right;">
+                <button id="refreshBtn" class="btn-submit"
+                        style="width:auto; padding:0.55rem 1.1rem; margin:0;">Fetch stock now</button>
+                <div id="refreshMsg" style="font-size:0.78rem; color:var(--text-muted);
+                     margin-top:0.4rem;"></div>
+            </div>
+        </div>
         <div id="settingsContent" style="font-size:0.9rem;">Loading…</div>
     </div>
 </div>
@@ -1059,7 +1079,98 @@
                style="color:inherit; font-weight:600;">Open Settings</a>`;
     }
 
+    /* ------------------------------------------------------- fetch stock on demand
+     *
+     * The button asks the harvest runner to start; the work happens there, because a
+     * browser cannot drive a login against a builder's portal. See api/refresh.py.
+     *
+     * Polls while a run is in flight so the page reports the outcome rather than leaving
+     * the consultant to guess — a button that goes quiet for twenty minutes is a button
+     * nobody trusts twice.
+     */
+    let REFRESH_POLL = null;
+
+    function paintRefresh(state) {
+        const btn = document.getElementById('refreshBtn');
+        const msg = document.getElementById('refreshMsg');
+        if (!btn || !msg) return;
+        const run = state && state.run;
+        const busy = run && (run.status === 'queued' || run.status === 'in_progress');
+        if (state && state.configured === false) {
+            btn.disabled = true;
+            btn.textContent = 'Not connected';
+            msg.innerHTML = 'Needs a one-off setup step &mdash; ask Ahsan to set '
+                          + '<code>GITHUB_DISPATCH_TOKEN</code>.';
+            return;
+        }
+        btn.disabled = !!busy;
+        btn.textContent = busy ? 'Fetching…' : 'Fetch stock now';
+        if (busy) {
+            msg.textContent = 'Running now — about 20 minutes. You can close this page.';
+        } else if (run && run.conclusion === 'success') {
+            msg.textContent = 'Last fetch finished successfully.';
+        } else if (run && run.conclusion) {
+            // "failure" routinely means ONE source was down while the rest refreshed —
+            // the run is failed deliberately so it gets noticed. Saying "failed" flatly
+            // would misdescribe a run that published most of the catalogue.
+            msg.innerHTML = 'Last fetch finished with a problem &mdash; see the table below '
+                          + 'for which source is affected.';
+        } else {
+            msg.textContent = '';
+        }
+    }
+
+    async function refreshStatus() {
+        try {
+            const res = await fetch('/api/refresh', { cache: 'no-store' });
+            if (res.status === 401) { sessionExpired(); return null; }
+            if (!res.ok) return null;
+            const state = await res.json();
+            paintRefresh(state);
+            const run = state.run;
+            const busy = run && (run.status === 'queued' || run.status === 'in_progress');
+            if (busy && !REFRESH_POLL) {
+                REFRESH_POLL = setInterval(refreshStatus, 30000);
+            } else if (!busy && REFRESH_POLL) {
+                clearInterval(REFRESH_POLL);
+                REFRESH_POLL = null;
+                // The run changed the data, so the status table is now out of date.
+                CHANNELS = null;
+                loadSettings();
+            }
+            return state;
+        } catch (e) { return null; }
+    }
+
+    async function startRefresh() {
+        const btn = document.getElementById('refreshBtn');
+        const msg = document.getElementById('refreshMsg');
+        btn.disabled = true;
+        btn.textContent = 'Starting…';
+        try {
+            const res = await fetch('/api/refresh', { method: 'POST' });
+            if (res.status === 401) { sessionExpired(); return; }
+            const d = await res.json().catch(() => ({}));
+            if (res.status === 202) {
+                msg.textContent = 'Started — about 20 minutes. You can close this page.';
+                setTimeout(refreshStatus, 4000);
+                if (!REFRESH_POLL) REFRESH_POLL = setInterval(refreshStatus, 30000);
+                return;
+            }
+            btn.disabled = false;
+            btn.textContent = 'Fetch stock now';
+            msg.textContent = d.error || 'Could not start the fetch.';
+        } catch (e) {
+            btn.disabled = false;
+            btn.textContent = 'Fetch stock now';
+            msg.textContent = 'Could not reach the server.';
+        }
+    }
+
     async function loadSettings() {
+        const rb = document.getElementById('refreshBtn');
+        if (rb && !rb.onclick) rb.onclick = startRefresh;
+        refreshStatus();
         const el = document.getElementById('settingsContent');
         const badge = document.getElementById('channelsBadge');
         await loadChannelHealth();
