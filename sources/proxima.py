@@ -780,6 +780,67 @@ class ProximaSource(PropertySource):
             "verified": True,
         }
 
+    def _reauthenticate(self, scraper) -> bool:
+        """Sign back in with the stored password when the server session has lapsed.
+
+        WHY THIS CAN WORK AT ALL, given Proxima enforces 2FA. Two different things expire
+        and they were being treated as one. The Magento SERVER session (PHPSESSID) dies
+        every few days — twice in nine days in August — and that is what bounces the
+        harvest to /login. DEVICE TRUST is a separate cookie, `otp_authentication`, and it
+        runs to 28 Jan 2027; while it is alive a correct password does NOT re-challenge
+        for a code. So the common failure needs a password, which the runner already has
+        (PORTAL_PROXIMA_USERNAME / _PASSWORD), not a human with an inbox.
+
+        Until now this branch just gave up and told someone to run portal_login.py on the
+        laptop, which is exactly the dependency the whole GitHub-Actions move existed to
+        remove — and it meant a session lapse cost every night's Proxima stock until a
+        person noticed.
+
+        HONEST WHEN IT CANNOT. If the device-trust cookie HAS expired, the password lands
+        on /customerauth/twofactor/ and no automation can pass it. That is reported as the
+        distinct thing it is — a human with the account's inbox — rather than as a generic
+        failure, because the two need completely different responses.
+        """
+        from secrets_store import get_credentials
+        from sources.portal_config import config_for_url
+
+        cfg = config_for_url(PROJECTS_URL)
+        user, password, src = get_credentials(self.SESSION)
+        if not (user and password):
+            logger.error("Proxima bounced to %s and no stored credentials are available "
+                         "to sign back in. Run: python portal_login.py portal_proxima "
+                         "--profile", scraper.page.url)
+            return False
+
+        logger.info("Proxima: the saved sign-in has lapsed — signing back in "
+                    "(credentials from %s).", src)
+        try:
+            scraper.goto(cfg.login_url)
+            scraper.page.wait_for_selector(cfg.password_selector, timeout=15000)
+            scraper.page.fill(cfg.email_selector, user, timeout=10000)
+            scraper.page.fill(cfg.password_selector, password, timeout=10000)
+            scraper.page.click(cfg.submit_selector, timeout=10000)
+            scraper.page.wait_for_load_state("networkidle", timeout=25000)
+        except Exception as e:                                        # noqa: BLE001
+            logger.error("Proxima: sign-in attempt failed (%s).", e)
+            return False
+
+        if "twofactor" in scraper.page.url:
+            # Device trust is gone. This is the one case that genuinely needs a person.
+            logger.error(
+                "Proxima asked for a TWO-FACTOR CODE, so this device is no longer "
+                "trusted. No automation can pass that. Someone with the account's inbox "
+                "must sign in once: python portal_login.py portal_proxima --profile")
+            return False
+
+        scraper.goto(PROJECTS_URL)
+        if "/login" in scraper.page.url or "twofactor" in scraper.page.url:
+            logger.error("Proxima: signed in but still bounced to %s — the password may "
+                         "have changed.", scraper.page.url)
+            return False
+        logger.info("Proxima: signed back in.")
+        return True
+
     def search(self, filters: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         if not PLAYWRIGHT_AVAILABLE:
             logger.error("Proxima skipped: Playwright is not installed.")
@@ -796,10 +857,8 @@ class ProximaSource(PropertySource):
             with scraper.session():
                 scraper.goto(PROJECTS_URL)
                 if "twofactor" in scraper.page.url or "/login" in scraper.page.url:
-                    logger.error("Proxima bounced to %s — the saved sign-in has expired. "
-                                 "Re-run: python portal_login.py portal_proxima --profile",
-                                 scraper.page.url)
-                    return []
+                    if not self._reauthenticate(scraper):
+                        return []
 
                 # BEFORE enumerating anything. A filtered page does not look broken —
                 # it looks like a smaller portfolio — so the count has to be taken from
