@@ -42,26 +42,28 @@ for (const [name, props] of [
 ]) {
   const h = comparisonDocument(props);
   check(name + ' renders a document', h.length > 500, h.length);
-  // The table is TRANSPOSED — features down the side, options across the top — to match
-  // the document Coleen's team sends. So rows count FEATURES and columns count options.
-  check(name + ' one column per option',
-    (h.match(/OPTION \d+/g) || []).length === props.length,
-    (h.match(/OPTION \d+/g) || []).length);
+  // Options as ROWS, matching the one-pager Coleen sent as the target: it fits four
+  // options on one page, which a feature-per-row table does not. +1 for the header.
+  check(name + ' one table row per option',
+    (h.match(/<tr/g) || []).length === props.length + 1, (h.match(/<tr/g) || []).length);
   check(name + ' one detail block per option',
     (h.match(/class="opt[ "]/g) || []).length === props.length);
-  check(name + ' exactly one preferred tag',
-    (h.match(/class="tag"/g) || []).length === 1, (h.match(/class="tag"/g) || []).length);
-  // One highlighted CELL per feature row: the preferred option's whole column.
-  check(name + ' the preferred column is highlighted throughout',
-    (h.match(/td class="best"/g) || []).length === (h.match(/th class="feat"/g) || []).length,
-    (h.match(/td class="best"/g) || []).length);
+  // Several badges now (BEST OVERALL / LARGEST HOME / MOST LAND / LOWEST EFFECTIVE
+  // PRICE), all computed from the selected set — but exactly one option is preferred.
+  check(name + ' exactly one BEST OVERALL',
+    (h.match(/BEST OVERALL/g) || []).length === 1, (h.match(/BEST OVERALL/g) || []).length);
+  check(name + ' no option wears two badges',
+    (h.match(/class="tag"/g) || []).length <= props.length);
+  check(name + ' exactly one highlighted row',
+    (h.match(/tr class="best"/g) || []).length === 1);
 }
 
 const h4 = comparisonDocument([full, sparse, hostile, full]);
 const body = h4.slice(h4.indexOf('<body>'));
 
 console.log('\n--- the preferred option is the engine\'s ranking, not a new judgement ---');
-check('banner names the highest-scoring option (3, score 95)', h4.includes('Option 3 &mdash;'));
+check('banner names the highest-scoring option (3, score 95)',
+  /SPB PREFERRED OPTION: OPTION 3/.test(h4), 'banner names the wrong option');
 
 console.log('\n--- nothing is invented ---');
 check('a missing figure is a dash', body.includes('class="na"'));
@@ -70,9 +72,9 @@ check('a missing price is never rendered as $0', !/\$0\b/.test(body));
 
 console.log('\n--- rebate and effective price ---');
 check('effective price = package - rebate ($718,500)', h4.includes('$718,500'));
-check('a Rebate row appears when any option has one', h4.includes('>Rebate<'));
+check('a Rebate column appears when any option has one', h4.includes('>Rebate<'));
 const noReb = comparisonDocument([{ ...full, incentive_amount: 0, incentive_text: '' }, sparse]);
-check('the Rebate row is omitted when none does',
+check('the Rebate column is omitted when none does',
   !noReb.includes('>Rebate<') && !noReb.includes('>Effective Price<'));
 
 console.log('\n--- untrusted vendor text cannot execute ---');
@@ -91,8 +93,10 @@ check('a quote cannot break out of an attribute', !/<td[^>]*"><img/.test(body));
 check('an ampersand in vendor text survives as escaped text', body.includes('&amp;'));
 
 console.log('\n--- the consultant writes the prose, the system does not ---');
-check('every option gets an empty notes field',
-  (h4.match(/<textarea/g) || []).length === 4);
+// Three per option (strengths / infrastructure / trade-off) plus one recommendation.
+check('each option gets its own notes fields',
+  (h4.match(/<textarea/g) || []).length === 4 * 3 + 1,
+  (h4.match(/<textarea/g) || []).length);
 check('no suburb/infrastructure commentary is pre-filled',
   !/growth area|infrastructure:|investment strengths:/i.test(body.replace(/placeholder="[^"]*"/g, '')));
 

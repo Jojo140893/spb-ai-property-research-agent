@@ -1101,7 +1101,7 @@ __REPORT_JS__
     // Every value below is rendered through esc() by the generators, which is what makes
     // it safe to render a document out of whatever the URL happened to contain.
     const html = data.k === 'compare'
-      ? comparisonDocument(data.p, null)
+      ? comparisonDocument(data.p, null, data.b || {})
       : clientReportDocument(data.p, null, data.c || '');
     document.open(); document.write(html); document.close();
   } catch (e) {
