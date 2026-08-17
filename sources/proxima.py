@@ -183,8 +183,20 @@ async (pid) => {
 #
 # Hidden inputs are excluded: the portal carries its own bookkeeping fields under the same
 # `property[...]` name, and counting those would make every run look filtered.
+# KEYWORD FIELDS ARE INCLUDED, AND THEY ARE HIDDEN ONES.
+#
+# The Quick-Filter chips ("Atchison and Kenny Wollongong Building B ×") are backed by
+# `keyword[projectname][]`, a HIDDEN input holding the project id. The exclusion above
+# skipped it, so _real_filters returned {} on a page filtered down to a single project and
+# _clear_filters reported the page clean. On 17 Aug 2026 that read 16 lots against 1,396
+# stored — a 99% collapse the filter guard was written to prevent and could not see.
+#
+# The hidden-input exclusion still applies to `property[...]`, where it was earned: the
+# portal keeps its own bookkeeping under those names and counting them made every run look
+# filtered. `keyword[...]` carries no such traffic — anything there IS a chip the user set.
 _FILTER_FIELDS = ('select[name^="property["], '
-                  'input[name^="property["]:not([type=hidden])')
+                  'input[name^="property["]:not([type=hidden]), '
+                  'input[name^="keyword["]')
 
 # What the form reads when it is NOT filtered. A default is not a filter, and treating
 # one as a filter is worse than missing a real one: it puts "the page came up FILTERED"
@@ -210,7 +222,14 @@ _FILTER_SNAPSHOT_JS = r"""
 (sel) => {
   const out = {};
   document.querySelectorAll(sel).forEach(el => {
-    const name = (el.getAttribute('name') || '').replace(/^property\[/, '').replace(/\]$/, '');
+    const raw = el.getAttribute('name') || '';
+    // property[state] -> state, so it can be matched against _UNFILTERED_DEFAULTS.
+    // keyword[projectname][] keeps its own shape: it has no default, anything in it is a
+    // chip somebody set, and flattening it to "projectname" would collide with a
+    // property field of the same name.
+    const name = raw.startsWith('property[')
+      ? raw.replace(/^property\[/, '').replace(/\]$/, '')
+      : raw;
     if (!name) return;
     if (el.type === 'checkbox' || el.type === 'radio') {
       if (el.checked && el.value) out[name] = el.value;
@@ -257,8 +276,24 @@ _CLEAR_AND_SUBMIT_JS = r"""
     const el = document.querySelector(s);
     if (el) { try { el.scrollIntoView(); } catch (e) {} el.click(); used.push(s); break; }
   }
+  // Keyword chips are REMOVED, not blanked. keyword[projectname][] is an array field, so
+  // an emptied one still posts a member and the portal can read that as "filter by
+  // nothing", keeping the narrowed result. Taking the input out of the form is the only
+  // way to post no keyword at all. The visible chip goes too, so the page does not show a
+  // filter it is no longer applying.
+  document.querySelectorAll('input[name^="keyword["]').forEach(el => {
+    used.push('-' + (el.getAttribute('name') || 'keyword'));
+    el.remove();
+  });
+  document.querySelectorAll('.keyword_projectname_field_group, [class*="keyword_"][class*="field_group"]')
+    .forEach(el => el.remove());
+
   document.querySelectorAll(sel).forEach(el => {
-    const name = (el.getAttribute('name') || '').replace(/^property\[/, '').replace(/\]$/, '');
+    if (!el.isConnected) return;                    // already removed above
+    const raw = el.getAttribute('name') || '';
+    const name = raw.startsWith('property[')
+      ? raw.replace(/^property\[/, '').replace(/\]$/, '')
+      : raw;
     const def = Object.prototype.hasOwnProperty.call(defaults, name) ? defaults[name] : '';
     if (el.type === 'checkbox' || el.type === 'radio') {
       el.checked = false;
