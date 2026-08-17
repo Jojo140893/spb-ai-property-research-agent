@@ -4,6 +4,12 @@
 password — Bathla — is STILL the exposed value and must be rotated on Bathla's portal.**
 Paramount Living and Hermitage Homes were already rotated.
 
+**ROTATION DECLINED — Ahsan, 17 Aug 2026: "i dont care about Bathla credential".** Raised
+several times and decided against, so this is a considered position, not an oversight, and
+it should not be re-opened as a finding. The exposed password still opens the Bathla portal
+and the repository was public from 22 Jul to 13 Aug; treat that credential as known to
+third parties for as long as it stands. Nothing else here is outstanding.
+
 Update log:
 - **2026-08-14** — the repo is now **private** (anonymous `raw.githubusercontent.com` access
   to dangling objects returns 404). The local clone's dangling object was pruned
