@@ -242,6 +242,12 @@ _FILTER_SNAPSHOT_JS = r"""
 # Both controls sit BELOW a 1440x900 headless viewport, so Playwright's own `.click()`
 # refuses them with "element is outside of the viewport". A click dispatched from inside
 # the page has no such constraint.
+# What a healthy, unfiltered Proxima run looks like — measured repeatedly in August 2026
+# and the same bar export_proxima_session.py applies before it will save a session
+# (MIN_PROJECTS / MIN_AVAIL). Kept here so the harvest can say when it is looking at less.
+_HEALTHY_PROJECTS = 40
+_HEALTHY_AVAIL = 9
+
 _CLEAR_AND_SUBMIT_JS = r"""
 (cfg) => {
   const {sel, defaults} = cfg;
@@ -395,6 +401,39 @@ class ProximaSource(PropertySource):
 
     def _bump(self, key: str) -> None:
         self.stats[key] = self.stats.get(key, 0) + 1
+
+    # Long enough for a cold runner on a slow morning; the poll exits as soon as the
+    # count holds, so a healthy page costs ~3 seconds, not 60.
+    _PROJECT_SETTLE_SECONDS = 60
+
+    @staticmethod
+    def _settle_project_list(scraper) -> int:
+        """Block until the project count stops changing, and return it.
+
+        Mirrors export_proxima_session._counts, which learned this the expensive way: the
+        accordion is filled by AJAX, so counting once counts a moment in the middle of it.
+        Three identical reads is the bar — two can both land inside the same pause between
+        batches.
+
+        Returns the settled count rather than nothing, so a caller can log what it waited
+        for. Never raises: a page that cannot be counted is a bigger problem than a slow
+        one and surfaces immediately afterwards as an empty harvest.
+        """
+        sel = "label.tab-label[data-project_id]"
+        last, stable, waited = -1, 0, 0
+        try:
+            while waited < ProximaSource._PROJECT_SETTLE_SECONDS:
+                n = scraper.page.locator(sel).count()
+                stable = stable + 1 if n == last else 0
+                last = n
+                if n and stable >= 2:
+                    break
+                scraper.page.wait_for_timeout(1000)
+                waited += 1
+        except Exception as e:                                        # noqa: BLE001
+            logger.warning("Proxima: could not settle the project list (%s) — "
+                           "counting what is on screen.", e)
+        return max(last, 0)
 
     @staticmethod
     def _settle(scraper) -> None:
@@ -741,6 +780,21 @@ class ProximaSource(PropertySource):
                         ", ".join(f"{k}={v}" for k, v in sorted(self.filter_found.items())))
                     return []
 
+                # WAIT FOR THE ACCORDION TO STOP GROWING BEFORE COUNTING ANYTHING.
+                #
+                # The project list arrives by AJAX after the document loads, so a single
+                # query_selector_all counts whatever had rendered at that instant. On
+                # 2026-08-17 the GitHub runner read ONE project and harvested 16 lots
+                # against the previous night's 1,291 — and it did not look like a race, it
+                # looked exactly like the filter trap this function guards against: a
+                # smaller portfolio, reported as a success. The filter check above had
+                # already passed (nothing was set), so nothing waited for the page.
+                #
+                # The same race produced 0, then 8, then 40, then 0 from one profile
+                # within minutes during the August session work, and was misread as a
+                # filtered session twice before being measured. export_proxima_session.py
+                # settled it there with this poll; the HARVEST never got the same fix.
+                self._settle_project_list(scraper)
                 labels = scraper.page.query_selector_all("label.tab-label[data-project_id]")
                 pids, seen = [], set()
                 for el in labels:
@@ -755,6 +809,20 @@ class ProximaSource(PropertySource):
                 }
                 logger.info("Proxima: %d project(s) listed, %d with an availability view.",
                             len(pids), len(avail_pids))
+                # The known-good line, recorded from repeated healthy runs. Said out loud
+                # rather than enforced: a genuinely smaller portfolio is possible and
+                # hard-failing on a remembered number would stop the harvest on a day the
+                # portal was merely quieter. harvest_buildings' partial-read guard is the
+                # net that acts — it now fails the CI run — and this line tells whoever
+                # reads the log which of the two it is looking at.
+                if len(pids) < _HEALTHY_PROJECTS:
+                    logger.warning(
+                        "Proxima: only %d project(s) after the list settled — a healthy "
+                        "run lists %d with %d availability views. Everything read below "
+                        "is a SUBSET and will be stamped as today's stock; the rest goes "
+                        "stale silently. Check the portal for a filter, or a session that "
+                        "is only partly signed in.",
+                        len(pids), _HEALTHY_PROJECTS, _HEALTHY_AVAIL)
 
                 for i, pid in enumerate(pids, 1):
                     try:
