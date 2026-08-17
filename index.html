@@ -1077,20 +1077,27 @@
         }
         const pill = s => s === 'ok'
             ? '<span class="pill pill-recommend">sending stock</span>'
-            : s === 'stale'
-                ? '<span class="pill pill-conditions">signed out?</span>'
-                : s === 'dead'
-                    ? '<span class="pill pill-reject">not sending</span>'
-                    : '<span class="pill pill-muted">unknown</span>';
-        el.innerHTML = `
+            : s === 'partial'
+                // Ran, and brought back a fraction. Proxima read 16 lots against 1,396
+                // stored on 17 Aug and this tab called it "ok" — the run happened, so
+                // recency alone said healthy while 99% of the stock quietly went stale.
+                ? '<span class="pill pill-conditions">only part of its stock</span>'
+                : s === 'stale'
+                    ? '<span class="pill pill-conditions">signed out?</span>'
+                    : s === 'dead'
+                        ? '<span class="pill pill-reject">not sending</span>'
+                        : '<span class="pill pill-muted">unknown</span>';
+
+        const table = (rows, firstCol) => `
           <table style="width:100%; border-collapse:collapse;">
             <thead><tr style="text-align:left; color:var(--text-muted); font-size:0.8rem;">
-              <th style="padding:0.45rem 0.5rem;">Source</th>
+              <th style="padding:0.45rem 0.5rem;">${firstCol}</th>
               <th style="padding:0.45rem 0.5rem;">Status</th>
               <th style="padding:0.45rem 0.5rem;">Last sent stock</th>
               <th style="padding:0.45rem 0.5rem; text-align:right;">Listings held</th>
+              <th style="padding:0.45rem 0.5rem; text-align:right;">Refreshed</th>
             </tr></thead>
-            <tbody>${chans.map(c => `
+            <tbody>${rows.map(c => `
               <tr style="border-top:1px solid var(--border-light);">
                 <td style="padding:0.55rem 0.5rem;"><strong>${esc(c.channel)}</strong></td>
                 <td style="padding:0.55rem 0.5rem;">${pill(c.state)}</td>
@@ -1098,11 +1105,29 @@
                   ${c.days_ago === null ? '' :
                     `<span style="color:var(--text-muted);"> (${c.days_ago} day${c.days_ago === 1 ? '' : 's'} ago)</span>`}</td>
                 <td style="padding:0.55rem 0.5rem; text-align:right;">${(c.live || 0).toLocaleString()}</td>
+                <td style="padding:0.55rem 0.5rem; text-align:right;
+                           ${c.refreshed_pct < (CHANNELS.partial_below_pct || 50)
+                             ? 'color:var(--rose-red); font-weight:600;' : ''}">
+                  ${c.refreshed_pct}%</td>
               </tr>`).join('')}</tbody>
-          </table>
+          </table>`;
+        const portals = CHANNELS.portals || [];
+        el.innerHTML = `
+          ${table(chans, 'Source')}
+          ${portals.length ? `
+          <h3 style="margin:1.6rem 0 0.5rem; font-size:0.95rem; color:var(--text-heading);">
+            Builder portals</h3>
+          <p style="margin:0 0 0.6rem; font-size:0.8rem; color:var(--text-muted);">
+            These sit inside &ldquo;Direct Builder Portal&rdquo; above. Listed separately
+            because when one signs out, the group name does not tell you which.
+          </p>
+          ${table(portals, 'Portal')}` : ''}
           <p style="margin-top:1rem; font-size:0.8rem; color:var(--text-muted);">
             Checked ${esc(CHANNELS.generated || '')}. A source is flagged after
-            ${CHANNELS.stale_after_days} days without sending anything.
+            ${CHANNELS.stale_after_days} days without sending anything, or when it sends
+            less than ${CHANNELS.partial_below_pct || 50}% of what we hold
+            (&ldquo;Refreshed&rdquo;) &mdash; a source that returns a fraction stamps that
+            fraction as current and lets the rest go stale.
           </p>
           ${bad.length ? `
           <div style="margin-top:1rem; padding:0.9rem 1.1rem; border:1px solid var(--border-light);

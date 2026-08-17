@@ -1100,6 +1100,12 @@ __REPORT_JS__
 # two days covers one missed run plus the clock. Beyond a week it is not a blip.
 CHANNEL_STALE_DAYS = 2
 CHANNEL_DEAD_DAYS = 7
+# Below this share of a source's stored listings refreshed on its last read, the run
+# brought back a fraction and stamped it as current. Proxima read 16 against 1,396 stored
+# on 17 Aug — 1% — and the first version of this tab called that "ok" because something
+# arrived. 50% is deliberately loose: a source legitimately shrinks, and a bar set tight
+# would cry wolf until nobody read the tab at all.
+CHANNEL_PARTIAL_PCT = 50
 
 
 def _export_channel_health(out_dir: Path, conn) -> dict:
@@ -1129,49 +1135,82 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
     # STRING comparison that puts '29/07/2026' above '13/08/2026' — it reads the leading
     # digit and stops. That mistake made a channel four days stale look nineteen days
     # stale during the 17 Aug investigation and pointed it at the wrong incident.
-    rows = conn.execute("""
-        SELECT source_channel,
-               COUNT(*) AS stored,
-               SUM(CASE WHEN superseded_by IS NULL OR superseded_by = ''
-                        THEN 1 ELSE 0 END) AS live,
-               MAX(CASE WHEN superseded_by IS NULL OR superseded_by = ''
-                        THEN substr(date_checked, 7, 4) || substr(date_checked, 4, 2)
-                             || substr(date_checked, 1, 2) END) AS newest_iso
-        FROM buildings GROUP BY source_channel
-    """).fetchall()
+    ISO = ("substr(date_checked, 7, 4) || substr(date_checked, 4, 2) "
+           "|| substr(date_checked, 1, 2)")
+    LIVE = "(superseded_by IS NULL OR superseded_by = '')"
 
-    channels = []
-    for row in rows:
-        row = dict(row) if not isinstance(row, dict) else row
-        name = str(row["source_channel"] or "").strip() or "(unnamed)"
-        live = row["live"] or 0
-        iso = row["newest_iso"] or ""
-        newest = None
-        if len(iso) == 8 and iso.isdigit():
-            try:
-                newest = date(int(iso[0:4]), int(iso[4:6]), int(iso[6:8]))
-            except ValueError:
-                newest = None
+    def _tally(group_sql, where_sql, params=()):
+        """{name: {iso: live_rows}} for one grouping."""
+        out = {}
+        for name, iso, n in conn.execute(
+                f"SELECT {group_sql} AS g, {ISO} AS iso, COUNT(*) FROM buildings "
+                f"WHERE {LIVE}{where_sql} GROUP BY g, iso", params):
+            out.setdefault(str(name or "").strip() or "(unnamed)", {})[iso or ""] = n
+        return out
+
+    def _health(name, by_iso):
+        """One row of the Settings table.
+
+        REPORTS VOLUME AS WELL AS RECENCY, and the second one was the gap. The first cut
+        asked only "did this source produce a row lately", so on 17 Aug it printed Proxima
+        as "ok" while that run had read 16 lots against a stored 1,396 — a 99% collapse,
+        shown as healthy, on the very tab built to stop exactly this being invisible. The
+        harvest's own partial-read guard caught it; the tab flattered it.
+
+        `refreshed` is how many of the live rows carry the newest date — i.e. how much of
+        what we hold was actually seen on the last successful read. A source that returns
+        a fraction of its stock is stamping that fraction as today's and letting the rest
+        go quietly stale, which is the same harm as not running at all, minus the warning.
+        """
+        newest, live = None, sum(by_iso.values())
+        for iso in by_iso:
+            if len(iso) == 8 and iso.isdigit():
+                try:
+                    d = date(int(iso[0:4]), int(iso[4:6]), int(iso[6:8]))
+                except ValueError:
+                    continue
+                if newest is None or d > newest:
+                    newest = d
         age = (today - newest).days if newest else None
+        refreshed = by_iso.get(newest.strftime("%Y%m%d"), 0) if newest else 0
+        pct = round(100.0 * refreshed / live) if live else 0
         if age is None:
             state = "unknown"
         elif age >= CHANNEL_DEAD_DAYS:
             state = "dead"
         elif age > CHANNEL_STALE_DAYS:
             state = "stale"
+        elif pct < CHANNEL_PARTIAL_PCT:
+            # Recent but thin: it ran, and brought back a fraction.
+            state = "partial"
         else:
             state = "ok"
-        channels.append({
-            "channel": name, "live": live, "stored": row["stored"],
-            "last_stock": newest.strftime("%d/%m/%Y") if newest else "",
-            "days_ago": age, "state": state,
-        })
+        return {"channel": name, "live": live,
+                "last_stock": newest.strftime("%d/%m/%Y") if newest else "",
+                "days_ago": age, "refreshed": refreshed, "refreshed_pct": pct,
+                "state": state}
+
+    channels = [_health(n, t) for n, t in _tally("source_channel", "").items()]
     channels.sort(key=lambda c: (-(c["days_ago"] or 0), -c["live"]))
+
+    # THE DIRECT PORTALS, BY NAME. They all share one source_channel, so Bathla,
+    # Hermitage and Torsion appeared as a single row called "Direct Builder Portal
+    # (live)" — and when one signs out, that row names the group rather than the portal
+    # that broke, which is the one thing a person needs in order to fix it.
+    portals = [_health(n, t) for n, t in
+               _tally("builder_name", " AND source_channel LIKE ?",
+                      ("Direct Builder Portal%",)).items()]
+    portals.sort(key=lambda c: (-(c["days_ago"] or 0), -c["live"]))
+    unwell = ("stale", "dead", "partial")
     payload = {
         "generated": datetime.now().strftime("%d/%m/%Y %H:%M"),
         "stale_after_days": CHANNEL_STALE_DAYS, "dead_after_days": CHANNEL_DEAD_DAYS,
+        "partial_below_pct": CHANNEL_PARTIAL_PCT,
         "channels": channels,
-        "needs_signin": [c["channel"] for c in channels if c["state"] in ("stale", "dead")],
+        "portals": portals,
+        # Portals are named individually here too: "Direct Builder Portal (live)" tells
+        # nobody which sign-in to go and fix.
+        "needs_signin": [c["channel"] for c in channels + portals if c["state"] in unwell],
     }
     (out_dir / "channels.json").write_text(json.dumps(payload), encoding="utf-8")
     return payload
