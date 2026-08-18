@@ -1104,17 +1104,11 @@
         return CHANNELS;
     }
 
-    function paintChannelBanner() {
-        const banner = document.getElementById('channelBanner');
-        const dot = document.getElementById('settingsAlertDot');
-        if (!banner) return;
-        const bad = (CHANNELS && CHANNELS.channels || []).filter(
-            c => c.state === 'stale' || c.state === 'dead');
-        if (!bad.length) {
-            banner.style.display = 'none';
-            if (dot) dot.textContent = '';
-            return;
-        }
+    // MODULE SCOPE, NOT INSIDE paintChannelBanner. These were first declared after
+    // that function's early return, so they existed only within it — and the
+    // channels table, which is rendered elsewhere, threw ReferenceError: agoText is
+    // not defined. The Settings tab sat on "Loading..." forever, and only when NO
+    // source was stale, because the early return is the path that reaches them.
     // HOW LONG AGO, IN THE SMALLEST UNIT THAT IS HONEST.
     //
     // This said "1 day ago" for every source on the morning of 18 Aug 2026, when all
@@ -1144,6 +1138,17 @@
         return (d === null || d === undefined) ? '?' : `${d}d`;
     }
 
+    function paintChannelBanner() {
+        const banner = document.getElementById('channelBanner');
+        const dot = document.getElementById('settingsAlertDot');
+        if (!banner) return;
+        const bad = (CHANNELS && CHANNELS.channels || []).filter(
+            c => c.state === 'stale' || c.state === 'dead');
+        if (!bad.length) {
+            banner.style.display = 'none';
+            if (dot) dot.textContent = '';
+            return;
+        }
         if (dot) {
             dot.textContent = ' ●';
             dot.style.color = bad.some(c => c.state === 'dead') ? '#b91c1c' : '#b45309';
