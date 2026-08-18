@@ -130,12 +130,19 @@ const bare = {
 };
 
 console.log('\n--- the client report follows the selection, not the ranking ---');
+// class="opt" OR class="opt opt-best": since the two documents merged (18 Aug) the
+// client-facing render marks its preferred block, which the strict pattern missed —
+// it counted n-1 and reported a defect that was not there.
+const WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight',
+               'nine', 'ten'];
+const blocks = h => (h.match(/class="opt[ "]/g) || []).length;
 for (const n of [1, 3, 7]) {
   const props = Array.from({ length: n }, (_, i) => ({ ...bare, content_hash: 'c' + i }));
   const h = clientReportDocument(props);
-  check(`${n} selected -> ${n} cards`,
-    (h.match(/class="opt"/g) || []).length === n, (h.match(/class="opt"/g) || []).length);
-  check(`${n} selected -> the document says ${n}`, h.includes(`following ${n} option(s)`));
+  check(`${n} selected -> ${n} cards`, blocks(h) === n, blocks(h));
+  // The merged lede states the count in words: "reviewed three packages across ..."
+  check(`${n} selected -> the document says ${n}`,
+    new RegExp('reviewed\\s+' + (WORDS[n] || n) + '\\s*\\n?\\s*package').test(h));
 }
 const cr = clientReportDocument([withMarket, bare]);
 check('no rank wording leaks into a selection-driven report', !/Rank #/.test(cr));
@@ -211,7 +218,8 @@ console.log('\n--- shareable client links ---');
   const url = await buildShareLink('client', P(3), 'Jane Buyer');
   const back = await unpackShare(url.slice(url.indexOf('#') + 1));
   const shared = clientReportDocument(back.p, null, back.c);
-  check('the shared document renders every option', (shared.match(/class="opt"/g) || []).length === 3);
+  check('the shared document renders every option',
+    (shared.match(/class="opt[ "]/g) || []).length === 3);
   check('the shared document names the client', shared.includes('Jane Buyer'));
   check('the shared document has no Copy-link bar', !shared.includes('Client link'));
 
@@ -222,6 +230,58 @@ console.log('\n--- shareable client links ---');
   threw = false;
   try { await unpackShare('nodot'); } catch (e) { threw = true; }
   check('a malformed fragment throws', threw);
+}
+
+
+console.log('\n--- one document, one page (Coleen and Colin, 18 Aug) ---');
+{
+  // "Consolidate into a single, one-page PDF by eliminating redundant information."
+  // Both entry points survive because r.html dispatches share links on k, so a link
+  // already in a client's inbox still renders — but they must now produce the SAME
+  // document, or a client still receives one of two.
+  const viaCompare = comparisonDocument([full, sparse], null, {});
+  const viaClient = clientReportDocument([full, sparse], null, '');
+  check('both entry points render one and the same document', viaCompare === viaClient);
+
+  const h = comparisonDocument([full, hostile], null, {});
+  // Moved OUT of the assessment block and INTO the comparison row, so a reader compares
+  // them side by side instead of scrolling between blocks to do it by eye.
+  check('bed / bath / car is a table column', h.includes('<th>Bed / Bath / Car</th>'));
+  check('and is gone from the assessment block', !h.includes('<b>Bed / Bath / Car</b>'));
+  check('titling status is a table column', h.includes('<th>Title</th>'));
+
+  // "Add the property address to the table header (e.g. Option 1: [Address])."
+  check('the option cell names the option', h.includes('<div class="opt-no">Option 1</div>'));
+  check('and carries the address', h.includes('class="opt-addr"'));
+  check('the redundant Location column is gone', !h.includes('<th>Location</th>'));
+  check('the address is not repeated in the block', !h.includes('<b>Address</b>'));
+  check('land and house are not restated in the block', !h.includes('<b>Land / House</b>'));
+  check('package price is not restated in the block', !h.includes('<b>Package</b>'));
+
+  // The assessment textareas open PREFILLED from what we actually hold, not empty and
+  // not invented.
+  const rich = comparisonDocument([Object.assign({}, full, {
+    recommendation_reason: 'Largest block in the release.',
+    amenities_summary: 'Primary school 900 m; rail 4 km.' })], null, {});
+  check('investment strengths prefill from the stored reason',
+    rich.includes('Largest block in the release.'));
+  check('infrastructure prefills from the stored amenity text',
+    rich.includes('Primary school 900 m; rail 4 km.'));
+  const dull = comparisonDocument([Object.assign({}, full, {
+    amenities_summary: 'No amenity assessment captured for this listing.' })], null, {});
+  check('boilerplate amenity text stays suppressed', !dull.includes('No amenity assessment'));
+
+  // The client's name reaches the merged document from either entry point.
+  check('a shared comparison still names the client',
+    comparisonDocument([full], null, { client: 'Jane Buyer' }).includes('Jane Buyer'));
+  check('a shared client report still names the client',
+    clientReportDocument([full], null, 'Jane Buyer').includes('Jane Buyer'));
+
+  // The banner uppercases the estate label, and must do it BEFORE escaping — otherwise
+  // an ampersand in a vendor's estate name ships to a client as "&AMP;".
+  check('no broken entity from uppercasing',
+    !comparisonDocument([Object.assign({}, full, { estate_context: 'Smith & Co Estate' })],
+      null, {}).includes('&AMP;'));
 }
 
 console.log(bad === 0 ? '\nALL CHECKS PASSED' : '\n' + bad + ' FAILED');

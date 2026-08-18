@@ -2539,32 +2539,31 @@ python state_sync.py push</pre>
     // there when the page reopens, exactly as the marked-listings set is.
     loadSelected();
 
+    /* ONE BUTTON, because there is now one document — see packageReportDocument.
+     *
+     * There were two, "Client Report" and "Compare selected", and which one a client
+     * received depended on which was pressed. The second was also disabled below two
+     * selections, so a consultant with one option ticked saw a greyed-out button reading
+     * "Compare selected (1 — pick another)" and reasonably concluded the report needed
+     * two. It never did.
+     *
+     * The wording still says WHICH options the document will cover, because that part was
+     * a real defect: it silently switched between "the top 3 of this search" and "the 3
+     * you picked" with identical text, which is how Coleen came to click it expecting her
+     * selection and get the ranking.
+     */
     function paintCompareBar() {
-        const btn = document.getElementById('openComparison');
         const clear = document.getElementById('clearComparison');
         const n = SELECTED.size;
         if (clear) clear.style.display = n ? '' : 'none';
 
-        // Say which document the button will produce. It silently switched between "the
-        // top 3 of this search" and "the 3 you picked" with identical wording, which is
-        // how Coleen came to click it expecting her selection and get the ranking.
         const rep = document.getElementById('openClientReport');
-        if (rep) {
-            rep.textContent = n ? `Client Report (${n} selected)` : 'Client Report (top 3)';
-            rep.title = n
-                ? `A client-facing report covering the ${n} option(s) you have selected.`
-                : 'A client-facing report covering the top 3 ranked options. Tick "compare" '
-                  + 'on the options you want and this will cover those instead.';
-        }
-
-        if (!btn) return;
-        btn.disabled = n < 2;
-        btn.textContent = n === 0 ? 'Compare selected (none yet)'
-                        : n === 1 ? 'Compare selected (1 — pick another)'
-                                  : `Compare selected (${n})`;
-        btn.title = n < 2
-            ? 'Tick "compare" on two or more options. Picks are kept when you run another search.'
-            : `Build one comparison report across these ${n} options.`;
+        if (!rep) return;
+        rep.textContent = n ? `Open Report (${n} selected)` : 'Open Report (top 3)';
+        rep.title = n
+            ? `One client-facing report comparing the ${n} option(s) you have selected.`
+            : 'One client-facing report over the top 3 ranked options. Tick "compare" on '
+              + 'the options you want and it will cover those instead.';
     }
 
     document.addEventListener('change', e => {
@@ -3146,9 +3145,6 @@ python state_sync.py push</pre>
                             <div style="display:flex; flex-wrap:wrap; gap:0.5rem; margin-top:0.85rem;">
                                 <button id="openClientReport" class="btn-submit"
                                         style="width:auto; flex:1 1 auto; padding:0.55rem 1rem; margin:0;">Open Client Report</button>
-                                <button id="openComparison" class="btn-submit" disabled
-                                        style="width:auto; flex:1 1 auto; padding:0.55rem 1rem; margin:0;"
-                                        title="Tick 'compare' on two or more options">Compare selected</button>
                                 <button id="clearComparison" type="button"
                                         style="width:auto; padding:0.55rem 0.8rem; margin:0; display:none;
                                                background:none; border:1px solid var(--border-strong, #cbd5e1);
@@ -3165,7 +3161,7 @@ python state_sync.py push</pre>
                         // something is ticked, that IS the report; the server's automatic
                         // document is the fallback for when nothing is.
                         if (SELECTED.size) {
-                            openGeneratedReport('client', [...SELECTED.values()], clientReportDocument);
+                            openGeneratedReport('compare', [...SELECTED.values()], comparisonDocument);
                             return;
                         }
                         // The server's document is a finished HTML blob with no structured
@@ -3180,8 +3176,6 @@ python state_sync.py push</pre>
                         w.document.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>SPB Client Report</title></head><body>' + (data.client_report_html || '<p>No report generated.</p>') + '</body></html>');
                         w.document.close();
                     };
-                    const cmpBtn = document.getElementById('openComparison');
-                    if (cmpBtn) cmpBtn.onclick = openComparisonReport;
                     const clrBtn = document.getElementById('clearComparison');
                     if (clrBtn) clrBtn.onclick = () => {
                         SELECTED.clear();
@@ -3460,20 +3454,40 @@ python state_sync.py push</pre>
         return price ? price - reb : 0;
     };
 
-    function comparisonDocument(props, shareUrl, briefIn) {
-        // Client preference and budget for the subtitle and the opening paragraph. Read
-        // from the brief form inside the app; passed explicitly when a shared link is
-        // rendered, where there is no form. Empty is fine — those lines simply drop.
-        const _v = id => (document.getElementById(id) || {}).value || '';
-        const brief = briefIn !== undefined ? (briefIn || {}) : {
-            pref: [_v('suburbs'), _v('stateSelect')].map(x => String(x).trim())
-                    .filter(Boolean).join(', '),
-            budget: Number(String(_v('budgetMax')).replace(/[^0-9.]/g, '')) || 0,
-        };
+    /* ONE DOCUMENT. Coleen and Colin, 18 Aug: the app produced two — a "Client Report"
+     * and a "Comparison" — and a client received whichever button was pressed. They
+     * overlapped almost entirely (both listed every option's beds, land, house and price)
+     * and neither fitted on one page. "Consolidate into a single, one-page PDF by
+     * eliminating redundant information."
+     *
+     * What that meant concretely, and what this does:
+     *
+     *   * THE PACKAGE FACTS LIVE IN THE TABLE, ONCE. Bed/bath/car moved out of the
+     *     per-option assessment block and into the comparison row, where a reader compares
+     *     them side by side instead of scrolling between four blocks to do it by eye.
+     *     The block keeps only what cannot be tabulated — the written assessment.
+     *   * THE ADDRESS IS IN THE ROW. "Option 1" alone does not tell a client which
+     *     property a row describes, and the old Location column said only the suburb. The
+     *     address goes in the option cell and the Location column goes, which is where the
+     *     width for bed/bath/car and title came from — the table is no wider than before.
+     *   * THE CLIENT REPORT'S OWN CONTENT SURVIVES: the benchmark value line, rent and
+     *     yield where stated, comparables where we hold them, and — the part worth having
+     *     — recommendation_reason and amenities_summary now PREFILL the two assessment
+     *     textareas that used to open empty. The consultant edits a draft instead of
+     *     facing a blank box.
+     *
+     * BOTH OLD NAMES STILL RESOLVE HERE. Share links already in clients' inboxes carry
+     * k:'compare' or k:'client' and r.html dispatches on it; deleting either function
+     * would turn every link sent so far into a blank page. They are adapters now, so an
+     * old link renders the new document.
+     */
+    function packageReportDocument(props, shareUrl, opts) {
+        const o = opts || {};
         const dash = '<span class="na">&mdash;</span>';
         const m = v => (Number(v) > 0) ? '$' + Math.round(Number(v)).toLocaleString() : dash;
         const sq = v => (Number(v) > 0) ? Math.round(Number(v)).toLocaleString() + ' m&sup2;' : dash;
         const t = v => { const s = String(v ?? '').trim(); return s ? esc(s) : dash; };
+        const raw = v => String(v ?? '').trim();
 
         // "Preferred" is the top SCORE — the engine's own ranking, not a new judgement
         // invented for this document. Ties keep the earlier pick rather than reordering.
@@ -3487,27 +3501,50 @@ python state_sync.py push</pre>
             if ((Number(p.score) || 0) > (Number(props[bestIdx].score) || 0)) bestIdx = i;
         });
         const best = props[bestIdx];
-        const anyRebate = props.some(p => Number(p.incentive_amount) > 0);
+        const anyRebate = props.some(p => Number(p.incentive_amount) > 0
+                                       || String(p.incentive_text ?? '').trim());
+
+        const place = p => [raw(p.suburb), raw(p.state)].filter(Boolean).join(', ');
+        // The street address if the source gave one, otherwise the estate and suburb.
+        // Never blank: this is the only thing in the row that names the property.
+        const addr = p => {
+            if (raw(p.lot_address)) return esc(p.lot_address);
+            const l = [raw(p.estate_context), raw(p.suburb)].filter(Boolean).join(', ');
+            return l ? esc(l) : dash;
+        };
+        /* ESCAPED, and uppercased BEFORE escaping. This feeds an <h3> and the preferred-
+           option banner, and a suburb is untrusted vendor text — the injection fixture
+           puts `"><img src=x onerror=...>` in exactly that field. Uppercasing after
+           escaping would also turn `&amp;` into `&AMP;`, which browsers still parse but
+           which has no business being in a document a client receives. */
+        const labelRaw = p => [raw(p.estate_context), raw(p.suburb)].filter(Boolean).join(', ')
+                              || raw(p.lot_address);
+        const label = p => labelRaw(p) ? esc(labelRaw(p)) : dash;
+        const labelUpper = p => labelRaw(p) ? esc(labelRaw(p).toUpperCase()) : dash;
 
         // NO BUILDER COLUMN. Colin, 17 Aug: "Normally we don't like putting the Builder ...
         // We know the Builder ourselves, but when we give them, we don't give them that
         // information." It stays on the shortlist card inside the app, where the
         // consultant needs it; it comes off everything a client receives.
-        /* OPTIONS AS ROWS, seven columns — the shape of the one-pager Coleen sent as
-           the target. It fits four options on one page, which the transposed thirteen-row
-           version does not, and one page is the whole point of that document. */
-        const head = ['Option', 'Location', 'Land', 'House', 'Package']
+        /* OPTIONS AS ROWS — the shape of the one-pager Coleen sent as the target. It fits
+           four options on one page, which the transposed thirteen-row version does not,
+           and one page is the whole point of this document. */
+        const head = ['Option', 'Bed / Bath / Car', 'Land', 'House', 'Title', 'Package']
             .concat(anyRebate ? ['Rebate', 'Effective Price'] : []);
         const rows = props.map((p, i) => {
+            const bbc = [p.bedrooms, p.bathrooms, p.car_spaces];
             const cells = [
-                `<strong>${i + 1}</strong>`,
-                t(p.suburb || '') + (p.state ? ', ' + esc(p.state) : ''),
+                `<div class="opt-no">Option ${i + 1}</div>
+                 <div class="opt-addr">${addr(p)}</div>` +
+                (place(p) ? `<div class="opt-place">${esc(place(p))}</div>` : ''),
+                bbc.some(v => raw(v)) ? bbc.map(v => raw(v) ? esc(v) : '&ndash;').join(' / ') : dash,
                 sq(p.land_size_sqm),
                 sq(p.house_size_sqm),
+                t(p.title_status),
                 m(p.advertised_package_price),
             ].concat(anyRebate ? [
                 Number(p.incentive_amount) > 0 ? m(p.incentive_amount)
-                    : (String(p.incentive_text || '').trim() ? esc(p.incentive_text) : dash),
+                    : (raw(p.incentive_text) ? esc(p.incentive_text) : dash),
                 m(EFFECTIVE(p)),
             ] : []);
             return `<tr${i === bestIdx ? ' class="best"' : ''}>` +
@@ -3515,10 +3552,10 @@ python state_sync.py push</pre>
         }).join('');
 
         /* The superlative badges the target carries — BEST OVERALL, LARGEST HOME,
-           BEST LAND, BEST PRICE. Every one is COMPUTED from the selected set, not written:
-           largest dwelling, largest block, lowest effective price. They are claims about
-           these options relative to each other, which is exactly what the data can support
-           and a consultant would otherwise work out by hand.
+           MOST LAND, LOWEST EFFECTIVE PRICE. Every one is COMPUTED from the selected set,
+           not written: largest dwelling, largest block, lowest effective price. They are
+           claims about these options relative to each other, which is exactly what the
+           data can support and a consultant would otherwise work out by hand.
 
            One badge per option, best first, and none awarded twice — four options each
            wearing "BEST" says nothing. */
@@ -3529,7 +3566,7 @@ python state_sync.py push</pre>
             props.forEach((p, i) => { const v = Number(f(p)) || 0; if (v > 0 && v < bv) { bv = v; bi = i; } });
             return bi; };
         const badges = new Array(props.length).fill('');
-        const award = (i, label) => { if (i >= 0 && !badges[i]) badges[i] = label; };
+        const award = (i, text) => { if (i >= 0 && !badges[i]) badges[i] = text; };
         award(bestIdx, 'BEST OVERALL');
         award(maxBy(p => p.house_size_sqm), 'LARGEST HOME');
         award(maxBy(p => p.land_size_sqm), 'MOST LAND');
@@ -3541,50 +3578,103 @@ python state_sync.py push</pre>
            consultant's hands: nothing here says whether a suburb is a good bet. */
         const bestEff = EFFECTIVE(props[bestIdx]);
         const cheapestIdx = minBy(p => EFFECTIVE(p));
+        // m() wraps a missing figure in markup; these strings go inside a <textarea>,
+        // where markup would be shown to the reader as literal angle brackets.
+        const plain = html => String(html).replace(/<[^>]+>/g, '');
         const gapLine = (p, i) => {
             const e = EFFECTIVE(p);
             if (!e || !bestEff) return '';
             if (i === bestIdx) {
                 if (cheapestIdx < 0 || cheapestIdx === bestIdx) return 'Lowest effective price of those compared.';
                 const d = e - EFFECTIVE(props[cheapestIdx]);
-                return d > 0 ? `${m(d)} above the cheapest option (Option ${cheapestIdx + 1}).`
+                return d > 0 ? `${plain(m(d))} above the cheapest option (Option ${cheapestIdx + 1}).`
                              : 'Lowest effective price of those compared.';
             }
             const d = e - bestEff;
-            return d > 0 ? `${m(d)} more than Option ${bestIdx + 1} after rebates.`
-                 : d < 0 ? `${m(-d)} less than Option ${bestIdx + 1} after rebates.`
+            return d > 0 ? `${plain(m(d))} more than Option ${bestIdx + 1} after rebates.`
+                 : d < 0 ? `${plain(m(-d))} less than Option ${bestIdx + 1} after rebates.`
                          : `Same effective price as Option ${bestIdx + 1}.`;
         };
 
-        const label = p => [t(p.estate_context) === dash ? '' : esc(p.estate_context),
-                            esc(p.suburb || '')].filter(Boolean).join(', ')
-                           || t(p.lot_address);
+        const blocks = props.map((p, i) => {
+            /* The benchmark line, carried over from the client-facing report. An internal
+               comparison is against other stock we hold, NOT the market, and this document
+               goes to a buyer — so it is never called a market price. */
+            const bm = p.benchmark || {};
+            const price = Number(p.realistic_total_price) || Number(p.advertised_package_price) || 0;
+            const avgMkt = Number(bm.avg_market_price) || 0;
+            const saving = avgMkt && price ? avgMkt - price : 0;
+            const what = bm.basis === 'internal' ? 'comparable listings' : 'average market price';
+            let valueLine = '';
+            if (saving > 0) {
+                valueLine = `<p class="value"><span class="good">${m(price)}</span> vs ${what}
+                             ${m(avgMkt)} &mdash; a saving of <strong>${m(saving)}</strong></p>`;
+            } else if (avgMkt) {
+                valueLine = `<p class="value">${m(price)} vs ${what} ${m(avgMkt)}
+                             ${bm.classification ? '(' + esc(bm.classification) + ')' : ''}</p>`;
+            }
 
-        const blocks = props.map((p, i) => `
+            const comps = (bm.comparables || []).map(c =>
+                `<tr><td>${t(c.suburb)}${c.state ? ', ' + esc(c.state) : ''}</td>
+                     <td>${t(c.bedrooms)} bed</td><td>${m(c.price)}</td>
+                     <td>${t(c.source)}</td></tr>`).join('');
+            const compTable = comps
+                ? `<table class="comps"><tr><th>Comparable</th><th>Beds</th><th>Price</th>
+                   <th>Source</th></tr>${comps}</table>`
+                : `<p class="pending">${bm.data_note ? esc(bm.data_note)
+                     : 'Market comparables to be confirmed.'}</p>`;
+
+            /* Rent and yield are OMITTED rather than shown as zero — stored stock carries
+               no rent, and "$0/week, 0.00% yield" does not read as "not captured" to a
+               buyer, it reads as "this earns nothing". */
+            const rMin = Number(p.estimated_rent_min) || 0, rMax = Number(p.estimated_rent_max) || 0;
+            const mid = (rMin + rMax) / 2;
+            const gy = (mid && price) ? (mid * 52 / price * 100) : 0;
+            const extras = [
+                raw(p.house_design) ? `<span><b>Design</b> ${esc(p.house_design)}</span>` : '',
+                (rMin || rMax) ? `<span><b>Est. rent</b> ${m(rMin)}&ndash;${m(rMax)} / wk</span>` : '',
+                gy ? `<span><b>Est. gross yield</b> ${gy.toFixed(2)}%</span>` : '',
+            ].filter(Boolean).join('');
+
+            /* PREFILLED FROM WHAT WE ACTUALLY HOLD, not invented. recommendation_reason is
+               the scoring engine's own stated reason and amenities_summary is the captured
+               amenity text; both used to appear only in the other document, while these
+               boxes opened empty. Where we hold nothing the placeholder still says so
+               rather than the system writing something plausible. */
+            const strengths = raw(p.recommendation_reason);
+            const am = raw(p.amenities_summary);
+            const infra = (am && !am.toLowerCase().startsWith('no amenity')) ? am : '';
+
+            return `
           <section class="opt${i === bestIdx ? ' opt-best' : ''}">
             <h3>OPTION ${i + 1} &mdash; ${label(p)}
               ${badges[i] ? `<span class="tag">${badges[i]}</span>` : ''}</h3>
-            <div class="facts">
-              <span><b>Address</b> ${t(p.lot_address)}</span>
-              <span><b>Design</b> ${t(p.house_design)}</span>
-              <span><b>Bed / Bath / Car</b> ${t(p.bedrooms)} / ${t(p.bathrooms)} / ${t(p.car_spaces)}</span>
-              <span><b>Land / House</b> ${sq(p.land_size_sqm)} / ${sq(p.house_size_sqm)}</span>
-              <span><b>Package</b> ${m(p.advertised_package_price)}</span>
-              <span><b>Effective</b> ${m(EFFECTIVE(p))}</span>
-              <span><b>Title</b> ${t(p.title_status)}</span>
-            </div>
+            ${valueLine}
+            ${extras ? `<div class="facts">${extras}</div>` : ''}
             <label class="note"><b>Investment strengths</b>
-              <textarea rows="2" placeholder="Why this option suits the client — your words."></textarea></label>
+              <textarea rows="2" placeholder="Why this option suits the client — your words."
+                >${esc(strengths)}</textarea></label>
             <label class="note"><b>Infrastructure</b>
-              <textarea rows="2" placeholder="Schools, transport, town centres, planning. Left blank on purpose: the system holds no suburb commentary and will not invent any."></textarea></label>
+              <textarea rows="2" placeholder="Schools, transport, town centres, planning. Left blank on purpose: the system holds no suburb commentary and will not invent any."
+                >${esc(infra)}</textarea></label>
             <label class="note"><b>${i === bestIdx ? 'Why it stands out' : 'Trade-off'}</b>
               <textarea rows="2">${esc(gapLine(p, i))}</textarea></label>
-          </section>`).join('');
+            ${compTable}
+          </section>`;
+        }).join('');
+
+        const subBits = [
+            o.client ? 'Prepared for ' + esc(o.client) : '',
+            o.pref ? 'Client preference: ' + esc(o.pref) : '',
+            o.budget ? 'Target budget: under ' + plain(m(o.budget)) : '',
+        ].filter(Boolean);
+        if (!subBits.length) subBits.push('Prepared ' + esc(new Date().toLocaleDateString('en-AU')));
 
         return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <title>SPB Home &amp; Land Package Comparison</title>
 <style>
- :root{--ink:#0f172a;--body:#334155;--muted:#64748b;--line:#e2e8f0;--accent:#1e40af;--bg:#f8fafc}
+ :root{--ink:#0f172a;--body:#334155;--muted:#64748b;--line:#e2e8f0;--accent:#1e40af;
+       --bg:#f8fafc;--good:#047857}
  *{box-sizing:border-box}
  body{margin:0;padding:28px;background:#fff;color:var(--body);
       font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
@@ -3593,14 +3683,17 @@ python state_sync.py push</pre>
  .banner{background:var(--bg);border:1px solid var(--line);border-left:4px solid var(--accent);
          border-radius:6px;padding:11px 14px;margin:0 0 18px}
  .banner b{color:var(--accent)}
- table{border-collapse:collapse;width:100%;margin:0 0 20px;font-size:12.5px}
- th,td{border:1px solid var(--line);padding:7px 9px;text-align:left}
+ table{border-collapse:collapse;width:100%;margin:0 0 20px;font-size:12.5px;table-layout:fixed}
+ th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;word-break:break-word;
+       vertical-align:top}
  th{background:var(--bg);color:var(--ink);font-weight:600}
- td.best{background:#f0f7ff}
- th.feat{background:var(--bg);width:23%;white-space:nowrap;color:var(--muted);
-         font-weight:600;text-align:left}
- table{table-layout:fixed}
- td,th{word-break:break-word}
+ tr.best td{background:#f0f7ff}
+ /* The option cell carries three lines and is the widest thing in the row; the numeric
+    columns are narrow and equal, so four options stay on one page. */
+ th:first-child,td:first-child{width:26%}
+ .opt-no{font-weight:700;color:var(--ink)}
+ .opt-addr{font-size:11.5px;line-height:1.35}
+ .opt-place{font-size:11px;color:var(--muted)}
  .na{color:#94a3b8}
  .opt{border:1px solid var(--line);border-radius:6px;padding:12px 14px;margin:0 0 12px;
       break-inside:avoid}
@@ -3608,6 +3701,8 @@ python state_sync.py push</pre>
  .opt h3{margin:0 0 8px;font-size:14px;color:var(--ink)}
  .tag{background:var(--accent);color:#fff;font-size:10px;padding:2px 7px;border-radius:3px;
       margin-left:6px;vertical-align:middle;letter-spacing:.03em}
+ .value{margin:0 0 8px;font-size:12.5px;color:var(--ink)}
+ .good{color:var(--good);font-weight:600}
  .facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:5px 16px;
         margin:0 0 9px}
  .facts b{color:var(--muted);font-weight:600;display:block;font-size:10.5px;
@@ -3616,6 +3711,10 @@ python state_sync.py push</pre>
  .note b{color:var(--muted);font-size:10.5px;text-transform:uppercase;letter-spacing:.03em}
  textarea{width:100%;margin-top:4px;padding:7px;border:1px solid var(--line);border-radius:5px;
           font:inherit;color:var(--body);resize:vertical}
+ .comps{border-collapse:collapse;width:100%;margin:8px 0 0;font-size:11.5px}
+ .comps th,.comps td{border:1px solid var(--line);padding:4px 6px;text-align:left}
+ .comps th{background:var(--bg);color:var(--ink)}
+ .pending{color:var(--muted);font-style:italic;font-size:11.5px;margin:8px 0 0}
  .foot{margin-top:18px;padding-top:11px;border-top:1px solid var(--line);
        color:var(--muted);font-size:11px}
 ${SHARE_CSS}${BRAND_CSS}
@@ -3633,14 +3732,13 @@ ${SHARE_CSS}${BRAND_CSS}
 ${shareBar(shareUrl)}
 ${SPB_BRAND()}
 <h1>HOME &amp; LAND PACKAGE COMPARISON</h1>
-<div class="sub">${brief.pref ? 'Client preference: ' + esc(brief.pref) + ' | ' : ''}${
-  brief.budget ? 'Target budget: under ' + m(brief.budget) : 'Prepared ' + esc(new Date().toLocaleDateString('en-AU'))}</div>
+<div class="sub">${subBits.join(' | ')}</div>
 <p class="lede">Smart Property Buying reviewed ${WORD[props.length] || props.length}
   package${props.length === 1 ? '' : 's'} across price, land value, dwelling size,
   location, infrastructure and investment fundamentals. The objective is to identify the
-  option that best balances${brief.pref ? " the client's preferred " + esc(brief.pref) + ' location'
+  option that best balances${o.pref ? " the client's preferred " + esc(o.pref) + ' location'
     : " the client's stated requirements"} with long-term owner-occupier and investment appeal.</p>
-<div class="banner"><b>SPB PREFERRED OPTION: OPTION ${bestIdx + 1} &mdash; ${label(best).toUpperCase()}</b>
+<div class="banner"><b>SPB PREFERRED OPTION: OPTION ${bestIdx + 1} &mdash; ${labelUpper(best)}</b>
   <div class="banner-sum">${m(best.advertised_package_price)}${Number(best.incentive_amount) > 0
     ? ' package &minus; ' + m(best.incentive_amount) + ' rebate = ' + m(EFFECTIVE(best)) + ' effective price'
     : ' package'}</div></div>
@@ -3652,176 +3750,46 @@ ${SPB_BRAND()}
 <h2>Smart Property Buying Recommendation</h2>
 <label class="note rec"><textarea rows="3">${esc(
   `Proceed with Option ${bestIdx + 1} as the strongest overall fit` +
-  (EFFECTIVE(best) ? ` at ${m(EFFECTIVE(best)).replace(/<[^>]+>/g, '')} effective` : '') + '.')}</textarea></label>
+  (EFFECTIVE(best) ? ` at ${plain(m(EFFECTIVE(best)))} effective` : '') + '.')}</textarea></label>
 <div class="foot">Investment observations are general and do not constitute financial
   advice. Figures are as published by the builder or developer at the date shown against
   each option and are not a valuation or an offer. Rebates, inclusions, land availability,
-  site costs and contract terms remain subject to builder/developer confirmation. A dash
-  means the source did not state that figure &mdash; it has not been estimated.</div>
+  site costs, rental estimates and contract terms remain subject to builder/developer
+  confirmation. A dash means the source did not state that figure &mdash; it has not been
+  estimated.</div>
 </body></html>`;
     }
 
-    /* The client-facing document, over the consultant's OWN selection.
-     *
-     * Coleen, 14 Aug: "I have selected three different properties from research scoring,
-     * and it's not implementing in open client report ... I'm still seeing first three
-     * ranks, not the ones that I selected." She was right: the button opened
-     * client_report_html, which the server renders at search time over the top 3 of one
-     * search, and it cannot know about a selection that spans several.
-     *
-     * DELIBERATELY A SECOND IMPLEMENTATION of client_report.py, and that is a cost worth
-     * naming: two renderers can drift, and this codebase has already been bitten by
-     * exactly that (server.py's shortlist entry silently lost three fields that
-     * api/research.py sends). It is done here because the alternative is worse — the
-     * selection spans searches, so no single server request holds all of it, and asking
-     * the server to re-derive properties for arbitrary hashes means re-running the
-     * pipeline against a brief that may since have changed and may now REJECT a property
-     * the consultant deliberately chose. Everything below comes from the record stored
-     * when the option was ticked, so what she picked is what she gets.
-     *
-     * Same rule as the comparison: a figure the source never stated is a dash. Rent and
-     * yield rows are OMITTED rather than shown as zero — stored stock carries no rent, and
-     * "$0/week, 0.00% yield" does not read as "not captured" to a buyer, it reads as
-     * "this earns nothing".
-     */
+    /* The two old entry points, kept as adapters. See packageReportDocument: r.html
+     * dispatches share links on k:'compare' vs k:'client', so both names have to keep
+     * resolving or every link sent so far renders a blank page. */
+    function comparisonDocument(props, shareUrl, briefIn) {
+        // Client preference and budget for the subtitle and the opening paragraph. Read
+        // from the brief form inside the app; passed explicitly when a shared link is
+        // rendered, where there is no form. Empty is fine — those lines simply drop.
+        const _v = id => (document.getElementById(id) || {}).value || '';
+        const brief = briefIn !== undefined ? (briefIn || {}) : {
+            pref: [_v('suburbs'), _v('stateSelect')].map(x => String(x).trim())
+                    .filter(Boolean).join(', '),
+            budget: Number(String(_v('budgetMax')).replace(/[^0-9.]/g, '')) || 0,
+        };
+        return packageReportDocument(props, shareUrl, {
+            pref: brief.pref, budget: brief.budget,
+            client: briefIn !== undefined ? (brief.client || '') : _v('clientName'),
+        });
+    }
+
     function clientReportDocument(props, shareUrl, clientName) {
-        const dash = '<span class="na">&mdash;</span>';
-        const m = v => (Number(v) > 0) ? '$' + Math.round(Number(v)).toLocaleString() : dash;
-        const sq = v => (Number(v) > 0) ? Math.round(Number(v)).toLocaleString() + ' m&sup2;' : dash;
-        const t = v => { const s = String(v ?? '').trim(); return s ? esc(s) : dash; };
         // Passed explicitly when rendering a shared link, where there is no brief form to
         // read it from; undefined inside the app means "take it from the form".
-        const client = clientName !== undefined ? (clientName || '')
-            : ((document.getElementById('clientName') || {}).value || '');
-
-        const cards = props.map((p, i) => {
-            const bm = p.benchmark || {};
-            const price = Number(p.realistic_total_price) || Number(p.advertised_package_price) || 0;
-            const avg = Number(bm.avg_market_price) || 0;
-            const saving = avg && price ? avg - price : 0;
-            // An internal comparison is against other stock we hold, NOT the market, and
-            // this document goes to a buyer — so it is never called a market price.
-            const what = bm.basis === 'internal' ? 'comparable listings' : 'average market price';
-            let valueLine;
-            if (saving > 0) {
-                valueLine = `<span class="good">${m(price)}</span> vs ${what} ${m(avg)}
-                             &mdash; a saving of <strong>${m(saving)}</strong>`;
-            } else if (avg) {
-                valueLine = `${m(price)} vs ${what} ${m(avg)}
-                             ${bm.classification ? '(' + esc(bm.classification) + ')' : ''}`;
-            } else {
-                valueLine = m(price);
-            }
-
-            const comps = (bm.comparables || []).map(c =>
-                `<tr><td>${t(c.suburb)}${c.state ? ', ' + esc(c.state) : ''}</td>
-                     <td>${t(c.bedrooms)} bed</td><td>${m(c.price)}</td>
-                     <td>${t(c.source)}</td></tr>`).join('');
-            const compTable = comps
-                ? `<table class="comps"><tr><th>Comparable</th><th>Beds</th><th>Price</th>
-                   <th>Source</th></tr>${comps}</table>`
-                : `<p class="pending">${bm.data_note ? esc(bm.data_note)
-                     : 'Market comparables to be confirmed.'}</p>`;
-
-            const rentMin = Number(p.estimated_rent_min) || 0;
-            const rentMax = Number(p.estimated_rent_max) || 0;
-            const rentRow = (rentMin || rentMax)
-                ? `<div class="row"><span class="label">Estimated rent</span>
-                   <span>${m(rentMin)}&ndash;${m(rentMax)} / week</span></div>` : '';
-            const mid = (rentMin + rentMax) / 2;
-            const gy = (mid && price) ? (mid * 52 / price * 100) : 0;
-            const yieldRow = gy
-                ? `<div class="row"><span class="label">Estimated gross yield</span>
-                   <span>${gy.toFixed(2)}%</span></div>` : '';
-
-            let titleText = String(p.title_status || 'Not stated in source').trim();
-            if (String(p.expected_title_date || '').trim()) {
-                titleText += ' (' + String(p.expected_title_date).trim() + ')';
-            }
-            // Only print the location note when it says something. "No amenity assessment
-            // captured" under a heading called Location reads, to a buyer, as though the
-            // area is a problem.
-            const am = String(p.amenities_summary || '').trim();
-            const amenityLine = (am && !am.toLowerCase().startsWith('no amenity'))
-                ? `<p class="why"><em>Location:</em> ${esc(am)}</p>` : '';
-            const why = String(p.recommendation_reason || '').trim();
-
-            const reb = Number(p.incentive_amount) > 0
-                ? `<div class="row"><span class="label">Rebate / incentive</span>
-                   <span>${m(p.incentive_amount)}</span></div>`
-                : (String(p.incentive_text || '').trim()
-                    ? `<div class="row"><span class="label">Rebate / incentive</span>
-                       <span>${esc(p.incentive_text)}</span></div>` : '');
-
-            return `
-              <section class="opt">
-                <h3>Option ${i + 1} &mdash; ${t(p.lot_address)}</h3>
-                <p class="loc">${t(p.suburb)}${p.state ? ', ' + esc(p.state) : ''}
-                   ${p.house_design ? '&middot; ' + esc(p.house_design) : ''}</p>
-                <p class="value">${valueLine}</p>
-                <div class="rows">
-                  <div class="row"><span class="label">Bed / Bath / Car</span>
-                    <span>${t(p.bedrooms)} / ${t(p.bathrooms)} / ${t(p.car_spaces)}</span></div>
-                  <div class="row"><span class="label">Land / House</span>
-                    <span>${sq(p.land_size_sqm)} / ${sq(p.house_size_sqm)}</span></div>
-                  ${reb}${rentRow}${yieldRow}
-                  <div class="row"><span class="label">Title</span><span>${esc(titleText)}</span></div>
-                  <div class="row"><span class="label">Last checked</span><span>${t(p.date_checked)}</span></div>
-                </div>
-                ${compTable}
-                ${why ? `<p class="why"><em>Why this option:</em> ${esc(why)}</p>` : ''}
-                ${amenityLine}
-              </section>`;
-        }).join('');
-
-        return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
-<title>SPB Property Recommendations</title>
-<style>
- :root{--ink:#0f172a;--body:#334155;--muted:#64748b;--line:#e2e8f0;--accent:#1e40af;
-       --bg:#f8fafc;--good:#047857}
- *{box-sizing:border-box}
- body{margin:0;padding:30px;background:#fff;color:var(--body);
-      font:13.5px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
- h1{margin:0;font-size:21px;color:var(--ink);letter-spacing:-.01em}
- .meta{margin:5px 0 6px;color:var(--muted);font-size:12px}
- .intro{margin:0 0 20px}
- .opt{border:1px solid var(--line);border-radius:7px;padding:14px 16px;margin:0 0 14px;
-      break-inside:avoid}
- .opt h3{margin:0 0 3px;font-size:15px;color:var(--ink)}
- .loc{margin:0 0 9px;color:var(--muted);font-size:12.5px}
- .value{margin:0 0 10px;font-size:14px;color:var(--ink)}
- .good{color:var(--good);font-weight:600}
- .rows{margin:0 0 10px}
- .row{display:flex;justify-content:space-between;gap:12px;padding:4px 0;
-      border-bottom:1px solid var(--line)}
- .row:last-child{border-bottom:0}
- .label{color:var(--muted)}
- .comps{border-collapse:collapse;width:100%;margin:8px 0;font-size:12px}
- .comps th,.comps td{border:1px solid var(--line);padding:5px 7px;text-align:left}
- .comps th{background:var(--bg);color:var(--ink)}
- .pending{color:var(--muted);font-style:italic;font-size:12px;margin:8px 0}
- .why{margin:8px 0 0;font-size:12.5px}
- .na{color:#94a3b8}
- .foot{margin-top:20px;padding-top:12px;border-top:1px solid var(--line);
-       color:var(--muted);font-size:11px}
-${SHARE_CSS}${BRAND_CSS}
- @media print{.opt{break-inside:avoid}}
-</style></head><body>
-<div class="bar"><button onclick="window.print()">Print / Save as PDF</button></div>
-${shareBar(shareUrl)}
-${SPB_BRAND()}
-<h1>Property Recommendations</h1>
-<div class="meta">${client ? 'Prepared for <strong>' + esc(client) + '</strong> &middot; ' : ''}
-  Smart Property Buying &middot; ${esc(new Date().toLocaleDateString('en-AU'))}</div>
-<p class="intro">Following your requirements, we reviewed available stock and shortlisted
-  the following ${props.length} option(s) for you.</p>
-${cards}
-<div class="foot">Prices are as published by the builder or developer at the date shown
-  against each option and are not a valuation or an offer. Rental estimates and price
-  comparisons are indicative only. A dash means the source did not state that figure &mdash;
-  it has not been estimated. Confirm all inclusions, titles and rebate conditions with the
-  builder before acting.</div>
-</body></html>`;
+        const _v = id => (document.getElementById(id) || {}).value || '';
+        const fromForm = clientName === undefined;
+        return packageReportDocument(props, shareUrl, {
+            client: fromForm ? _v('clientName') : (clientName || ''),
+            pref: fromForm ? [_v('suburbs'), _v('stateSelect')].map(x => String(x).trim())
+                    .filter(Boolean).join(', ') : '',
+            budget: fromForm ? Number(String(_v('budgetMax')).replace(/[^0-9.]/g, '')) || 0 : 0,
+        });
     }
 
     /* Opens the window BEFORE the await, and this ordering is load-bearing: building the
@@ -3856,11 +3824,6 @@ ${cards}
         w.document.open();
         w.document.write(render(props, url));
         w.document.close();
-    }
-
-    function openComparisonReport() {
-        if (SELECTED.size < 2) return;
-        openGeneratedReport('compare', [...SELECTED.values()], comparisonDocument);
     }
 
     function copyPayloadJSON() {

@@ -1100,8 +1100,11 @@ __REPORT_JS__
     }
     // Every value below is rendered through esc() by the generators, which is what makes
     // it safe to render a document out of whatever the URL happened to contain.
+    // The client's name travels in `c` and the brief in `b`; the merged document shows
+    // "Prepared for <name>" from either kind, so `c` is folded in rather than dropped.
+    // Object.assign order matters only if a future brief ever carries its own client.
     const html = data.k === 'compare'
-      ? comparisonDocument(data.p, null, data.b || {})
+      ? comparisonDocument(data.p, null, Object.assign({ client: data.c || '' }, data.b || {}))
       : clientReportDocument(data.p, null, data.c || '');
     document.open(); document.write(html); document.close();
   } catch (e) {
