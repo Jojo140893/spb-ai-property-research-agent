@@ -237,6 +237,98 @@ def find_duplicate_groups(rows):
     return groups
 
 
+def _iso(d):
+    """DD/MM/YYYY -> YYYYMMDD, so dates compare as dates.
+
+    A plain string compare puts '29/07/2026' above '13/08/2026' — it reads the leading
+    digit and stops. That mistake once made a channel four days stale look nineteen days
+    stale and pointed an investigation at the wrong incident.
+    """
+    p = str(d or "").strip().split("/")
+    return f"{p[2]}{p[1]}{p[0]}" if len(p) == 3 else ""
+
+
+def _identity_without_suburb(r):
+    """The row's stored identity basis with the SUBURB taken out of it.
+
+    Built from database's own _HASH_FIELDS rather than a fresh guess, minus suburb_norm,
+    so two rows group together here exactly when content_hash would have matched had the
+    suburb agreed. _variant_key is imported rather than reimplemented — it is the part
+    that strips prices, statuses and dates out of the row text, and a second copy of that
+    rule would drift from the one identity actually depends on.
+    """
+    from database import _variant_key
+    return (
+        _norm(r["source_channel"]),
+        _norm(r["attribution_scope"]),
+        _norm(r["builder_name"]),
+        _norm(r["lot_number"]),
+        # house_design is hashed but never STORED as a column, so it cannot be read back
+        # here. _variant_key covers it: the design name is written in source_text
+        # ("... Duval 04 149.49 4 2 2 ..."), which is what that key is derived from, so
+        # two designs on one lot still land in different groups.
+        _norm(r["land_sqm"]),
+        _variant_key({"source_text": r["source_text"], "lot_address": r["lot_address"]}),
+    )
+
+
+def find_suburb_twins(rows):
+    """One package stored twice because it only recently started stating its suburb.
+
+    THE MECHANISM. `suburb_norm` is one of the eight fields in content_hash, so the day a
+    stocklist's Suburb COLUMN began to be read (18 Aug 2026, see
+    spreadsheet_extract._pdf_rows_from_tables) every affected row acquired a NEW identity.
+    The harvest inserted it, and the old suburb-less row was never matched again — so it
+    was never updated and never superseded. It just sits there, live, a second copy of a
+    property Coleen can sell once.
+
+    PRICE IS ALLOWED TO DIFFER, unlike find_duplicate_groups. The suburb-less copy is an
+    OLDER capture, so a price move between then and now is expected — it is the normal
+    case, not evidence of a different package. Everything identity actually turns on is
+    required to match: builder, lot number, design, land size, channel, and the row text
+    with prices, statuses and dates stripped out of it. Superseding marks rather than
+    deletes, per the standing rule, so the older capture and its advertised price remain
+    real history.
+
+    Only a BLANK-suburb row is ever the loser. Two rows that each name a suburb, and name
+    different ones, are left alone: that is a disagreement about where a property is, and
+    guessing which is right is exactly the kind of call this project refuses to make.
+    """
+    by = collections.defaultdict(list)
+    for r in rows:
+        if r["superseded_by"]:
+            continue
+        by[_identity_without_suburb(r)].append(r)
+
+    pairs = []
+    for _, g in by.items():
+        if len(g) < 2:
+            continue
+        named = [r for r in g if (r["suburb"] or "").strip()]
+        blank = [r for r in g if not (r["suburb"] or "").strip()]
+        if not named or not blank:
+            continue
+        # Where the named copies disagree about the suburb there is no single keeper to
+        # point the blank ones at, so nothing is collapsed.
+        if len({_norm(r["suburb"]) for r in named}) > 1:
+            continue
+        # THE KEEPER IS THE ROW THE HARVEST STILL SEES, not the fullest one.
+        #
+        # Ranking on completeness alone chose the stale copy 
+        # and would have retired live stock: one group kept a row last checked 06/08
+        # whose suburb read "PART" and whose price was $0, and superseded tonight's
+        # $60,000 row for it. A suburb-less row that is NEWER than every named copy is
+        # not an old duplicate at all — the source has stopped stating a suburb — so it
+        # is left alone rather than collapsed backwards.
+        keeper = sorted(named, key=lambda r: (_iso(r["date_checked"]), _completeness(r)),
+                        reverse=True)[0]
+        cut = _iso(keeper["date_checked"])
+        stale = [r for r in blank if _iso(r["date_checked"]) < cut]
+        if stale:
+            pairs.append((keeper, stale))
+    return pairs
+
+
 def main(apply_changes):
     conn = sqlite3.connect(str(config.DATABASE_PATH))
     rows = _rows(conn)
@@ -290,6 +382,17 @@ def main(apply_changes):
             print(f"     drop  [{r['source_channel']}] builder={r['builder_name']!r} "
                   f"state={r['state']} score={_completeness(r)[0]}")
 
+    twins = find_suburb_twins(live)
+    twin_losers = [r for _, rest in twins for r in rest]
+    print(f"\n5. one package stored twice, the older copy missing only its suburb: "
+          f"{len(twins)} group(s), {len(twin_losers)} copy(ies) to supersede")
+    for keep, rest in twins[:5]:
+        print(f"     keep  suburb={keep['suburb']!r} checked {keep['date_checked']} "
+              f"${float(keep['price'] or 0):,.0f}")
+        for r in rest:
+            print(f"     drop  suburb=''            checked {r['date_checked']} "
+                  f"${float(r['price'] or 0):,.0f}  {str(r['lot_address'])[:44]}")
+
     if not apply_changes:
         print("\n(report only — pass --apply to write these corrections)")
         return 0
@@ -316,7 +419,7 @@ def main(apply_changes):
                         ("withdrawn: postcode was the lot number", r["id"]))
         else:
             cur.execute("UPDATE buildings SET postcode=NULL WHERE id=?", (r["id"],))
-    for keep, rest in groups:
+    for keep, rest in list(groups) + list(twins):
         for r in rest:
             cur.execute("UPDATE buildings SET superseded_by=?, superseded_at=? WHERE id=?",
                         (keep["content_hash"] or str(keep["id"]), now, r["id"]))
@@ -325,7 +428,8 @@ def main(apply_changes):
           f"({states_dropped} state(s) cleared), {len(cheap)} implausible price(s) cleared, "
           f"{len(understated)} understated price(s) corrected, "
           f"{len(land_only)} row(s) typed as land, "
-          f"{len(losers)} duplicate row(s) superseded")
+          f"{len(losers)} duplicate row(s) superseded, "
+          f"{len(twin_losers)} suburb-less twin(s) superseded")
     after = len([r for r in _rows(conn) if not r["superseded_by"]])
     print(f"live rows: {len(live)} -> {after}")
     return 0
