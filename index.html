@@ -707,9 +707,20 @@
                         <label>Max Budget ($)</label>
                         <input type="number" id="budgetMax" placeholder="no maximum" step="10000">
                     </div>
+                    <!-- NOT A CAP, and calling it one was the problem. This value never
+                         excludes anything: scoring_engine grades a package against it for
+                         up to 20 of 100 points and that is all. Measured 17 Aug — six
+                         identical searches varying only this returned the same 52 rows,
+                         the same content_hashes, every time. Colin set it to 800,000 in
+                         the 15 Aug call alongside the maximum, plainly expecting a limit.
+                         Maximum Budget is the limit; this ranks within it. -->
                     <div class="form-group">
-                        <label>Preferred Cap ($)</label>
+                        <label>Preferred Price ($)</label>
                         <input type="number" id="budgetPref" placeholder="optional" step="10000">
+                        <div style="font-size:0.75rem; color:var(--text-muted); margin-top:0.25rem;">
+                            Ranks packages at or under this higher. It does not exclude
+                            anything &mdash; Maximum Budget does that.
+                        </div>
                     </div>
                 </div>
 

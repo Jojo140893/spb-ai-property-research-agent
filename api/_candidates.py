@@ -593,6 +593,29 @@ def _collapse_same_listing(entries):
     return kept, len(entries) - len(kept)
 
 
+def _estate_suburb_map(rows):
+    """{(estate, state): suburb} where one estate's located rows agree on a suburb."""
+    seen = {}
+    for r in rows:
+        if r.get("superseded_by"):
+            continue
+        estate = str(r.get("estate_name") or "").strip().lower()
+        sub = str(r.get("suburb") or "").strip()
+        state = str(r.get("state") or "").strip().upper()
+        if not (estate and sub and state):
+            continue
+        seen.setdefault((estate, state), {})
+        seen[(estate, state)][sub] = seen[(estate, state)].get(sub, 0) + 1
+    out = {}
+    for key, counts in seen.items():
+        total = sum(counts.values())
+        top, n = max(counts.items(), key=lambda kv: kv[1])
+        # A split estate names nothing: two suburbs at 50/50 is not evidence.
+        if total and n / total >= 0.8:
+            out[key] = top
+    return out
+
+
 def build_packages(brief_dict, rows, today=None):
     """(packages, coverage) — coverage is a plain dict of counts, all reported.
 
@@ -611,6 +634,19 @@ def build_packages(brief_dict, rows, today=None):
         _one = str(_raw_product or "").strip().lower()
         want_product = {_one} if _one else set()
     want_incentive = bool(brief_dict.get("requires_incentive"))
+    # A suburb the SAME ESTATE states on its other rows. 3,292 live rows record no suburb
+    # at all and are therefore unlocatable — dropped before scoring, so a third of the
+    # apartment stock can never be recommended. The suburb is inside the source PDF the
+    # extractor never read, and E-Agent's file names are Wix hashes, so nothing outside
+    # the row can supply it — except the estate's own siblings. "Uptown" appears on 18
+    # rows that DO say Shepparton; the ones that do not are the same estate in the same
+    # state.
+    #
+    # Only when the estate is unambiguous (>=80% of its located siblings agree) and only
+    # within one state, because a fifth of Australian locality names exist in more than
+    # one. It recovers ~222 rows of the 3,292 — 7%. The rest need the extractor to read
+    # the suburb out of the file, which is harvest-side work, not a filter fix.
+    _estate_suburb = _estate_suburb_map(rows)
     budget_max = _num(brief_dict.get("budget_max")) or 0.0
     ceiling = budget_max + BUDGET_HEADROOM if budget_max else None
     # storeys_max < 2 is the only brief that a missing storey figure could slip past,
@@ -732,6 +768,13 @@ def build_packages(brief_dict, rows, today=None):
         # cannot be confirmed must not reach a client, and cannot be geocoded,
         # distance-filtered or benchmarked either.
         suburb, suburb_why = suburb_quality.resolve(row)
+        if not suburb_quality.is_located(suburb_why):
+            borrowed = _estate_suburb.get((
+                str(row.get("estate_name") or "").strip().lower(),
+                str(row.get("state") or "").strip().upper()))
+            if borrowed:
+                row = {**row, "suburb": borrowed}
+                suburb, suburb_why = suburb_quality.resolve(row)
         if not suburb_quality.is_located(suburb_why):
             # SHOWN is not LOCATED. A value can be a real locality name and still be
             # unusable here: with no state recorded there is nothing to check it against,
