@@ -3641,7 +3641,13 @@ python state_sync.py push</pre>
                amenity text; both used to appear only in the other document, while these
                boxes opened empty. Where we hold nothing the placeholder still says so
                rather than the system writing something plausible. */
-            const strengths = raw(p.recommendation_reason);
+            /* The AI draft when we have one, the scoring engine's own stated reason
+               when we do not. See api/narrative.py: the model is sent ONLY this row's
+               figures and every draft is checked before it is returned, so a box that
+               opens empty means the draft was refused rather than that none was asked
+               for. Coleen edits either before the PDF is saved. */
+            const drafted = ((o.drafts || [])[i] || {}).text || '';
+            const strengths = drafted || raw(p.recommendation_reason);
             const am = raw(p.amenities_summary);
             const infra = (am && !am.toLowerCase().startsWith('no amenity')) ? am : '';
 
@@ -3651,7 +3657,8 @@ python state_sync.py push</pre>
               ${badges[i] ? `<span class="tag">${badges[i]}</span>` : ''}</h3>
             ${valueLine}
             ${extras ? `<div class="facts">${extras}</div>` : ''}
-            <label class="note"><b>Investment strengths</b>
+            <label class="note"><b>Investment strengths${
+                drafted ? ' <span class="draft">draft &mdash; check before sending</span>' : ''}</b>
               <textarea rows="2" placeholder="Why this option suits the client — your words."
                 >${esc(strengths)}</textarea></label>
             <label class="note"><b>Infrastructure</b>
@@ -3709,6 +3716,9 @@ python state_sync.py push</pre>
           text-transform:uppercase;letter-spacing:.03em}
  .note{display:block;margin-top:8px}
  .note b{color:var(--muted);font-size:10.5px;text-transform:uppercase;letter-spacing:.03em}
+ .draft{background:#fef3c7;color:#92400e;border-radius:3px;padding:1px 5px;
+        text-transform:none;letter-spacing:0;font-weight:600}
+ @media print{.draft{display:none}}
  textarea{width:100%;margin-top:4px;padding:7px;border:1px solid var(--line);border-radius:5px;
           font:inherit;color:var(--body);resize:vertical}
  .comps{border-collapse:collapse;width:100%;margin:8px 0 0;font-size:11.5px}
@@ -3807,23 +3817,76 @@ ${SPB_BRAND()}
         w.document.write('<!doctype html><meta charset="utf-8"><title>Preparing…</title>'
             + '<p style="font:14px -apple-system,sans-serif;padding:2rem;color:#334155">'
             + 'Preparing report…</p>');
+        const _v = id => (document.getElementById(id) || {}).value || '';
+        const client = _v('clientName');
+        const brief = {
+            pref: [_v('suburbs'), _v('stateSelect')].map(x => String(x).trim())
+                    .filter(Boolean).join(', '),
+            budget: Number(String(_v('budgetMax')).replace(/[^0-9.]/g, '')) || 0,
+            client,
+        };
+
+        /* THE DRAFT NOTES, and the report never waits on them for long. api/narrative.py
+         * makes one Groq call per option, so eight options is the slow case; if it stalls,
+         * fails, or is not configured, the document opens with the boxes as they always
+         * were. A report that arrives without a draft is useful. A button that hangs is
+         * not — and Coleen clicks this in front of clients. */
+        try {
+            brief.drafts = await withTimeout(fetchDrafts(props), DRAFT_TIMEOUT_MS);
+        } catch (e) {
+            console.error('draft notes:', e);
+        }
+
         let url = '';
         try {
-            const client = (document.getElementById('clientName') || {}).value || '';
-            const _v = id => (document.getElementById(id) || {}).value || '';
-            url = await buildShareLink(kind, props, client, {
-                pref: [_v('suburbs'), _v('stateSelect')].map(x => String(x).trim())
-                        .filter(Boolean).join(', '),
-                budget: Number(String(_v('budgetMax')).replace(/[^0-9.]/g, '')) || 0,
-            });
+            url = await buildShareLink(kind, props, client, brief);
         } catch (e) {
             // A failed link must not cost the report itself; shareBar() renders the
             // "too many options" note for an empty url and the document still opens.
             console.error('share link:', e);
         }
         w.document.open();
-        w.document.write(render(props, url));
+        // comparisonDocument takes the brief as its third argument; clientReportDocument
+        // takes a client NAME there, so only the comparison path is handed the object.
+        w.document.write(kind === 'compare' ? render(props, url, brief) : render(props, url));
         w.document.close();
+    }
+
+    // Long enough for eight sequential Groq calls on a cold function, short enough that a
+    // stalled one does not hold the window on "Preparing report…".
+    const DRAFT_TIMEOUT_MS = 45000;
+
+    function withTimeout(promise, ms) {
+        return Promise.race([promise, new Promise((_, rej) =>
+            setTimeout(() => rej(new Error('timed out')), ms))]);
+    }
+
+    /* Sends the FIGURES ONLY — the same short list api/narrative.py is willing to write
+     * from. Sending the whole record would hand the model source_text and estate
+     * marketing copy to elaborate on, which is the thing the endpoint exists to prevent.
+     */
+    const DRAFT_FIELDS = ['suburb', 'state', 'bedrooms', 'bathrooms', 'car_spaces',
+                          'land_size_sqm', 'house_size_sqm', 'advertised_package_price',
+                          'incentive_amount', 'title_status', 'frontage_m', 'storeys'];
+
+    async function fetchDrafts(props) {
+        const options = props.map(p => {
+            const o = {};
+            DRAFT_FIELDS.forEach(k => { if (p[k] !== undefined && p[k] !== null) o[k] = p[k]; });
+            return o;
+        });
+        const r = await fetch('/api/narrative', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ options }),
+        });
+        if (!r.ok) return [];
+        const data = await r.json();
+        // Log why a box came back empty, so "the AI did nothing" is answerable without
+        // guessing. The reasons are the endpoint's own checks, not model output.
+        (data.drafts || []).forEach(d => {
+            if (d && d.skipped) console.info(`option ${d.index + 1}: no draft — ${d.skipped}`);
+        });
+        return data.drafts || [];
     }
 
     function copyPayloadJSON() {
