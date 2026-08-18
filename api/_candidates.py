@@ -143,8 +143,35 @@ PRODUCT_TYPES = ("House & Land", "Apartment", "Townhouse", "Villa", "Land", "Com
 # reason: the unit/townhouse/villa words WIN over the presence of a land size, because an
 # apartment row can carry a land figure (its share of the site) and 1,319 of them do.
 _UNIT_WORDS = re.compile(r"\bunit\b|\bapt\b|\bapartment\b|\blevel\s*\d|\blvl\s*\d|\bdual\s*key\b", re.I)
+# Words the stocklists use for a HOUSE that the first pass never read, so 20 of the 22
+# type-unknown rows in a scored pool were describing themselves and being ignored:
+#   "1054 Available Detached Wildflower Circuit Regent 4-2-1"
+#   "836 Available Medium Density Rotunno Drive Poinciana"
+_HOUSE_WORDS = re.compile(r"detached|medium\s*density|duplex|"
+                          r"dual\s*occ(upancy)?|house\s*&?\s*land", re.I)
 _TOWNHOUSE_WORDS = re.compile(r"\btown\s*house(s)?\b|\bth\b", re.I)
 _VILLA_WORDS = re.compile(r"\bvilla(s)?\b", re.I)
+
+
+# "Lot 103 Unit 103, 3 Turffontein Avenue" — the LOT NUMBER REPEATED after the word Unit.
+# That is a stocklist column artefact, not a product: the sibling stated row for the same
+# lot says "House & Land" or "Land", and the lot carries 301 m2 of dirt. 619 Proxima rows
+# are shaped like this, and treating the word "Unit" as decisive classified 360 house lots
+# as apartments — so a search for Apartment returned 8 greenfield packages and 0 real
+# apartments, while House & Land silently LOST those same 8. Found by the 17 Aug filter
+# audit, which is exactly the failure the earlier fix was meant to end.
+_LOT_UNIT_REPEAT = re.compile(r"lot\s+(\S+).{0,40}?unit\s+", re.I)
+
+# A dwelling with real land is not an apartment, whatever the text says. Real apartments in
+# this catalogue carry NO land figure at all; the artefact rows carry 260-720 m2. Set above
+# a townhouse/villa footprint so those still classify on their own words.
+_HOUSE_LOT_SQM = 200.0
+
+
+def _UNIT_IS_AN_ARTEFACT(text, row) -> bool:
+    if _LOT_UNIT_REPEAT.search(text):
+        return True
+    return (_num(row.get("land_sqm")) or 0) >= _HOUSE_LOT_SQM
 
 
 def product_type_of(row):
@@ -171,8 +198,10 @@ def product_type_of(row):
         return "Villa"
     if _TOWNHOUSE_WORDS.search(text):
         return "Townhouse"
-    if _UNIT_WORDS.search(text):
+    if _UNIT_WORDS.search(text) and not _UNIT_IS_AN_ARTEFACT(text, row):
         return "Apartment"
+    if _HOUSE_WORDS.search(text):
+        return "House & Land"
     # Land with a build price or a dwelling size is a package; land alone is land. Neither
     # is asserted without a land figure, which is the one number that separates them.
     land = _num(row.get("land_sqm")) or 0
@@ -636,7 +665,17 @@ def build_packages(brief_dict, rows, today=None):
         # that are vacant blocks, so a house brief no longer ranks one of them first.
         if want_product:
             row_product = product_type_of(row).lower()
-            if row_product and row_product not in want_product:
+            # AN UNKNOWN TYPE NO LONGER PASSES. It used to, deliberately: 1,853 of 6,127
+            # rows stated no type, and rejecting them discarded a third of the catalogue to
+            # enforce a preference their source never contradicted.
+            #
+            # Inference has since settled all but ~2%, and the old rule is now the bug
+            # rather than the guard: measured 17 Aug, Apartment / Townhouse / Villa / Land
+            # each returned the SAME 19 rows, every one type-unknown and none of them the
+            # requested type. That is Colin's complaint word for word — "it's still giving
+            # us the same options regardless of what you write" — surviving inside the fix
+            # meant to end it. A filter that cannot exclude is not a filter.
+            if not row_product or row_product not in want_product:
                 counts["other_product_type"] += 1
                 continue
 

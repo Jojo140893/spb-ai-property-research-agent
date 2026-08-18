@@ -156,7 +156,37 @@ class ScoringEngine:
         # Distance search is a mandatory boundary, not just a scoring nudge: a client
         # asking for "within N km" must not be shown stock beyond it (SOP Step 3
         # predefined rejection rules).
-        if brief.search_radius_km:
+        # RADIUS 0 MEANS "EXACT SUBURBS ONLY", which is what the form has always
+        # promised — index.html labels the field "0 = exact suburbs only" — and what it
+        # did until now was NOTHING. `if brief.search_radius_km:` is false for 0, so the
+        # whole distance test was skipped and a search for one suburb returned the state:
+        # measured 17 Aug, "Armstrong Creek" with the field at its default 0 returned 460
+        # rows across 63 suburbs, the farthest 323 km away, byte-identical to searching
+        # with no suburb at all. That is the reverse of what a consultant typing a suburb
+        # is asking for.
+        if not brief.search_radius_km and brief.primary_suburbs:
+            wanted = {str(s).strip().lower() for s in brief.primary_suburbs if str(s).strip()}
+            here = str(prop.suburb or "").strip().lower()
+            if wanted and here not in wanted:
+                hard_rejection = True
+                rejection_reasons.append(
+                    "%s is not one of the requested suburbs (%s). Set a search radius to "
+                    "include nearby areas." % (prop.suburb or "This listing's suburb",
+                                               ", ".join(sorted(brief.primary_suburbs))))
+            elif not here:
+                hard_rejection = True
+                rejection_reasons.append(
+                    "No suburb recorded for this listing, so it cannot be matched to the "
+                    "requested suburbs")
+
+        # A radius with NO origin cannot be applied, and applying it anyway rejected
+        # EVERYTHING: 2,035 rejections, shortlist 0, status "success". A state-wide search
+        # with a radius left in the box is a normal thing to do, so the radius is ignored
+        # rather than made fatal — the state filter still bounds the search.
+        elif brief.search_radius_km and not brief.primary_suburbs:
+            pass
+
+        elif brief.search_radius_km:
             target = brief.primary_suburbs[0] if brief.primary_suburbs else 'target'
             if prop.distance_km_from_target is None:
                 # Unknown distance must NOT be a free pass through a distance filter —
