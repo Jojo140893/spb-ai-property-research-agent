@@ -360,7 +360,72 @@ def _display_address(row):
         if lot and not re.match(r"^\s*(?:lot|unit)\b", street, re.I):
             return "Lot %s, %s" % (lot, street)
         return street
-    return clean_display_address(row.get("lot_address"), row)
+    cleaned = clean_display_address(row.get("lot_address"), row)
+    if not _is_a_flattened_row(cleaned):
+        return cleaned
+
+    # STILL A SPREADSHEET ROW. clean_display_address never returns empty — "a cluttered
+    # address beats a blank one" — which is right for a card and wrong for a document a
+    # buyer reads. On the 17 Aug comparison the Denman options came out as
+    #     "Available 105 House COPPER 19A 177.08m2 820.0 m2 4 beds / 2 baths / 2 cars
+    #      2-part Contract $792,070 Portal Lin"
+    # which is not an address, is not client-ready, and cannot be searched for.
+    #
+    # No street name exists anywhere in those rows — the source never published one — so
+    # nothing can recover "106 Almond Street". What the row DOES carry is a lot number, an
+    # estate and a suburb, and "Lot 105, Highfields, Denman NSW" is how a consultant names
+    # it on the phone. Composed only from stated fields; falls back to the mess when there
+    # is nothing to compose from, because a cluttered address still beats a blank one.
+    composed = _compose_address(row)
+    return composed or cleaned
+
+
+# Tokens that only appear once a whole stocklist line has been stored in the address
+# column: money, areas, bed/bath/car counts, contract and portal wording.
+_FLATTENED_ROW = re.compile(
+    r"\$\s*[\d,]|m²|\bsqm\b|\bbeds?\b|\bbaths?\b|\bcars?\b|\bgarage\b|"
+    r"\bcontract\b|\bavailable\b|\bportal\b", re.I)
+
+
+def _is_a_flattened_row(text) -> bool:
+    # Length is not the test: "Lot 2 Unit 2, 275 Twelfth Avenue, AUSTRAL, NSW, 2179" is
+    # long and is a perfectly good address.
+    return bool(_FLATTENED_ROW.search(str(text or "")))
+
+
+def _compose_address(row) -> str:
+    """"Lot 105, Highfields, Denman NSW" from the fields the source did state."""
+    lot = str(row.get("lot_number") or "").strip()
+    estate = str(row.get("estate_name") or "").strip()
+    suburb = str(row.get("suburb") or "").strip()
+    state = str(row.get("state") or "").strip().upper()
+    # The stored suburb is sometimes "Highfields Estate, Denman" — the estate glued to the
+    # locality. Keep the last comma-separated part, which is the locality.
+    if "," in suburb:
+        suburb = suburb.rsplit(",", 1)[-1].strip()
+    # THE SUBURB HAS TO BE A PLACE. 115 rows carry suburb "GARAGE" — a spreadsheet column
+    # header read as a locality — and composing faithfully produced "Lot 800, GARAGE SA",
+    # which asserts a place that does not exist. Naming nowhere is worse than showing the
+    # raw row, so an unvalidated locality composes nothing and the mess stands.
+    if suburb and not _is_real_locality(suburb, state):
+        suburb = ""
+    if estate and suburb and estate.lower() in suburb.lower():
+        estate = ""                      # an estate repeating the suburb adds nothing
+    # Without a real locality the rest names nothing: "Lot 800, Highfields" could be any
+    # Highfields in the country.
+    if not suburb:
+        return ""
+    parts = []
+    if lot:
+        parts.append(lot if re.match(r"^\s*(?:lot|unit)\b", lot, re.I) else "Lot %s" % lot)
+    if estate:
+        parts.append(estate)
+    if suburb:
+        parts.append(suburb + (" " + state if state else ""))
+    elif state:
+        parts.append(state)
+    # A lone lot number names nothing: "Lot 105" could be any estate in the country.
+    return ", ".join(parts) if (parts and (estate or suburb)) else ""
 
 
 _GEO = None
