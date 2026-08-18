@@ -62,6 +62,10 @@ _LINK_KINDS = (
 # openpyxl loses a =HYPERLINK() target when the workbook is opened for values.
 _HYPERLINK_FN = re.compile(r'HYPERLINK\(\s*"([^"]+)"', re.I)
 LinkList = List[Tuple[str, str]]          # [(anchor text, url), ...]
+# One parsed source row: its flattened text, its hyperlinks, and whatever its
+# table stated column by column. The third member is {} for any source that has no
+# columns to state — see _pdf_rows_from_lines.
+PdfRow = Tuple[str, LinkList, Dict[str, str]]
 
 
 def _row_to_text(cells: List[Any]) -> str:
@@ -443,6 +447,56 @@ def _context_suburb(header: str, state: str = "") -> Optional[str]:
     return found
 
 
+# Column headers that name a locality outright. Deliberately short: "City" is excluded
+# because builders use it for the nearest capital ("Sydney") rather than the lot's own
+# locality, and "Area" is a land size far more often than a place.
+_SUBURB_COLUMN = re.compile(r"^(suburb|localit(y|ies)|town)s?$", re.I)
+
+
+def _column_suburb(value: Any, state: str = "") -> Optional[str]:
+    """A Suburb COLUMN's own value, where it names a real locality.
+
+    Held to exactly the same bar as a banner segment — see _context_suburb. A stated
+    column is better evidence than a banner (it is per-row, so it survives an estate
+    that spans two towns), but it is not self-certifying: the same stocklists put
+    "TBA", "Various" and an estate name in that column, and a repair that trusted the
+    header alone once composed "Lot 800, GARAGE SA" out of a spreadsheet heading.
+    """
+    if not value:
+        return None
+    bit = _clean(str(value)).strip(" ,-|/")
+    if not bit or bit.upper() in _STATE_TOKENS or _NOT_A_LOCALITY.search(bit):
+        return None
+    global _BANNER_GEO
+    if _BANNER_GEO is None:
+        from geo import SuburbGeoIndex
+        _BANNER_GEO = SuburbGeoIndex()
+    if not _BANNER_GEO.loaded:
+        return None
+    known = (_BANNER_GEO.locate(bit, state) if state
+             else _BANNER_GEO.states_for_suburb(bit))
+    return bit.title() if known else None
+
+
+def _column_map(values: List[List[Any]]) -> Dict[int, str]:
+    """column index -> canonical name, read from the table's OWN header row.
+
+    Only the first few rows are considered: a stocklist repeats its header on every page
+    but never halfway down one, and scanning further starts matching lot rows that happen
+    to be wordy.
+    """
+    for cells in values[:4]:
+        flat = [_clean(str(c)) if c is not None else "" for c in cells]
+        joined = " ".join(x for x in flat if x)
+        if not joined or not _is_column_header(joined):
+            continue
+        out = {i: "suburb" for i, name in enumerate(flat)
+               if _SUBURB_COLUMN.match(name.strip())}
+        if out:
+            return out
+    return {}
+
+
 # ---------------------------------------------------------------- row iterators
 
 def _formula_links(data: bytes) -> Dict[Tuple[int, int, int], str]:
@@ -534,28 +588,41 @@ def _links_in_band(annots: List[Tuple[float, float, str]], top: Any, bottom: Any
 
 
 def _pdf_rows_from_tables(page: Any, annots: List[Tuple[float, float, str]]
-                          ) -> List[Tuple[str, LinkList]]:
+                          ) -> List["PdfRow"]:
     try:
         tables = page.find_tables() or []
     except Exception:
         return []
-    rows: List[Tuple[str, LinkList]] = []
+    rows: List[PdfRow] = []
     for table in tables:
         try:
             values = table.extract()
         except Exception:
             continue
+        # THE COLUMNS ARE THE POINT OF THIS STRATEGY, AND THEY USED TO BE THROWN AWAY.
+        #
+        # _row_to_text flattens the cells to one string, which is all the price/bed/bath
+        # parsers need — but it also destroys the one thing the text can never recover.
+        # E-Agent stocklists publish a SUBURB COLUMN ("Lot 324 Dapple | Armstrong |
+        # Palomino Estate | ..."), and once flattened, "Armstrong" is just another word
+        # in a row full of them. 3,070 live rows had no suburb while the PDF they came
+        # from stated one in its own column.
+        colmap = _column_map(values)
         for row_obj, cells in zip(getattr(table, "rows", []), values):
-            text = _row_to_text(list(cells))
+            cells = list(cells)
+            text = _row_to_text(cells)
             bbox = getattr(row_obj, "bbox", None)
             links = _links_in_band(annots, bbox[1], bbox[3]) if bbox else []
+            columns = {name: _clean(str(cells[i]))
+                       for i, name in colmap.items()
+                       if i < len(cells) and cells[i]}
             if text or links:
-                rows.append((text, links))
+                rows.append((text, links, columns))
     return rows
 
 
 def _pdf_rows_from_lines(page: Any, annots: List[Tuple[float, float, str]]
-                         ) -> List[Tuple[str, LinkList]]:
+                         ) -> List["PdfRow"]:
     try:
         lines = page.extract_text_lines() or []
     except Exception:
@@ -565,7 +632,10 @@ def _pdf_rows_from_lines(page: Any, annots: List[Tuple[float, float, str]]
     for ln in lines:
         text = _clean(ln.get("text", ""))
         if text:
-            out.append((text, _links_in_band(annots, ln.get("top"), ln.get("bottom"))))
+            # No columns: a text line has none to state. The empty dict keeps both
+            # strategies the same shape so _rows_to_listings never has to ask which
+            # produced a row.
+            out.append((text, _links_in_band(annots, ln.get("top"), ln.get("bottom")), {}))
     return out
 
 
@@ -612,7 +682,8 @@ def _is_price_fragment(text: str, fields: Dict[str, Any]) -> bool:
 
 
 def _listing_from_row(text: str, links: LinkList, context: str, source_label: str,
-                      builder_hint: str) -> Optional[Dict[str, Any]]:
+                      builder_hint: str,
+                      columns: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
     """A parsed listing, or None if the row is not one."""
     fields = parse_fields(text)
     # availability/storey/lot/postcode/estate/incentives, from the FULL row
@@ -642,7 +713,12 @@ def _listing_from_row(text: str, links: LinkList, context: str, source_label: st
     if not fields.get("suburb"):
         # The row's own state where the parser found one, so an ambiguous banner
         # segment resolves in the right state ("Springfield" is QLD, NSW and SA).
-        fields["suburb"] = _context_suburb(context, fields.get("state") or "")
+        state = fields.get("state") or ""
+        # A STATED COLUMN BEATS A BANNER. The banner names the estate's town, which is
+        # one town; a Suburb column is per-row and stays right where an estate spans
+        # two. Both are checked against the suburb index, so neither can invent a place.
+        fields["suburb"] = (_column_suburb((columns or {}).get("suburb"), state)
+                            or _context_suburb(context, state))
     fields.update(_link_fields(links))
     filled = sum(1 for k in ("bedrooms", "land_size_sqm", "suburb", "house_size_sqm")
                  if fields.get(k))
@@ -655,7 +731,7 @@ def _listing_from_row(text: str, links: LinkList, context: str, source_label: st
     }
 
 
-def _rows_to_listings(rows: List[Tuple[str, LinkList]], context: str, source_label: str,
+def _rows_to_listings(rows: List[Any], context: str, source_label: str,
                       builder_hint: str,
                       banner: str = "") -> Tuple[List[Dict[str, Any]], str, str]:
     """Parse a batch of rows, carrying the estate/group header context through them.
@@ -669,12 +745,18 @@ def _rows_to_listings(rows: List[Tuple[str, LinkList]], context: str, source_lab
     so it is kept and stamped on every listing for the caller to attribute from.
     """
     out: List[Dict[str, Any]] = []
-    for text, links in rows:
+    for row in rows:
+        # Two members from the spreadsheet readers, three from the PDF ones. Tolerated
+        # rather than normalised at every call site, so a reader that has no columns to
+        # state does not have to say so.
+        text, links = row[0], row[1]
+        columns = row[2] if len(row) > 2 else {}
         if not text:
             continue
         if _is_column_header(text):
             continue                         # column names: neither a lot nor a banner
-        listing = _listing_from_row(text, links, context, source_label, builder_hint)
+        listing = _listing_from_row(text, links, context, source_label, builder_hint,
+                                    columns)
         if listing is None:
             if _is_group_header(text, {}):   # no price: _listing_from_row already told us
                 context = text

@@ -134,6 +134,30 @@ PROXIMA_PRICE_FIX_DATE = datetime(2026, 8, 7)
 # The five types Proxima's own filter offers, which Colin read out on 17 Aug as the list
 # ours should match: "apartment, land, townhouse, villas, house and land". Commercial is
 # kept because 40 stored rows say it.
+#
+# WHY THIS IS SIX AND PROXIMA'S DROPDOWN IS TWELVE. Asked on 18 Aug 2026 and measured
+# rather than assumed. Proxima offers Apartment, Land Only, Townhouse, Villa, House and
+# Land, Townhouse (Single Contract), Flat, Unit, Granny Flat, Commercial, House and
+# Granny and Co-Living. Six of those are ours exactly; Flat and Unit are our Apartment;
+# Townhouse (Single Contract) is a contract term, not a building.
+#
+# The remaining three cannot be filled, for two separate reasons:
+#
+#  * PROXIMA DOES NOT PUBLISH A PER-LOT TYPE. It is in neither the accordion's data-*
+#    attributes nor the availability API's property records, and the project header does
+#    not carry one either. It exists only as `property[property_types]`, a server-side
+#    search facet — and that facet is nearly empty in their own data. Filtering DAMAC
+#    Islands Stage 2 returned 10 of its 129 lots as "Apartment" and nothing for the other
+#    eleven types; Ahlei, 110 real apartments, returned NOTHING for all twelve.
+#
+#  * OUR CATALOGUE HAS ALMOST NONE OF THEM. Granny Flat is 3 live rows and House and
+#    Granny is 0. Co-Living is 12.
+#
+# Dual Key (86 rows) and Duplex (44) were considered as additions and rejected: 77 of the
+# dual-key rows and 16 of the duplex rows already carry a STATED "House & Land", which is
+# what they are — a package with two dwellings on it. Promoting them to types would filter
+# 8 of 86 dual-key rows under "Dual Key" and leave the other 77 under House & Land, which
+# is the "same options regardless of what you write" failure of 17 Aug in a new shape.
 PRODUCT_TYPES = ("House & Land", "Apartment", "Townhouse", "Villa", "Land", "Commercial")
 
 # A LOT NUMBER IS NOT A HOUSE. Colin, 17 Aug, reading a result aloud: "that's a lot unit

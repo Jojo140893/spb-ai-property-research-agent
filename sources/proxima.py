@@ -39,6 +39,7 @@ not a listing and is dropped with a counted reason.
 import json
 import logging
 import re
+import urllib.parse
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -194,9 +195,28 @@ async (pid) => {
 # The hidden-input exclusion still applies to `property[...]`, where it was earned: the
 # portal keeps its own bookkeeping under those names and counting them made every run look
 # filtered. `keyword[...]` carries no such traffic — anything there IS a chip the user set.
+# THE PROJECT-LEVEL FILTERS WERE INVISIBLE TO THIS GUARD UNTIL 18 AUG 2026.
+#
+# Everything above concerns `property[...]`, which filters LOTS. The projects page also
+# carries `projects_filter[...]` — Project Category, Project Type, Country — and those
+# filter PROJECTS, which is strictly worse: a lot filter hides lots inside projects we
+# still enumerate, a project filter removes whole projects from the list.
+#
+# Setting `projects_filter[product_category]=Land` took the page from 40 projects to 13,
+# and _clear_filters read that page as clean, because nothing here matched the field. That
+# is the 2026-08-07 failure again through a door the fix never covered. `select[name=
+# "projects"]` is the same story for the Project Name dropdown.
+#
+# Hidden inputs stay excluded for the reason earned on `property[...]`: the portal keeps
+# bookkeeping under these names and counting it would make every run look filtered.
 _FILTER_FIELDS = ('select[name^="property["], '
                   'input[name^="property["]:not([type=hidden]), '
-                  'input[name^="keyword["]')
+                  'input[name^="keyword["], '
+                  'select[name^="projects_filter["], '
+                  'input[name^="projects_filter["]:not([type=hidden]), '
+                  'select[name^="table_filter["], '
+                  'input[name^="table_filter["]:not([type=hidden]), '
+                  'select[name="projects"]')
 
 # What the form reads when it is NOT filtered. A default is not a filter, and treating
 # one as a filter is worse than missing a real one: it puts "the page came up FILTERED"
@@ -266,6 +286,75 @@ _FILTER_SNAPSHOT_JS = r"""
 # (MIN_PROJECTS / MIN_AVAIL). Kept here so the harvest can say when it is looking at less.
 _HEALTHY_PROJECTS = 40
 _HEALTHY_AVAIL = 9
+
+# THE ACCORDION STOPS AT 80 LOTS, AND SAYS NOTHING ABOUT IT.
+#
+# Every project label carries `data-propertylimit="80"`, but the cap is enforced by the
+# SERVER: raising the attribute to 2000 and re-expanding still renders 80. There is no
+# "load more" control and the POST body carries no limit field, so the page simply cannot
+# be asked for lot 81.
+#
+# What it CAN be asked for is the other end of the same list. The body carries
+# `sort[sort_attributes]`, so price-asc returns the cheapest 80 and price-desc the dearest
+# 80; union them and a project of up to 160 lots is read whole. Measured on DAMAC Islands
+# Stage 2 (project 587) on 2026-08-18, which the harvest had been storing at 80 for weeks:
+#
+#     price-asc     80 lots
+#     price-desc    80 lots  (+49 new)   union 129 = the 129 the project header states
+#
+# Only the price sorts help. rooms-asc/desc and area-asc/desc each returned 80 and added
+# nothing new — they re-rank the same capped slice rather than re-selecting it.
+#
+# Above 160 lots this is still short. Price BANDS work there (splitting
+# property_range_filter[rop] into ranges returned 49 + 80 = the same 129), but no live
+# project needs them yet, so the shortfall is logged loudly rather than guessed at.
+_RENDER_CAP = 80
+
+# Replays the page's own accordion POST with one field changed, and returns the lot tiles
+# shaped exactly like _COLLECT_JS's, so _row cannot tell which path a lot arrived by.
+_REPLAY_ACCORDION_JS = r"""
+async ([body]) => {
+  const r = await fetch('/agent/projects/properties/?isAjax=true',
+    {method:'POST', body,
+     headers:{'Content-Type':'application/x-www-form-urlencoded',
+              'X-Requested-With':'XMLHttpRequest'},
+     credentials:'include'});
+  if (!r.ok) return null;
+  const doc = new DOMParser().parseFromString(await r.text(), 'text/html');
+  return [...doc.querySelectorAll('[class*="properties-container-sort"]')].map(c => {
+    const d = {};
+    [...c.attributes].forEach(a => { if (a.name.startsWith('data-')) d[a.name.slice(5)] = a.value; });
+    const pick = sel => { const e = c.querySelector(sel); return e ? (e.textContent||'').trim() : ''; };
+    d._titled = pick('.property-titled-date');
+    d._status = '';
+    for (const el of c.querySelectorAll('.property-status')) {
+      const t = (el.textContent||'').trim();
+      if (t && !t.startsWith('$')) { d._status = t; break; }
+    }
+    d._reserved = /(^|\s)non-res(\s|$)/.test(c.className) ? 'no' : 'yes';
+    d._floorplan = '';
+    return d;
+  });
+}
+"""
+
+
+def _with_field(body: str, key: str, value: str) -> str:
+    """Return the captured POST body with one field replaced, everything else verbatim.
+
+    Rebuilt field by field rather than parsed and re-encoded: the body carries the whole
+    search form, and round-tripping it through a parser changed the encoding of fields the
+    server was fussy about. A hand-built minimal body was tried first and the server
+    answered 10 lots where the page showed 80, so the page's own body is the only one
+    trusted here.
+    """
+    out = []
+    for kv in body.split("&"):
+        k, _, v = kv.partition("=")
+        if urllib.parse.unquote_plus(k) == key:
+            v = urllib.parse.quote_plus(value)
+        out.append(f"{k}={v}")
+    return "&".join(out)
 
 _CLEAR_AND_SUBMIT_JS = r"""
 (cfg) => {
@@ -423,6 +512,7 @@ class ProximaSource(PropertySource):
         self.projects_with_stock = 0
         self.cross_listed: List = []
         self.via_api = 0
+        self.topped_up = 0
         # What the projects page had filtered on when this run opened it, if anything.
         # Kept so the run summary can say the harvest walked into a filtered page rather
         # than leaving that to be inferred from a low count. See _clear_filters.
@@ -575,38 +665,109 @@ class ProximaSource(PropertySource):
         on the page, lazy-loading behind a heavy DOM. An empty read is indistinguishable
         from a project that genuinely publishes no stock, so without retrying, 80 real
         lots silently become a line in the skip log.
+
+        The POST the expand fires is captured on the way past and returned as `_body`.
+        It is the whole search form as the page itself serialises it, and it is what
+        _top_up_capped replays to reach past the 80-lot render cap — see _RENDER_CAP.
         """
-        data = None
-        for attempt in range(1, attempts + 1):
-            lab = scraper.page.query_selector(f'label.tab-label[data-project_id="{pid}"]')
-            if not lab:
-                return None
-            lab.click()
-            try:
-                scraper.page.wait_for_selector(f".properties-container-sort-{pid}",
-                                               timeout=8000 * attempt)
-            except Exception:
-                pass
-            scraper.page.wait_for_timeout(400 * attempt)
-            data = scraper.page.evaluate(_COLLECT_JS, pid)
-            if data and data["props"]:
-                # Collapse again: 40 open accordions makes every later read crawl.
+        captured: Dict[str, str] = {}
+
+        def _grab(req):
+            if ("agent/projects/properties" in req.url and req.method == "POST"
+                    and "body" not in captured):
                 try:
-                    lab.click()
-                    scraper.page.wait_for_timeout(200)
+                    captured["body"] = req.post_data or ""
                 except Exception:
                     pass
-                return data
-            # Leave it closed before retrying so the expand handler fires cleanly.
-            try:
+
+        scraper.page.on("request", _grab)
+        try:
+            data = None
+            for attempt in range(1, attempts + 1):
+                lab = scraper.page.query_selector(f'label.tab-label[data-project_id="{pid}"]')
+                if not lab:
+                    return None
                 lab.click()
-                scraper.page.wait_for_timeout(600)
+                try:
+                    scraper.page.wait_for_selector(f".properties-container-sort-{pid}",
+                                                   timeout=8000 * attempt)
+                except Exception:
+                    pass
+                scraper.page.wait_for_timeout(400 * attempt)
+                data = scraper.page.evaluate(_COLLECT_JS, pid)
+                if data and data["props"]:
+                    # Collapse again: 40 open accordions makes every later read crawl.
+                    try:
+                        lab.click()
+                        scraper.page.wait_for_timeout(200)
+                    except Exception:
+                        pass
+                    data["_body"] = captured.get("body", "")
+                    return data
+                # Leave it closed before retrying so the expand handler fires cleanly.
+                try:
+                    lab.click()
+                    scraper.page.wait_for_timeout(600)
+                except Exception:
+                    pass
+                if attempt < attempts:
+                    logger.info("     project %s came back empty (attempt %d) — retrying",
+                                pid, attempt)
+            if isinstance(data, dict):
+                data["_body"] = captured.get("body", "")
+            return data
+        finally:
+            try:
+                scraper.page.remove_listener("request", _grab)
             except Exception:
                 pass
-            if attempt < attempts:
-                logger.info("     project %s came back empty (attempt %d) — retrying",
-                            pid, attempt)
-        return data
+
+    def _top_up_capped(self, scraper, pid: str, body: str,
+                       props: List[Dict[str, str]],
+                       stated_available: Optional[int]) -> List[Dict[str, str]]:
+        """Read the lots the 80-tile render cap hid, by asking for the other end.
+
+        Only runs for a project that came back sitting ON the cap and has no availability
+        view to read instead. See _RENDER_CAP for why the sort flip is the lever and why
+        raising data-propertylimit is not.
+        """
+        if not body:
+            logger.warning("     project %s is capped at %d lot(s) but no POST body was "
+                           "captured, so the rest cannot be reached", pid, len(props))
+            self._bump("capped project, no body to replay")
+            return props
+
+        def key(d):
+            return f"{(d.get('lot') or '').strip()}|{(d.get('name') or '').strip()}"
+
+        have = {key(d) for d in props}
+        for srt in ("price-desc",):
+            try:
+                extra = scraper.page.evaluate(
+                    _REPLAY_ACCORDION_JS, [_with_field(body, "sort[sort_attributes]", srt)])
+            except Exception as e:
+                logger.warning("     project %s: %s replay failed: %s", pid, srt, e)
+                self._bump("capped project, replay failed")
+                return props
+            for d in (extra or []):
+                k = key(d)
+                if k not in have:
+                    have.add(k)
+                    props.append(d)
+
+        self.topped_up += 1
+        logger.info("     project %s: render cap reached, sort flip recovered %d more "
+                    "lot(s) — %d in hand", pid, len(props) - _RENDER_CAP, len(props))
+        # An honest shortfall beats a silent one. Above 160 lots the two price sorts
+        # cannot cover the middle of the list; price bands would, and _RENDER_CAP says so.
+        if stated_available and len(props) < stated_available:
+            logger.warning(
+                "     project %s STILL SHORT: %d lot(s) read against the %d the project "
+                "header states are available. The two price sorts reach 2 x %d; this "
+                "project needs price-band slicing.", pid, len(props), stated_available,
+                _RENDER_CAP)
+            self._bump("capped project still short after the sort flip")
+        return props
 
     def _read_via_api(self, scraper, pid: str) -> Optional[List[Dict[str, str]]]:
         """A project's FULL inventory, via the availability view's own REST call.
@@ -926,6 +1087,7 @@ class ProximaSource(PropertySource):
                             continue
                         # Where an availability view exists, it beats the accordion:
                         # uncapped, and it includes lots that are no longer for sale.
+                        used_api = False
                         if pid in avail_pids:
                             api = self._read_via_api(scraper, pid)
                             if api:
@@ -935,10 +1097,20 @@ class ProximaSource(PropertySource):
                                                 pid, len(api), len(data["props"]))
                                     data = {"header": data["header"], "props": api}
                                     self.via_api += 1
+                                    used_api = True
                                 else:
                                     logger.info("     project %s: availability view had "
                                                 "fewer (%d < %d) — keeping the page",
                                                 pid, len(api), len(data["props"]))
+                        # Sitting exactly on the render cap means the page stopped
+                        # early, not that the project holds 80 lots. Projects read via
+                        # the availability view are already whole and are left alone.
+                        if not used_api and len(data.get("props") or []) >= _RENDER_CAP:
+                            _, stated_avail, _ = parse_project_title(
+                                data["header"].get("project"))
+                            data["props"] = self._top_up_capped(
+                                scraper, pid, data.get("_body", ""),
+                                data["props"], stated_avail)
                         if not data["props"]:
                             self._bump("project published no lots")
                             logger.info("  [%2d/%d] project %s (%s): no lots published",
@@ -966,9 +1138,10 @@ class ProximaSource(PropertySource):
 
         results = self._collapse_cross_listed(results)
         logger.info("Proxima: %d lot(s) from %d/%d project(s) "
-                    "(%d read via the availability view). Skipped: %s",
+                    "(%d read via the availability view, %d topped up past the render "
+                    "cap). Skipped: %s",
                     len(results), self.projects_with_stock, self.projects_seen,
-                    self.via_api, self.stats or "none")
+                    self.via_api, self.topped_up, self.stats or "none")
         return results
 
     def _collapse_cross_listed(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

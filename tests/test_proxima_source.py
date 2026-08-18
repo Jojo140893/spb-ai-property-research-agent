@@ -607,3 +607,104 @@ def run_all():
 if __name__ == "__main__":
     import sys
     sys.exit(1 if run_all() else 0)
+
+
+# ------------------------------------------------- the 80-lot render cap
+#
+# Measured live on 2026-08-18 against DAMAC Islands Stage 2 (project 587), which the
+# harvest had been storing at 80 lots under a header reading (129/267). The server
+# enforces the cap — raising the label's own data-propertylimit to 2000 and re-expanding
+# still rendered 80 — so the only lever is asking for the other end of the same list.
+
+from sources.proxima import _RENDER_CAP, _with_field, _FILTER_FIELDS
+
+
+def test_the_filter_guard_can_see_project_level_filters():
+    """The blind spot that took the projects page from 40 to 13 unnoticed.
+
+    `projects_filter[product_category]=Land` removes whole PROJECTS from the list, which
+    is strictly worse than a lot filter, and until this selector existed _clear_filters
+    read that page as clean.
+    """
+    for name in ('select[name^="projects_filter["]',
+                 'select[name="projects"]',
+                 'select[name^="table_filter["]'):
+        assert name in _FILTER_FIELDS, f"{name} is not guarded"
+    # The hidden-input exclusion is load-bearing on the portal's own bookkeeping fields.
+    assert 'input[name^="projects_filter["]:not([type=hidden])' in _FILTER_FIELDS
+
+
+def test_replaying_the_body_changes_one_field_and_nothing_else():
+    """The captured POST is the whole search form; a hand-built one is not accepted.
+
+    A minimal body was tried first and the server answered 10 lots where the page showed
+    80, so the body is edited in place rather than parsed and re-encoded.
+    """
+    body = ("keyword_search=&property%5Bproperty_status%5D=SALE"
+            "&sort%5Bsort_attributes%5D=price-asc"
+            "&property_range_filter%5Brop%5D%5Brange_two%5D=26000000"
+            "&projectId=587&form_key=AbC123")
+    out = _with_field(body, "sort[sort_attributes]", "price-desc")
+    assert "sort%5Bsort_attributes%5D=price-desc" in out
+    # everything else survives byte for byte, including the form key and the project
+    for keep in ("keyword_search=", "property%5Bproperty_status%5D=SALE",
+                 "property_range_filter%5Brop%5D%5Brange_two%5D=26000000",
+                 "projectId=587", "form_key=AbC123"):
+        assert keep in out
+    assert out.count("&") == body.count("&")
+
+
+def test_a_field_that_is_not_present_is_not_invented():
+    body = "projectId=587&form_key=AbC123"
+    assert _with_field(body, "sort[sort_attributes]", "price-desc") == body
+
+
+def test_top_up_merges_the_second_sort_without_double_counting(monkeypatch):
+    """Union on (lot, name), because the two sorts overlap by design.
+
+    price-asc returns the cheapest 80 and price-desc the dearest 80; on a 129-lot project
+    31 lots appear in both and must be stored once.
+    """
+    src = ProximaSource()
+    first = [{"lot": f"{i:03d}", "name": f"Lot {i}, EXAMPLE ESTATE"} for i in range(80)]
+    # The dearest 80 of a 129-lot project: lots 49..128, so 49..79 are already in hand.
+    second = [{"lot": f"{i:03d}", "name": f"Lot {i}, EXAMPLE ESTATE"} for i in range(49, 129)]
+
+    class _Page:
+        def evaluate(self, js, arg):
+            return second
+
+    class _Scraper:
+        page = _Page()
+
+    out = src._top_up_capped(_Scraper(), "587", "projectId=587", list(first), 129)
+    assert len(out) == 129
+    assert len({(d["lot"], d["name"]) for d in out}) == 129
+    assert src.topped_up == 1
+    assert "capped project still short after the sort flip" not in src.stats
+
+
+def test_a_project_too_big_for_two_sorts_says_so_rather_than_going_quiet():
+    """Above 2 x _RENDER_CAP the price sorts cannot cover the middle of the list."""
+    src = ProximaSource()
+    first = [{"lot": f"a{i}", "name": "x"} for i in range(_RENDER_CAP)]
+    second = [{"lot": f"b{i}", "name": "y"} for i in range(_RENDER_CAP)]
+
+    class _Scraper:
+        class page:
+            @staticmethod
+            def evaluate(js, arg):
+                return second
+
+    out = src._top_up_capped(_Scraper(), "999", "projectId=999", list(first), 400)
+    assert len(out) == 2 * _RENDER_CAP
+    assert src.stats.get("capped project still short after the sort flip") == 1
+
+
+def test_no_captured_body_is_reported_not_silently_accepted():
+    src = ProximaSource()
+    props = [{"lot": str(i), "name": "x"} for i in range(_RENDER_CAP)]
+    out = src._top_up_capped(None, "587", "", list(props), 129)
+    assert len(out) == _RENDER_CAP
+    assert src.stats.get("capped project, no body to replay") == 1
+    assert src.topped_up == 0

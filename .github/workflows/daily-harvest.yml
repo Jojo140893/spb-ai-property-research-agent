@@ -41,6 +41,22 @@ jobs:
     timeout-minutes: 90
 
     env:
+      # THE RUNNER IS UTC, AND EVERY DATE THIS HARVEST WRITES IS A LOCAL ONE.
+      #
+      # date_checked is datetime.now().strftime("%d/%m/%Y") in eight places, and the cron
+      # is 23:00 UTC precisely so it lands at 09:00 Melbourne. On a UTC runner that stamps
+      # YESTERDAY: the 17 Aug 23:21 run — 09:21 on the 18th in Melbourne — wrote
+      # "17/08/2026" on every row, and the Settings tab correctly reported every source as
+      # "1 day ago" on a morning they had all just delivered. That is a false alarm on the
+      # one page whose job is to say when a source went quiet, and it fired every day.
+      #
+      # It also straddled midnight UTC (23:21 -> 00:03), so a single harvest stamped rows
+      # with two different dates, which the staleness flag and deploy.ps1's staleness
+      # guard both measure against.
+      #
+      # Melbourne is the business's clock — Colin reads these dates, not the runner — so
+      # the runner keeps it. 09:21 AEST is nowhere near a date boundary either.
+      TZ: Australia/Melbourne
       # Portal credentials. secrets_store resolves portal+field to an env name
       # (portal_bathla + password -> PORTAL_BATHLA_PASSWORD) and falls back to env when no
       # OS vault exists, which is exactly the case on a Linux runner.
