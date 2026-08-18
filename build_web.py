@@ -1146,9 +1146,10 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
     "Rows arrived" is the only claim worth making, and it is the one a consultant cares
     about. Session files are never published: they are live credentials.
     """
-    from datetime import date
+    from datetime import date, datetime as _dt
 
     today = date.today()
+    now_ts = _dt.now()
     # REORDERED TO YYYYMMDD IN SQL, and this is the point of doing it here rather than
     # with MAX(date_checked). date_checked is stored DD/MM/YYYY, so a plain MAX() is a
     # STRING comparison that puts '29/07/2026' above '13/08/2026' — it reads the leading
@@ -1167,7 +1168,38 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
             out.setdefault(str(name or "").strip() or "(unnamed)", {})[iso or ""] = n
         return out
 
-    def _health(name, by_iso):
+    def _newest_ts(group_sql, where_sql, params=()):
+        """{name: newest checked_at} — a real timestamp, so recency can be said in hours.
+
+        SEPARATE FROM _tally because it answers a different question. date_checked is a
+        DAY and drives every staleness threshold; checked_at is the MOMENT and drives
+        nothing but the wording on screen. MAX() is safe here where it is not on
+        date_checked: ISO 8601 sorts correctly as a string, which is the whole reason it
+        was stored that way.
+
+        NULL on every row harvested before 18 Aug 2026, so this is empty until a run has
+        been through — and _health falls back to whole days when it is.
+        """
+        out = {}
+        for name, ts in conn.execute(
+                f"SELECT {group_sql} AS g, MAX(checked_at) FROM buildings "
+                f"WHERE {LIVE} AND checked_at IS NOT NULL{where_sql} GROUP BY g", params):
+            if ts:
+                out[str(name or "").strip() or "(unnamed)"] = ts
+        return out
+
+    def _hours_since(ts):
+        if not ts:
+            return None
+        try:
+            delta = now_ts - _dt.fromisoformat(str(ts))
+        except ValueError:
+            return None
+        # A clock that disagrees with the build machine's can put this slightly in the
+        # future; report 0 rather than a negative age.
+        return max(0, round(delta.total_seconds() / 3600))
+
+    def _health(name, by_iso, ts_map=None):
         """One row of the Settings table.
 
         REPORTS VOLUME AS WELL AS RECENCY, and the second one was the gap. The first cut
@@ -1206,17 +1238,23 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
             state = "ok"
         return {"channel": name, "live": live,
                 "last_stock": newest.strftime("%d/%m/%Y") if newest else "",
-                "days_ago": age, "refreshed": refreshed, "refreshed_pct": pct,
+                "days_ago": age,
+                # None until a harvest has written checked_at; the tab says days then.
+                "hours_ago": _hours_since((ts_map or {}).get(name)),
+                "refreshed": refreshed, "refreshed_pct": pct,
                 "state": state}
 
-    channels = [_health(n, t) for n, t in _tally("source_channel", "").items()]
+    chan_ts = _newest_ts("source_channel", "")
+    channels = [_health(n, t, chan_ts) for n, t in _tally("source_channel", "").items()]
     channels.sort(key=lambda c: (-(c["days_ago"] or 0), -c["live"]))
 
     # THE DIRECT PORTALS, BY NAME. They all share one source_channel, so Bathla,
     # Hermitage and Torsion appeared as a single row called "Direct Builder Portal
     # (live)" — and when one signs out, that row names the group rather than the portal
     # that broke, which is the one thing a person needs in order to fix it.
-    portals = [_health(n, t) for n, t in
+    portal_ts = _newest_ts("builder_name", " AND source_channel LIKE ?",
+                          ("Direct Builder Portal%",))
+    portals = [_health(n, t, portal_ts) for n, t in
                _tally("builder_name", " AND source_channel LIKE ?",
                       ("Direct Builder Portal%",)).items()]
     portals.sort(key=lambda c: (-(c["days_ago"] or 0), -c["live"]))

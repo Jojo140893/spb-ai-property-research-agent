@@ -68,6 +68,14 @@ def _first_suburb(brief_dict: Dict[str, Any]) -> str:
 # Columns added to `buildings` after its original CREATE TABLE, with their types.
 # Declared here (not inline) so a new field is one line and the type is explicit.
 BUILDINGS_EXTRA_COLUMNS = (
+    # WHEN, to the second. date_checked is "%d/%m/%Y" and always has been, which is all
+    # the staleness thresholds ever needed — but it cannot answer "how long ago", because
+    # a date alone puts a harvest anywhere inside a 24-hour window. The Settings tab was
+    # therefore stuck reporting whole days: on 18 Aug it said every source was "1 day ago"
+    # on a morning all four had just delivered. ISO 8601, local time, seconds precision.
+    # NULL on every row written before 18 Aug 2026, so readers must fall back to
+    # date_checked rather than assume it is there.
+    ("checked_at", "TEXT"),
     # price breakdown (SOP Step 6)
     ("land_price", "REAL"), ("build_price", "REAL"), ("extraction_confidence", "REAL"),
     # fields Coleen asked for on 28/29 July
@@ -442,6 +450,9 @@ class ResearchDatabase:
         truthiness — every return value here is truthy.
         """
         now_date = b.get("date_checked") or datetime.now().strftime("%d/%m/%Y")
+        # Stamped HERE rather than in the eight sources, so a source that predates the
+        # column still gets one and no harvest path can forget.
+        now_ts = b.get("checked_at") or datetime.now().isoformat(timespec="seconds")
 
         # One builder, one name — BEFORE the hash, never after. builder_name feeds
         # builder_key in content_hash, so rewriting it over stored rows would change
@@ -493,6 +504,7 @@ class ResearchDatabase:
             "source_url": b.get("source_url_or_ref") or b.get("source_url", ""),
             "dedup_key": key,
             "date_checked": now_date,
+            "checked_at": now_ts,
             "land_price": b.get("land_price"),
             "build_price": b.get("build_price"),
             "extraction_confidence": b.get("extraction_confidence"),
@@ -564,7 +576,8 @@ class ResearchDatabase:
 
             # Update the volatile fields in place; leave enrichment-owned columns
             # (state, builder_matched, benchmark_*) alone unless this run supplied one.
-            upd = {"date_checked": now_date, "last_seen": now_date}
+            upd = {"date_checked": now_date, "last_seen": now_date,
+                   "checked_at": now_ts}
             # A run that could not read a field must not erase what is stored. Writing
             # these unconditionally meant one unparsed row blanked the availability and
             # title Coleen asked for, and zeroed its price.

@@ -1115,13 +1115,42 @@
             if (dot) dot.textContent = '';
             return;
         }
+    // HOW LONG AGO, IN THE SMALLEST UNIT THAT IS HONEST.
+    //
+    // This said "1 day ago" for every source on the morning of 18 Aug 2026, when all
+    // four had delivered a couple of hours earlier — because the only timestamp we had
+    // was date_checked, a DATE, and a date puts a harvest anywhere inside 24 hours.
+    // checked_at now carries the moment, so recency is said in hours.
+    //
+    // Past two days the hour count stops being useful ("173 hours ago" is not a fact
+    // anybody acts on) and it reverts to days. Rows harvested before checked_at existed
+    // have none, so days remain the fallback rather than a fabricated hour figure.
+    function agoText(c) {
+        const h = c.hours_ago;
+        if (h === null || h === undefined) {
+            if (c.days_ago === null || c.days_ago === undefined) return '';
+            return `${c.days_ago} day${c.days_ago === 1 ? '' : 's'} ago`;
+        }
+        if (h < 1) return 'less than an hour ago';
+        if (h < 48) return `${h} hour${h === 1 ? '' : 's'} ago`;
+        return `${Math.round(h / 24)} days ago`;
+    }
+
+    // The same age, compressed for the warning banner: "3h" / "5d".
+    function agoShort(c) {
+        const h = c.hours_ago;
+        if (h !== null && h !== undefined && h < 48) return `${h}h`;
+        const d = (h !== null && h !== undefined) ? Math.round(h / 24) : c.days_ago;
+        return (d === null || d === undefined) ? '?' : `${d}d`;
+    }
+
         if (dot) {
             dot.textContent = ' ●';
             dot.style.color = bad.some(c => c.state === 'dead') ? '#b91c1c' : '#b45309';
             dot.title = `${bad.length} data source(s) need attention`;
         }
         const worst = bad.some(c => c.state === 'dead') ? 'dead' : 'stale';
-        const names = bad.map(c => `${esc(c.channel)} (${c.days_ago}d)`).join(', ');
+        const names = bad.map(c => `${esc(c.channel)} (${agoShort(c)})`).join(', ');
         banner.style.display = '';
         banner.style.cssText = 'margin:0 0 1rem; padding:0.7rem 1rem; border-radius:8px;'
             + 'font-size:0.85rem; border:1px solid '
@@ -1268,8 +1297,7 @@
                 <td style="padding:0.55rem 0.5rem;"><strong>${esc(c.channel)}</strong></td>
                 <td style="padding:0.55rem 0.5rem;">${pill(c.state)}</td>
                 <td style="padding:0.55rem 0.5rem;">${c.last_stock ? esc(c.last_stock) : '&mdash;'}
-                  ${c.days_ago === null ? '' :
-                    `<span style="color:var(--text-muted);"> (${c.days_ago} day${c.days_ago === 1 ? '' : 's'} ago)</span>`}</td>
+                  ${agoText(c) ? `<span style="color:var(--text-muted);"> (${agoText(c)})</span>` : ''}</td>
                 <td style="padding:0.55rem 0.5rem; text-align:right;">${(c.live || 0).toLocaleString()}</td>
                 <td style="padding:0.55rem 0.5rem; text-align:right;
                            ${c.refreshed_pct < (CHANNELS.partial_below_pct || 50)
