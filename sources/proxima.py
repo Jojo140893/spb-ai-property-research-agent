@@ -356,6 +356,37 @@ def _with_field(body: str, key: str, value: str) -> str:
         out.append(f"{k}={v}")
     return "&".join(out)
 
+# THE INDEX IS A FRONT PAGE, NOT THE PORTFOLIO.
+#
+# Every project label on the index carries class "top-projects", and the index renders 40.
+# The account's own project dropdown lists 118. The other 78 are not filtered out and not
+# archived — they simply never appear on the page the harvest reads, so for months the
+# harvest saw 34% of the stock this login can reach and nothing said so.
+#
+# Found on 2026-08-18 from a listing Coleen was looking at and the app did not hold: "The
+# Pinnacle Liverpool, 3 bed, $744K". There is no Liverpool project on the index. There are
+# two in the dropdown — The Pinnacle Tower A (273) and Tower B (275) — and Tower B holds
+# exactly that lot:
+#
+#     Lot 73 Unit B1001, 10 Norfolk Street, LIVERPOOL   $744,581   3 bed   For Sale
+#
+# Kemps Estate - Austral and Leppington Rise Estate are off-index too, which is why a
+# Liverpool-area search came back with land lots and no apartments.
+#
+# The accordion's own POST honours a projectId that is not on the page, so these are
+# readable without touching the filter — see _read_off_index. The dropdown is the only
+# enumeration of them we have.
+_PROJECT_OPTIONS_JS = r"""
+() => {
+  const s = document.querySelector('select[name="projects"]');
+  if (!s) return [];
+  return [...s.options]
+    .map(o => ({id: (o.value || '').trim(), name: (o.text || '').trim()}))
+    .filter(o => o.id && o.name && /^\d+$/.test(o.id));
+}
+"""
+
+
 _CLEAR_AND_SUBMIT_JS = r"""
 (cfg) => {
   const {sel, defaults} = cfg;
@@ -513,6 +544,7 @@ class ProximaSource(PropertySource):
         self.cross_listed: List = []
         self.via_api = 0
         self.topped_up = 0
+        self.off_index = 0
         # What the projects page had filtered on when this run opened it, if anything.
         # Kept so the run summary can say the harvest walked into a filtered page rather
         # than leaving that to be inferred from a low count. See _clear_filters.
@@ -768,6 +800,30 @@ class ProximaSource(PropertySource):
                 _RENDER_CAP)
             self._bump("capped project still short after the sort flip")
         return props
+
+    def _read_off_index(self, scraper, pid: str, name: str, body: str):
+        """One project that the index never renders, read by id through the same POST.
+
+        Returns data shaped like _open_and_read's so _row cannot tell them apart. The
+        HEADER is thin on purpose: the index is where a project states its developer,
+        location and (available/total) counter, and a project that is not on the index
+        states none of them here. The name comes from the dropdown option, and everything
+        else is left blank rather than guessed — the lot's own address still carries its
+        suburb, state and postcode, which is what search actually needs.
+        """
+        if not body:
+            return None
+        try:
+            tiles = scraper.page.evaluate(
+                _REPLAY_ACCORDION_JS, [_with_field(body, "projectId", pid)])
+        except Exception as e:
+            logger.warning("     off-index project %s (%s) failed: %s", pid, name[:30], e)
+            return None
+        if not tiles:
+            return None
+        return {"header": {"project": name, "status": "", "location": "",
+                           "developer": "", "sunset": "", "deposit": ""},
+                "props": tiles, "_body": body}
 
     def _read_via_api(self, scraper, pid: str) -> Optional[List[Dict[str, str]]]:
         """A project's FULL inventory, via the availability view's own REST call.
@@ -1079,9 +1135,16 @@ class ProximaSource(PropertySource):
                         "is only partly signed in.",
                         len(pids), _HEALTHY_PROJECTS, _HEALTHY_AVAIL)
 
+                # The accordion POST is the only way to reach an off-index project, and
+                # it has to be a body the page itself produced — see _with_field. The
+                # first project that yields one lends it to all 78.
+                off_body = ""
+
                 for i, pid in enumerate(pids, 1):
                     try:
                         data = self._open_and_read(scraper, pid)
+                        if data and data.get("_body") and not off_body:
+                            off_body = data["_body"]
                         if not data:
                             self._bump("project unreadable")
                             continue
@@ -1132,6 +1195,53 @@ class ProximaSource(PropertySource):
                     except Exception as e:
                         self._bump("project errored")
                         logger.warning("  project %s failed: %s", pid, e)
+                # ---------------------------------------------------------------
+                # THE PROJECTS THE INDEX NEVER RENDERS. See _PROJECT_OPTIONS_JS: the
+                # index is a "top projects" front page of 40, the account's dropdown
+                # lists 118, and the 78 in between were simply never harvested. That is
+                # where Coleen's Liverpool apartment was.
+                try:
+                    options = scraper.page.evaluate(_PROJECT_OPTIONS_JS) or []
+                except Exception as e:                                   # noqa: BLE001
+                    logger.warning("Proxima: could not read the project dropdown: %s", e)
+                    options = []
+                extra = [o for o in options
+                         if o.get("id") and o["id"] not in seen and o.get("name")]
+                if extra and not off_body:
+                    # Said out loud rather than skipped quietly: this is 66% of the
+                    # portfolio and its absence used to be invisible.
+                    logger.warning(
+                        "Proxima: %d project(s) are in the account dropdown but not on the "
+                        "index, and no POST body was captured to read them with. They are "
+                        "NOT in this harvest.", len(extra))
+                elif extra:
+                    logger.info("Proxima: %d project(s) off the index — reading by id.",
+                                len(extra))
+                    for j, o in enumerate(extra, 1):
+                        pid, name = o["id"], o["name"]
+                        try:
+                            data = self._read_off_index(scraper, pid, name, off_body)
+                            if not data:
+                                self._bump("off-index project published no lots")
+                                continue
+                            props = data["props"]
+                            if len(props) >= _RENDER_CAP:
+                                props = self._top_up_capped(scraper, pid, off_body,
+                                                            props, None)
+                            rows = [r for r in (self._row(d, data["header"], pid)
+                                                for d in props) if r]
+                            if rows:
+                                self.projects_with_stock += 1
+                                self.off_index += 1
+                            else:
+                                self._bump("off-index project with no priced lot")
+                            results.extend(rows)
+                            logger.info("  [off %2d/%d] project %s: %d lot(s) of %d  %s",
+                                        j, len(extra), pid, len(rows), len(props), name[:40])
+                        except Exception as e:                           # noqa: BLE001
+                            self._bump("off-index project errored")
+                            logger.warning("  off-index project %s failed: %s", pid, e)
+                    self.projects_seen += len(extra)
         except Exception as e:
             logger.exception("Proxima harvest crashed: %s", e)
             return results
@@ -1139,9 +1249,9 @@ class ProximaSource(PropertySource):
         results = self._collapse_cross_listed(results)
         logger.info("Proxima: %d lot(s) from %d/%d project(s) "
                     "(%d read via the availability view, %d topped up past the render "
-                    "cap). Skipped: %s",
+                    "cap, %d off the index). Skipped: %s",
                     len(results), self.projects_with_stock, self.projects_seen,
-                    self.via_api, self.topped_up, self.stats or "none")
+                    self.via_api, self.topped_up, self.off_index, self.stats or "none")
         return results
 
     def _collapse_cross_listed(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
