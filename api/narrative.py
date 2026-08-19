@@ -14,9 +14,9 @@ and never reaches the page.
 
 FIGURES ONLY, AND ENFORCED RATHER THAN REQUESTED.
 
-Ahsan chose this explicitly on 18 Aug over the richer alternative. llama-3.1-8b-instant is
-an 8-billion-parameter model; asked about Armstrong Creek or Denman it will produce a
-confident, specific train line, primary school or council project that does not exist, and
+Ahsan chose this explicitly on 18 Aug over the richer alternative. A small instruct model
+asked about Armstrong Creek or Denman will produce a confident, specific train line,
+primary school or council project that does not exist, and
 these documents go to people spending eight hundred thousand dollars. A prompt asking it
 not to is not a control — it is a request. So:
 
@@ -38,7 +38,18 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+# openai/gpt-oss-20b, not a Llama model: Groq retired llama-3.1-8b-instant, and asking
+# for it returned 404 on every draft while the key was perfectly good. Of what this
+# account can actually reach, most are not chat models at all — Whisper is speech-to-text,
+# Orpheus is text-to-speech, prompt-guard and safeguard are classifiers, allam-2-7b is
+# Arabic-focused, and the two groq/compound models BROWSE, which is the one thing the
+# figures-only rule exists to prevent. That leaves gpt-oss-20b, gpt-oss-120b and
+# qwen3.6-27b; 20b is chosen because this is a mechanical rewrite of eight numbers into
+# two sentences and the larger models cost more per call for no gain.
+#
+# Overridable, and the endpoint says when the override is wrong:
+# GET /api/narrative?models=1 lists what the key can use.
+MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b")
 TIMEOUT = 25
 MAX_OPTIONS = 8              # the report itself caps a selection at 8
 
