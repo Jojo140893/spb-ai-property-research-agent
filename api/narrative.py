@@ -161,13 +161,45 @@ def _groq(prompt):
             payload = json.loads(r.read().decode("utf-8", "replace"))
         return (payload["choices"][0]["message"]["content"] or "").strip(), ""
     except urllib.error.HTTPError as e:
-        # The body can echo request content; the status is enough to act on and cannot
-        # leak the key.
+        # THE STATUS ALONE WAS NOT ENOUGH. A 404 here means "no such model", and reporting
+        # it as a bare "Groq returned 404." sent us looking at the API key — which was
+        # fine — instead of at MODEL. Groq's error.message names the model and nothing
+        # else, so it is quoted; the rest of the body can echo request content and is not.
+        detail = ""
+        try:
+            body = json.loads(e.read().decode("utf-8", "replace"))
+            detail = str((body.get("error") or {}).get("message") or "")[:180]
+        except Exception:                                              # noqa: BLE001
+            detail = ""
+        if detail and _key() and _key() in detail:                     # never, but cheap
+            detail = ""
         return "", {401: "Groq rejected the key.",
                     429: "Groq rate limit reached — try again shortly.",
-                    }.get(e.code, f"Groq returned {e.code}.")
+                    404: f"Groq has no model called {MODEL!r}"
+                         + (f" — {detail}" if detail else "")
+                         + ". Set GROQ_MODEL on the Vercel project to one it does have; "
+                           "GET this endpoint with ?models=1 to list them.",
+                    }.get(e.code, f"Groq returned {e.code}."
+                                  + (f" {detail}" if detail else ""))
     except Exception:                                                  # noqa: BLE001
         return "", "Could not reach Groq."
+
+
+def _models():
+    """(model ids this key can use, error). Names only — no key, no usage, no billing."""
+    if not _key():
+        return [], "GROQ_API_KEY is not set."
+    req = urllib.request.Request(
+        "https://api.groq.com/openai/v1/models",
+        headers={"Authorization": f"Bearer {_key()}", "User-Agent": "spb-dashboard"})
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            payload = json.loads(r.read().decode("utf-8", "replace"))
+        return sorted(m.get("id", "") for m in (payload.get("data") or []) if m.get("id")), ""
+    except urllib.error.HTTPError as e:
+        return [], f"Groq returned {e.code} when listing models."
+    except Exception:                                                  # noqa: BLE001
+        return [], "Could not reach Groq."
 
 
 def drafts_for(options):
@@ -206,7 +238,18 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        """Whether the button should offer to draft at all."""
+        """Whether the button should offer to draft at all, and — with ?models=1 — which
+        models this key may actually use.
+
+        The listing exists because a wrong MODEL and a wrong key are indistinguishable
+        from the outside: both stop drafts appearing. This says which it is, without ever
+        returning the key.
+        """
+        if "models=1" in (self.path or ""):
+            names, err = _models()
+            return self._reply(200, {"configured": bool(_key()), "model": MODEL,
+                                     "available": names, "error": err,
+                                     "current_model_exists": MODEL in names})
         self._reply(200, {"configured": bool(_key()), "model": MODEL})
 
     def do_POST(self):
