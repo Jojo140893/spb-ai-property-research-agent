@@ -99,15 +99,38 @@ def test_a_lot_under_the_cap_still_scores_full_budget_points():
     assert not result.hard_rejection
 
 
-def test_a_source_that_states_nothing_is_reported_unclear_not_partial_turnkey():
-    """"Partial Turnkey" asserts what the package contains. The source said nothing."""
+def test_a_source_that_states_nothing_adds_no_number_of_our_own():
+    """Coleen, 19 Aug: take the $15,000 out, everywhere.
+
+    "Partial Turnkey" asserts what the package contains, and the source said nothing —
+    that much was already fixed. But the price still carried an invented $15,000
+    site-cost allowance, and because NO extractor populates `inclusions` (0 of the
+    packages we hold carry one) that branch was every package in the catalogue.
+    scoring_engine had already had to route around it: "a $900,000 package on a $900,000
+    budget was thrown out as '$915,000 — over by $15,000', a figure no builder ever
+    quoted."
+
+    The caveat stays, because a buyer does need to know site costs are unconfirmed. The
+    number goes.
+    """
     pb = TurnkeyCalculator.calculate_price_breakdown(
         {"advertised_package_price": 700_000, "land_price": 300_000,
          "build_price": 400_000})
     assert pb.turnkey_status == TurnkeyStatus.UNCLEAR, pb.turnkey_status
-    assert pb.estimated_additional_costs == 15_000.0
+    assert pb.estimated_additional_costs == 0.0
+    assert pb.realistic_total_price == 700_000, "the advertised price, unaltered"
     assert any("not stated" in m for m in pb.missing_inclusions), pb.missing_inclusions
-    assert any("ESTIMATE" in m for m in pb.missing_inclusions), pb.missing_inclusions
+    assert not any("15,000" in m or "15000" in m for m in pb.missing_inclusions),         pb.missing_inclusions
+
+
+def test_a_stated_exclusion_still_carries_its_allowance():
+    """Not a blanket removal. When the source LISTS its inclusions and site costs are
+    not among them, that is a stated exclusion and the allowance is evidence-backed."""
+    pb = TurnkeyCalculator.calculate_price_breakdown(
+        {"advertised_package_price": 700_000,
+         "inclusions": {"driveway_included": True, "site_costs_fixed": False}})
+    assert pb.estimated_additional_costs == 15_000.0
+    assert any("15,000" in m for m in pb.missing_inclusions), pb.missing_inclusions
 
 
 def test_a_source_that_does_state_its_inclusions_is_read_not_second_guessed():

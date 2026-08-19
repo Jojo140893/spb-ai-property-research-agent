@@ -3415,6 +3415,21 @@ python state_sync.py push</pre>
        with no base URL and are then emailed on or opened from a share link — a relative
        <img src> would be a broken icon on the client's screen. Falls back to the wordmark
        alone when absent, so a report still generates rather than showing a gap. */
+    /* ON THE PDF ITSELF, not only in the app. Coleen, 18 Aug: a report that is
+       forwarded on has to stay traceable to Smart Property Buying, and the letterhead at
+       the top is lost the moment someone screenshots the table. It is repeated in the
+       footer, where a printed page keeps it.
+
+       SPB_PHONE is empty until somebody fills it in: the meeting said "the mobile ending
+       212" and no full number is recorded anywhere in this repo. An invented phone number
+       on a document a buyer might ring is worse than no phone number, so the line simply
+       omits it while it is blank. */
+    const SPB_EMAIL = 'info@smartpropertybuying.com.au';
+    const SPB_PHONE = '';
+    const SPB_SITE = 'smartpropertybuying.com.au';
+    const SPB_CONTACT = () => ['Smart Property Buying', SPB_EMAIL, SPB_PHONE, SPB_SITE]
+        .filter(Boolean).map(esc).join(' &middot; ');
+
     const SPB_BRAND = () => `
       <header class="spb-head">
         ${window.SPB_LOGO || ''}
@@ -3534,18 +3549,26 @@ python state_sync.py push</pre>
         /* OPTIONS AS ROWS — the shape of the one-pager Coleen sent as the target. It fits
            four options on one page, which the transposed thirteen-row version does not,
            and one page is the whole point of this document. */
-        const head = ['Option', 'Bed / Bath / Car', 'Land', 'House', 'Title', 'Package']
+        /* THE COLUMNS COLEEN'S OWN ONE-PAGER USES, in her order:
+           Option | Location | Land | House | Package | Rebate | Effective Price.
+
+           The 18 Aug asks are folded INTO those columns rather than added beside them,
+           because a column costs width and the whole point is one page: the street
+           address sits under the suburb in Location, and bed/bath/car sits under the
+           size in House. Seven columns, exactly as the target. */
+        const head = ['Option', 'Location', 'Land', 'House', 'Package']
             .concat(anyRebate ? ['Rebate', 'Effective Price'] : []);
         const rows = props.map((p, i) => {
             const bbc = [p.bedrooms, p.bathrooms, p.car_spaces];
+            const bbcText = bbc.some(v => raw(v))
+                ? bbc.map(v => raw(v) ? esc(v) : '&ndash;').join(' / ') : '';
+            const street = raw(p.lot_address) ? esc(p.lot_address) : '';
             const cells = [
-                `<div class="opt-no">Option ${i + 1}</div>
-                 <div class="opt-addr">${addr(p)}</div>` +
-                (place(p) ? `<div class="opt-place">${esc(place(p))}</div>` : ''),
-                bbc.some(v => raw(v)) ? bbc.map(v => raw(v) ? esc(v) : '&ndash;').join(' / ') : dash,
+                `<strong>${i + 1}</strong>`,
+                (place(p) ? esc(place(p)) : dash)
+                    + (street ? `<div class="sub">${street}</div>` : ''),
                 sq(p.land_size_sqm),
-                sq(p.house_size_sqm),
-                t(p.title_status),
+                sq(p.house_size_sqm) + (bbcText ? `<div class="sub">${bbcText}</div>` : ''),
                 m(p.advertised_package_price),
             ].concat(anyRebate ? [
                 Number(p.incentive_amount) > 0 ? m(p.incentive_amount)
@@ -3601,7 +3624,13 @@ python state_sync.py push</pre>
                          : `Same effective price as Option ${bestIdx + 1}.`;
         };
 
-        const blocks = props.map((p, i) => {
+        /* BEST FIRST, then the rest in their table order — the reading order of the
+           target one-pager, whose grid runs OPTION 4, OPTION 1, OPTION 3, OPTION 2. The
+           table stays in selection order, so "Option 3" means the same row in both. */
+        const blockOrder = [bestIdx].concat(
+            props.map((_p, i) => i).filter(i => i !== bestIdx));
+        const blocks = blockOrder.map(i => {
+            const p = props[i];
             /* The benchmark line, carried over from the client-facing report. An internal
                comparison is against other stock we hold, NOT the market, and this document
                goes to a buyer — so it is never called a market price. */
@@ -3730,8 +3759,13 @@ python state_sync.py push</pre>
  .comps th,.comps td{border:1px solid var(--line);padding:4px 6px;text-align:left}
  .comps th{background:var(--bg);color:var(--ink)}
  .pending{color:var(--muted);font-style:italic;font-size:11.5px;margin:8px 0 0}
- .foot{margin-top:18px;padding-top:11px;border-top:1px solid var(--line);
-       color:var(--muted);font-size:11px}
+ .foot{margin-top:14px;padding-top:9px;border-top:1px solid var(--line);
+       color:var(--muted);font-size:9.5px;line-height:1.35}
+ .foot .contact{color:var(--ink);font-weight:600;font-size:10.5px;margin-bottom:3px}
+ td .sub{color:var(--muted);font-size:10px;line-height:1.3;margin-top:1px}
+ /* ONE PAGE IS THE REQUIREMENT, not a preference — Coleen's target fits four options
+    and a full assessment on a single sheet. These are the margins that get it there. */
+ @page{size:A4 portrait;margin:10mm}
 ${SHARE_CSS}${BRAND_CSS}
  h2{font-size:12.5px;color:var(--accent);margin:16px 0 7px;text-transform:uppercase;
     letter-spacing:.04em;border-bottom:1px solid var(--line);padding-bottom:3px}
@@ -3766,12 +3800,13 @@ ${SPB_BRAND()}
 <label class="note rec"><textarea rows="3">${esc(
   `Proceed with Option ${bestIdx + 1} as the strongest overall fit` +
   (EFFECTIVE(best) ? ` at ${plain(m(EFFECTIVE(best)))} effective` : '') + '.')}</textarea></label>
-<div class="foot">Investment observations are general and do not constitute financial
-  advice. Figures are as published by the builder or developer at the date shown against
-  each option and are not a valuation or an offer. Rebates, inclusions, land availability,
-  site costs, rental estimates and contract terms remain subject to builder/developer
-  confirmation. A dash means the source did not state that figure &mdash; it has not been
-  estimated.</div>
+<div class="foot"><div class="contact">${SPB_CONTACT()}</div>
+  Investment observations are general and do not constitute financial advice. Figures are
+  as published by the builder or developer at the date shown against each option and are
+  not a valuation or an offer. Rebates, inclusions, land availability, site costs, rental
+  estimates and contract terms remain subject to builder/developer confirmation. A dash
+  means the source did not state that figure &mdash; it has not been estimated.
+  Information checked ${esc(new Date().toLocaleDateString('en-AU'))}.</div>
 </body></html>`;
     }
 

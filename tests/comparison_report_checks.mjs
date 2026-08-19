@@ -244,19 +244,35 @@ console.log('\n--- one document, one page (Coleen and Colin, 18 Aug) ---');
   check('both entry points render one and the same document', viaCompare === viaClient);
 
   const h = comparisonDocument([full, hostile], null, {});
-  // Moved OUT of the assessment block and INTO the comparison row, so a reader compares
-  // them side by side instead of scrolling between blocks to do it by eye.
-  check('bed / bath / car is a table column', h.includes('<th>Bed / Bath / Car</th>'));
-  check('and is gone from the assessment block', !h.includes('<b>Bed / Bath / Car</b>'));
-  check('titling status is a table column', h.includes('<th>Title</th>'));
+  // THE COLUMNS OF COLEEN'S OWN ONE-PAGER, in her order. The 18 Aug asks are folded INTO
+  // these columns rather than added beside them: a column costs width, and one page is
+  // the requirement.
+  const headings = [...h.matchAll(/<th>([^<]*)<\/th>/g)].map(m => m[1]);
+  check('the seven target columns, in order',
+    headings.join('|') === 'Option|Location|Land|House|Package|Rebate|Effective Price',
+    headings.join('|'));
+  check('no Title column — the target has none', !h.includes('<th>Title</th>'));
+  check('no Bed / Bath / Car column either', !h.includes('<th>Bed / Bath / Car</th>'));
 
-  // "Add the property address to the table header (e.g. Option 1: [Address])."
-  check('the option cell names the option', h.includes('<div class="opt-no">Option 1</div>'));
-  check('and carries the address', h.includes('class="opt-addr"'));
-  check('the redundant Location column is gone', !h.includes('<th>Location</th>'));
+  // ...but both asks still land, inside the cells they belong to.
+  check('bed / bath / car rides in the House cell', /class="sub">\s*4 \/ 2 \/ 2/.test(h));
+  check('and is gone from the assessment block', !h.includes('<b>Bed / Bath / Car</b>'));
+  check("the street address rides in the Location cell", /class="sub">[^<]*Banksia Way/.test(h));
+
   check('the address is not repeated in the block', !h.includes('<b>Address</b>'));
   check('land and house are not restated in the block', !h.includes('<b>Land / House</b>'));
   check('package price is not restated in the block', !h.includes('<b>Package</b>'));
+
+  // The assessment grid reads best-first, as the target's does (OPTION 4, 1, 3, 2).
+  const order = [...h.matchAll(/OPTION (\d+) &mdash;/g)].map(m => m[1]);
+  check('the preferred option is assessed first', order[0] === '2', order.join(','));
+
+  // Contact details on the document itself: a forwarded PDF has to stay traceable, and
+  // the letterhead is lost the moment somebody screenshots the table.
+  check('the footer carries the SPB email',
+    h.includes('info@smartpropertybuying.com.au'));
+  check('and no invented phone number', !/04\d{2}[ -]?\d{3}[ -]?\d{3}/.test(h));
+  check('the page is set up to print as one A4 sheet', h.includes('@page'));
 
   // The assessment textareas open PREFILLED from what we actually hold, not empty and
   // not invented.

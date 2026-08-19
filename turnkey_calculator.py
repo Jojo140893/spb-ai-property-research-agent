@@ -39,12 +39,28 @@ class TurnkeyCalculator:
         site_costs_fixed = inclusions.get('site_costs_fixed', False)
         site_cost_val = float(inclusions.get('site_costs_val', 0.0))
         if not site_costs_fixed and site_cost_val == 0:
-            missing_inclusions.append(
-                'Site costs are not stated by the source — $15,000 allowed as an '
-                'ESTIMATE, not a builder figure'
-                if nothing_stated else
-                'Fixed site costs (estimated $15,000 allowance needed)')
-            est_add_cost += cls.DEFAULT_ESTIMATES['site_costs']
+            if nothing_stated:
+                # NO NUMBER WHERE THE SOURCE GAVE NONE. Coleen, 19 Aug: take the $15,000
+                # out, everywhere.
+                #
+                # No extractor populates `inclusions` — 0 of the packages we hold carry
+                # one — so this branch was EVERY package, and every package silently
+                # carried an identical $15,000 nobody had quoted. scoring_engine already
+                # had to work around it ("a $900,000 package on a $900,000 budget was
+                # thrown out as '$915,000 — over by $15,000', a figure no builder ever
+                # quoted") and its conclusion is the rule here too: an estimate may
+                # inform a ranking, only evidence may change a price.
+                #
+                # The caveat stays, because a buyer does need to know site costs are
+                # unconfirmed. It just no longer carries an invented figure.
+                missing_inclusions.append(
+                    'Site costs are not stated by the source — confirm with the builder')
+            else:
+                # The source DID list its inclusions and site costs are not among them.
+                # That is a stated exclusion, so the allowance is evidence-backed.
+                missing_inclusions.append(
+                    'Fixed site costs (estimated $15,000 allowance needed)')
+                est_add_cost += cls.DEFAULT_ESTIMATES['site_costs']
 
         # Driveway
         if not inclusions.get('driveway_included', True):
