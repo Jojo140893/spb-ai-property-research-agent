@@ -271,7 +271,10 @@ console.log('\n--- one document, one page (Coleen and Colin, 18 Aug) ---');
   // the letterhead is lost the moment somebody screenshots the table.
   check('the footer carries the SPB email',
     h.includes('info@smartpropertybuying.com.au'));
-  check('and no invented phone number', !/04\d{2}[ -]?\d{3}[ -]?\d{3}/.test(h));
+  check('and the mobile Coleen named, ending 212', h.includes('0411 502 212'));
+  // Off the site's contact page, not typed from memory — it also publishes a landline
+  // and only one of the two is the number the meeting asked for.
+  check('not the landline', !h.includes('7056 7191'));
   check('the page is set up to print as one A4 sheet', h.includes('@page'));
 
   // The assessment textareas open PREFILLED from what we actually hold, not empty and

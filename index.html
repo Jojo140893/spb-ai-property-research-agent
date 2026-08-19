@@ -3420,12 +3420,13 @@ python state_sync.py push</pre>
        the top is lost the moment someone screenshots the table. It is repeated in the
        footer, where a printed page keeps it.
 
-       SPB_PHONE is empty until somebody fills it in: the meeting said "the mobile ending
-       212" and no full number is recorded anywhere in this repo. An invented phone number
-       on a document a buyer might ring is worse than no phone number, so the line simply
-       omits it while it is blank. */
+       The mobile is the one Coleen named in the 18 Aug meeting ("ending 212"), taken
+       from smartpropertybuying.com.au/contact rather than typed from memory — the site
+       also publishes a landline, (03) 7056 7191, and only one of them is the number she
+       asked for. The filter below still drops any of these that is blanked, so removing
+       one is a one-word change rather than a broken separator. */
     const SPB_EMAIL = 'info@smartpropertybuying.com.au';
-    const SPB_PHONE = '';
+    const SPB_PHONE = '0411 502 212';
     const SPB_SITE = 'smartpropertybuying.com.au';
     const SPB_CONTACT = () => ['Smart Property Buying', SPB_EMAIL, SPB_PHONE, SPB_SITE]
         .filter(Boolean).map(esc).join(' &middot; ');
