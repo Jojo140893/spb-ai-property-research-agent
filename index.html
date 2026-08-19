@@ -3692,15 +3692,15 @@ python state_sync.py push</pre>
               ${badges[i] ? `<span class="tag">${badges[i]}</span>` : ''}</h3>
             ${valueLine}
             ${extras ? `<div class="facts">${extras}</div>` : ''}
-            <label class="note"><b>Investment strengths${
-                drafted ? ' <span class="draft">draft &mdash; check before sending</span>' : ''}</b>
-              <textarea rows="2" placeholder="Why this option suits the client — your words."
-                >${esc(strengths)}</textarea></label>
-            <label class="note"><b>Infrastructure</b>
-              <textarea rows="2" placeholder="Schools, transport, town centres, planning. Left blank on purpose: the system holds no suburb commentary and will not invent any."
-                >${esc(infra)}</textarea></label>
-            <label class="note"><b>${i === bestIdx ? 'Why it stands out' : 'Trade-off'}</b>
-              <textarea rows="2">${esc(gapLine(p, i))}</textarea></label>
+            <p class="note"><b>Investment strengths:</b>${
+                drafted ? ' <span class="draft">draft</span>' : ''}
+              <span class="ed" contenteditable="true" data-ph="why this option suits the client"
+                >${esc(strengths)}</span></p>
+            <p class="note"><b>Infrastructure:</b>
+              <span class="ed" contenteditable="true" data-ph="schools, transport, town centres, planning"
+                >${esc(infra)}</span></p>
+            <p class="note"><b>${i === bestIdx ? 'Why it stands out' : 'Trade-off'}:</b>
+              <span class="ed" contenteditable="true">${esc(gapLine(p, i))}</span></p>
             ${compTable}
           </section>`;
         }).join('');
@@ -3749,13 +3749,22 @@ python state_sync.py push</pre>
         margin:0 0 9px}
  .facts b{color:var(--muted);font-weight:600;display:block;font-size:8.5px;
           text-transform:uppercase;letter-spacing:.03em}
- .note{display:block;margin-top:5px}
- .note b{color:var(--muted);font-size:8.5px;text-transform:uppercase;letter-spacing:.03em}
+ /* INLINE, THE WAY COLEEN'S OWN ONE-PAGER READS: "Investment strengths: ...". A label
+    on its own line above a bordered box costs three lines of chrome per note, and there
+    are three notes on each of four options — twelve labels, twelve boxes and their
+    margins, which was most of the height that would not fit. contenteditable keeps every
+    word editable in the browser and prints as plain flowing text. */
+ .note{display:block;margin:0 0 3px;line-height:1.3}
+ .note b{color:var(--muted);text-transform:uppercase;letter-spacing:.03em;
+         font-size:.86em;font-weight:700}
+ .ed{outline:none}
+ .ed:focus{background:#fffbeb;box-shadow:0 0 0 2px #fde68a;border-radius:2px}
+ .ed:empty::before{content:attr(data-ph);color:#94a3b8;font-style:italic}
+ .note.rec{margin-top:2px}
  .draft{background:#fef3c7;color:#92400e;border-radius:3px;padding:1px 5px;
         text-transform:none;letter-spacing:0;font-weight:600}
  @media print{.draft{display:none}}
- textarea{width:100%;margin-top:4px;padding:7px;border:1px solid var(--line);border-radius:5px;
-          font:inherit;color:var(--body);resize:vertical}
+
  .comps{border-collapse:collapse;width:100%;margin:8px 0 0;font-size:11.5px}
  .comps th,.comps td{border:1px solid var(--line);padding:4px 6px;text-align:left}
  .comps th{background:var(--bg);color:var(--ink)}
@@ -3769,63 +3778,66 @@ python state_sync.py push</pre>
  td .sub{color:var(--muted);font-size:8.5px;line-height:1.2;margin-top:0}
  /* ONE PAGE IS THE REQUIREMENT, not a preference — Coleen's target fits four options
     and a full assessment on a single sheet. These are the margins that get it there. */
- @page{size:A4 portrait;margin:10mm}
+ /* LANDSCAPE, BECAUSE HERS IS. Measured off the target PDF: 842 x 595 pt, which is A4
+    LANDSCAPE, with 7pt body text. That is how four options and a full assessment fit on
+    one sheet — the 2x2 grid gets 1,047px of width instead of 718px, so every block wraps
+    far less and the table spreads out instead of stacking. I spent a while shrinking type
+    towards 5.7pt to force this into portrait, which was solving the wrong problem: her
+    document is not denser than ours, it is wider. */
+ @page{size:A4 landscape;margin:7mm}
 ${SHARE_CSS}${BRAND_CSS}
  h2{font-size:10px;color:var(--accent);margin:9px 0 5px;text-transform:uppercase;
     letter-spacing:.04em;border-bottom:1px solid var(--line);padding-bottom:2px}
  .lede{margin:0 0 8px;font-size:10px;color:var(--body)}
  .banner-sum{font-size:12px;color:var(--ink);margin-top:2px}
  .assess{display:grid;grid-template-columns:1fr 1fr;gap:7px}
- .note.rec textarea{min-height:24px}
  @media (max-width:720px){.assess{grid-template-columns:1fr}}
  @media print{
    /* @page already supplies the margin. The body's own padding was added ON TOP of it,
       costing 40px — which was the difference between the assessment grid's second row
       fitting and being pushed whole onto page 2 by break-inside:avoid. */
    body{padding:0}
-   textarea{border:0;padding:0;resize:none;height:auto;min-height:0}
-   /* A PLACEHOLDER IS INTERNAL GUIDANCE, NOT CLIENT COPY. Printing rendered it into the
-      PDF verbatim — "Left blank on purpose: the system holds no suburb commentary and
-      will not invent any" reached page 2 of a document meant for a buyer. */
-   textarea::placeholder{color:transparent}
-   /* An untouched box has nothing to say, so it prints as neither a heading nor blank
-      space. This is also most of the height that pushed a one-page document to three. */
-   .note:has(textarea:placeholder-shown){display:none}
+   /* A PLACEHOLDER IS INTERNAL GUIDANCE, NOT CLIENT COPY — it once printed verbatim
+      into page 2 of a document meant for a buyer. An untouched note prints as nothing
+      at all: no label, no blank space. */
+   .ed:empty::before{content:none}
+   .note:has(.ed:empty){display:none}
+   .ed:focus{background:none;box-shadow:none}
    .opt{break-inside:avoid}
    .bar,.sharebar{display:none}
-   /* PRINT IS DENSER THAN SCREEN, deliberately. On screen this is read at ~1280px and
-      11px is comfortable; the PDF lays out at 718px (A4 less margins), where every
-      column wraps more and the same content ran to 1.44 pages. One page is the
-      requirement, so print gets its own scale rather than the screen being made
-      unreadable to satisfy it. */
-   body{font-size:7.6px;line-height:1.18}
-   h1{font-size:14px}
-   .sub,.lede{font-size:8px}
-   table{font-size:8px;margin-bottom:6px}
-   th,td{padding:2.5px 4px}
-   td .sub{font-size:7.5px}
-   h2{font-size:8.5px;margin:6px 0 4px}
-   .banner{padding:5px 8px;margin-bottom:7px}
+   /* PRINT IS DENSER THAN SCREEN, but only a little. Her target runs 7pt body text on
+      A4 landscape, so this sits just under that at 8.6px (~6.5pt) — the screen stays at
+      11px because it is read at ~1280px where that is comfortable.
+      Two things are dropped from print entirely because her one-pager does not carry
+      them and they cost four rows each: the DESIGN line and the per-option "comparables
+      to be confirmed" note. Both remain on screen, where the consultant wants them. */
+   body{font-size:8.6px;line-height:1.26}
+   .facts{display:none}
+   .pending{display:none}
+   h1{font-size:17px}
+   .sub,.lede{font-size:8.6px}
+   table{font-size:8.6px;margin-bottom:6px}
+   th,td{padding:3px 5px}
+   td .sub{font-size:8px}
+   h2{font-size:9px;margin:5px 0 3px}
+   .banner{padding:4px 7px;margin-bottom:5px}
    .banner-sum{font-size:9px}
-   .opt{padding:3px 5px;margin-bottom:3px}
-   .opt h3{font-size:9px;margin-bottom:3px}
+   .opt{padding:4px 6px;margin-bottom:3px}
+   .opt h3{font-size:9.6px;margin-bottom:3px}
    .tag{font-size:7px;padding:1px 4px}
    .note{margin-top:3px}
-   .note b{font-size:7px}
+   .note b{font-size:7.8px}
    .facts{gap:2px 10px;margin-bottom:4px}
    .facts b{font-size:7px}
    .value{font-size:8.5px;margin-bottom:4px}
    .pending,.comps{font-size:7.5px;margin:3px 0 0}
-   .assess{gap:3px}
-   .spb-head{padding-bottom:5px;margin-bottom:6px}
+   .assess{gap:5px}
+   .spb-head{padding-bottom:3px;margin-bottom:4px}
    .spb-head .logo{height:26px}
    .spb-name{font-size:11px}
    .spb-tag{font-size:8px}
-   .foot{font-size:7px;margin-top:6px;padding-top:5px}
+   .foot{font-size:7.4px;margin-top:5px;padding-top:4px}
    .foot .contact{font-size:8px}
-   /* SHRINK ONLY AS MUCH AS IT TAKES. Set by fitOnePage() below from a measurement at
-      A4 width; 1 when the document already fits, so a short report is never shrunk. */
-   body{zoom:var(--fit, 1)}
  }
 </style></head><body>
 <div class="bar"><button onclick="window.print()">Print / Save as PDF</button></div>
@@ -3844,8 +3856,8 @@ ${SHARE_CSS}${BRAND_CSS}
  * The floor is real: below it the answer is "this is too much content for one page", not
  * "make it unreadable". Coleen sees the note and can shorten a box. */
 (function fitOnePage() {
-  var PAGE = (297 - 20) * 3.7795275591;      // A4 less 10mm margins, px at 96 dpi
-  var WIDTH = (210 - 20) * 3.7795275591;     // the width the print layout gets
+  var PAGE = (210 - 14) * 3.7795275591;      // A4 LANDSCAPE height, less 7mm margins
+  var WIDTH = (297 - 14) * 3.7795275591;     // and its width
   var FLOOR = 0.78;
   function measure() {
     var prev = document.body.style.width;
@@ -3859,11 +3871,14 @@ ${SHARE_CSS}${BRAND_CSS}
     var h = measure();
     if (h <= PAGE) return;
     var ratio = PAGE / h;
-    document.documentElement.style.setProperty('--fit', Math.max(FLOOR, ratio).toFixed(3));
+    // NO ZOOM. A CSS zoom in a print stylesheet does not repaginate in Chromium —
+    // measured at 0.875 with the document still printing on two pages — so the only
+    // honest thing left is to say so rather than to appear to fix it.
+    // (No backticks in here: this whole document is built inside a template literal.)
     var note = document.getElementById('fitNote');
-    if (note && ratio < FLOOR) {
-      note.textContent = 'This is longer than one page even at the smallest size — '
-        + 'shorten an assessment box to bring it back to a single sheet.';
+    if (note) {
+      note.textContent = 'This runs to more than one page — shorten an assessment note, '
+        + 'or drop an option, to bring it back to a single sheet.';
       note.style.display = '';
     }
   }
@@ -3892,9 +3907,9 @@ ${SPB_BRAND()}
 <h2>Investment &amp; Location Assessment</h2>
 <div class="assess">${blocks}</div>
 <h2>Smart Property Buying Recommendation</h2>
-<label class="note rec"><textarea rows="3">${esc(
+<p class="note rec"><span class="ed" contenteditable="true">${esc(
   `Proceed with Option ${bestIdx + 1} as the strongest overall fit` +
-  (EFFECTIVE(best) ? ` at ${plain(m(EFFECTIVE(best)))} effective` : '') + '.')}</textarea></label>
+  (EFFECTIVE(best) ? ` at ${plain(m(EFFECTIVE(best)))} effective` : '') + '.')}</span></p>
 <div class="foot"><div class="contact">${SPB_CONTACT()}</div>
   Investment observations are general and do not constitute financial advice. Figures are
   as published by the builder or developer at the date shown against each option and are

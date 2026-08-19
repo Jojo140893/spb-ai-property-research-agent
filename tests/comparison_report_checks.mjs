@@ -106,11 +106,20 @@ check('an ampersand in vendor text survives as escaped text', body.includes('&am
 
 console.log('\n--- the consultant writes the prose, the system does not ---');
 // Three per option (strengths / infrastructure / trade-off) plus one recommendation.
-check('each option gets its own notes fields',
-  (h4.match(/<textarea/g) || []).length === 4 * 3 + 1,
-  (h4.match(/<textarea/g) || []).length);
+// contenteditable spans since 19 Aug, not textareas: a label above a bordered box cost
+// three lines of chrome per note, and four options would not fit one page. Still one
+// editable field each — the count is the point, not the element.
+const fields = h => (h.match(/class="ed"/g) || []).length;
+check('each option gets its own notes fields', fields(h4) === 4 * 3 + 1, fields(h4));
+check('every field is editable',
+  (h4.match(/contenteditable="true"/g) || []).length === 13,
+  (h4.match(/contenteditable="true"/g) || []).length);
+// The LABELS are ours and always present; what must never be pre-filled is commentary
+// about the AREA, which no source gives us. Placeholders are stripped first — they are
+// guidance for the consultant, not content, and they never print.
 check('no suburb/infrastructure commentary is pre-filled',
-  !/growth area|infrastructure:|investment strengths:/i.test(body.replace(/placeholder="[^"]*"/g, '')));
+  !/growth area|planned town centres|major activity centre|rail connectivity/i
+     .test(body.replace(/data-ph="[^"]*"/g, '')));
 
 // ---------------------------------------------------------------- the client report
 //
