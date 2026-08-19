@@ -3844,6 +3844,13 @@ ${SHARE_CSS}${BRAND_CSS}
 <script data-spb="fit">
 /* ONE PAGE, MEASURED RATHER THAN HOPED FOR.
  *
+ * NOTE THE SPLIT TAGS ABOVE AND BELOW. This document is built inside a template literal
+ * that lives in index.html's own script element, and an HTML parser ends that element
+ * at the first literal end tag it sees — inside a JS string, inside a COMMENT, it
+ * makes no difference. Writing either tag plainly here
+ * ended index.html's script tag early and dumped the rest of the application onto the
+ * page as visible text. It shipped, and Ahsan found it on the live site.
+ *
  * Density alone gets a typical report onto one page and a full one onto two: measured at
  * A4 width, four options with every box filled ran 1,166px against the 1,047px a page
  * holds. Shrinking the type further to cover the worst case would punish every ordinary
@@ -3886,7 +3893,7 @@ ${SHARE_CSS}${BRAND_CSS}
   else window.addEventListener('load', fit);
   window.addEventListener('beforeprint', fit);
 })();
-</script>
+<\/script>
 <div id="fitNote" class="fitnote" style="display:none"></div>
 ${shareBar(shareUrl)}
 ${SPB_BRAND()}

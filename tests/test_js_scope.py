@@ -145,3 +145,39 @@ def test_the_scanner_accepts_siblings():
     s_start = tops["second"][0]
     f_start, f_end = tops["first"]
     assert not (f_start < s_start < f_end)
+
+
+# ------------------------------------------------------------------ the script element
+
+def test_nothing_closes_the_page_script_early():
+    """A literal end tag anywhere inside index.html's script — in a string, in a template
+    literal, or in a COMMENT — ends the element there and dumps the rest of the
+    application onto the page as visible text.
+
+    This shipped on 19 Aug. The report generator needs a real <script> in the document it
+    writes, so the close tag was written plainly; the outer element ended at that point
+    and the live site showed raw source under the tabs. The fix escapes it — and then the
+    COMMENT explaining the fix quoted the tag literally and broke it a second time, at
+    exactly the word "literal".
+
+    So the rule is mechanical: between index.html's opening script tag and its last
+    closing one, the sequence must not appear unescaped even once.
+    """
+    text = INDEX.read_text(encoding="utf-8")
+    lower = text.lower()
+    start = lower.index("<script>") + len("<script>")
+    end = lower.rindex("</script>")
+    inner = text[start:end]
+    close = "</" + "script"
+    bad = [i for i in range(len(inner)) if inner[i:i + len(close)].lower() == close]
+    assert not bad, (
+        f"{len(bad)} literal end tag(s) inside the page script — the browser stops there. "
+        f"First at offset {bad[0]}: ...{inner[max(0, bad[0] - 70):bad[0] + 20]!r}. "
+        f"Write it split or escaped.")
+
+
+def test_the_report_still_ships_its_fitter_script():
+    """The escape must not have removed the feature it protects."""
+    text = INDEX.read_text(encoding="utf-8")
+    assert 'data-spb="fit"' in text, "the one-page fitter is gone"
+    assert "<" + chr(92) + "/script>" in text, "its close tag must be escaped, not deleted"
