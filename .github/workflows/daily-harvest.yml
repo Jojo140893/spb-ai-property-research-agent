@@ -123,7 +123,28 @@ jobs:
         # --with-deps pulls the system libraries headless Chromium needs on ubuntu-latest;
         # without it Playwright launches and dies on a missing .so with a stack trace that
         # says nothing about the real cause.
-        run: python -m playwright install --with-deps chromium
+        #
+        # BOUNDED, BECAUSE IT HUNG TWICE IN ONE DAY. --with-deps shells out to apt-get,
+        # which waits forever on a dpkg lock or a prompt. On 19 Aug two runs froze here
+        # — 32227500945 and 32233167273 — each burning the full 90-minute job timeout and
+        # publishing nothing, while the step's own healthy time is 33 to 36 seconds.
+        #
+        # So: a hard 5-minute cap on the apt path, then a retry WITHOUT it. The
+        # browser-only install touches no apt at all, and the ubuntu-latest image already
+        # carries most of what Chromium needs — a run that gets that far is far better
+        # than one that sits for an hour and a half. If the browser itself is then
+        # unusable, the Harvest step fails loudly in seconds rather than silently.
+        timeout-minutes: 12
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -uo pipefail
+          if timeout 300 python -m playwright install --with-deps chromium; then
+            echo "chromium + system deps installed"
+          else
+            echo "::warning::playwright install --with-deps did not finish in 5 minutes           (apt is the usual cause) — retrying the browser only, without apt."
+            timeout 300 python -m playwright install chromium
+          fi
 
       - name: Install the Supabase CLI
         # NOT supabase/setup-cli@v1. The first run died on it in 63 seconds with a bare
