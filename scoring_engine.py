@@ -326,7 +326,17 @@ class ScoringEngine:
         if score >= 80.0 and not has_high_risk:
             caveats = []
             if prop.price_breakdown.turnkey_status != TurnkeyStatus.FULL_TURNKEY:
-                caveats.append(f"{prop.price_breakdown.turnkey_status.value} - allow ${prop.price_breakdown.estimated_additional_costs:,.0f} in additional costs")
+                # A ZERO ALLOWANCE IS NOT A FIGURE TO QUOTE. Taking the invented $15,000
+                # out of turnkey_calculator left this sentence rendering "Unclear - allow
+                # $0 in additional costs", which is worse than the number it replaced: it
+                # reads as a builder having quoted nothing rather than as our having been
+                # told nothing. Where there is no stated exclusion, say that.
+                extra = prop.price_breakdown.estimated_additional_costs or 0
+                caveats.append(
+                    f"{prop.price_breakdown.turnkey_status.value} - allow "
+                    f"${extra:,.0f} in additional costs" if extra > 0 else
+                    f"{prop.price_breakdown.turnkey_status.value} - inclusions are not "
+                    f"stated by the source, confirm with the builder")
             if prop.risks:
                 caveats.append(f"{len(prop.risks)} open risk item(s) - see risk register")
             caveat_str = f" Note: {'; '.join(caveats)}." if caveats else " Fully satisfies budget, location, and structural requirements."
