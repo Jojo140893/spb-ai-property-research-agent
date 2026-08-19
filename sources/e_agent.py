@@ -18,7 +18,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse
 import config
 from sources.base import PropertySource
 from sources.scraper_base import PlaywrightScraper, ScraperError, parse_price, parse_int, PLAYWRIGHT_AVAILABLE, SESSION_DIR
-from sources.portal_config import EAGENT_CONFIG
+from sources.portal_config import EAGENT_CONFIG, CategoryPage
 from sources.adaptive_extract import extract_listings
 from sources.spreadsheet_extract import extract_stocklist
 from sources import remote_stocklist as remote
@@ -112,6 +112,11 @@ _STATE_WORDS = re.compile(
 
 
 # Where a banner-derived name is recorded, so a reader can tell it from a heading.
+# Same-site only. Checked in Python as well as in the JS that gathers the
+# links: an off-site page walked as a category page would have its stock
+# stored as E-Agent's, which is worse than missing it.
+_EAGENT_HOSTS = frozenset(("www.e-agent.com.au", "e-agent.com.au"))
+
 _BANNER_SOURCE = "e-agent stocklist banner"
 
 # Headings that are page furniture, not builders. Without this filter the crawl
@@ -554,6 +559,96 @@ class EAgentSource(PropertySource):
         logger.info("E-Agent: %d pooled listing(s) from %d stocklist file(s).", len(out), len(links))
         return out
 
+    # THE CONFIGURED PAGE LIST IS A SNAPSHOT, AND SNAPSHOTS GO STALE.
+    #
+    # EAGENT_CONFIG.category_pages was "read off the live navigation on 2026-07-29" and
+    # has been walked as though it were the site ever since. It holds twelve pages: four
+    # for VIC, three for QLD, two for NSW, one for SA and two commercial. There is no NSW
+    # land page in it, no NSW townhouse page, no QLD land page, and nothing for SA beyond
+    # house and land — and nothing in the harvest ever asked whether those exist.
+    #
+    # This is the same shape as the Proxima index, which rendered 40 of 118 projects and
+    # was read as the whole portfolio until a client noticed a missing listing. Two
+    # approved builders flagged as being on E-Agent — Gdev (QLD/NSW/SA) and Choice Homes
+    # (QLD) — have never produced a single row, live or superseded, which is what a page
+    # we never open looks like from the database.
+    #
+    # So the configured list becomes a SEED, and the site's own navigation is read at
+    # harvest time. A page the site links and we were not going to visit is logged by
+    # name, then visited. The state comes from the nav LABEL, never from the slug: E-Agent
+    # slugs lie (/copy-of-house-and-land-qld is the NEW SOUTH WALES page).
+    _NAV_STATE = re.compile(
+        r"\b(NSW|VIC|QLD|SA|WA|TAS|NT|ACT|NEW SOUTH WALES|VICTORIA|QUEENSLAND|"
+        r"SOUTH AUSTRALIA|WESTERN AUSTRALIA|TASMANIA|NORTHERN TERRITORY|"
+        r"AUSTRALIAN CAPITAL TERRITORY)\b", re.I)
+    _NAV_STATE_NAMES = {
+        "NEW SOUTH WALES": "NSW", "VICTORIA": "VIC", "QUEENSLAND": "QLD",
+        "SOUTH AUSTRALIA": "SA", "WESTERN AUSTRALIA": "WA", "TASMANIA": "TAS",
+        "NORTHERN TERRITORY": "NT", "AUSTRALIAN CAPITAL TERRITORY": "ACT",
+    }
+    _NAV_PRODUCT = re.compile(
+        r"house\s*&?\s*and\s*land|house\s*&\s*land|land\s*estate|land|apartment|"
+        r"townhouse|terrace|villa|duplex|commercial", re.I)
+    # Utility routes a Wix site always carries. Visiting them costs a page load and
+    # yields nothing, and /access-projects is already read separately as the pooled set.
+    _NOT_A_CATEGORY = re.compile(
+        r"/(account|login|logout|signin|signup|cart|checkout|blog|post|forum|profile|"
+        r"members|plans|contact|about|privacy|terms|faq|services|access-projects|"
+        r"home)?$|/_|\.(xlsx|xlsm|xls|csv|pdf|jpg|png|svg)", re.I)
+
+    _NAV_LINKS_JS = """() => {
+        const out = {};
+        document.querySelectorAll('a[href]').forEach(a => {
+            let href = (a.href || '').split('#')[0].split('?')[0].replace(/\\/$/, '');
+            if (!href || href.indexOf('e-agent.com.au') === -1) return;
+            const label = ((a.innerText || a.textContent || '')
+                           .replace(/\\s+/g, ' ')).trim();
+            if (!out[href] && label) out[href] = label.slice(0, 60);
+        });
+        return Object.entries(out).map(([href, label]) => ({href, label}));
+    }"""
+
+    def _discover_category_pages(self, scraper: PlaywrightScraper):
+        """Category pages the SITE links that the configured list does not carry.
+
+        Read from whatever page is currently open, signed in. Returns CategoryPage
+        objects; the caller walks them exactly like the configured ones.
+        """
+        try:
+            links = scraper.page.evaluate(self._NAV_LINKS_JS) or []
+        except Exception as e:                                          # noqa: BLE001
+            logger.warning("E-Agent: could not read the site navigation: %s", e)
+            return []
+
+        known = {(c.url or "").rstrip("/").lower() for c in (self.cfg.category_pages or ())}
+        found, seen = [], set()
+        for l in links:
+            href = (l.get("href") or "").rstrip("/")
+            label = (l.get("label") or "").strip()
+            low = href.lower()
+            if not href or low in known or low in seen:
+                continue
+            if urlparse(low).hostname not in _EAGENT_HOSTS:
+                continue
+            if self._NOT_A_CATEGORY.search(low):
+                continue
+            # A category page is one whose LABEL names a product. A bare slug is not
+            # enough — Wix pages are named things like /projects-6, which says nothing.
+            if not self._NAV_PRODUCT.search(label):
+                continue
+            seen.add(low)
+            state = ""
+            m = self._NAV_STATE.search(label)
+            if m:
+                tok = m.group(1).upper()
+                state = self._NAV_STATE_NAMES.get(tok, tok)
+            product = ""
+            mp = self._NAV_PRODUCT.search(label)
+            if mp:
+                product = mp.group(0).strip().title()
+            found.append(CategoryPage(href, state, product))
+        return found
+
     def _scrape_category_pages(self, scraper: PlaywrightScraper,
                                seen_files: Optional[set] = None) -> List[Dict[str, Any]]:
         """Per-builder stock, the fix for Coleen's blank builder column.
@@ -566,7 +661,21 @@ class EAgentSource(PropertySource):
         out: List[Dict[str, Any]] = []
         seen_files = seen_files if seen_files is not None else set()
         builders, unattributed = {}, 0
-        for cat in (self.cfg.category_pages or ()):
+
+        pages = list(self.cfg.category_pages or ())
+        extra = self._discover_category_pages(scraper)
+        if extra:
+            # LOUD. A page the site publishes and we were not going to open is exactly
+            # how two builders came to have no stock at all, and it was invisible because
+            # twelve pages looked like a complete read.
+            logger.warning(
+                "E-Agent: the site links %d category page(s) NOT in category_pages — "
+                "harvesting them, and they should be added to portal_config: %s",
+                len(extra), ", ".join(f"{c.url} ({c.state or '?'}, {c.product_type or '?'})"
+                                      for c in extra))
+            pages += extra
+
+        for cat in pages:
             # One retry. The Victoria apartments page timed out on a live run and took
             # all 24 of its developments with it, which reads exactly like "no stock here".
             loaded = False
