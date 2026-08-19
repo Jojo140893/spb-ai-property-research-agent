@@ -200,3 +200,51 @@ def test_an_http_error_body_is_not_echoed(monkeypatch):
     text, err = N._groq("anything")
     assert text == ""
     assert "gsk-secret" not in err and "rejected" in err.lower()
+
+
+# --------------------------------------------------- a verdict on the price is not a fact
+
+# A stocklist row states what a package COSTS. Whether that price is good, fair or
+# competitive is a judgement about a market nobody here has looked at — and coming from a
+# buyer's advocate it carries weight. The first filter caught the loud claims and missed
+# the quiet ones: the live probe on 19 Aug ended "...at a competitive rate in the area",
+# which named no forbidden topic and invented no number, so every check would have passed
+# it.
+@pytest.mark.parametrize("draft", [
+    "The 448 m2 block is priced at a competitive rate in the area.",
+    "At 812450 this is good value for a family home.",
+    "An excellent opportunity for a first buyer.",
+    "A well-priced 448 m2 block in a sought-after pocket.",
+    "Affordable entry at 812450.",
+    "Strong rental return for investors.",
+    "This is an ideal package for a growing family.",
+    "A desirable address at 812450.",
+    "Priced to sell at 812450.",
+    "An up-and-coming pocket at 448 m2.",
+])
+def test_a_verdict_on_the_price_or_the_area_is_refused(draft):
+    ok, why = N._acceptable(draft, _allowed(), "Armstrong Creek")
+    assert not ok, f"a valuation reached the client: {draft!r}"
+    assert why
+
+
+def test_the_real_drafts_from_the_live_run_still_pass():
+    """Measured 19 Aug against openai/gpt-oss-20b, through the deployed endpoint. The
+    tightening must not start refusing the notes it is meant to produce."""
+    for draft in (
+        "This 4-bedroom, 2-bathroom house on 448 m2 of land offers 259 m2 of living "
+        "space and 2 car spaces, priced at AUD 812450 with a AUD 15000 rebate, and is "
+        "already titled.",
+        "This 4-bedroom home sits on 448 m2 with 259 m2 of internal space. The package "
+        "is 812450 and the title has already issued.",
+    ):
+        ok, why = N._acceptable(draft, _allowed(), "Armstrong Creek")
+        assert ok, f"refused a clean draft: {why}"
+
+
+def test_the_prompt_states_the_rule_as_well_as_the_check():
+    """Belt and braces: a refused draft costs a Groq call and leaves an empty box, so the
+    model is told not to write these, not only stopped afterwards."""
+    assert "competitive" in N.SYSTEM
+    assert "good value" in N.SYSTEM or "value" in N.SYSTEM
+    assert "sought after" in N.SYSTEM or "desirable" in N.SYSTEM

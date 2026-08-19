@@ -71,7 +71,10 @@ SYSTEM = (
     "transport, shops, hospitals, parks, beaches, employment, population, councils, "
     "development plans or anything else about the area; never invent a number; never "
     "estimate rent, yield, growth or value; do not name a builder; do not use bullet "
-    "points, headings or quotation marks. If the figures are too sparse to say anything "
+    "points, headings or quotation marks. Never judge the price or the deal — do not call it "
+    "competitive, good value, affordable, ideal, an opportunity or a bargain, and do not "
+    "describe the area as desirable or sought after. State what the figures are and what "
+    "they mean structurally, nothing more. If the figures are too sparse to say anything "
     "useful, reply with exactly: INSUFFICIENT"
 )
 
@@ -91,9 +94,34 @@ _INVENTED_TOPIC = re.compile(
     r")\b", re.I)
 
 # Words that make a claim we cannot support from a stocklist row.
+# A stocklist row states what a package COSTS. It says nothing about whether that price is
+# good, fair, competitive or a bargain — those are judgements about a market we have not
+# looked at, and a buyer's advocate saying them carries weight.
+#
+# The first list caught the loud ones (guaranteed, risk-free, undervalued) and missed the
+# quiet ones. The live probe on 19 Aug ended "...at a competitive rate in the area", which
+# would have passed every check: it names no forbidden topic and invents no number. It is
+# still a valuation, and it is exactly the register a model reaches for when asked to say
+# something nice about a price.
 _UNSUPPORTED_CLAIM = re.compile(
-    r"\b(guarantee|guaranteed|certain|assured|will increase|will rise|will grow|"
-    r"safe bet|no risk|risk-free|bargain|undervalued|below market|above market)\b", re.I)
+    r"\b("
+    # certainty about the future
+    r"guarantee|guaranteed|certain|assured|will increase|will rise|will grow|"
+    r"safe bet|no risk|risk-free|"
+    # a verdict on the price
+    r"bargain|undervalued|overvalued|below market|above market|under market|"
+    r"competitive(ly)?|good value|great value|excellent value|value for money|"
+    r"well[- ]priced|attractively priced|keenly priced|affordable|affordability|"
+    r"cheap|inexpensive|reasonable price|fair price|priced to sell|"
+    # a verdict on the deal
+    r"opportunity|opportunities|ideal|perfect|excellent|outstanding|exceptional|"
+    r"strong buy|smart buy|must[- ]see|snap up|"
+    # a verdict on the area, which no figure we send can support
+    r"sought[- ]after|desirable|prestigious|up[- ]and[- ]coming|blue[- ]chip|"
+    r"in demand|high demand|"
+    # rental and return language, which the row never carries
+    r"rental return|returns|investors? will|investment grade"
+    r")\b", re.I)
 
 
 def _key():
