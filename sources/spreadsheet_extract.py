@@ -27,6 +27,7 @@ that cannot be found stay None.
 
 import csv
 import io
+import os
 import logging
 import re
 from typing import Any, Dict, Iterator, List, Optional, Tuple
@@ -591,13 +592,25 @@ def _pdf_rows_from_tables(page: Any, annots: List[Tuple[float, float, str]]
                           ) -> List["PdfRow"]:
     try:
         tables = page.find_tables() or []
-    except Exception:
-        return []
+    except Exception as e:                                              # noqa: BLE001
+        # Re-raised, not swallowed. Returning [] made "this page has no tables" and
+        # "this page could not be read" identical, so a page no strategy could read
+        # passed as an empty one and was never counted as lost.
+        logger.warning("pdf page %s: table detection failed (%s)",
+                       getattr(page, "page_number", "?"), e)
+        raise
     rows: List[PdfRow] = []
+    dropped = 0
     for table in tables:
         try:
             values = table.extract()
-        except Exception:
+        except Exception as e:                                          # noqa: BLE001
+            # Counted and reported below. A page with two tables can lose one and still
+            # beat the lines strategy on count, so the truncated read wins the page and
+            # nothing says a table went missing.
+            dropped += 1
+            logger.warning("pdf page %s: 1 of %d table(s) could not be extracted (%s)",
+                           getattr(page, "page_number", "?"), len(tables), e)
             continue
         # THE COLUMNS ARE THE POINT OF THIS STRATEGY, AND THEY USED TO BE THROWN AWAY.
         #
@@ -626,8 +639,20 @@ def _pdf_rows_from_lines(page: Any, annots: List[Tuple[float, float, str]]
     try:
         lines = page.extract_text_lines() or []
     except Exception:
-        lines = [{"text": l, "top": None, "bottom": None}
-                 for l in (page.extract_text() or "").splitlines()]
+        # The fallback routes through the same .chars that just failed, so it usually
+        # fails too — and it sat OUTSIDE the except, which meant it re-raised and took
+        # the page with it. Guarded: an unreadable page yields no lines, and the tables
+        # strategy still gets its turn at the same page.
+        try:
+            lines = [{"text": l, "top": None, "bottom": None}
+                     for l in (page.extract_text() or "").splitlines()]
+        except Exception as e:                                          # noqa: BLE001
+            # Re-raised on purpose. The caller guards each STRATEGY separately, so the
+            # tables strategy still gets its turn at this page, and a page where every
+            # strategy failed is counted as unreadable rather than passing as empty.
+            logger.warning("pdf page %s: no text could be read (%s)",
+                           getattr(page, "page_number", "?"), e)
+            raise
     out = []
     for ln in lines:
         text = _clean(ln.get("text", ""))
@@ -644,6 +669,9 @@ def _pdf_rows_from_lines(page: Any, annots: List[Tuple[float, float, str]]
 # Alete and Land Build Direct publish borderless PDFs where find_tables() detects a
 # handful of spurious regions, and merely producing rows was enough to suppress the
 # text-line path that reads them correctly.
+# How many pages of one PDF are read. Named so the log can say when it binds.
+PDF_PAGE_CAP = int(os.environ.get("SPB_PDF_PAGE_CAP", "25"))
+
 _PDF_STRATEGIES = (("tables", _pdf_rows_from_tables), ("lines", _pdf_rows_from_lines))
 
 
@@ -825,15 +853,32 @@ def extract_from_xlsx(data: bytes, source_label: str = "", builder_hint: str = "
     for si, cells, links, sheet_name, row_no in rows:
         if si != sheet:
             context, sheet, money = "", si, _MoneyColumns()   # headers are per sheet
-        plain = _clean(" ".join(t for t, _c, _i in cells))
-        if not plain:
+        # RENDER BEFORE DECIDING WHETHER THIS IS A HEADER.
+        #
+        # _is_column_header returns False the moment it sees money (_PRICE_ANY), which is
+        # what stops a lot row being mistaken for column names. But a numeric sheet stores
+        # the price as 705000 with the dollar sign living in the cell FORMAT, so the raw
+        # text carries no "$" and the guard cannot fire — on exactly the sheets
+        # _MoneyColumns exists to rescue. A row like
+        #
+        #     45  Available  Titled  House & Land  375  4  2  2  705000
+        #
+        # is then all header vocabulary, and feed_header rebuilds the column map out of
+        # the lot's own data before the `continue`, emptying self.cols. Every row below it
+        # loses its price and _listing_from_row drops it. Measured: 5 data rows in, 2 out;
+        # on a sheet whose only text columns are Status and Title, 0 of 3.
+        #
+        # render() uses the map built from the rows ABOVE, so a data row gets its "$" back
+        # before the test and a real header row is unaffected — it has no money to render.
+        rendered = money.render(cells)
+        if not rendered:
             continue
-        is_header = _is_column_header(plain)
+        is_header = _is_column_header(rendered)
         money.feed_header(cells, is_header)
         if is_header:
             continue
         listings, context, banner = _rows_to_listings(
-            [(money.render(cells), links)], context, source_label, builder_hint, banner)
+            [(rendered, links)], context, source_label, builder_hint, banner)
         _apply_header_specs(listings, money.specs(cells))
         # Stamped on every listing this row produced. One row can yield several (priced
         # siblings that differ only by package), and they all genuinely live on that row —
@@ -851,18 +896,69 @@ def extract_from_pdf(data: bytes, source_label: str = "", builder_hint: str = ""
         logger.error("pdfplumber not installed — cannot read pdf stocklists.")
         return []
     out: List[Dict[str, Any]] = []
-    used = {}
+    used, hurt = {}, []
+    pages_total = 0
     try:
         with pdfplumber.open(io.BytesIO(data)) as pdf:
             context, banner = "", ""
-            for page in pdf.pages[:25]:
-                annots = _annot_links(page)
+            pages_total = len(pdf.pages)
+            for page in pdf.pages[:PDF_PAGE_CAP]:
+                # ONE BAD PAGE COSTS ONE PAGE.
+                #
+                # This try used to wrap the whole loop, so the first page whose glyphs
+                # pdfplumber could not read ended the document — and `out`, built outside
+                # it, was returned as though it were the file. Measured on a clean
+                # 10-page list publishing 50 lots with page 4 poisoned: 15 rows, from
+                # pages 1-3, logged as "-> 15 listing(s)" like any success. The biggest
+                # single source in this pipeline is a PDF (2,799 live rows), so the
+                # difference between "this page failed" and "this file failed" is
+                # thousands of listings.
+                try:
+                    annots = _annot_links(page)
+                except Exception:                                       # noqa: BLE001
+                    annots = []
                 best, best_ctx, best_banner, best_name = [], context, banner, ""
+                others, failed = [], 0
                 for name, strategy in _PDF_STRATEGIES:
-                    listings, ctx, ban = _rows_to_listings(
-                        strategy(page, annots), context, source_label, builder_hint, banner)
+                    # PER STRATEGY, not per page. `lines` failing on a page whose text
+                    # layer is broken must not cost the `tables` read of the same page.
+                    try:
+                        listings, ctx, ban = _rows_to_listings(
+                            strategy(page, annots), context, source_label, builder_hint,
+                            banner)
+                    except Exception as e:                              # noqa: BLE001
+                        failed += 1
+                        logger.warning("pdf %s: page %s failed the %s strategy (%s)",
+                                       source_label or "(file)",
+                                       getattr(page, "page_number", "?"), name, e)
+                        continue
                     if len(listings) > len(best):
+                        if best:
+                            others.append(best)
                         best, best_ctx, best_banner, best_name = listings, ctx, ban, name
+                    elif listings:
+                        others.append(listings)
+                if failed == len(_PDF_STRATEGIES):
+                    # Every way of reading this page failed. Say so — an unreadable page
+                    # and a blank one both yield nothing, and only one is a problem.
+                    hurt.append(getattr(page, "page_number", 0) or 0)
+                    continue
+                # UNION, NOT MAX. The strict `>` tie-break to `tables` is right — it
+                # carries the columns map that `lines` cannot produce — but the loser
+                # was thrown away whole, and a row only one strategy could read went
+                # with it. Normally `lines` is a text superset of `tables` and the
+                # union IS the max, so this adds nothing; it bites when a table's rows
+                # split badly across baselines while parseable content sits outside it.
+                # Deduped on source_text, keeping the winner's copy, because a naive
+                # concatenation would double-count every row both strategies read.
+                if others:
+                    seen_text = {(_l.get("source_text") or "").strip() for _l in best}
+                    for group in others:
+                        for _l in group:
+                            key = (_l.get("source_text") or "").strip()
+                            if key and key not in seen_text:
+                                seen_text.add(key)
+                                best.append(_l)
                 # Which PAGE the lot was read from. A price list URL alone opens a 30-page
                 # PDF; 2,799 of the live rows come from one, far more than from any
                 # spreadsheet, so this is the answer to Colin's ask for most of the stock.
@@ -875,7 +971,18 @@ def extract_from_pdf(data: bytes, source_label: str = "", builder_hint: str = ""
                 if best_name:
                     used[best_name] = used.get(best_name, 0) + len(best)
     except Exception as e:
+        # Now only ever a failure to OPEN the file, which really is fatal to it.
         logger.warning("could not read pdf %s: %s", source_label, e)
+    if hurt:
+        logger.warning("pdf %s: %d of %d page(s) could not be read: %s",
+                       source_label or "(file)", len(hurt), min(pages_total, PDF_PAGE_CAP),
+                       ", ".join(str(p) for p in hurt[:12]))
+    # A CAP THAT BINDS IS A FACT ABOUT THE FILE, NOT A DETAIL. Silently reading 25 of 40
+    # pages is the same shape of loss as everything else in this module.
+    if pages_total > PDF_PAGE_CAP:
+        logger.warning("pdf %s: %d pages, only the first %d read — pages %d+ are NOT in "
+                       "this harvest.", source_label or "(file)", pages_total,
+                       PDF_PAGE_CAP, PDF_PAGE_CAP + 1)
     if len(used) > 1:
         logger.info("pdf %s: mixed page layouts — %s", source_label or "(file)",
                     ", ".join(f"{k} {v}" for k, v in used.items()))
@@ -906,15 +1013,17 @@ def extract_from_csv(data: bytes, source_label: str = "", builder_hint: str = ""
     # the sheet itself shows, which is the number Colin will be looking at.
     for line_no, raw in enumerate(csv.reader(io.StringIO(text), delimiter=delimiter), 1):
         cells = [(str(v).strip(), False, i) for i, v in enumerate(raw) if str(v).strip()]
-        plain = _clean(" ".join(t for t, _c, _i in cells))
-        if not plain:
+        # See the xlsx path: render before the header test, or a numeric price column
+        # makes a lot row look like column names and wipes the money map.
+        rendered = money.render(cells)
+        if not rendered:
             continue
-        is_header = _is_column_header(plain)
+        is_header = _is_column_header(rendered)
         money.feed_header(cells, is_header)
         if is_header:
             continue
         listings, context, banner = _rows_to_listings(
-            [(money.render(cells), [])], context, source_label, builder_hint, banner)
+            [(rendered, [])], context, source_label, builder_hint, banner)
         _apply_header_specs(listings, money.specs(cells))
         for _l in listings:
             _l["source_row"] = line_no
