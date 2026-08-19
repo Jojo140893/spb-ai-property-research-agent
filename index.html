@@ -3682,7 +3682,14 @@ python state_sync.py push</pre>
                opens empty means the draft was refused rather than that none was asked
                for. Coleen edits either before the PDF is saved. */
             const drafted = ((o.drafts || [])[i] || {}).text || '';
-            const strengths = drafted || raw(p.recommendation_reason);
+            /* ONLY THE DRAFT. recommendation_reason is CONSULTANT text, not client copy:
+               scoring_engine builds it as "Strong match (92.5/100). Note: Unclear - allow
+               $15,000 in additional costs." Prefilling it put the internal score and the
+               invented allowance straight into a document a buyer reads — seen live on
+               19 Aug. api/narrative.py's draft is written for the client and is checked
+               before it is returned; where there is none the box stays empty and Coleen
+               writes it, which is what she did before this existed. */
+            const strengths = drafted;
             const am = raw(p.amenities_summary);
             const infra = (am && !am.toLowerCase().startsWith('no amenity')) ? am : '';
 
@@ -3757,8 +3764,15 @@ python state_sync.py push</pre>
  .note{display:block;margin:0 0 3px;line-height:1.3}
  .note b{color:var(--muted);text-transform:uppercase;letter-spacing:.03em;
          font-size:.86em;font-weight:700}
- .ed{outline:none}
- .ed:focus{background:#fffbeb;box-shadow:0 0 0 2px #fde68a;border-radius:2px}
+ /* IT HAS TO LOOK EDITABLE. Replacing bordered textareas with plain flowing text won
+    the page back, and took every affordance with it: the fields still accept typing, but
+    nothing on screen says so, and Coleen reasonably read them as static. A dashed rule
+    under each one, and a highlight on hover, say "click here" without printing. */
+ .ed{outline:none;border-bottom:1px dashed #cbd5e1;padding:0 1px;min-width:1.5em;
+     display:inline-block}
+ .ed:hover{background:#f8fafc}
+ .ed:focus{background:#fffbeb;box-shadow:0 0 0 2px #fde68a;border-radius:2px;
+           border-bottom-color:transparent}
  .ed:empty::before{content:attr(data-ph);color:#94a3b8;font-style:italic}
  .note.rec{margin-top:2px}
  .draft{background:#fef3c7;color:#92400e;border-radius:3px;padding:1px 5px;
@@ -3772,6 +3786,8 @@ python state_sync.py push</pre>
  .foot{margin-top:8px;padding-top:6px;border-top:1px solid var(--line);
        color:var(--muted);font-size:8px;line-height:1.3}
  .foot .contact{color:var(--ink);font-weight:600;font-size:9.5px;margin-bottom:2px}
+ .edhint{color:var(--muted);font-size:10.5px;margin:0 0 8px}
+ @media print{.edhint{display:none !important}}
  .fitnote{background:#fef3c7;color:#92400e;border-radius:5px;padding:7px 10px;
           margin:0 0 10px;font-size:11px}
  @media print{.fitnote{display:none !important}}
@@ -3802,6 +3818,7 @@ ${SHARE_CSS}${BRAND_CSS}
       at all: no label, no blank space. */
    .ed:empty::before{content:none}
    .note:has(.ed:empty){display:none}
+   .ed{border-bottom:0;padding:0;display:inline}
    .ed:focus{background:none;box-shadow:none}
    .opt{break-inside:avoid}
    .bar,.sharebar{display:none}
@@ -3895,6 +3912,8 @@ ${SHARE_CSS}${BRAND_CSS}
 })();
 <\/script>
 <div id="fitNote" class="fitnote" style="display:none"></div>
+<div class="edhint">Every underlined line is editable — click and type. Nothing you leave
+  blank is printed, and none of the guides print.</div>
 ${shareBar(shareUrl)}
 ${SPB_BRAND()}
 <h1>HOME &amp; LAND PACKAGE COMPARISON</h1>
@@ -3943,6 +3962,13 @@ ${SPB_BRAND()}
         return packageReportDocument(props, shareUrl, {
             pref: brief.pref, budget: brief.budget,
             client: briefIn !== undefined ? (brief.client || '') : _v('clientName'),
+            // FORWARDED, and it was not. openGeneratedReport builds the brief, fetches
+            // the AI drafts into brief.drafts and hands the whole thing here — and this
+            // adapter rebuilt the options object field by field, silently dropping them.
+            // Every draft api/narrative.py produced was thrown away one call before it
+            // reached the box it was written for, and the empty box looked exactly like
+            // "Groq is not configured", which it also was.
+            drafts: brief.drafts || [],
         });
     }
 

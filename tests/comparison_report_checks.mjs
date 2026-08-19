@@ -300,13 +300,24 @@ console.log('\n--- one document, one page (Coleen and Colin, 18 Aug) ---');
 
   // The assessment textareas open PREFILLED from what we actually hold, not empty and
   // not invented.
-  const rich = comparisonDocument([Object.assign({}, full, {
-    recommendation_reason: 'Largest block in the release.',
+  // recommendation_reason is CONSULTANT text, and it must never reach a client.
+  // scoring_engine builds it as "Strong match (92.5/100). Note: Unclear - allow $15,000
+  // in additional costs." — an internal score and an allowance no builder quoted. It was
+  // prefilled into Investment strengths and shipped, and Coleen saw both on screen.
+  const leaky = comparisonDocument([Object.assign({}, full, {
+    recommendation_reason: 'Strong match (92.5/100). Note: Unclear - allow $15,000 in '
+      + 'additional costs.',
     amenities_summary: 'Primary school 900 m; rail 4 km.' })], null, {});
-  check('investment strengths prefill from the stored reason',
-    rich.includes('Largest block in the release.'));
-  check('infrastructure prefills from the stored amenity text',
-    rich.includes('Primary school 900 m; rail 4 km.'));
+  check('the internal score never reaches the document', !/92\.5|\/100/.test(leaky));
+  check('nor the turnkey allowance', !/15,000|additional costs/.test(leaky));
+  check('nor the phrase the engine writes for consultants', !/Strong match/.test(leaky));
+  check('infrastructure still prefills from the stored amenity text',
+    leaky.includes('Primary school 900 m; rail 4 km.'));
+  // The AI draft IS client copy — api/narrative.py checks every one before returning it.
+  const drafted = comparisonDocument([full], null,
+    { drafts: [{ index: 0, text: 'Titled block, 350 m2, ready to build on now.' }] });
+  check('an AI draft does prefill the box',
+    drafted.includes('Titled block, 350 m2, ready to build on now.'));
   const dull = comparisonDocument([Object.assign({}, full, {
     amenities_summary: 'No amenity assessment captured for this listing.' })], null, {});
   check('boilerplate amenity text stays suppressed', !dull.includes('No amenity assessment'));
