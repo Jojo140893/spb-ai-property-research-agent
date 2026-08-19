@@ -56,7 +56,12 @@ MAX_OPTIONS = 8              # the report itself caps a selection at 8
 # Kept low: this is a rewrite of figures into a sentence, not a creative task, and a
 # deterministic draft means Coleen sees the same words when she reopens the report.
 TEMPERATURE = 0.2
-MAX_TOKENS = 160
+# ROOM FOR THINKING, NOT JUST FOR THE ANSWER. gpt-oss is a REASONING model: it spends
+# tokens deliberating before it writes anything, and that comes out of the same budget.
+# At 160 the whole allowance went on reasoning and `content` came back empty, which this
+# endpoint reported as "model declined" — indistinguishable from the model refusing.
+# 700 is ample for two sentences plus its working.
+MAX_TOKENS = int(os.environ.get("GROQ_MAX_TOKENS", "700"))
 
 SYSTEM = (
     "You write one short factual note for a buyer's advocate in Australia. "
@@ -135,8 +140,13 @@ def _facts_block(opt):
 def _acceptable(draft, allowed, suburb):
     """(ok, reason). A draft is returned only when every claim in it was handed over."""
     text = (draft or "").strip()
-    if not text or text.upper().startswith("INSUFFICIENT"):
-        return False, "model declined"
+    if not text:
+        # NOT the same as a refusal, and reporting both as "model declined" cost an
+        # afternoon: an empty content field means the model wrote nothing at all, which
+        # on a reasoning model means the token budget went on deliberation.
+        return False, "model returned nothing (token budget may be too small)"
+    if text.upper().startswith("INSUFFICIENT"):
+        return False, "model declined — too few figures to write from"
     if len(text) > 400:
         return False, "too long"
     m = _INVENTED_TOPIC.search(text)
@@ -155,13 +165,19 @@ def _acceptable(draft, allowed, suburb):
 
 def _groq(prompt):
     """One completion. Returns (text, error)."""
-    body = json.dumps({
+    payload = {
         "model": MODEL,
         "temperature": TEMPERATURE,
-        "max_tokens": MAX_TOKENS,
+        "max_completion_tokens": MAX_TOKENS,
         "messages": [{"role": "system", "content": SYSTEM},
                      {"role": "user", "content": prompt}],
-    }).encode()
+    }
+    # Only where the model understands it — an unknown parameter is a 400 elsewhere.
+    # "low" because there is nothing to reason about: the facts are handed over and the
+    # task is to phrase them.
+    if MODEL.startswith("openai/gpt-oss"):
+        payload["reasoning_effort"] = "low"
+    body = json.dumps(payload).encode()
     req = urllib.request.Request(
         GROQ_URL, data=body, method="POST",
         headers={"Authorization": f"Bearer {_key()}",
@@ -194,6 +210,34 @@ def _groq(prompt):
                                   + (f" {detail}" if detail else ""))
     except Exception:                                                  # noqa: BLE001
         return "", "Could not reach Groq."
+
+
+def _raw(prompt):
+    """The message object Groq returns, for diagnosis. Never includes the key."""
+    payload = {"model": MODEL, "temperature": TEMPERATURE,
+               "max_completion_tokens": MAX_TOKENS,
+               "messages": [{"role": "system", "content": SYSTEM},
+                            {"role": "user", "content": prompt}]}
+    if MODEL.startswith("openai/gpt-oss"):
+        payload["reasoning_effort"] = "low"
+    req = urllib.request.Request(
+        GROQ_URL, data=json.dumps(payload).encode(), method="POST",
+        headers={"Authorization": f"Bearer {_key()}",
+                 "Content-Type": "application/json", "User-Agent": "spb-dashboard"})
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            body = json.loads(r.read().decode("utf-8", "replace"))
+        ch = (body.get("choices") or [{}])[0]
+        msg = ch.get("message") or {}
+        return {"finish_reason": ch.get("finish_reason"),
+                "content": (msg.get("content") or "")[:400],
+                "content_len": len(msg.get("content") or ""),
+                "other_message_keys": sorted(k for k in msg if k != "content"),
+                "usage": body.get("usage")}, ""
+    except urllib.error.HTTPError as e:
+        return {}, f"Groq returned {e.code}."
+    except Exception as ex:                                            # noqa: BLE001
+        return {}, f"Could not reach Groq: {type(ex).__name__}"
 
 
 def _models():
@@ -256,6 +300,21 @@ class handler(BaseHTTPRequestHandler):
         from the outside: both stop drafts appearing. This says which it is, without ever
         returning the key.
         """
+        if "probe=1" in (self.path or ""):
+            # One real call, with the response shape laid bare. A draft that never
+            # appears can be a bad key, a dead model, a refusal, or an empty completion,
+            # and from outside they are identical. This says which.
+            probe_prompt = (
+                "Facts about one house and land package. Use only these:" + chr(10) * 2
+                + "Suburb: Armstrong Creek" + chr(10)
+                + "State: VIC" + chr(10)
+                + "Bedrooms: 4" + chr(10)
+                + "Land size (m2): 448" + chr(10)
+                + "Package price (AUD): 812450" + chr(10) * 2
+                + "Write the note now.")
+            raw, err = _raw(probe_prompt)
+            return self._reply(200, {"configured": bool(_key()), "model": MODEL,
+                                     "max_tokens": MAX_TOKENS, "error": err, "raw": raw})
         if "models=1" in (self.path or ""):
             names, err = _models()
             return self._reply(200, {"configured": bool(_key()), "model": MODEL,

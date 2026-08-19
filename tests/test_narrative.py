@@ -122,7 +122,16 @@ def test_a_number_that_was_never_supplied_is_refused():
 
 def test_the_model_declining_is_not_an_error():
     ok, why = N._acceptable("INSUFFICIENT", _allowed(), "x")
-    assert not ok and why == "model declined"
+    assert not ok and "declined" in why
+
+
+def test_an_empty_completion_is_reported_as_its_own_thing():
+    """A refusal and an empty answer were both "model declined", and the difference cost
+    an afternoon: on a reasoning model an empty `content` means the token budget went on
+    deliberation, which is a setting to change, not a model saying no."""
+    ok, why = N._acceptable("", _allowed(), "x")
+    assert not ok
+    assert "returned nothing" in why and "token budget" in why
 
 
 def test_an_empty_answer_is_refused():
