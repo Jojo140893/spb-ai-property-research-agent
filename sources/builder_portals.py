@@ -100,13 +100,48 @@ class BuilderPortalSource(PropertySource):
                 scraper.goto(cfg.listings_url)
                 st0 = builder["states"][0] if builder.get("states") else filters.get("state", "")
                 probe = extract_listings(scraper.page, builder_hint=builder["builder_name"], state_hint=st0)
-                if not probe and not scraper.page.query_selector_all(cfg.listing_card_selector):
+
+                # A SIGNED-OUT PORTAL THAT STILL RENDERS A FEW CARDS READ AS A SUCCESS.
+                #
+                # The test below is "did anything at all come back", so a public teaser
+                # page — the handful of listings a portal shows a logged-out visitor —
+                # satisfied it and the saved session was never checked. has_session was
+                # computed and then never referenced again; is_logged_in() is only called
+                # inside _login, which this path never enters. Every row was stamped
+                # verified: True regardless.
+                #
+                # scraper_base already names this hazard: a partially authenticated
+                # session is worse than none, because it looks like a small day.
+                # _collapsed_channels cannot catch it either — all five portals pool into
+                # one "Direct Builder Portal (live)" channel and its floor is disabled
+                # below 20 rows, so one portal degrading stays invisible.
+                #
+                # So when we HAVE a session, it has to prove itself: if the logged-in
+                # marker is absent, that is a login trigger, not a result.
+                signed_in = True
+                if has_session and cfg.logged_in_selector:
+                    try:
+                        signed_in = bool(scraper.page.query_selector(cfg.logged_in_selector))
+                    except Exception:                                   # noqa: BLE001
+                        signed_in = True          # cannot tell; do not throw away a read
+                    if not signed_in:
+                        logger.warning("[%s] a saved session exists but the page is not "
+                                       "signed in — %d listing(s) visible are the public "
+                                       "view, not the full stock. Re-authenticating.",
+                                       cfg.name, len(probe or []))
+
+                if (not probe and not scraper.page.query_selector_all(cfg.listing_card_selector)) \
+                        or not signed_in:
                     if not (email and password):
                         logger.warning("[%s] stock list not readable and no credentials stored. "
                                        "Sign in once: python portal_login.py \"%s\"",
                                        cfg.name, builder["builder_name"])
                         return []
                     if not self._login(scraper, cfg, email, password):
+                        if probe and not signed_in:
+                            logger.error("[%s] could not sign in; refusing the %d public "
+                                         "listing(s) rather than storing a teaser as the "
+                                         "whole stock.", cfg.name, len(probe))
                         return []
                     scraper.goto(cfg.listings_url)
                 # JS-rendered stock grids (e.g. Paramount's filter UI) finish painting
@@ -149,6 +184,13 @@ class BuilderPortalSource(PropertySource):
                     })
                 # Some portals split inventory across several pages (e.g. Bathla
                 # /display + /granny) — collect those too.
+                # MERGED INTO BOTH LISTS, not just the adaptive one. These are pages
+                # the main grid does not contain at all (Bathla /display + /granny), so
+                # they are additive to whichever path wins — but they were appended only
+                # to `adaptive`, and the comparison below then discarded them wholesale
+                # whenever the mapped selectors read more. The log had already claimed
+                # them: "[Bathla] +4 listing(s) from .../granny", for listings that were
+                # then thrown away.
                 for extra_url in (cfg.extra_listings_urls or ()):
                     try:
                         scraper.goto(extra_url)
@@ -156,6 +198,12 @@ class BuilderPortalSource(PropertySource):
                         if more:
                             logger.info("[%s] +%d listing(s) from %s", cfg.name, len(more), extra_url)
                             adaptive = (adaptive or []) + more
+                            results = (results or []) + more
+                        else:
+                            # /promotions has produced zero log lines in ten runs, and
+                            # nobody can tell "this page is empty" from "this page 404s".
+                            logger.info("[%s] extra stock page %s returned nothing.",
+                                        cfg.name, extra_url)
                     except Exception as e:
                         logger.warning("[%s] extra stock page %s failed: %s", cfg.name, extra_url, e)
 

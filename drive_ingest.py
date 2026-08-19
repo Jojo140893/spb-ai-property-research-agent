@@ -26,11 +26,19 @@ class DriveStocklistIngestor:
             # comparables*.csv files are market benchmark data (BenchmarkEngine), not stock lists
             if file_path.name.lower().startswith('comparables'):
                 continue
+            # CSV goes through the same extractor as PDF and XLSX. ingest_csv wraps its
+            # ENTIRE row loop in one try and returns the rows read so far, so the first
+            # row that raises — int('') on a blank cell, float('$680,000') on a money
+            # column, int(None) on a short row, all verified — ends the file and the
+            # partial list is returned as though it were the whole thing. Its only signal
+            # is a print() that never says the list is truncated. extract_stocklist has
+            # per-row handling and real logging, and the .pdf and .xlsx branches already
+            # use it.
             if file_path.suffix.lower() == '.csv':
-                packages.extend(self.ingest_csv(file_path))
+                packages.extend(self.ingest_spreadsheet(file_path))
             elif file_path.suffix.lower() == '.pdf':
                 packages.extend(self.ingest_pdf(file_path))
-            elif file_path.suffix.lower() in ('.xlsx', '.xls'):
+            elif file_path.suffix.lower() in ('.xlsx', '.xlsm', '.xls'):
                 packages.extend(self.ingest_spreadsheet(file_path))
 
         return packages

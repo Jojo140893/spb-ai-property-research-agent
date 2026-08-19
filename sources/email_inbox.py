@@ -42,7 +42,11 @@ logger = logging.getLogger("spb.source.email")
 IMAP_HOST = os.getenv("IMAP_HOST", "imap.hostinger.com")
 IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
 
-DATA_EXT = re.compile(r"\.(xlsx|xls|pdf|csv)$", re.I)
+# xlsm included: every sibling module accepts it (e_agent, remote_stocklist) and
+# extract_stocklist dispatches on the PK magic bytes, so it parses identically.
+# Without it, an unknown-domain sender whose stocklist is a macro workbook was
+# dropped whole.
+DATA_EXT = re.compile(r"\.(xlsx|xlsm|xls|pdf|csv)$", re.I)
 STOCK_SUBJECT = re.compile(
     r"stock|stocklist|stock list|availability|available|price|pricing|"
     r"packages?|house\s*&?\s*land|h\s*[/&]\s*l\b|inventory|lots?\b|weekly|release|"
@@ -336,7 +340,7 @@ class EmailStocklistSource(PropertySource):
         if not box:
             return []
         out: List[Dict[str, Any]] = []
-        scanned = matched = 0
+        scanned = matched = failed = 0
         try:
             box.select("INBOX", readonly=True)          # READ-ONLY: never mutate the mailbox
             since = (datetime.now() - timedelta(days=self.days_back)).strftime("%d-%b-%Y")
@@ -345,18 +349,38 @@ class EmailStocklistSource(PropertySource):
             logger.info("Email: %d message(s) since %s", len(ids), since)
             for mid in reversed(ids):                   # newest first
                 scanned += 1
+                # ONE LOST MESSAGE IS ABOUT A HUNDRED LISTINGS against a channel of a few
+                # hundred — comfortably inside the collapse floor, so nothing downstream
+                # would ever flag it. Both branches used to `continue` in silence, and
+                # `typ` was assigned and never checked, so an imaplib 'NO' landed in the
+                # bare except as a TypeError and vanished the same way.
                 try:
                     typ, raw = box.fetch(mid, "(RFC822)")
-                    if not raw or not raw[0]:
+                    if typ != "OK" or not raw or not raw[0]:
+                        failed += 1
+                        logger.warning("Email: message %s could not be fetched (%s) — "
+                                       "its stock is NOT in this harvest.",
+                                       mid.decode() if isinstance(mid, bytes) else mid,
+                                       typ)
                         continue
                     msg = email.message_from_bytes(raw[0][1])
-                except Exception:
+                except Exception as e:                                  # noqa: BLE001
+                    failed += 1
+                    logger.warning("Email: message %s could not be read (%s) — its stock "
+                                   "is NOT in this harvest.",
+                                   mid.decode() if isinstance(mid, bytes) else mid, e)
                     continue
                 from_hdr = _decode(msg.get("From"))
                 subject = _decode(msg.get("Subject"))
                 when = _decode(msg.get("Date"))[:31]
-                att_names = " ".join(_decode(p.get_filename()) or "" for p in msg.walk())
-                has_data = bool(DATA_EXT.search(att_names))
+                names = [_decode(p.get_filename()) or "" for p in msg.walk()]
+                att_names = " ".join(names)
+                # PER FILENAME. DATA_EXT is anchored on "$", so testing it against the
+                # JOINED string only ever matched the LAST attachment — a message whose
+                # stocklist was followed by a .png signature or a .docx cover letter read
+                # as having no data at all and was dropped. The live log said "scanned 20
+                # message(s), 8 relevant" and gave no reason for any of the 12.
+                has_data = any(DATA_EXT.search(n) for n in names if n)
                 ok, builder = self._relevant(from_hdr, subject, has_data, att_names)
                 if not ok:
                     continue
@@ -374,7 +398,8 @@ class EmailStocklistSource(PropertySource):
             except Exception:
                 pass
 
-        logger.info("Email: scanned %d message(s), %d relevant, %d listing(s).", scanned, matched, len(out))
+        logger.info("Email: scanned %d message(s), %d relevant, %d unreadable, "
+                    "%d listing(s).", scanned, matched, failed, len(out))
         max_budget = float(filters.get("budget_max", 10_000_000))
         return [r for r in out if (r.get("advertised_package_price") or 0) <= max_budget + 50_000]
 
