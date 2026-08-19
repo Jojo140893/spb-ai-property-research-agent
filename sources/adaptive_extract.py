@@ -18,9 +18,12 @@ does not at least have a price plus one of (address, beds). It never invents
 values: a field it cannot find stays None.
 """
 
+import logging
 import re
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger("spb.extract.adaptive")
 
 from sources.scraper_base import MIN_PLAUSIBLE_PRICE, normalise_money_spacing
 
@@ -356,12 +359,20 @@ def parse_fields(text: str) -> Dict[str, Any]:
 # Runs in the page context via Playwright page.evaluate().
 FIND_CARDS_JS = r"""
 () => {
+  const CARD_CAP = 200, FALLBACK_CAP = 60;
   const priceRe = /\$\s?(\d{1,3}(,\d{3})+|\d{5,7})\b/;
   const sig = el => el.tagName + ':' + (el.className || '').toString().split(/\s+/).slice(0,3).join('.');
   // all elements whose OWN text (not just descendants) mentions a price
+  let oversize = 0;
   const priced = [...document.querySelectorAll('body *')].filter(el => {
     if (!el.innerText) return false;
-    if (el.children.length > 12) return false;              // too big to be one card
+    if (el.children.length > 12) {
+      // Counted, not just skipped. A wide table whose cells all share a signature can
+      // put every real row over this line and return nothing at all — measured: 0 of 6
+      // rows on a 13-column table. Silent, it reads as "this page has no stock".
+      if (priceRe.test(el.innerText)) oversize++;
+      return false;
+    }
     const t = el.innerText;
     return priceRe.test(t) && t.length < 1200;
   });
@@ -374,30 +385,71 @@ FIND_CARDS_JS = r"""
       const mySig = sig(node);
       const twins = [...parent.children].filter(c => sig(c) === mySig);
       if (twins.length >= 2 && node.innerText && priceRe.test(node.innerText)) {
+        // KEYED ON MARKUP, SO TWO SECTIONS COLLIDE. A page that lists "Available" and
+        // "Under Offer" in two identically-built grids produced one key, and the second
+        // grid was dropped here — before the group choice below ever ran. Merged
+        // instead, de-duplicated by element, so both grids survive as one candidate.
         const key = parent.tagName + '>' + mySig;
-        if (!cands.has(key)) cands.set(key, twins);
+        const prev = cands.get(key);
+        if (!prev) cands.set(key, twins);
+        else cands.set(key, [...new Set([...prev, ...twins])]);
         break;
       }
       node = parent;
     }
   }
-  // choose the group with the most cards that contain a price
+  // EVERY REAL GROUP, NOT THE BIGGEST ONE.
+  //
+  // This took the single largest group and discarded the rest, so a page split into a
+  // featured strip plus a main grid, or by estate, or by status, kept only whichever
+  // happened to be biggest. Measured on three Chromium fixtures publishing 6 priced
+  // cards each: 4 returned, every time. The callers log only the surviving count, so
+  // the other two were invisible.
+  //
+  // A group is kept when it holds at least GROUP_FLOOR of the winner's cards. That
+  // keeps a genuine second section (usually the same order of size) while still
+  // ignoring the one-off "from $X" banner or a related-properties teaser, which is what
+  // taking the max was really protecting against. De-duplicated by element, because a
+  // card can appear in two candidate groups.
+  const GROUP_FLOOR = 0.34;
+  const groups = [...cands.values()]
+      .map(g => g.filter(x => priceRe.test(x.innerText || '')))
+      .filter(g => g.length)
+      .sort((a, b) => b.length - a.length);
   let best = [];
-  for (const group of cands.values()) {
-    const withPrice = group.filter(g => priceRe.test(g.innerText || ''));
-    if (withPrice.length > best.length) best = withPrice;
+  if (groups.length) {
+    const floor = Math.max(1, Math.floor(groups[0].length * GROUP_FLOOR));
+    const seen = new Set();
+    for (const g of groups) {
+      if (g.length < floor) break;
+      // NEVER TAKE TWO GROUPS THAT NEST. Taking the largest group alone used to exclude
+      // these by accident; unioning does not. The same page yields a group of cards, a
+      // group of the bare <p>$705,000</p> inside them, and a group of the containers
+      // AROUND them — and accepting all three would store each lot three times, once as
+      // a priceless fragment and once as a run-on of every lot in its section.
+      const clash = g.some(el => best.some(a => a === el || a.contains(el) || el.contains(a)));
+      if (clash) continue;
+      for (const el of g) { if (!seen.has(el)) { seen.add(el); best.push(el); } }
+    }
   }
   // fall back: individual priced blocks if no repeated structure was detected
-  if (best.length === 0) best = priced.slice(0, 60);
-  return best.slice(0, 200).map(el => {
-    const a = el.querySelector('a[href]') || el.closest('a[href]');
-    const img = el.querySelector('img[src]');
-    return {
-      text: el.innerText || '',
-      href: a ? a.href : '',
-      img: img ? img.src : '',
-    };
-  });
+  const fellBack = best.length === 0;
+  if (fellBack) best = priced.slice(0, FALLBACK_CAP);
+  const found = fellBack ? priced.length : best.length;
+  return {
+    found: found,
+    fallback: fellBack,
+    oversize: oversize,
+    cards: best.slice(0, CARD_CAP).map(el => {
+      const a = el.querySelector('a[href]') || el.closest('a[href]');
+      const img = el.querySelector('img[src]');
+      return {
+        text: el.innerText || '',
+        href: a ? a.href : '',
+        img: img ? img.src : '',
+      };
+    }),
+  };
 }
 """
 
@@ -405,9 +457,29 @@ FIND_CARDS_JS = r"""
 def extract_listings(page, builder_hint: str = "", state_hint: str = "") -> List[Dict[str, Any]]:
     """Return listings found on the currently-loaded page. Empty list if none."""
     try:
-        raw_cards = page.evaluate(FIND_CARDS_JS)
+        found = page.evaluate(FIND_CARDS_JS)
     except Exception:
         return []
+
+    # The JS now returns a denominator alongside the cards. Reading 200 of 300, or 4 of
+    # 6 because two grids were discarded, used to be indistinguishable from reading all
+    # of them — the caller logged the surviving count and nothing else.
+    if isinstance(found, dict):
+        raw_cards = found.get("cards") or []
+        seen_count = int(found.get("found") or 0)
+        if found.get("oversize"):
+            logger.warning("adaptive: %d priced block(s) on this page have more than 12 "
+                           "child elements and were excluded as too big to be one card — "
+                           "a wide table can lose every row this way.",
+                           found["oversize"])
+        if seen_count > len(raw_cards):
+            logger.warning("adaptive: %d priced card(s) on this page, only %d read — "
+                           "the rest are NOT in this harvest.", seen_count, len(raw_cards))
+        if found.get("fallback"):
+            logger.info("adaptive: no repeated card structure found; read %d individual "
+                        "priced block(s).", len(raw_cards))
+    else:                                        # pre-denominator shape, kept for safety
+        raw_cards = found or []
 
     seen = set()
     out: List[Dict[str, Any]] = []
