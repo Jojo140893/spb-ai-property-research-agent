@@ -28,6 +28,18 @@ const hostile = {
   land_size_sqm: 427, house_size_sqm: 175.28,
 };
 
+let failures = 0;
+
+// The document carries exactly ONE script of our own — the one-page fitter, tagged
+// data-spb="fit". The injection checks below strip it first and then assert that NOTHING
+// else script-shaped survives, so untrusted vendor text still cannot introduce one. A
+// blanket "no <script>" would have been satisfied by deleting our own feature.
+const OURS = /<script data-spb="fit">[\s\S]*?<\/script>/g;
+const stripOurs = h => {
+  const n = (h.match(OURS) || []).length;
+  if (n !== 1) { failures++; console.error(`FAIL exactly one SPB script -> found ${n}`); }
+  return h.replace(OURS, '');
+};
 let bad = 0;
 const check = (name, cond, extra) => {
   console.log((cond ? '  PASS  ' : '  FAIL  ') + name + (cond ? '' : '  -> ' + extra));
@@ -78,7 +90,7 @@ check('the Rebate column is omitted when none does',
   !noReb.includes('>Rebate<') && !noReb.includes('>Effective Price<'));
 
 console.log('\n--- untrusted vendor text cannot execute ---');
-check('no raw <script survives', !body.includes('<scr' + 'ipt'), 'SCRIPT INJECTED');
+check('no raw <script survives', !stripOurs(body).includes('<scr' + 'ipt'), 'SCRIPT INJECTED');
 // The letterhead is a legitimate <img> (our logo, inlined as a data URI), so a blanket
 // "no <img>" test would fail on our own branding. Assert the INJECTED shape instead:
 // no payload-sourced attributes, and every img on the page is the logo.
@@ -168,7 +180,7 @@ const nasty = clientReportDocument([{
   recommendation_reason: '<scr' + 'ipt>alert(3)</scr' + 'ipt>',
 }]);
 const nb = nasty.slice(nasty.indexOf('<body>'));
-check('no raw <script survives', !nb.includes('<scr' + 'ipt'), 'SCRIPT INJECTED');
+check('no raw <script survives', !stripOurs(nb).includes('<scr' + 'ipt'), 'SCRIPT INJECTED');
 // The letterhead is a legitimate <img> (our logo, inlined as a data URI), so a blanket
 // "no <img>" test would fail on our own branding. Assert the INJECTED shape instead:
 // no payload-sourced attributes, and every img on the page is the logo.

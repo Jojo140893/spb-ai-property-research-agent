@@ -3442,9 +3442,9 @@ python state_sync.py push</pre>
       </header>`;
 
     const BRAND_CSS = `
- .spb-head{display:flex;align-items:center;gap:14px;padding:0 0 12px;margin:0 0 18px;
+ .spb-head{display:flex;align-items:center;gap:10px;padding:0 0 7px;margin:0 0 9px;
            border-bottom:2px solid var(--accent)}
- .spb-head .logo{height:46px;width:auto;display:block}
+ .spb-head .logo{height:34px;width:auto;display:block}
  .spb-name{font-size:15px;font-weight:700;color:var(--ink);letter-spacing:-.01em}
  .spb-tag{font-size:11px;color:var(--muted);margin-top:1px}
  @media print{.spb-head{break-inside:avoid}}`;
@@ -3718,15 +3718,15 @@ python state_sync.py push</pre>
  :root{--ink:#0f172a;--body:#334155;--muted:#64748b;--line:#e2e8f0;--accent:#1e40af;
        --bg:#f8fafc;--good:#047857}
  *{box-sizing:border-box}
- body{margin:0;padding:28px;background:#fff;color:var(--body);
-      font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
- h1{margin:0;font-size:20px;color:var(--ink);letter-spacing:-.01em}
- .sub{margin:4px 0 16px;color:var(--muted);font-size:12px}
+ body{margin:0;padding:20px;background:#fff;color:var(--body);
+      font:11px/1.34 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+ h1{margin:0;font-size:16px;color:var(--ink);letter-spacing:-.01em}
+ .sub{margin:3px 0 9px;color:var(--muted);font-size:10px}
  .banner{background:var(--bg);border:1px solid var(--line);border-left:4px solid var(--accent);
-         border-radius:6px;padding:11px 14px;margin:0 0 18px}
+         border-radius:5px;padding:7px 10px;margin:0 0 10px}
  .banner b{color:var(--accent)}
- table{border-collapse:collapse;width:100%;margin:0 0 20px;font-size:12.5px;table-layout:fixed}
- th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;word-break:break-word;
+ table{border-collapse:collapse;width:100%;margin:0 0 11px;font-size:10px;table-layout:fixed}
+ th,td{border:1px solid var(--line);padding:4px 5px;text-align:left;word-break:break-word;
        vertical-align:top}
  th{background:var(--bg);color:var(--ink);font-weight:600}
  tr.best td{background:#f0f7ff}
@@ -3737,20 +3737,20 @@ python state_sync.py push</pre>
  .opt-addr{font-size:11.5px;line-height:1.35}
  .opt-place{font-size:11px;color:var(--muted)}
  .na{color:#94a3b8}
- .opt{border:1px solid var(--line);border-radius:6px;padding:12px 14px;margin:0 0 12px;
+ .opt{border:1px solid var(--line);border-radius:5px;padding:7px 9px;margin:0 0 7px;
       break-inside:avoid}
  .opt-best{border-color:var(--accent)}
- .opt h3{margin:0 0 8px;font-size:14px;color:var(--ink)}
+ .opt h3{margin:0 0 4px;font-size:11px;color:var(--ink)}
  .tag{background:var(--accent);color:#fff;font-size:10px;padding:2px 7px;border-radius:3px;
       margin-left:6px;vertical-align:middle;letter-spacing:.03em}
  .value{margin:0 0 8px;font-size:12.5px;color:var(--ink)}
  .good{color:var(--good);font-weight:600}
  .facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:5px 16px;
         margin:0 0 9px}
- .facts b{color:var(--muted);font-weight:600;display:block;font-size:10.5px;
+ .facts b{color:var(--muted);font-weight:600;display:block;font-size:8.5px;
           text-transform:uppercase;letter-spacing:.03em}
- .note{display:block;margin-top:8px}
- .note b{color:var(--muted);font-size:10.5px;text-transform:uppercase;letter-spacing:.03em}
+ .note{display:block;margin-top:5px}
+ .note b{color:var(--muted);font-size:8.5px;text-transform:uppercase;letter-spacing:.03em}
  .draft{background:#fef3c7;color:#92400e;border-radius:3px;padding:1px 5px;
         text-transform:none;letter-spacing:0;font-weight:600}
  @media print{.draft{display:none}}
@@ -3760,25 +3760,119 @@ python state_sync.py push</pre>
  .comps th,.comps td{border:1px solid var(--line);padding:4px 6px;text-align:left}
  .comps th{background:var(--bg);color:var(--ink)}
  .pending{color:var(--muted);font-style:italic;font-size:11.5px;margin:8px 0 0}
- .foot{margin-top:14px;padding-top:9px;border-top:1px solid var(--line);
-       color:var(--muted);font-size:9.5px;line-height:1.35}
- .foot .contact{color:var(--ink);font-weight:600;font-size:10.5px;margin-bottom:3px}
- td .sub{color:var(--muted);font-size:10px;line-height:1.3;margin-top:1px}
+ .foot{margin-top:8px;padding-top:6px;border-top:1px solid var(--line);
+       color:var(--muted);font-size:8px;line-height:1.3}
+ .foot .contact{color:var(--ink);font-weight:600;font-size:9.5px;margin-bottom:2px}
+ .fitnote{background:#fef3c7;color:#92400e;border-radius:5px;padding:7px 10px;
+          margin:0 0 10px;font-size:11px}
+ @media print{.fitnote{display:none !important}}
+ td .sub{color:var(--muted);font-size:8.5px;line-height:1.2;margin-top:0}
  /* ONE PAGE IS THE REQUIREMENT, not a preference — Coleen's target fits four options
     and a full assessment on a single sheet. These are the margins that get it there. */
  @page{size:A4 portrait;margin:10mm}
 ${SHARE_CSS}${BRAND_CSS}
- h2{font-size:12.5px;color:var(--accent);margin:16px 0 7px;text-transform:uppercase;
-    letter-spacing:.04em;border-bottom:1px solid var(--line);padding-bottom:3px}
- .lede{margin:0 0 14px;font-size:12px;color:var(--body)}
+ h2{font-size:10px;color:var(--accent);margin:9px 0 5px;text-transform:uppercase;
+    letter-spacing:.04em;border-bottom:1px solid var(--line);padding-bottom:2px}
+ .lede{margin:0 0 8px;font-size:10px;color:var(--body)}
  .banner-sum{font-size:12px;color:var(--ink);margin-top:2px}
- .assess{display:grid;grid-template-columns:1fr 1fr;gap:10px}
- .note.rec textarea{min-height:52px}
+ .assess{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+ .note.rec textarea{min-height:24px}
  @media (max-width:720px){.assess{grid-template-columns:1fr}}
- @media print{textarea{border:0;padding:0;resize:none;height:auto}
-   .opt{break-inside:avoid}}
+ @media print{
+   /* @page already supplies the margin. The body's own padding was added ON TOP of it,
+      costing 40px — which was the difference between the assessment grid's second row
+      fitting and being pushed whole onto page 2 by break-inside:avoid. */
+   body{padding:0}
+   textarea{border:0;padding:0;resize:none;height:auto;min-height:0}
+   /* A PLACEHOLDER IS INTERNAL GUIDANCE, NOT CLIENT COPY. Printing rendered it into the
+      PDF verbatim — "Left blank on purpose: the system holds no suburb commentary and
+      will not invent any" reached page 2 of a document meant for a buyer. */
+   textarea::placeholder{color:transparent}
+   /* An untouched box has nothing to say, so it prints as neither a heading nor blank
+      space. This is also most of the height that pushed a one-page document to three. */
+   .note:has(textarea:placeholder-shown){display:none}
+   .opt{break-inside:avoid}
+   .bar,.sharebar{display:none}
+   /* PRINT IS DENSER THAN SCREEN, deliberately. On screen this is read at ~1280px and
+      11px is comfortable; the PDF lays out at 718px (A4 less margins), where every
+      column wraps more and the same content ran to 1.44 pages. One page is the
+      requirement, so print gets its own scale rather than the screen being made
+      unreadable to satisfy it. */
+   body{font-size:7.6px;line-height:1.18}
+   h1{font-size:14px}
+   .sub,.lede{font-size:8px}
+   table{font-size:8px;margin-bottom:6px}
+   th,td{padding:2.5px 4px}
+   td .sub{font-size:7.5px}
+   h2{font-size:8.5px;margin:6px 0 4px}
+   .banner{padding:5px 8px;margin-bottom:7px}
+   .banner-sum{font-size:9px}
+   .opt{padding:3px 5px;margin-bottom:3px}
+   .opt h3{font-size:9px;margin-bottom:3px}
+   .tag{font-size:7px;padding:1px 4px}
+   .note{margin-top:3px}
+   .note b{font-size:7px}
+   .facts{gap:2px 10px;margin-bottom:4px}
+   .facts b{font-size:7px}
+   .value{font-size:8.5px;margin-bottom:4px}
+   .pending,.comps{font-size:7.5px;margin:3px 0 0}
+   .assess{gap:3px}
+   .spb-head{padding-bottom:5px;margin-bottom:6px}
+   .spb-head .logo{height:26px}
+   .spb-name{font-size:11px}
+   .spb-tag{font-size:8px}
+   .foot{font-size:7px;margin-top:6px;padding-top:5px}
+   .foot .contact{font-size:8px}
+   /* SHRINK ONLY AS MUCH AS IT TAKES. Set by fitOnePage() below from a measurement at
+      A4 width; 1 when the document already fits, so a short report is never shrunk. */
+   body{zoom:var(--fit, 1)}
+ }
 </style></head><body>
 <div class="bar"><button onclick="window.print()">Print / Save as PDF</button></div>
+<script data-spb="fit">
+/* ONE PAGE, MEASURED RATHER THAN HOPED FOR.
+ *
+ * Density alone gets a typical report onto one page and a full one onto two: measured at
+ * A4 width, four options with every box filled ran 1,166px against the 1,047px a page
+ * holds. Shrinking the type further to cover the worst case would punish every ordinary
+ * report, and this is read by buyers.
+ *
+ * So the document measures ITSELF at the width the printer will use — the body is briefly
+ * constrained to 718px, which is A4 portrait less 10mm margins at 96dpi — and sets a print
+ * zoom that is exactly enough to fit, or 1 when nothing is needed.
+ *
+ * The floor is real: below it the answer is "this is too much content for one page", not
+ * "make it unreadable". Coleen sees the note and can shorten a box. */
+(function fitOnePage() {
+  var PAGE = (297 - 20) * 3.7795275591;      // A4 less 10mm margins, px at 96 dpi
+  var WIDTH = (210 - 20) * 3.7795275591;     // the width the print layout gets
+  var FLOOR = 0.78;
+  function measure() {
+    var prev = document.body.style.width;
+    document.body.style.width = WIDTH + 'px';
+    var h = document.body.scrollHeight;
+    document.body.style.width = prev;
+    return h;
+  }
+  function fit() {
+    document.documentElement.style.setProperty('--fit', 1);
+    var h = measure();
+    if (h <= PAGE) return;
+    var ratio = PAGE / h;
+    document.documentElement.style.setProperty('--fit', Math.max(FLOOR, ratio).toFixed(3));
+    var note = document.getElementById('fitNote');
+    if (note && ratio < FLOOR) {
+      note.textContent = 'This is longer than one page even at the smallest size — '
+        + 'shorten an assessment box to bring it back to a single sheet.';
+      note.style.display = '';
+    }
+  }
+  if (document.readyState === 'complete') fit();
+  else window.addEventListener('load', fit);
+  window.addEventListener('beforeprint', fit);
+})();
+</script>
+<div id="fitNote" class="fitnote" style="display:none"></div>
 ${shareBar(shareUrl)}
 ${SPB_BRAND()}
 <h1>HOME &amp; LAND PACKAGE COMPARISON</h1>
