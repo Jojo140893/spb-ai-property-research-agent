@@ -35,6 +35,7 @@ import csv
 import io
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -73,6 +74,22 @@ def _session() -> Any:
     workbook (and a 403 for OneDrive)."""
     s = requests.Session()
     s.headers["User-Agent"] = UA
+    # ONE FAILED FETCH COSTS A WHOLE PRODUCT CATEGORY. A Dropbox folder link is the only
+    # route to its estate's stock, and a single connection reset was enough to lose it
+    # for the night: the caller drops a piece that carries a problem. A transient 429 or
+    # 5xx now gets three attempts with backoff before it counts as a real failure.
+    try:
+        from urllib3.util.retry import Retry
+        from requests.adapters import HTTPAdapter
+        retry = Retry(total=3, backoff_factor=2,
+                      status_forcelist=(429, 500, 502, 503, 504),
+                      allowed_methods=frozenset(("GET", "HEAD")),
+                      raise_on_status=False)
+        s.mount("https://", HTTPAdapter(max_retries=retry))
+        s.mount("http://", HTTPAdapter(max_retries=retry))
+    except Exception as e:                                              # noqa: BLE001
+        logger.warning("could not install HTTP retries (%s) — a transient failure will "
+                       "cost that link's stock for this run.", e)
     return s
 
 
@@ -109,7 +126,10 @@ def _google_tabs(sess: Any, sheet_id: str) -> Dict[str, str]:
             return {}
         return {gid: _js_unescape(name) for name, gid in _TAB_ITEM.findall(r.text)}
     except Exception as e:
-        logger.debug("google: tab list failed for %s: %s", sheet_id, e)
+        # WARNING, not DEBUG. This is the input to the stale-gid guard: when it is empty
+        # the guard cannot run, and the harvest log is the only place that shows why.
+        logger.warning("google: tab list failed for %s (%s) — the stale-gid guard "
+                       "cannot run for this workbook.", sheet_id, e)
         return {}
 
 
@@ -151,8 +171,26 @@ def _fetch_google(url: str, label: str, sess: Any) -> List[Fetched]:
     if gid:
         targets.append(f"https://docs.google.com/spreadsheets/d/{sheet_id}"
                        f"/export?format=csv&gid={gid}")
-        targets.append(f"https://docs.google.com/spreadsheets/d/{sheet_id}"
-                       f"/gviz/tq?tqx=out:csv&gid={gid}")
+        # THE GVIZ FALLBACK IS ONLY SAFE WHEN THE GID IS KNOWN TO BE REAL.
+        #
+        # The guard above needs `tabs`, and _google_tabs returns {} on any non-200 —
+        # historically with no log at all — so a single 429 or a markup change disabled
+        # it and the harvest fell straight through to gviz, which answers 200 with the
+        # FIRST tab for a gid that no longer exists. That is precisely the silent
+        # substitution the guard was written to prevent, and every section on that
+        # workbook would have received the same sheet.
+        #
+        # `export` is not affected: it 400s correctly on a stale gid. So when the tab
+        # list is unknown, only the fallback is withheld — the normal path still works,
+        # and the workbooks the fallback exists for (download-disabled ones, where
+        # export 401s for every gid) simply report a problem instead of inventing data.
+        if tabs:
+            targets.append(f"https://docs.google.com/spreadsheets/d/{sheet_id}"
+                           f"/gviz/tq?tqx=out:csv&gid={gid}")
+        else:
+            logger.warning("google %s: the tab list could not be read, so the gviz "
+                           "fallback is withheld for gid=%s — it would return the "
+                           "workbook's first tab if that gid is stale.", label, gid)
     else:
         targets.append(f"https://docs.google.com/spreadsheets/d/{sheet_id}"
                        f"/export?format=csv")
@@ -254,6 +292,12 @@ def _dropbox_entries(sess: Any, url: str) -> List[Tuple[str, bool, str]]:
     return out
 
 
+# Request budgets for one Dropbox link. Both are announced when they bind:
+# a truncated read that says nothing is the whole failure this module was
+# audited for.
+_DBX_MAX_FILES = int(os.environ.get("SPB_DBX_MAX_FILES", "12"))
+_DBX_MAX_FOLDERS = int(os.environ.get("SPB_DBX_MAX_FOLDERS", "20"))
+
 def _fetch_dropbox(url: str, label: str, sess: Any) -> List[Fetched]:
     """Dropbox "Access Portal" folders — the whole apartment, townhouse, commercial and
     land-estate inventory. List the folder, then download only the stocklist entry:
@@ -269,15 +313,54 @@ def _fetch_dropbox(url: str, label: str, sess: Any) -> List[Fetched]:
                         problem="folder listing came back empty (layout change or dead link)")]
 
     files = [(n, u) for n, is_dir, u in entries if not is_dir]
+    folders = [(n, u) for n, is_dir, u in entries if is_dir]
+
+    # UNION, NOT FALLBACK — three times over, and each `if not picks:` cost real stock.
+    #
+    # 96 of E-Agent's 142 stock links are Dropbox folders, so this is the dominant source
+    # in the pipeline, and it used to harvest ONE file from a folder that holds many:
+    #
+    #   * a keyword file suppressed every other spreadsheet beside it. A folder holding
+    #     "VIC Price List.xlsx", "Brisbane Apartments.xlsx" and "Marina Towers Stage
+    #     2.xlsx" yielded the first. "Report Murcia" — an actually observed filename —
+    #     matches no keyword at all.
+    #   * any root-level file at all suppressed the per-estate SUBFOLDERS beneath it. A
+    #     category folder laid out as one summary sheet plus twelve estate subfolders,
+    #     each with its own price list, contributed exactly one file. _fetch_dropbox
+    #     contained no logging, and the "no price list in this folder" problem below is
+    #     unreachable the moment any pick exists — so this was completely silent.
+    #
+    # The subfolder walk still only descends one level and still costs one request per
+    # folder, which is the documented tradeoff; what changed is that it now runs whether
+    # or not the root yielded something. The name filter is gone as a GATE — real
+    # subfolders are project-named ("eAgent/APARTMENTS/NSW/Babylon"), which matches
+    # nothing — and is kept only to order the walk, so price-named folders are visited
+    # first and the budget below is spent where it is most likely to pay.
     picks = [(n, u) for n, u in files if _DBX_STOCK_FILE.search(n)]
-    if not picks:
-        picks = [(n, u) for n, u in files if _DBX_ANY_SHEET.search(n)]
-    if not picks:
-        for name, is_dir, sub in entries:
-            if is_dir and _DBX_PRICE_FOLDER.search(name):
-                for n, u in [(n, u) for n, d, u in _dropbox_entries(sess, sub) if not d]:
-                    if _DBX_STOCK_FILE.search(n) or _DBX_ANY_SHEET.search(n):
-                        picks.append((f"{name}/{n}", u))
+    seen_urls = {u for _n, u in picks}
+    for n, u in files:
+        if u not in seen_urls and _DBX_ANY_SHEET.search(n):
+            picks.append((n, u))
+            seen_urls.add(u)
+
+    folders.sort(key=lambda f: 0 if _DBX_PRICE_FOLDER.search(f[0]) else 1)
+    for name, sub in folders[:_DBX_MAX_FOLDERS]:
+        try:
+            children = [(n, u) for n, d, u in _dropbox_entries(sess, sub) if not d]
+        except Exception as e:                                          # noqa: BLE001
+            logger.warning("dropbox %s: subfolder %r could not be listed (%s) — its "
+                           "price list is NOT in this harvest", label, name, e)
+            continue
+        for n, u in children:
+            if u not in seen_urls and (_DBX_STOCK_FILE.search(n) or _DBX_ANY_SHEET.search(n)):
+                picks.append((f"{name}/{n}", u))
+                seen_urls.add(u)
+    if len(folders) > _DBX_MAX_FOLDERS:
+        logger.warning("dropbox %s: %d subfolder(s), only the first %d walked — the rest "
+                       "are NOT in this harvest: %s", label, len(folders),
+                       _DBX_MAX_FOLDERS,
+                       ", ".join(n for n, _u in folders[_DBX_MAX_FOLDERS:][:6]))
+
     if not picks:
         return [Fetched(label=label, url=url, problem=(
             f"no price list in this folder — it holds only "
@@ -285,8 +368,12 @@ def _fetch_dropbox(url: str, label: str, sess: Any) -> List[Fetched]:
             f"{' ...' if len(entries) > 4 else ''}. Nothing to harvest until the vendor "
             f"uploads one."))]
 
+    if len(picks) > _DBX_MAX_FILES:
+        logger.warning("dropbox %s: %d price list(s) found, only %d downloaded — %s "
+                       "are NOT in this harvest", label, len(picks), _DBX_MAX_FILES,
+                       ", ".join(n for n, _u in picks[_DBX_MAX_FILES:][:6]))
     out: List[Fetched] = []
-    for name, entry_url in picks[:4]:
+    for name, entry_url in picks[:_DBX_MAX_FILES]:
         target = re.sub(r"([?&])dl=0", r"\1dl=1", entry_url)
         try:
             r = sess.get(target, timeout=180)
