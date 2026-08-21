@@ -164,3 +164,32 @@ def test_the_estate_banner_around_them_still_is_one():
     for line in ("KINMA VALLEY - MORAYFIELD", "AIRE RIVERSIDE ESTATE - LILYWOOD",
                  "RIVERRBANK ESTATE - CABOOLTURE SOUTH"):
         assert _is_group_header(line, {}), line
+
+
+def test_a_line_that_begins_mid_sentence_is_a_continuation():
+    """PDF text comes out wrapped, and the tail of a paragraph lands on its own line.
+    "subject to final positioning on the site and may" is short, digit-free and has none
+    of the words the prose test looks for — it read as a section and took the estate of
+    27 rows. A banner starts with a capital, a digit or a symbol; never a lowercase word.
+    """
+    for tail in ("subject to final positioning on the site and may",
+                 "and may vary from those shown",
+                 "or as otherwise agreed in writing"):
+        assert not _is_group_header(tail, {}), tail
+
+
+def test_a_wrapped_column_header_is_not_a_section():
+    """These lists print their column row over two lines — "Status Lot/ Building Design
+    Name ... Package Price" then "Street # Type" — and only the first is recognised as a
+    column header. The orphan is short, capitalised and digit-free."""
+    for line in ("Street # Type", "Lot No Stage Street Land Size",
+                 "Design Facade Beds Storeys"):
+        assert not _is_group_header(line, {}), line
+
+
+def test_a_real_banner_made_of_ordinary_words_survives_both_rules():
+    """The vocabulary test must key on the WHOLE line being column words, not on any of
+    them appearing — plenty of estates are named after streets and parks."""
+    for line in ("Millfield Rise, Millfield NSW", "Park Lane - Stage 1, Joyner",
+                 "House and Land Packages, Adelaide", "Southern Suburbs, Seaford"):
+        assert _is_group_header(line, {}), line

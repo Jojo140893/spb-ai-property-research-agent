@@ -416,6 +416,17 @@ _PROSE = re.compile(
     r"|purchase price|payable within)\b", re.I)
 
 
+# The vocabulary a table's column row is built from. A line made of nothing else is that
+# row -- or the tail of it, wrapped onto its own line.
+_COLUMN_WORDS = frozenset("""
+    status lot lots no num number street st address type types size sizes price prices
+    land build building total date dates title titled est estimated design designs
+    facade facades width depth stage orien orientation contract contracts package
+    packages floor area areas yield bed beds bath baths car cars name names storey
+    storeys reg registered avail available link links portal m2 sqm inc gst and or of
+""".split())
+
+
 def _is_group_header(text: str, fields: Dict[str, Any]) -> bool:
     """Estate/builder/region banner rather than a lot row."""
     if fields.get("advertised_package_price"):
@@ -433,6 +444,22 @@ def _is_group_header(text: str, fields: Dict[str, Any]) -> bool:
     # own, four characters of pure digits, which slipped under the ceiling below and took
     # the estate of 9 rows on the FRD Homes stocklist.
     if re.fullmatch(r"[\d\s.,/-]+(?:\s+[A-Z]{1,3})?", stripped):
+        return False
+    # A LINE THAT BEGINS MID-SENTENCE IS A CONTINUATION, NOT A SECTION.
+    #
+    # PDF text comes out wrapped, and the tail of a paragraph lands on a line of its own:
+    # "subject to final positioning on the site and may" is short, digit-free, and has
+    # none of the words the prose test looks for -- so it read as a section and took the
+    # estate of 27 rows on the Alete stocklist. A banner names a place or a project; it
+    # starts with a capital, a digit or a symbol, never a lowercase word.
+    if stripped[:1].islower():
+        return False
+    # A WRAPPED COLUMN HEADER IS NOT A SECTION EITHER. These stocklists print their
+    # column row over two lines -- "Status Lot/ Building Design Name ... Package Price"
+    # then "Street # Type" -- and _is_column_header only recognises the first. The
+    # orphaned second line is short, capitalised and digit-free, so it read as a banner.
+    _tokens = re.findall(r"[A-Za-z]+", stripped)
+    if _tokens and all(w.lower() in _COLUMN_WORDS for w in _tokens):
         return False
     # PROSE IS NEVER A SECTION. The disclaimer at the foot of every page — "For further
     # details or clarification, please contact us." — is short enough and digit-free
