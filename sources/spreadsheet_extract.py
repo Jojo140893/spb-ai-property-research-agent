@@ -626,6 +626,13 @@ def _context_suburb(header: str, state: str = "") -> Optional[str]:
 _SUBURB_COLUMN = re.compile(r"^(suburb|localit(y|ies)|town)s?$", re.I)
 
 
+# What a Suburb column holds when it holds nothing. Each of these is a single alphabetic
+# word and would pass any test based on the SHAPE of a place name.
+_COLUMN_PLACEHOLDER = re.compile(
+    r"^(tba|tbc|tbd|various|varies|multiple|several|all|any|none|nil|na|n/a|unknown|"
+    r"pending|misc|other|see below|as above|blank|empty|null|test|sample)$", re.I)
+
+
 def _column_suburb(value: Any, state: str = "") -> Optional[str]:
     """A Suburb COLUMN's own value, where it names a real locality.
 
@@ -648,7 +655,36 @@ def _column_suburb(value: Any, state: str = "") -> Optional[str]:
         return None
     known = (_BANNER_GEO.locate(bit, state) if state
              else _BANNER_GEO.states_for_suburb(bit))
-    return bit.title() if known else None
+    if known:
+        return bit.title()
+
+    # A MISSPELLING IS STILL THE SOURCE NAMING ITS SUBURB, and dropping it here means
+    # nothing downstream ever gets to fix it.
+    #
+    # The Luxton sheet writes "Michleham" in a column headed SUBURB for nineteen lots. It
+    # is Mickleham with one letter changed, suburb_quality corrects exactly that class,
+    # and it never got the chance: this function required a locality match before the
+    # value was stored, so the column was discarded at extraction and the row reached the
+    # database with no suburb at all.
+    #
+    # So a value that LOOKS like a place name is kept even when it does not match, and
+    # the decision moves to where it belongs. That is this module's own stated
+    # architecture -- store what the source wrote, judge it on the way out -- and it is
+    # safe because suburb_quality.resolve blanks anything it cannot verify, which is what
+    # keeps "GARAGE" and "TBA" out of the published column regardless of what is stored.
+    #
+    # Kept narrow on purpose: letters, spaces and hyphens only, one to three words, so a
+    # price, a date or a lot code is still refused here rather than passed along. And the
+    # placeholders this column actually holds on live stocklists are named outright --
+    # "TBA" and "Various" are one alpha word each and would sail through a shape test.
+    if _COLUMN_PLACEHOLDER.match(bit):
+        return None
+    words = bit.replace("-", " ").split()
+    if (1 <= len(words) <= 3
+            and all(w.replace("'", "").isalpha() for w in words)
+            and 3 <= len(bit) <= 30):
+        return bit.title()
+    return None
 
 
 def _column_map(values: List[List[Any]]) -> Dict[int, str]:

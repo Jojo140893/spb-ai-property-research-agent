@@ -47,3 +47,45 @@ def test_a_header_repeated_further_down_restates_the_columns():
     )
     out = extract_from_csv(two_blocks.encode(), source_label="t", builder_hint="X")
     assert "Beveridge" in {str(l.get("suburb") or "") for l in out}
+
+
+# ------------------------------------- a misspelling is still the source naming a suburb
+def test_a_misspelled_suburb_column_value_is_kept_for_later_correction():
+    """The Luxton sheet writes "Michleham" in a column headed SUBURB for nineteen lots. It
+    is Mickleham with one letter changed, and suburb_quality corrects exactly that class —
+    but it never got the chance, because _column_suburb required a locality match before
+    the value was stored. The column was discarded at extraction and the row reached the
+    database with no suburb at all.
+
+    Storing it is safe because suburb_quality.resolve blanks anything it cannot verify.
+    That is what keeps GARAGE and TBA out of the published column regardless of what the
+    extractor kept."""
+    from sources.spreadsheet_extract import _column_suburb
+
+    assert _column_suburb("Michleham") == "Michleham"
+    assert _column_suburb("Soutbank") == "Soutbank"
+
+
+def test_the_placeholders_that_column_actually_holds_are_still_refused():
+    """"TBA" and "Various" are one alphabetic word each and pass any test based on the
+    SHAPE of a place name, so they are named outright."""
+    from sources.spreadsheet_extract import _column_suburb
+
+    for junk in ("TBA", "TBC", "Various", "N/A", "Unknown", "Pending", "None"):
+        assert _column_suburb(junk) is None, junk
+
+
+def test_a_figure_or_a_code_is_still_refused():
+    from sources.spreadsheet_extract import _column_suburb
+
+    for junk in ("$450,000", "Stage 2", "House & Land", "NSW", "Lot 12", "2026"):
+        assert _column_suburb(junk) is None, junk
+
+
+def test_the_misspelling_resolves_once_the_row_has_its_state():
+    """End to end: the extractor keeps it, resolve corrects it."""
+    import suburb_quality
+
+    kept = "Michleham"
+    assert suburb_quality.resolve({"suburb": kept, "state": "VIC"}) == (
+        "Mickleham", suburb_quality.FROM_TYPO)
