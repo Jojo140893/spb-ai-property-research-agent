@@ -110,3 +110,68 @@ def test_two_member_rows_are_still_accepted():
     row = ("Lot 12 Palomino Titled 350 4 2 2 $820,000", [])
     out, _, _ = SE._rows_to_listings([row], "", "f.pdf", "")
     assert len(out) == 1
+
+
+# ------------------------------------------- the locality at the END of a banner
+
+def test_a_banner_whose_whole_segment_is_not_a_locality_still_yields_one():
+    """Coleen, 19 Aug: a Donnybrook lot she could see in E-Agent was missing from the app.
+
+    It was there — priced, 3 bedrooms, 238 m2 — with NO SUBURB. Its banner reads
+    "Estate : Balmain Donnybrook", which is a single segment, and _NOT_A_LOCALITY matches
+    "Estate" inside it, so the whole thing was discarded. "Donnybrook" sat at the end of
+    it the entire time.
+    """
+    if not _geo_loaded():
+        pytest.skip("suburb index not available in this environment")
+    assert SE._context_suburb("Estate : Balmain Donnybrook", "VIC") == "Donnybrook"
+    assert SE._context_suburb("Estate : Banksia Armstrong Creek", "VIC") == "Armstrong Creek"
+
+
+def test_the_estate_name_trap_still_holds():
+    """This is NOT a substring search. Searching anywhere inside a segment yields
+    "Bingara" from "Bingara Gorge" — a real town 500 km from those lots. An Australian
+    banner ENDS with its locality, so only the tail is read, and the trap has none."""
+    if not _geo_loaded():
+        pytest.skip("suburb index not available in this environment")
+    assert SE._context_suburb("Bingara Gorge - Spec Contract", "NSW") is None
+    assert SE._context_suburb("Bingara Gorge", "NSW") is None
+
+
+@pytest.mark.parametrize("banner", [
+    "One Part Contracts", "7 Star Energy Rating",
+    "2-Part Detached SS North 704 Balmain Estate", "External Agent Price List",
+])
+def test_a_banner_that_names_no_place_still_yields_nothing(banner):
+    """These were the largest fake-suburb cohorts in the whole database once."""
+    if not _geo_loaded():
+        pytest.skip("suburb index not available in this environment")
+    assert SE._context_suburb(banner, "VIC") is None
+
+
+def test_the_row_state_is_required_and_is_load_bearing():
+    """Measured across the catalogue: a stateless tail is unsafe even when unambiguous.
+    "Caboolture Central Springs" tails to "Springs", which exists in exactly ONE state —
+    Western Australia — while Caboolture is in Queensland. And "Donnybrook" itself exists
+    in QLD, VIC and WA, so the state is what makes the answer a fact rather than a guess.
+    """
+    if not _geo_loaded():
+        pytest.skip("suburb index not available in this environment")
+    assert SE._context_suburb("Caboolture Central Springs", "") is None
+    assert SE._context_suburb("Caboolture Central Springs", "QLD") is None
+    assert SE._context_suburb("Estate : Balmain Donnybrook", "NSW") is None, \
+        "Donnybrook is not in NSW; the wrong state must not resolve"
+
+
+def test_the_longest_tail_wins():
+    if not _geo_loaded():
+        pytest.skip("suburb index not available in this environment")
+    assert SE._context_suburb("Estate : Palomino Armstrong Creek", "VIC") == "Armstrong Creek"
+
+
+def test_the_whole_segment_rule_still_runs_first():
+    """The existing behaviour is untouched — the tail is only a fallback."""
+    if not _geo_loaded():
+        pytest.skip("suburb index not available in this environment")
+    assert (SE._context_suburb("Harvest Hill | 1377 Hue Hue Road, Wyee", "NSW") or "").lower() \
+        == "wyee"

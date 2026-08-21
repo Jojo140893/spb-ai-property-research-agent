@@ -396,6 +396,9 @@ _NOT_A_LOCALITY = re.compile(
     r"house|land|terrace|townhouse|apartment|dual|key|stage|estate|stock|list|"
     r"contract|price|package|available|updated|as of|smsf|rating|energy|star", re.I)
 
+# Words of a banner segment, for the trailing-locality fallback below.
+_BANNER_WORD = re.compile(r"[A-Za-z][A-Za-z'\-]*")
+
 _BANNER_GEO = None
 
 
@@ -445,7 +448,43 @@ def _context_suburb(header: str, state: str = "") -> Optional[str]:
                  else _BANNER_GEO.states_for_suburb(bit))
         if known:
             found = bit.title()
-    return found
+    if found:
+        return found
+
+    # THE LOCALITY AT THE END OF A SEGMENT, when the whole segment is not one.
+    #
+    # Coleen, 19 Aug: a Donnybrook lot she was looking at in E-Agent could not be found in
+    # the app. It was there, priced and bedroomed, with NO SUBURB — because its banner
+    # reads "Estate : Balmain Donnybrook", which is a single segment, and _NOT_A_LOCALITY
+    # matches "Estate" in it, so the whole thing was discarded. "Donnybrook" was sitting
+    # at the end of it the entire time.
+    #
+    # This is NOT the substring search the loop above refuses. Searching anywhere inside a
+    # segment is the estate-name trap — "Bingara Gorge - Spec Contract" yields "Bingara",
+    # a real town 500 km from the lots. An Australian banner ENDS with its locality, so
+    # the tail is a different claim from any substring, and the trap survives it:
+    # "Bingara Gorge" tails to "Gorge" and "Bingara Gorge", neither of which is a place.
+    #
+    # THE STATE IS REQUIRED HERE, unlike above. Measured across the catalogue, a stateless
+    # tail is not safe even when it is unambiguous: "Caboolture Central Springs" tails to
+    # "Springs", which exists in exactly one state — Western Australia — while Caboolture
+    # is in Queensland. Requiring the row's own state costs about 37 recoveries and
+    # removes the whole class. "Donnybrook" itself exists in QLD, VIC and WA.
+    #
+    # Longest tail first, so "Armstrong Creek" wins over "Creek".
+    if not state:
+        return None
+    for bit in _BANNER_SPLIT.split(cleaned):
+        words = _BANNER_WORD.findall(bit or "")
+        for n in (3, 2, 1):
+            if len(words) < n:
+                continue
+            cand = " ".join(words[-n:])
+            if cand.upper() in _STATE_TOKENS or _NOT_A_LOCALITY.search(cand):
+                continue
+            if _BANNER_GEO.locate(cand, state):
+                return cand.title()
+    return None
 
 
 # Column headers that name a locality outright. Deliberately short: "City" is excluded
