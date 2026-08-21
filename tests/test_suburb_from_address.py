@@ -60,10 +60,19 @@ def test_a_flattened_table_row_is_never_read_as_an_ADDRESS():
         assert not SQ.is_located(why), f"{junk[:40]!r} -> {suburb!r} treated as located"
 
 
-def test_it_will_not_answer_without_a_state():
-    """'Caboolture Central Springs' tails to Springs, a locality in Western Australia and
-    nowhere else, for a Queensland lot. Requiring the row's own state removes the class."""
-    assert resolve("12 Smith St, Caboolture Central Springs", "")[0] == ""
+def test_the_address_rule_will_not_answer_without_a_state():
+    """'Caboolture Central Springs' TAILS to Springs — a locality in Western Australia and
+    nowhere else — for a Queensland lot. Requiring the row's own state removes that class,
+    and the LOCATED address rule still requires it.
+
+    The last-resort inferred pass may answer here, and on this input it says Caboolture,
+    which is right: it takes the longest nationally-unambiguous name rather than the tail,
+    so 'Springs' (two states) is skipped where 'Caboolture' (one) is not. What must never
+    happen is either of them being presented as a located fact."""
+    suburb, why = resolve("12 Smith St, Caboolture Central Springs", "")
+    assert why != SQ.FROM_ADDRESS_TAIL, f"the address rule answered {suburb!r} stateless"
+    assert not SQ.is_located(why), (suburb, why)
+    assert suburb != "Springs", "the WA trap came back"
 
 
 def test_a_segment_that_calls_itself_an_estate_is_not_a_located_locality():

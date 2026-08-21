@@ -260,6 +260,12 @@ def resolve(row: Dict[str, Any], index=None) -> Tuple[str, str]:
         named = _document_suburb(row)
         if named:
             return _canonical_spelling(named, "", index), FROM_DOCUMENT
+        # And the last-resort read, for the same reason: this return is final, so a
+        # stateless row would otherwise never reach it. It only accepts a nationally
+        # unambiguous name — see _longest_locality_in_text.
+        guess = _longest_locality_in_text(row, "", index)
+        if guess:
+            return _canonical_spelling(guess, "", index), INFERRED_FROM_TEXT
         return "", BLANK_NO_STATE if raw else BLANK_ABSENT
 
     if raw:
@@ -384,9 +390,17 @@ def _longest_locality_in_text(row: Dict[str, Any], state: str, index) -> str:
     The street guard and the not-a-locality list still apply — they cost nothing and each
     removes a whole class of the errors this rule is prone to.
     """
-    if not state:
-        return ""
-    words = _ADDR_WORD.findall(_row_text(row))
+    # THE ESTATE NAME IS READ HERE AND NOWHERE ELSE IN THIS MODULE.
+    #
+    # It is deliberately absent from _row_text, because _postcode_anchor and
+    # _looks_like_a_street would both change behaviour if it appeared there. But the last
+    # documents holding out are multi-suburb BUILDER price lists — one sheet covering 57
+    # estates — and on those the estate is the only thing that names a place at all:
+    # "Bahrs Scrub Brookhaven", "Coridale Lara", "Central Springs Caboolture", "Logan
+    # Reserve Riverleigh". Reading it is 68%-87% right on its own, which is why it is
+    # confined to this function and its answer is marked INFERRED.
+    text = " ".join([_row_text(row), str(row.get("estate_name") or "")])
+    words = _ADDR_WORD.findall(text)
     for size in (3, 2, 1):
         for start in range(len(words) - size + 1):
             candidate = " ".join(words[start:start + size])
@@ -395,7 +409,18 @@ def _longest_locality_in_text(row: Dict[str, Any], state: str, index) -> str:
             after = start + size
             if after < len(words) and words[after].lower().strip(".") in _STREET_TOKENS:
                 continue
-            if index.locate(candidate, state):
+            if state:
+                if index.locate(candidate, state):
+                    return candidate
+                continue
+            # NO STATE RECORDED — 430 of these rows. A nationally UNAMBIGUOUS name is
+            # still worth offering: 'Mambourin' and 'Caboolture' exist in exactly one
+            # state each, so there is no state for them to be wrong about. Anything
+            # existing in two states is skipped, which is the 'Springs' case that made
+            # requiring a state necessary everywhere else.
+            found = index.states_for_suburb(candidate)
+            found = list(found) if not isinstance(found, str) else [found]
+            if len(found) == 1:
                 return candidate
     return ""
 

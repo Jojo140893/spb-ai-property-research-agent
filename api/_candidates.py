@@ -660,6 +660,35 @@ def _estate_suburb_map(rows):
     return _sibling_suburb_map(rows, "estate_name")
 
 
+def _sibling_state_map(rows, floor=0.95):
+    """{(field, group): state} where a group's rows agree overwhelmingly on one state.
+
+    A stateless row is invisible to every other rule here, because both sibling maps are
+    keyed by state and suburb_quality will not check a locality without one. Borrowing
+    the state first is what lets those rules run at all.
+    """
+    seen = {}
+    for row in rows:
+        if row.get("superseded_by"):
+            continue
+        state = str(row.get("state") or "").strip().upper()
+        if not state:
+            continue
+        for field in ("estate_name", "source_url"):
+            group = str(row.get(field) or "").strip().lower()
+            if not group:
+                continue
+            seen.setdefault((field, group), {})
+            seen[(field, group)][state] = seen[(field, group)].get(state, 0) + 1
+    out = {}
+    for key, counts in seen.items():
+        total = sum(counts.values())
+        top, n = max(counts.items(), key=lambda kv: kv[1])
+        if total and n / total >= floor:
+            out[key] = top
+    return out
+
+
 def build_packages(brief_dict, rows, today=None):
     """(packages, coverage) — coverage is a plain dict of counts, all reported.
 
@@ -696,6 +725,17 @@ def build_packages(brief_dict, rows, today=None):
     # and the same 80% agreement rule applies. It is worth having: 496 live rows have no
     # estate name at all but sit on a page whose other rows agree on one suburb.
     _page_suburb = _sibling_suburb_map(rows, "source_url")
+    # THE STATE, BORROWED, BEFORE ANY OF THE ABOVE CAN BE ASKED.
+    #
+    # Both maps above are keyed by state, and every suburb rule in suburb_quality
+    # requires one, so a row with no state recorded cannot be reached by any of them.
+    # That is not a small population: "CC-0114, Bald Hills" and "CC-0108, One Mile" name
+    # real Queensland suburbs and were unreachable purely because their own row does not
+    # say QLD, while every other row on the same price list does.
+    #
+    # 95%, not 80%. A state is a stronger claim than a suburb — one estate sits in one
+    # state, and a page mixing two is a page whose state cannot be borrowed at all.
+    _state_of = _sibling_state_map(rows)
     budget_max = _num(brief_dict.get("budget_max")) or 0.0
     ceiling = budget_max + BUDGET_HEADROOM if budget_max else None
     # storeys_max < 2 is the only brief that a missing storey figure could slip past,
@@ -816,6 +856,14 @@ def build_packages(brief_dict, rows, today=None):
         # offer in offer, QLD" as four of its five results. A listing whose location
         # cannot be confirmed must not reach a client, and cannot be geocoded,
         # distance-filtered or benchmarked either.
+        # Borrow the state FIRST where the row has none, so every rule below can run.
+        if not str(row.get("state") or "").strip():
+            for field in ("estate_name", "source_url"):
+                borrowed_state = _state_of.get(
+                    (field, str(row.get(field) or "").strip().lower()))
+                if borrowed_state:
+                    row = {**row, "state": borrowed_state}
+                    break
         suburb, suburb_why = suburb_quality.resolve(row)
         if not suburb_quality.is_located(suburb_why):
             state_key = str(row.get("state") or "").strip().upper()

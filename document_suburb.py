@@ -209,27 +209,51 @@ def resolve_documents(groups: Iterable[Tuple[str, str]], index,
 # the old one. So the answer lives beside the database as a small map from document to
 # suburb, refreshed by the harvest and read by everything else.
 _MAP_PATH = "data/document_suburbs.json"
+# THE ANSWERS A DOCUMENT CANNOT GIVE ITSELF.
+#
+# A tower price list names its PROJECT and never its suburb — "Victoria & Albert",
+# "Collins Wharf - Ancora", "Senso", "Dairy Farmers Towers". Reading more pages does not
+# help; the suburb is simply not in the file. But these are named developments with
+# published addresses, so the answer exists, it is just not in the document.
+#
+# This file holds those, one line per document, each with the address it was verified
+# against so the claim can be rechecked rather than taken on trust. Hand-written, never
+# overwritten by the automatic refresh, and it WINS over the automatic answer — a person
+# who has checked the developer's own listing knows more than a front-page scan.
+_MANUAL_PATH = "data/document_suburbs_manual.json"
 _MAP_CACHE: Optional[Dict[str, List[str]]] = None
 
 
-def map_path() -> str:
+def map_path(manual: bool = False) -> str:
     import os
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), _MAP_PATH)
+    name = _MANUAL_PATH if manual else _MAP_PATH
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+
+
+def _read(path: str) -> dict:
+    import json
+    try:
+        with open(path, encoding="utf-8") as handle:
+            loaded = json.load(handle)
+        return loaded if isinstance(loaded, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def load_map(refresh: bool = False) -> Dict[str, List[str]]:
-    """{url: [suburb, state]} as last read from the documents themselves."""
+    """{url: [suburb, state]} — what each document says, manual answers taking priority."""
     global _MAP_CACHE
     if _MAP_CACHE is not None and not refresh:
         return _MAP_CACHE
-    import json
-    import os
-    try:
-        with open(map_path(), encoding="utf-8") as handle:
-            loaded = json.load(handle)
-        _MAP_CACHE = {str(k): list(v) for k, v in loaded.items()} if isinstance(loaded, dict) else {}
-    except (OSError, ValueError):
-        _MAP_CACHE = {}
+    merged = {str(k): list(v) for k, v in _read(map_path()).items()
+              if isinstance(v, (list, tuple))}
+    for url, entry in _read(map_path(manual=True)).items():
+        # The manual file is written for a reader, so it is a dict with its evidence.
+        if isinstance(entry, dict) and entry.get("suburb"):
+            merged[str(url)] = [str(entry["suburb"]), str(entry.get("state") or "")]
+        elif isinstance(entry, (list, tuple)) and entry:
+            merged[str(url)] = list(entry)
+    _MAP_CACHE = merged
     return _MAP_CACHE
 
 
