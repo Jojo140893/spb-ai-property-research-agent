@@ -1308,6 +1308,16 @@ def extract_from_csv(data: bytes, source_label: str = "", builder_hint: str = ""
     out: List[Dict[str, Any]] = []
     context, banner = "", ""
     money = _MoneyColumns()
+    # THE SUBURB COLUMN, WHICH THIS READER WAS THROWING AWAY.
+    #
+    # The xlsx and PDF-table readers both build a column map so a fact can be read out of
+    # the column its header names. This one passed `(text, links)` -- a two-member row
+    # with no columns at all -- so _column_suburb could never fire and a sheet whose
+    # header literally reads "ESTATE, REGION, LOT No, SUBURB, TITLES, ..." produced 0 of
+    # 29 rows with a location, while printing Werribee, Tarneit, Thornhill Park,
+    # Beveridge, Clyde North and Manor Lakes down the page.
+    csv_colmap: Dict[int, str] = {}
+    header_rows: List[List[str]] = []
     # enumerate from 1: a CSV exported from Google Sheets lines up with the row numbers
     # the sheet itself shows, which is the number Colin will be looking at.
     for line_no, raw in enumerate(csv.reader(io.StringIO(text), delimiter=delimiter), 1):
@@ -1319,10 +1329,20 @@ def extract_from_csv(data: bytes, source_label: str = "", builder_hint: str = ""
             continue
         is_header = _is_column_header(rendered)
         money.feed_header(cells, is_header)
+        raw_cells = [str(v).strip() for v in raw]
         if is_header:
+            # Same rule the other readers use: a header near the top names the columns,
+            # and one repeated further down re-states them for a new block.
+            header_rows.append(raw_cells)
+            found = _column_map([raw_cells])
+            if found:
+                csv_colmap = found
             continue
+        columns = {name: _clean(raw_cells[i])
+                   for i, name in csv_colmap.items()
+                   if i < len(raw_cells) and raw_cells[i]}
         listings, context, banner = _rows_to_listings(
-            [(rendered, [])], context, source_label, builder_hint, banner)
+            [(rendered, [], columns)], context, source_label, builder_hint, banner)
         _apply_header_specs(listings, money.specs(cells))
         for _l in listings:
             _l["source_row"] = line_no
