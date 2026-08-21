@@ -379,11 +379,41 @@ def _apply_header_specs(listings: List[Dict[str, Any]], specs: Dict[str, float])
                 row[field] = int(value) if field in ("bedrooms", "car_spaces") else value
 
 
+# A "header" that is really a stray line, and what it costs when one is believed.
+#
+# A section header sets the context for every lot BENEATH it, so a line wrongly accepted
+# as one does not lose a suburb — it steals one, from every row until the next real
+# header. Measured on the Hudson Homes stocklist (104 lots, twelve suburbs): 26 rows had
+# their estate recorded as "NSW" and 18 as "DUPLEX", and 47 of 104 ended with no suburb
+# at all, because two lines were being read as sections:
+#
+#   NSW      the document's own state line, three lines under the title
+#   DUPLEX   the tail of a wrapped cell — "MAGNESIUM 37 -" breaks, and "DUPLEX" lands on
+#            a line of its own
+#
+# Both pass the size-and-digits test below, because both genuinely are short lines with
+# few digits. They are rejected by name instead: a bare state is never a section, and a
+# single bare product word is a fragment of the row above, not a place.
+_NOT_A_SECTION = re.compile(
+    r"^(?:vic|nsw|qld|sa|wa|nt|act|tas"
+    r"|duplex|dual\s*key|house|townhouse|apartment|villa|terrace|unit|land"
+    r"|single|double|storey|traditional|medium|narrow"
+    r"|available|sold|titled|registered|under\s*offer|on\s*hold"
+    r"|total|subtotal|continued|cont\.?|page)$", re.I)
+
+
 def _is_group_header(text: str, fields: Dict[str, Any]) -> bool:
     """Estate/builder/region banner rather than a lot row."""
     if fields.get("advertised_package_price"):
         return False
     if LOT_TOKEN.search(text):
+        return False
+    stripped = str(text or "").strip().strip("-–—:|").strip()
+    # Too short to be a name, or the encoding fragments a PDF leaves behind ("m²" comes
+    # through as "m?" or worse and was being stored as an estate on two rows).
+    if len(stripped) < 4:
+        return False
+    if _NOT_A_SECTION.match(stripped):
         return False
     # short-ish line, mostly words, few digits
     digits = sum(c.isdigit() for c in text)
@@ -826,6 +856,19 @@ def _rows_to_listings(rows: List[Any], context: str, source_label: str,
                                     columns)
         if listing is None:
             if _is_group_header(text, {}):   # no price: _listing_from_row already told us
+                # THE DOCUMENT'S OWN TITLE, REPEATED ON EVERY PAGE, IS NOT A NEW SECTION.
+                #
+                # A multi-page stocklist prints its title as a running header, and each
+                # repeat was resetting the context — so every lot after the first page
+                # break inherited "Hudson Homes Stocklist" instead of the estate it sits
+                # in. That was 39 of 104 rows on one document, and it scales with page
+                # count: the longer the price list, the more of it loses its suburb.
+                #
+                # `banner` is already the first header seen, which IS the title. A later
+                # line identical to it is the same title again, never a section called
+                # after the whole document.
+                if banner and text.strip() == banner.strip():
+                    continue
                 context = text
                 banner = banner or text
             continue
