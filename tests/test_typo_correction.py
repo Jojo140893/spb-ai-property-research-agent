@@ -65,3 +65,23 @@ def test_an_ambiguous_near_miss_is_refused_rather_than_guessed():
                 if SQ._one_edit_apart(name.lower(), n.lower())}
         if len(hits) > 1:
             assert SQ._typo_correction(name, "VIC", index) == "", name
+
+
+# ------------------------------------- the stateless door the WA trap walked back through
+def test_two_localities_in_two_states_names_neither():
+    """'Central Springs Caboolture' is a QUEENSLAND estate containing two nationally
+    unambiguous names: Springs, which is in Western Australia and nowhere else, and
+    Caboolture, which is in Queensland.
+
+    The stateless inference took whichever it found first and labelled a Caboolture lot as
+    being in WA — the exact trap that made a state mandatory everywhere else, walking back
+    in through the one door left open. Candidates must now agree on one state."""
+    for text in ("Central Springs Caboolture", "Caboolture Central Springs"):
+        suburb, _why = SQ.resolve({"estate_name": text, "state": ""})
+        assert suburb != "Springs", f"{text!r} -> {suburb!r} (WA trap reopened)"
+        assert suburb == "", f"{text!r} -> {suburb!r}; two states means neither"
+
+
+def test_an_unambiguous_name_on_its_own_is_still_offered():
+    """The guard is against DISAGREEMENT, not against stateless rows as a class."""
+    assert SQ.resolve({"estate_name": "Mambourin", "state": ""})[0] == "Mambourin"

@@ -510,6 +510,7 @@ def _longest_locality_in_text(row: Dict[str, Any], state: str, index) -> str:
     # confined to this function and its answer is marked INFERRED.
     text = " ".join([_row_text(row), str(row.get("estate_name") or "")])
     words = _ADDR_WORD.findall(text)
+    stateless_hits: list = []
     for size in (3, 2, 1):
         for start in range(len(words) - size + 1):
             candidate = " ".join(words[start:start + size])
@@ -522,15 +523,29 @@ def _longest_locality_in_text(row: Dict[str, Any], state: str, index) -> str:
                 if index.locate(candidate, state):
                     return candidate
                 continue
-            # NO STATE RECORDED — 430 of these rows. A nationally UNAMBIGUOUS name is
-            # still worth offering: 'Mambourin' and 'Caboolture' exist in exactly one
-            # state each, so there is no state for them to be wrong about. Anything
-            # existing in two states is skipped, which is the 'Springs' case that made
-            # requiring a state necessary everywhere else.
+            # NO STATE RECORDED. A nationally UNAMBIGUOUS name is still worth offering:
+            # 'Mambourin' and 'Caboolture' exist in exactly one state each, so there is
+            # no state for them to be wrong about.
+            #
+            # BUT UNAMBIGUOUS IS NOT THE SAME AS ALONE. 'Central Springs Caboolture' is a
+            # Queensland estate, and it contains TWO unambiguous names: Springs, which is
+            # in Western Australia and nowhere else, and Caboolture, which is in
+            # Queensland. Taking the first match found labelled a Caboolture lot as being
+            # in WA -- the exact trap that made a state mandatory everywhere else, walked
+            # straight back in through the stateless door.
+            #
+            # So every candidate in the text is collected, and they must agree on ONE
+            # state before any of them is offered. Disagreement means the text names two
+            # places in two states and nothing here can say which the lot is in.
             found = index.states_for_suburb(candidate)
             found = list(found) if not isinstance(found, str) else [found]
             if len(found) == 1:
-                return candidate
+                stateless_hits.append((candidate, found[0]))
+
+    if stateless_hits:
+        agreed = {st for _name, st in stateless_hits}
+        if len(agreed) == 1:
+            return stateless_hits[0][0]
     return ""
 
 

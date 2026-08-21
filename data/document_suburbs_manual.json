@@ -95,6 +95,12 @@
    "state": "VIC",
    "project": "aston junction",
    "evidence": "Aston Junction, 493 Mountain Highway, Bayswater VIC 3153 - industrial unit development. Bayswater also exists in WA, so the state is pinned here"
+  },
+  {
+   "suburb": "Waterloo",
+   "state": "NSW",
+   "project": "danks st",
+   "evidence": "Danks St District, 903-921 Bourke Street, Waterloo NSW 2017 (DASCO). The price list's own header reads 'Danks St. District - [Bourke St Residences]', which is why an earlier filename rule tried to call it Bourke -- a NSW town 760 km west"
   }
  ]
 }
