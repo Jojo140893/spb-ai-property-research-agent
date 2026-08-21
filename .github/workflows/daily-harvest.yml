@@ -173,7 +173,21 @@ jobs:
       - name: Harvest
         # --no-deploy: publishing is its own step below, so a data failure can never push a
         # partial snapshot over a good one. That rule predates this workflow and is kept.
-        run: python run_daily.py --state-sync --no-deploy --email-days 7
+        #
+        # tee _daily.log: THE ALERT BELOW READS THAT FILE AND NOTHING EVER WROTE IT.
+        # Two steps grep _daily.log — the one that names the dead channel and the one that
+        # tails the log on failure — and in CI the harvest only ever wrote to stdout. So
+        # the 20 Aug failure reported "A channel returned nothing tonight: see the harvest
+        # summary below", and the summary below it was empty, while the line naming the
+        # channel ("- Proxima: read 0 tonight, 3922 listing(s) already stored") sat in the
+        # step log where no alert could reach it. The channel-naming comment below has
+        # been describing behaviour that never ran on a runner.
+        #
+        # pipefail keeps the harvest's own exit code across the pipe; -u keeps the output
+        # ordered rather than arriving in 8 KB blocks after the fact.
+        run: |
+          set -o pipefail
+          python -u run_daily.py --state-sync --no-deploy --email-days 7 2>&1 | tee _daily.log
 
       - name: Publish to Vercel
         # Only when the harvest succeeded — same guarantee run_daily.cmd gives on Windows.
@@ -272,7 +286,16 @@ jobs:
                    | sed -E 's/^ +- //; s/: read 0 tonight//' | sort -u | paste -sd', ' -)
             echo "::error::A channel returned nothing tonight: ${DEAD:-see the harvest summary below}"
             echo "Its stored rows are going stale while the dashboard serves them as current."
-            echo "The usual cause is an expired sign-in. On the laptop:"
+            echo ""
+            # SHOW THE ACTUAL ERROR BEFORE PRESCRIBING A CURE FOR A DIFFERENT ONE.
+            # On 20 Aug this alert said the usual cause is an expired sign-in. It was not:
+            # the auth check had passed at 09:26 and the log said "Page.goto: Timeout
+            # 30000ms exceeded". Re-authenticating a working session fixes nothing, and
+            # the one line that would have said so was already in the log.
+            echo "--- what the harvest actually reported ---"
+            grep -E "ERROR|crashed|Timeout|sign-in expired|auth check failed" _daily.log               | tail -8 || echo "(no error line found)"
+            echo ""
+            echo "If that says the sign-in expired, refresh it on the laptop:"
             echo "    python portal_login.py e_agent"
             echo "    python portal_login.py portal_proxima --profile"
             echo "then push the refreshed session:  python state_sync.py push"

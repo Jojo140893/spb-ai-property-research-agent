@@ -393,8 +393,43 @@ class PlaywrightScraper:
         if self.rate_limit_seconds > 0:
             time.sleep(self.rate_limit_seconds)
 
+    # A first navigation that times out once must not cost the whole channel.
+    #
+    # The scheduled run of 20 Aug went red having read NOTHING from Proxima — 3,922 lots
+    # left to go stale — because the very first page.goto of the run hit
+    #     Page.goto: Timeout 30000ms exceeded
+    # on https://portal.proxima.com.au/agent/projects/index/. The session was valid (the
+    # auth check had passed at 09:26) and a manual re-run three hours later read all
+    # 3,922 back. The portal was simply slow for half a minute.
+    #
+    # The alert made it worse: the guard's advice is "the usual cause is an expired
+    # sign-in, run portal_login.py", which sends Ahsan to re-authenticate a session that
+    # was never broken. A retry removes the whole class — a portal that is slow once at
+    # 09:23 is usually fine at 09:24 — and a portal that is genuinely down still fails,
+    # just after three honest attempts instead of one.
+    _GOTO_ATTEMPTS = 3
+
     def goto(self, url: str):
-        self.page.goto(url, wait_until="domcontentloaded")
+        last = None
+        for attempt in range(1, self._GOTO_ATTEMPTS + 1):
+            try:
+                # Grow the budget: a portal mid-deploy can take well over the 30s default.
+                self.page.goto(url, wait_until="domcontentloaded",
+                               timeout=30_000 * attempt)
+                last = None
+                break
+            except Exception as exc:  # Playwright TimeoutError and transport resets alike
+                last = exc
+                if attempt == self._GOTO_ATTEMPTS:
+                    break
+                logger.warning("goto %s failed (%s) — attempt %d of %d, retrying.",
+                               url, type(exc).__name__, attempt, self._GOTO_ATTEMPTS)
+                try:
+                    self.page.wait_for_timeout(2000 * attempt)
+                except Exception:
+                    time.sleep(2 * attempt)
+        if last is not None:
+            raise last
         # Let client-rendered inventory hydrate before anything reads the DOM.
         # (Bathla's /display renders stock via JS; without this the page is still
         # empty at extraction time and the portal looks like it has no listings.)
