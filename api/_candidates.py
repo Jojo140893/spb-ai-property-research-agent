@@ -701,7 +701,15 @@ def _sibling_state_map(rows, floor=0.95):
         state = str(row.get("state") or "").strip().upper()
         if not state:
             continue
-        for field in ("estate_name", _DOC_KEY, "source_url"):
+        # BUILDER LAST, and only because 95% makes it safe.
+        #
+        # A builder that sells in one state is strong evidence for a row of theirs that
+        # forgot to say so -- 287 stateless listings. A builder that sells in several is
+        # no evidence at all, and the same 95% floor that protects the estate and
+        # document groups refuses them by construction: Creation Homes (QLD 138 / NSW
+        # 122), Hudson Homes, G Developments, Hattan Homes and four others never qualify.
+        # It is tried after estate and document because those are narrower claims.
+        for field in ("estate_name", _DOC_KEY, "source_url", "builder_name"):
             group = str(row.get(field) or "").strip().lower()
             if not group:
                 continue
@@ -811,7 +819,7 @@ def build_packages(brief_dict, rows, today=None):
             # It has to be here, before the drop, and before the suburb rules further
             # down — all of which are keyed by state and none of which can run without
             # one.
-            for _field in ("estate_name", "source_doc", "source_url"):
+            for _field in ("estate_name", "source_doc", "source_url", "builder_name"):
                 _borrowed = _state_of.get(
                     (_field, str(row.get(_field) or "").strip().lower()))
                 if _borrowed:

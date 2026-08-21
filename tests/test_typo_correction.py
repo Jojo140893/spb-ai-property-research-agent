@@ -85,3 +85,19 @@ def test_two_localities_in_two_states_names_neither():
 def test_an_unambiguous_name_on_its_own_is_still_offered():
     """The guard is against DISAGREEMENT, not against stateless rows as a class."""
     assert SQ.resolve({"estate_name": "Mambourin", "state": ""})[0] == "Mambourin"
+
+
+def test_a_multi_state_builder_lends_no_state():
+    """A builder selling in one state is evidence for a row of theirs that forgot to say
+    so. A builder selling in several is evidence of nothing, and the 95% floor refuses
+    them by construction — Creation Homes (QLD 138 / NSW 122), Hudson Homes, G
+    Developments, Hattan Homes, Prosperity Residential and three others never qualify."""
+    from api._candidates import _sibling_state_map
+
+    rows = ([{"builder_name": "Split Co", "state": "QLD"}] * 6
+            + [{"builder_name": "Split Co", "state": "NSW"}] * 4
+            + [{"builder_name": "Single Co", "state": "VIC"}] * 20)
+    got = _sibling_state_map(rows)
+    assert ("builder_name", "single co") in got
+    assert got[("builder_name", "single co")] == "VIC"
+    assert ("builder_name", "split co") not in got, "a multi-state builder lent a state"
