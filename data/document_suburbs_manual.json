@@ -101,6 +101,12 @@
    "state": "NSW",
    "project": "danks st",
    "evidence": "Danks St District, 903-921 Bourke Street, Waterloo NSW 2017 (DASCO). The price list's own header reads 'Danks St. District - [Bourke St Residences]', which is why an earlier filename rule tried to call it Bourke -- a NSW town 760 km west"
+  },
+  {
+   "suburb": "Birtinya",
+   "state": "QLD",
+   "project": "st clair",
+   "evidence": "St Clair, 11 Waterside Retreat, Birtinya QLD 4575 (Habitat Development Group) - two towers on Lake Kawana, which is why the rows read 'Lake View'. Not St Clair NSW or St Clair SA, both of which are localities"
   }
  ]
 }
