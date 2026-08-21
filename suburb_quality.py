@@ -435,7 +435,11 @@ def _document_suburb(row: Dict[str, Any]) -> str:
     """
     try:
         import document_suburb
-        return document_suburb.suburb_for_row(row)
+        # PER-ROW FIRST. A builder's stocklist is a dozen suburbs, not one, and the line
+        # this row was read from has its own section header above it. The whole-document
+        # answer is only right for a single-project price list.
+        line = document_suburb.suburb_for_line(row)
+        return line or document_suburb.suburb_for_row(row)
     except Exception:                              # missing module, unreadable map
         return ""
 

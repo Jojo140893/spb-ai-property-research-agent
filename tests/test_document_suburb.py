@@ -141,3 +141,153 @@ def test_a_row_from_another_state_does_not_inherit_the_answer(monkeypatch):
     monkeypatch.setattr(DS, "_MAP_CACHE", {"http://x": ["Broadbeach", "QLD"]})
     assert DS.suburb_for_row({"source_url": "http://x", "state": "QLD"}) == "Broadbeach"
     assert DS.suburb_for_row({"source_url": "http://x", "state": "VIC"}) == ""
+
+
+# ------------------------------------------------- the section header above each block
+def test_line_key_survives_the_encoding_noise_pdfs_produce():
+    """The same line arrives as '197.08m\u00b2' from one reader and '197.08m?' from another."""
+    a = DS.line_key("Available 61 House COPPER 21 197.08m\u00b2 469.0 m\u00b2 4 beds")
+    b = DS.line_key("Available 61 House COPPER 21 197.08m? 469.0 m? 4 beds")
+    assert a == b != ""
+
+
+def test_a_builder_stocklist_is_a_dozen_suburbs_not_one():
+    """Hudson Homes' list reads
+
+        Watagan Park - Display Homes, Cooranbong
+        Available 7 House MARIGOLD 35 ... $1,519,500
+        Jensen Rise Estate - Wadalba, Wadalba
+        Available 61 House COPPER 21 ... $1,167,260
+
+    and every one of its 104 live rows was stored with no suburb, because the harvest
+    kept the lot line and threw the header above it away. suburb_for_document correctly
+    refuses this file — asked for ONE locality when there are twelve — so the lot line
+    itself has to carry the join."""
+    lines = [
+        "Hudson Homes Stocklist",
+        "Watagan Park - Display Homes, Cooranbong",
+        "Available 7 House MARIGOLD 35 324.91m2 483.0 m2 5 beds $1,519,500 Portal Link",
+        "Jensen Rise Estate - Wadalba, Wadalba",
+        "Available 61 House COPPER 21 197.08m2 469.0 m2 4 beds $1,167,260 Portal Link",
+    ]
+
+    class _Idx:
+        def locate(self, name, state):
+            return str(name).lower() in ("cooranbong", "wadalba")
+
+        def states_for_suburb(self, name):
+            return ["NSW"] if str(name).lower() in ("cooranbong", "wadalba") else []
+
+    got = _rows_from_lines(lines, "NSW", _Idx())
+    assert got[DS.line_key(lines[2])] == "Cooranbong"
+    assert got[DS.line_key(lines[4])] == "Wadalba"
+
+
+def test_a_lot_before_any_header_is_left_unnamed():
+    """Better to name nothing than to hand a lot the suburb of the block below it."""
+    class _Idx:
+        def locate(self, name, state):
+            return str(name).lower() == "wadalba"
+
+        def states_for_suburb(self, name):
+            return ["NSW"] if str(name).lower() == "wadalba" else []
+
+    lines = ["Available 7 House MARIGOLD $1,519,500", "Estate - Wadalba, Wadalba",
+             "Available 61 House COPPER $1,167,260"]
+    got = _rows_from_lines(lines, "NSW", _Idx())
+    assert DS.line_key(lines[0]) not in got
+    assert got[DS.line_key(lines[2])] == "Wadalba"
+
+
+def _rows_from_lines(lines, state, index):
+    """row_suburbs' logic against a list of lines, without building a PDF to hold them."""
+    out, current = {}, ""
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        if DS._MONEY.search(line):
+            if current:
+                out[DS.line_key(line)] = current
+            continue
+        segments = [s.strip() for s in line.split(",") if s.strip()]
+        if not segments:
+            continue
+        tail = segments[-1]
+        if len(DS._WORD.findall(tail)) > 4:
+            continue
+        if index.locate(tail, state) if state else len(index.states_for_suburb(tail)) == 1:
+            current = tail.title()
+    return out
+
+
+def test_the_estate_name_trap_does_not_reach_the_section_headers():
+    """Only the LAST comma-separated segment is tested, which is what keeps
+    'Bingara Gorge - Spec Contract' from yielding Bingara."""
+    class _Idx:
+        def locate(self, name, state):
+            return str(name).lower() == "bingara"
+
+        def states_for_suburb(self, name):
+            return ["NSW"] if str(name).lower() == "bingara" else []
+
+    got = _rows_from_lines(["Bingara Gorge - Spec Contract",
+                            "Available 7 House $900,000"], "NSW", _Idx())
+    assert got == {}
+
+
+# ------------------------------------------------ the gate that keeps the row map safe
+def test_the_row_map_gate_is_strict_enough_to_matter():
+    """Ungated, the per-row mapping is 32% right, and its failure LATCHES: a line that is
+    not a section header matches anyway and hands its suburb to every lot beneath it
+    until the next match. That is how Donnybrook reached Shepparton lots.
+
+    The gate is what stands between that and the published snapshot, so its constants are
+    pinned here rather than left as tunables someone relaxes on a quiet afternoon."""
+    assert DS._ROW_MAP_MIN_CHECKS >= 5
+    assert DS._ROW_MAP_FLOOR >= 0.9
+
+
+def test_the_shipped_row_map_agrees_with_every_suburb_it_can_be_checked_against():
+    """The map in the repo is the gate's output, so it must survive the gate's own test.
+
+    This is the regression that matters: if a future refresh ever writes the ungated map,
+    or the gate is loosened, this fails rather than the app quietly serving Shepparton
+    lots as Donnybrook."""
+    import sqlite3
+
+    import config
+    import suburb_quality
+
+    try:
+        conn = sqlite3.connect("file:%s?mode=ro" % config.DATABASE_PATH, uri=True)
+        conn.row_factory = sqlite3.Row
+        rows = [dict(r) for r in conn.execute(
+            "SELECT source_text, suburb, state FROM buildings "
+            "WHERE (superseded_by IS NULL OR superseded_by = '')")]
+        conn.close()
+    except Exception:                              # no database in this environment
+        return
+
+    index = suburb_quality._index()
+    if not index.loaded:
+        return
+    mapping = DS.load_row_map(refresh=True)
+    if not mapping:
+        return
+    disagreements = []
+    for row in rows:
+        named = mapping.get(DS.line_key(row.get("source_text") or ""))
+        if not named:
+            continue
+        stored = str(row.get("suburb") or "").strip()
+        state = str(row.get("state") or "").strip()
+        if not stored:
+            continue
+        if not (index.locate(stored, state) if state else index.states_for_suburb(stored)):
+            continue
+        if named.lower() != stored.lower():
+            disagreements.append((named, stored))
+    assert not disagreements, (
+        "the shipped row map contradicts %d known suburb(s), e.g. %s"
+        % (len(disagreements), disagreements[:3]))

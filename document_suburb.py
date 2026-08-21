@@ -94,8 +94,46 @@ _EMPTY_RETRIES = 3
 _last_fetch_at = [0.0]
 
 
-def fetch(url: str, opener=urllib.request.urlopen, sleep=None) -> bytes:
-    """The document's bytes, or b'' if it cannot be read. Never raises."""
+def _get(url: str, opener=None) -> bytes:
+    """The bytes at a URL, preferring requests over urllib.
+
+    NOT A STYLE CHOICE. e-agent.com.au answers urllib with a flat HTTP 429 and requests
+    with a 200, from the same machine, in the same second, with identical headers -- even
+    with curl's own User-Agent. The block is on the TLS/HTTP fingerprint of the stack,
+    not on anything in the request, so no amount of header-setting reaches it.
+
+    That cost real time: urllib returning nothing looks exactly like a rate limit you have
+    earned, and 17 e-agent documents covering several hundred listings were written off as
+    unreadable on that basis. requests is already a dependency (requirements.txt), so this
+    is only a matter of asking the right library.
+
+    `opener` is honoured when a caller passes one, so the tests can inject a fake without
+    a network stack of any kind.
+    """
+    if opener is not None:
+        request = urllib.request.Request(url, headers={"User-Agent": _UA})
+        with opener(request, timeout=_TIMEOUT) as response:
+            return response.read(_MAX_BYTES)
+    try:
+        import requests
+    except ImportError:                            # pragma: no cover - env without it
+        request = urllib.request.Request(url, headers={"User-Agent": _UA})
+        with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
+            return response.read(_MAX_BYTES)
+    response = requests.get(url, headers={"User-Agent": _UA}, timeout=_TIMEOUT,
+                            allow_redirects=True)
+    if response.status_code != 200:
+        logger.info("document %s answered HTTP %s", url[:70], response.status_code)
+        return b""
+    return response.content[:_MAX_BYTES]
+
+
+def fetch(url: str, opener=None, sleep=None) -> bytes:
+    """The document's bytes, or b'' if it cannot be read. Never raises.
+
+    `opener` defaults to None so _get chooses the library -- see the note there about
+    e-agent answering urllib 429 and requests 200. Passing one is for tests.
+    """
     import time
 
     napper = sleep or time.sleep
@@ -104,9 +142,7 @@ def fetch(url: str, opener=urllib.request.urlopen, sleep=None) -> bytes:
         if gap < _PAUSE_SECONDS:
             napper(_PAUSE_SECONDS - gap)
         try:
-            request = urllib.request.Request(url, headers={"User-Agent": _UA})
-            with opener(request, timeout=_TIMEOUT) as response:
-                data = response.read(_MAX_BYTES)
+            data = _get(url, opener)
         except Exception as exc:                   # network, auth, redirect, anything
             logger.info("document %s could not be fetched (%s)",
                         url[:80], type(exc).__name__)
@@ -333,6 +369,7 @@ def refresh_from_database(db_path: Optional[str] = None, limit: int = 0) -> Dict
     rows = [dict(r) for r in conn.execute(
         "SELECT * FROM buildings WHERE (superseded_by IS NULL OR superseded_by = '')")]
     conn.close()
+    index = SuburbGeoIndex()
 
     located = collections.Counter()
     members = collections.defaultdict(list)
@@ -346,12 +383,73 @@ def refresh_from_database(db_path: Optional[str] = None, limit: int = 0) -> Dict
         if suburb_quality.is_located(why) and why != suburb_quality.FROM_DOCUMENT:
             located[url] += 1
 
+    # PER-ROW MAPPING, for every document that still has an unnamed row on it — not
+    # only the wholly-unnamed ones. A builder stocklist can have half its sections
+    # recognised and half not, and the half that is not is invisible to the orphan test.
+    row_map: Dict[str, str] = {}
+    partial = [(u, rs) for u, rs in members.items() if located[u] < len(rs)]
+    partial.sort(key=lambda pair: -len(pair[1]))
+    for url, group in (partial[:limit] if limit else partial):
+        states = collections.Counter(
+            str(r.get("state") or "").strip().upper() for r in group)
+        state = states.most_common(1)[0][0] if states else ""
+        found = row_suburbs(fetch(url), state, index)
+        if not found:
+            continue
+
+        # EVERY DOCUMENT MUST EARN ITS PLACE, and most do not.
+        #
+        # Ungated, this mapping is 32% right. The Hudson Homes list is read perfectly --
+        # 104 of 104 -- because its headers are clean "Estate - Stage, Suburb" lines, and
+        # that success does not generalise: on other layouts a line that is not a header
+        # matches anyway, and then LATCHES, handing its suburb to every lot line beneath
+        # it until the next match. That is how "Donnybrook" ended up on Shepparton lots
+        # and "Melton" on Tarneit ones. One bad header silently mislabels dozens of rows.
+        #
+        # So the document is asked to reproduce what is already known about it: the rows
+        # on it that carry a checked suburb from a stronger source. Agree with enough of
+        # them and its remaining rows are trusted; disagree and the whole document is
+        # dropped, not just the lines that disagreed.
+        #
+        # This is strict on purpose and it costs almost everything: 2 documents of 28
+        # pass, 63 lines of 1,138 survive. It is kept because those 34 new suburbs are
+        # RIGHT, and because the alternative is a nightly job that quietly republishes a
+        # 32%-accurate map every morning with every check still green.
+        agree = disagree = 0
+        unknown: List[str] = []
+        for row in group:
+            key = line_key(row.get("source_text") or "")
+            named = found.get(key)
+            if not named:
+                continue
+            stored = str(row.get("suburb") or "").strip()
+            row_state = str(row.get("state") or "").strip()
+            checked = stored and (index.locate(stored, row_state) if row_state
+                                  else index.states_for_suburb(stored))
+            if not checked:
+                unknown.append(key)
+            elif named.lower() == stored.lower():
+                agree += 1
+            else:
+                disagree += 1
+        checks = agree + disagree
+        if checks < _ROW_MAP_MIN_CHECKS or agree / checks < _ROW_MAP_FLOOR:
+            logger.warning("      rejected %s (%d/%d agree)",
+                           url.split("/")[-1][:40], agree, checks)
+            continue
+        for key in unknown:
+            row_map[key] = found[key]
+        logger.warning("%5d lines named in %s (%d/%d agree)",
+                       len(unknown), url.split("/")[-1][:40], agree, checks)
+    save_row_map(row_map)
+    logger.warning("per-row map: %d line(s) across %d document(s)",
+                   len(row_map), len(partial))
+
     orphans = [(u, rs) for u, rs in members.items() if not located[u]]
     orphans.sort(key=lambda pair: -len(pair[1]))
     if limit:
         orphans = orphans[:limit]
 
-    index = SuburbGeoIndex()
     mapping: Dict[str, List[str]] = {}
     for url, group in orphans:
         states = collections.Counter(
@@ -368,6 +466,132 @@ def refresh_from_database(db_path: Optional[str] = None, limit: int = 0) -> Dict
                    "%d document(s) did not.",
                    len(mapping), covered, len(orphans) - len(mapping))
     return mapping
+
+
+
+# ---------------------------------------------------------------------------------
+# PER ROW, not per document.
+#
+# A builder's stocklist is not one suburb, it is a dozen. The Hudson Homes list reads
+#
+#     Watagan Park - Display Homes, Cooranbong        <- section header
+#     Available 7 House MARIGOLD 35 ... $1,519,500    <- lots in Cooranbong
+#     Jensen Rise Estate - Wadalba, Wadalba           <- section header
+#     Available 61 House COPPER 21 ... $1,167,260     <- lots in Wadalba
+#
+# and every one of its 104 live rows was stored with no suburb at all, because the
+# harvest kept the lot line and threw the header above it away. suburb_for_document
+# cannot help here — asked for ONE locality it correctly refuses, since there are twelve.
+#
+# The lot line itself is the join. It is stored verbatim as the row's source_text, so
+# walking the document in order, remembering the last header seen, gives each line the
+# suburb printed above it. Measured on that document: 104 of 104 rows matched, naming
+# Wadalba, Millfield, Bellbird, Denman, Warnervale, Woongarrah, Maitland, Heatherbrae,
+# Cooranbong, Riverstone, Gillieston Heights and Austral.
+#
+# This is the document stating where the lot is, so it is FROM_DOCUMENT like the rest —
+# a fact read off the price list, not an inference about it.
+_ROW_MAP_PATH = "data/document_row_suburbs.json"
+_ROW_CACHE: Optional[Dict[str, str]] = None
+# How much a document must prove before its unknown rows are believed. See the long note
+# in refresh_from_database: ungated this mapping is 32% right, and the failure latches.
+_ROW_MAP_MIN_CHECKS = 5
+_ROW_MAP_FLOOR = 0.9
+
+# A lot row is the one with money on it. Section headers never carry a price.
+_MONEY = re.compile(r"\$\s?[\d,]{4,}")
+
+
+def line_key(text: str) -> str:
+    """A stable key for one lot line, tolerant of the encoding noise PDFs produce.
+
+    The same line arrives as 'COPPER 21 197.08m\xb2' from one reader and '197.08m?' from
+    another, so anything that is not a word character or basic punctuation is flattened.
+    """
+    # ASCII-only, deliberately. Python's \w is Unicode-aware, so the superscript in
+    # '197.08m²' is a word character and survives while the '?' a different reader
+    # produces for the same glyph does not — giving two keys for one line.
+    cleaned = re.sub(r"[^A-Za-z0-9$,./ -]", " ", str(text or ""))
+    return re.sub(r"\s+", " ", cleaned).strip().lower()[:110]
+
+
+def row_suburbs(data: bytes, state: str, index) -> Dict[str, str]:
+    """{lot line key: suburb} for one document, from the headers above each block."""
+    if not data[:4] == b"%PDF":
+        return {}
+    try:
+        import pdfplumber
+    except ImportError:                            # pragma: no cover - env without it
+        return {}
+    lines: List[str] = []
+    try:
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            for page in pdf.pages[:60]:
+                try:
+                    lines.extend((page.extract_text() or "").split("\n"))
+                except Exception:                  # one bad page costs one page
+                    continue
+    except Exception as exc:
+        logger.info("document unreadable for row mapping (%s)", type(exc).__name__)
+        return {}
+
+    out: Dict[str, str] = {}
+    current = ""
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        if _MONEY.search(line):
+            if current:
+                out[line_key(line)] = current
+            continue
+        # A SECTION HEADER ENDS WITH ITS SUBURB. "Jensen Rise Estate - Wadalba, Wadalba"
+        # and "Mt View Grange - Bellbird, Bellbird" both name the estate, then the stage,
+        # then the locality. Only the last comma-separated segment is tested, which is
+        # what keeps "Bingara Gorge - Spec Contract" from yielding Bingara.
+        segments = [seg.strip() for seg in line.split(",") if seg.strip()]
+        if not segments:
+            continue
+        tail = segments[-1]
+        if len(_WORD.findall(tail)) > 4:
+            continue                               # a sentence, not a locality
+        if state:
+            if index.locate(tail, state):
+                current = tail.title()
+        else:
+            states = index.states_for_suburb(tail)
+            states = list(states) if not isinstance(states, str) else [states]
+            if len(states) == 1:
+                current = tail.title()
+    return out
+
+
+def load_row_map(refresh: bool = False) -> Dict[str, str]:
+    """{lot line key: suburb} across every document the harvest has read."""
+    global _ROW_CACHE
+    if _ROW_CACHE is not None and not refresh:
+        return _ROW_CACHE
+    import os
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), _ROW_MAP_PATH)
+    loaded = _read(path)
+    _ROW_CACHE = {str(k): str(v) for k, v in loaded.items() if v}
+    return _ROW_CACHE
+
+
+def save_row_map(mapping: Dict[str, str]) -> None:
+    import json
+    import os
+    global _ROW_CACHE
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), _ROW_MAP_PATH)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        json.dump(mapping, handle, indent=0, sort_keys=True)
+    _ROW_CACHE = dict(mapping)
+
+
+def suburb_for_line(row: Dict[str, object]) -> str:
+    """The suburb printed above this row's own line in its source document, or ''."""
+    return load_row_map().get(line_key(row.get("source_text") or ""), "")
 
 
 if __name__ == "__main__":                         # pragma: no cover - operator entry
