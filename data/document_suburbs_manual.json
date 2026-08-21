@@ -77,6 +77,24 @@
    "evidence": "Serene, Hope Island QLD",
    "url": "https://www.dropbox.com/scl/fo/it2mw67hz01oa1lrzdt1d/AMP3jz-opkJH4h9sloYQBpw/Hope%20Island%20Serene%20Price%20List.pdf?rlkey=taxu55a6ayxvpxjf2du9q3rol&dl=1",
    "project": "hope island serene"
+  },
+  {
+   "suburb": "St Kilda Road",
+   "state": "VIC",
+   "project": "fawkner park west",
+   "evidence": "The Fawkner, Fawkner Park / St Kilda Road, Melbourne VIC 3004 - the tower fronts St Kilda Road; 'Fawkner Park West' is the release name, and Fawkner itself is a suburb 15 km north that this project has nothing to do with"
+  },
+  {
+   "suburb": "Maroochydore",
+   "state": "QLD",
+   "project": "millwell",
+   "evidence": "The Millwell, 2 Millwell Road East, Maroochydore QLD 4558 (Habitat Development Group). Millwell Road is in Maroochydore, not Morayfield"
+  },
+  {
+   "suburb": "Bayswater",
+   "state": "VIC",
+   "project": "aston junction",
+   "evidence": "Aston Junction, 493 Mountain Highway, Bayswater VIC 3153 - industrial unit development. Bayswater also exists in WA, so the state is pinned here"
   }
  ]
 }
