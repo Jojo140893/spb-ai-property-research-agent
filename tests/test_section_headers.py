@@ -242,3 +242,31 @@ def test_a_later_region_row_switches_the_state_mid_document():
     out, _ctx, _ban, hint = _rows_to_listings(rows, "", "t", "")
     assert hint == "VIC"
     assert [l.get("suburb") for l in out] == ["Rosewood", "Lara"], out
+
+
+def test_a_line_that_names_a_locality_is_a_section_whatever_words_it_shares():
+    """"House and Land Packages, Adelaide" is the section header on the Alete stocklist,
+    and _is_column_header calls it a column row — House, Land and Packages are all column
+    vocabulary. It was skipped before the section branch ever saw it, and 44 of that
+    document's 71 lots kept the page title for a location. 27 of 71 named -> 71 of 71."""
+    from sources.spreadsheet_extract import _is_column_header
+
+    line = "House and Land Packages, Adelaide"
+    assert _is_column_header(line), "the premise: this DOES look like a column row"
+    out, ctx, _ban, _hint = _rows_to_listings(
+        [("SA", []), (line, []), ("Available Lot 4 House 130.0m2 628.0 m2 $743,800", [])],
+        "", "t", "")
+    assert ctx == line, ctx
+    assert out and out[0].get("suburb") == "Adelaide", out
+
+
+def test_a_real_column_row_is_still_skipped():
+    """The guard only fires when the line actually yields a place. A column row that
+    happens to share words with one must still be skipped, or the lots beneath it inherit
+    a header made of column names."""
+    from sources.spreadsheet_extract import _rows_to_listings as R
+
+    columns = "Status Lot/ Building Design Name Floor Area Land Size Bed / Bath / Car"
+    _out, ctx, _ban, _hint = R([("Estate : Ooranya Beveridge", []), (columns, []),
+                                ("Available Lot 4 House 130m2 $743,800", [])], "", "t", "")
+    assert "Ooranya" in ctx, ctx

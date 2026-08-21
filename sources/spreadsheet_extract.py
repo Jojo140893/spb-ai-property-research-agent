@@ -414,6 +414,8 @@ _PROSE = re.compile(
     r"|eoi|expression of interest|unconditional|conditional offer|deposit"
     r"|balance of|contract signing|finance terms|pre-?approval|initial dep"
     r"|purchase price|payable within|brochure|flyer|floorplan|price list|pricelist"
+    r"|payable|business days|contract date|owner occupier|investor only|co-living"
+    r"|bod\b|holding deposit|subject to|traditional|hold\b"
     r"|tba|tbc|coming soon|register|enquire)\b", re.I)
 
 
@@ -1104,6 +1106,11 @@ def _region_state(text: str) -> str:
     return _REGION_TO_STATE.get(match.group(1).lower(), "") if match else ""
 
 
+def _banner_key(text: str) -> str:
+    """A page title, normalised for comparison across pages: case and spacing vary."""
+    return " ".join(str(text or "").split()).strip(" -–—:|").lower()
+
+
 def _rows_to_listings(rows: List[Any], context: str, source_label: str,
                       builder_hint: str, banner: str = "",
                       state_hint: str = "") -> Tuple[List[Dict[str, Any]], str, str, str]:
@@ -1125,6 +1132,18 @@ def _rows_to_listings(rows: List[Any], context: str, source_label: str,
         text, links = row[0], row[1]
         columns = row[2] if len(row) > 2 else {}
         if not text:
+            continue
+        # A LINE THAT NAMES A LOCALITY IS A SECTION, whatever vocabulary it shares with
+        # a column row. "House and Land Packages, Adelaide" is the section header on the
+        # Alete stocklist and _is_column_header calls it a column row -- House, Land and
+        # Packages are all column words -- so it was skipped before the section branch
+        # ever saw it, and 44 of that document's 71 lots kept the page title for a
+        # location. Checked first, and only when the line actually yields a place.
+        if (_is_group_header(text, {}) and "," in text
+                and _context_suburb(text, state_hint)):
+            if not (banner and _banner_key(text) == _banner_key(banner)):
+                context = text
+                banner = banner or text
             continue
         if _is_column_header(text):
             continue                         # column names: neither a lot nor a banner
@@ -1151,7 +1170,12 @@ def _rows_to_listings(rows: List[Any], context: str, source_label: str,
                 # `banner` is already the first header seen, which IS the title. A later
                 # line identical to it is the same title again, never a section called
                 # after the whole document.
-                if banner and text.strip() == banner.strip():
+                # Normalised, not exact. The same title extracts with different
+                # spacing and casing on different pages -- "Invest Builder By Alete Homes
+                # Stocklist" arrives one way on page 1 and another on page 2 -- so an
+                # exact comparison let the repeat through and reset the context on 44 of
+                # that document's 71 rows.
+                if banner and _banner_key(text) == _banner_key(banner):
                     continue
                 context = text
                 banner = banner or text
