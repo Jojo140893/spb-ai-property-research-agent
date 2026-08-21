@@ -141,3 +141,26 @@ def test_two_postcodes_in_one_banner_prove_nothing():
     assert _state_from_banner_postcode("Melton South 3338") == "VIC"
     assert _state_from_banner_postcode("Stage 3338 and 4000") == ""
     assert _state_from_banner_postcode("no postcode here") == ""
+
+
+def test_the_paperwork_between_a_section_and_its_lots_is_not_a_section():
+    """The AVIA sheet prints its deposit terms and an EOI link under every estate banner:
+
+        KINMA VALLEY - MORAYFIELD
+        Land:  Conditional Offer: 3% purchase price deposit ...
+        EOI Form
+        Lot No.,Stage,Street,Land Size,...
+        573,Stage 20,,412m2,"$470,000",...
+
+    Each of those middle lines was read as a NEW section, so the estate above them was
+    thrown away and the lots below inherited "EOI Form". 59 rows on one sheet."""
+    for line in ("EOI Form", "EOI Form Link", "Unconditional Contracts Only",
+                 "Land:  5% Deposit at Contract Signing",
+                 "Expression of Interest", "5% balance of deposit payable within 14 days"):
+        assert not _is_group_header(line, {}), line
+
+
+def test_the_estate_banner_around_them_still_is_one():
+    for line in ("KINMA VALLEY - MORAYFIELD", "AIRE RIVERSIDE ESTATE - LILYWOOD",
+                 "RIVERRBANK ESTATE - CABOOLTURE SOUTH"):
+        assert _is_group_header(line, {}), line

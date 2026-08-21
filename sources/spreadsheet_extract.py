@@ -406,7 +406,14 @@ _NOT_A_SECTION = re.compile(
 # is short and digit-free enough to pass every other test here.
 _PROSE = re.compile(
     r"\b(please|contact us|further details|clarification|disclaimer|subject to change"
-    r"|indicative only|terms and conditions|images|renders|floor plans|e&oe)\b", re.I)
+    r"|indicative only|terms and conditions|images|renders|floor plans|e&oe"
+    # ADMINISTRATIVE LINES BETWEEN A SECTION AND ITS LOTS. The AVIA sheet prints its
+    # deposit terms and an "EOI Form" link under every estate banner, and each of those
+    # lines was being read as a NEW section -- so the estate above them was thrown away
+    # and the lots below inherited "EOI Form". 59 rows on one sheet.
+    r"|eoi|expression of interest|unconditional|conditional offer|deposit"
+    r"|balance of|contract signing|finance terms|pre-?approval|initial dep"
+    r"|purchase price|payable within)\b", re.I)
 
 
 def _is_group_header(text: str, fields: Dict[str, Any]) -> bool:
