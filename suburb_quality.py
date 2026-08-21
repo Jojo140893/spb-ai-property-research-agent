@@ -423,10 +423,29 @@ _TABLE_ROW = re.compile(
     r"|(\b\d+\s*(?:m2|sqm)\b)|(\b\d{1,2}\.\d\s*x\s*\d)", re.I)
 
 # Somewhere that is not Australia. Matched against the row's own text.
-_OVERSEAS = re.compile(
-    r"\b(dubai|dxb|abu\s*dhabi|u\.?a\.?e|damac|emaar|safa\s*gate|"
-    r"iloilo|manila|makati|philippines|smdc|brgy\.?|barangay|"
-    r"bali|phuket|bangkok|singapore|kuala\s*lumpur)\b", re.I)
+# NAMES THAT MEAN A PROPERTY IS FOREIGN, whatever else the row says. Developers,
+# addressing conventions and specific projects — none of these appear in an Australian
+# address by accident.
+#
+# 'Sanaya Residences' is here because it has to be: ten 3-bedroom villas in Pecatu,
+# Uluwatu, BALI, whose price list names no country, quotes $ per SQUARE FOOT, and arrived
+# stored as NSW. Ten Indonesian villas sitting in an Australian buyer's advocate's stock
+# list as New South Wales property. Nothing in the row text says Indonesia; only the name
+# and the sqft pricing do.
+_OVERSEAS_STRONG = re.compile(
+    r"\b(dxb|abu\s*dhabi|u\.?a\.?e|damac|emaar|safa\s*gate|"
+    r"iloilo|makati|philippines|smdc|brgy\.?|barangay|"
+    r"sanaya\s*residences)\b", re.I)
+
+# PLACE NAMES THAT ALSO APPEAR IN AUSTRALIAN ADDRESSES. 'Bali Hai Avenue' is on the Gold
+# Coast; there are Singapore and London streets in half the capitals. These only count
+# where the row records NO Australian state — which is true of every one of the 633
+# overseas rows in this catalogue, and false of any Gold Coast lot.
+_OVERSEAS_WEAK = re.compile(
+    r"\b(dubai|manila|bali|phuket|bangkok|singapore|kuala\s*lumpur|"
+    r"uluwatu|pecatu|seminyak|canggu)\b", re.I)
+
+_AU_STATES = frozenset(("NSW", "VIC", "QLD", "SA", "WA", "TAS", "NT", "ACT"))
 
 
 # A SPELLING SLIP IS NOT A MISSING SUBURB.
@@ -569,8 +588,22 @@ def _document_suburb(row: Dict[str, Any]) -> str:
 
 
 def is_overseas(row: Dict[str, Any]) -> bool:
-    """Is this listing outside Australia? See BLANK_OVERSEAS."""
-    return bool(_OVERSEAS.search(_row_text(row)))
+    """Is this listing outside Australia? See BLANK_OVERSEAS.
+
+    A strong signal counts on its own. A weak one — a place name that also appears in
+    Australian addresses — only counts where the row records no Australian state.
+    """
+    # builder_name and estate_name are scanned here and not in _row_text, which feeds the
+    # postcode and street checks where they would change unrelated behaviour. The project
+    # name is often the ONLY thing that says where a listing is: 'Sanaya Residences' is
+    # the entire evidence that those ten villas are in Bali.
+    text = " ".join((_row_text(row), str(row.get("estate_name") or ""),
+                     str(row.get("builder_name") or "")))
+    if _OVERSEAS_STRONG.search(text):
+        return True
+    if not _OVERSEAS_WEAK.search(text):
+        return False
+    return str(row.get("state") or "").strip().upper() not in _AU_STATES
 
 
 def _is_addressy(text: str) -> bool:

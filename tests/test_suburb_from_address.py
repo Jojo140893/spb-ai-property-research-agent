@@ -203,3 +203,35 @@ def test_a_carried_blank_reason_does_not_outlive_the_fact_behind_it():
     cleared = {**stale, "suburb_source": ""}
     assert SQ.is_searchable(SQ.resolve(cleared)[1]), \
         "clearing the stale grade must let the borrowed state be used"
+
+
+# ------------------------------------------ foreign property in an Australian stock list
+def test_a_named_foreign_project_is_caught_even_when_stored_as_australian():
+    """Sanaya Residences is ten 3-bedroom villas in Pecatu, Uluwatu, BALI. Its price list
+    names no country, quotes $ per SQUARE FOOT, and the rows arrived stored as NSW — ten
+    Indonesian villas sitting in an Australian buyer's advocate's stock list as New South
+    Wales property. Nothing in the row text says Indonesia; only the project name does."""
+    row = {"builder_name": "Sanaya Residences", "state": "NSW",
+           "lot_address": "Ground Villa 1 3 Beds ($399,000) 2766 107 296,619"}
+    assert SQ.is_overseas(row)
+    assert SQ.resolve(row)[1] == SQ.BLANK_OVERSEAS
+
+
+def test_an_australian_street_named_after_a_foreign_place_is_not_foreign():
+    """'Bali Hai Avenue' is on the Gold Coast, and there are Singapore and London streets
+    in half the capitals. A place name that also appears in Australian addresses only
+    counts where the row records no Australian state."""
+    for address, state in (("11 Bali Hai Ave, Gold Coast", "QLD"),
+                           ("4 Singapore Street, Kingsford", "NSW"),
+                           ("22 London Circuit, Canberra", "ACT")):
+        assert not SQ.is_overseas({"lot_address": address, "state": state}), address
+
+
+def test_the_weak_signal_still_catches_a_stateless_foreign_row():
+    assert SQ.is_overseas({"lot_address": "Villa 3, Seminyak", "state": ""})
+
+
+def test_a_developer_name_counts_on_its_own():
+    """DAMAC and SMDC do not appear in an Australian address by accident."""
+    assert SQ.is_overseas({"lot_address": "DAMAC ISLANDS 2, DXB", "state": ""})
+    assert SQ.is_overseas({"estate_name": "SMDC Gold Residences", "state": ""})
