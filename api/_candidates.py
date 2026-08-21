@@ -81,7 +81,22 @@ SNAPSHOT_FIELDS = [
     # this column the SQLite reader would hand over rows with the flag missing and
     # silently score stale prices while the JSON reader filtered them.
     "superseded_by",
+    # WHICH DOCUMENT A ROW CAME FROM, without publishing the document's URL.
+    #
+    # Rows on one price list are each other's best evidence: a lot with no locality is
+    # nearly always sitting next to lots that have one. The grouping key for that was
+    # source_url — which is NOT exported, deliberately, because a Dropbox folder link is
+    # a capability and this deployment is public. So the page-sibling suburb map and the
+    # state borrow were both permanently EMPTY on the deployed path while working
+    # perfectly against the local database, which is the worst possible split: measured
+    # correct in development, silently absent in production.
+    #
+    # A short hash of the URL groups the rows identically and discloses nothing.
+    "source_doc",
 ]
+
+# The field rows are grouped by when asking "what do this document's other rows say?".
+_DOC_KEY = "source_doc"
 
 # Not purchasable, so not a candidate.
 #
@@ -617,6 +632,12 @@ def _collapse_same_listing(entries):
     return kept, len(entries) - len(kept)
 
 
+# A group must have more than one located row before it can name the rest. See the note
+# at the ratio test: 80% of one voter is 100%, and an estate should not be named by an
+# echo of a single recovery.
+_SIBLING_MIN_VOTERS = 2
+
+
 def _sibling_suburb_map(rows, field):
     """{(group, state): suburb} where one group's located rows agree on a suburb.
 
@@ -650,7 +671,13 @@ def _sibling_suburb_map(rows, field):
         total = sum(counts.values())
         top, n = max(counts.items(), key=lambda kv: kv[1])
         # A split group names nothing: two suburbs at 50/50 is not evidence.
-        if total and n / total >= 0.8:
+        #
+        # AND NEITHER IS ONE ROW. 80% of a single voter is 100%, so a group whose only
+        # located row was itself a recovery could name an entire estate — a 400-lot
+        # project taking its suburb from one lot, with the ratio test passing trivially
+        # because there was nothing to disagree with. Two agreeing rows is still a low
+        # bar; it is the difference between a consensus and an echo.
+        if total >= _SIBLING_MIN_VOTERS and n / total >= 0.8:
             out[key] = top
     return out
 
@@ -674,7 +701,7 @@ def _sibling_state_map(rows, floor=0.95):
         state = str(row.get("state") or "").strip().upper()
         if not state:
             continue
-        for field in ("estate_name", "source_url"):
+        for field in ("estate_name", _DOC_KEY, "source_url"):
             group = str(row.get(field) or "").strip().lower()
             if not group:
                 continue
@@ -724,7 +751,7 @@ def build_packages(brief_dict, rows, today=None):
     # claim than an estate — one page can list several suburbs — so it is checked after,
     # and the same 80% agreement rule applies. It is worth having: 496 live rows have no
     # estate name at all but sit on a page whose other rows agree on one suburb.
-    _page_suburb = _sibling_suburb_map(rows, "source_url")
+    _page_suburb = _sibling_suburb_map(rows, _DOC_KEY)
     # THE STATE, BORROWED, BEFORE ANY OF THE ABOVE CAN BE ASKED.
     #
     # Both maps above are keyed by state, and every suburb rule in suburb_quality
@@ -772,6 +799,26 @@ def build_packages(brief_dict, rows, today=None):
             counts["superseded"] += 1
             continue
         row_state = str(row.get("state") or "").strip().upper()
+        if not row_state:
+            # BORROW THE STATE BEFORE DROPPING THE ROW FOR NOT HAVING ONE.
+            #
+            # This borrow was written 70 lines further down, next to the suburb borrows,
+            # where it could never run: every row it targets had already been dropped
+            # here. "CC-0114, Bald Hills" and "CC-0108, One Mile" name real Queensland
+            # suburbs and were invisible to every search purely because their own row
+            # does not say QLD, while every other row on the same price list does.
+            #
+            # It has to be here, before the drop, and before the suburb rules further
+            # down — all of which are keyed by state and none of which can run without
+            # one.
+            for _field in ("estate_name", "source_doc", "source_url"):
+                _borrowed = _state_of.get(
+                    (_field, str(row.get(_field) or "").strip().lower()))
+                if _borrowed:
+                    row = {**row, "state": _borrowed}
+                    row_state = _borrowed
+                    counts["state_borrowed"] = counts.get("state_borrowed", 0) + 1
+                    break
         if not row_state:
             counts["state_unknown"] += 1
             continue
@@ -856,19 +903,11 @@ def build_packages(brief_dict, rows, today=None):
         # offer in offer, QLD" as four of its five results. A listing whose location
         # cannot be confirmed must not reach a client, and cannot be geocoded,
         # distance-filtered or benchmarked either.
-        # Borrow the state FIRST where the row has none, so every rule below can run.
-        if not str(row.get("state") or "").strip():
-            for field in ("estate_name", "source_url"):
-                borrowed_state = _state_of.get(
-                    (field, str(row.get(field) or "").strip().lower()))
-                if borrowed_state:
-                    row = {**row, "state": borrowed_state}
-                    break
         suburb, suburb_why = suburb_quality.resolve(row)
         if not suburb_quality.is_located(suburb_why):
             state_key = str(row.get("state") or "").strip().upper()
             for group_map, field in ((_estate_suburb, "estate_name"),
-                                     (_page_suburb, "source_url")):
+                                     (_page_suburb, _DOC_KEY)):
                 borrowed = group_map.get(
                     (str(row.get(field) or "").strip().lower(), state_key))
                 if borrowed:
@@ -976,6 +1015,12 @@ def build_packages(brief_dict, rows, today=None):
             # street was stated. Never invents and never empties.
             "lot_address": (_display_address(row) or "(no address in source row)"),
             "suburb": suburb,
+            # HOW WE KNOW IT. Carried so the grade cannot die at this boundary: without
+            # it api/research.py rebuilds a bare {suburb, state, ...} dict for the
+            # comparables gate, suburb_quality.resolve() on that dict has only a locality
+            # name to go on and returns STATED, and the gate meant to keep GUESSED
+            # locations out of a client's comparables can never reject anything.
+            "suburb_source": suburb_why,
             "state": row_state,
             # The development keeps its name here, where it is true, instead of standing in
             # for a builder. Falls back to the estate for builder-scope rows.

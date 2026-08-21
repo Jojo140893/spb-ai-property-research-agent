@@ -204,6 +204,17 @@ class CandidateProperty:
     incentive_amount: float = 0.0
     incentive_text: str = ""
 
+    # HOW WE KNOW THE SUBURB — suburb_quality's own grade, carried so it cannot be lost.
+    #
+    # Without this the grade dies at the candidate boundary. api/research.py rebuilds a
+    # bare {suburb, state, bedrooms, land_sqm, price} dict for the comparables gate, and
+    # suburb_quality.resolve() on that dict has nothing to go on but a locality name that
+    # already passed a lookup — so it returns STATED, is_located() is True, and the gate
+    # that exists to keep GUESSED locations out of a client's comparables can never
+    # reject anything. A suburb we inferred from a house design ("Magnolia", "Dalton 18")
+    # was being used to build suburb medians and REA comparables.
+    suburb_source: str = ""
+
     # The estate/development the lot sits in — "Denman – Highfields Estate". A row of its
     # own on the comparison Coleen's team actually sends. NOT developer_name, which for
     # builder-scope rows holds a BUILDER, and no client document may name one (Colin,

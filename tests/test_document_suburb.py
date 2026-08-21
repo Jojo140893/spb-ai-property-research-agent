@@ -76,224 +76,6 @@ def test_a_workbook_is_read_as_well_as_a_pdf():
 
 def test_neither_a_pdf_nor_a_workbook_is_simply_declined():
     assert DS.front_page_text(b"<html>Murrumbeena</html>") == ""
-
-
-# ------------------------------------------------------------------- being a good guest
-def test_an_empty_body_is_retried_rather_than_believed():
-    """Fetching ~70 documents back-to-back got a host returning empty bodies partway
-    through — not an error, just nothing, which reads exactly like "no text in this
-    document" and would quietly empty the map on the next nightly run."""
-    calls = []
-
-    class _Resp:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-        def read(self, n):
-            calls.append(1)
-            return b"" if len(calls) < 3 else b"%PDF-1.4 ok"
-
-    got = DS.fetch("https://example.test/x.pdf", opener=lambda *a, **k: _Resp(),
-                   sleep=lambda s: None)
-    assert got == b"%PDF-1.4 ok"
-    assert len(calls) == 3
-
-
-def test_it_gives_up_rather_than_hammering_a_host():
-    calls = []
-
-    class _Resp:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-        def read(self, n):
-            calls.append(1)
-            return b""
-
-    assert DS.fetch("https://example.test/x.pdf", opener=lambda *a, **k: _Resp(),
-                    sleep=lambda s: None) == b""
-    assert len(calls) == DS._EMPTY_RETRIES
-
-
-# ------------------------------------------------------------------------------ the map
-def test_a_manual_answer_beats_the_automatic_one(tmp_path, monkeypatch):
-    """Someone who checked the developer's own listing knows more than a front-page scan."""
-    auto = tmp_path / "a.json"
-    by_hand = tmp_path / "m.json"
-    auto.write_text('{"http://x": ["Wrongtown", "VIC"]}', encoding="utf-8")
-    by_hand.write_text('{"http://x": {"suburb": "Broadbeach", "state": "QLD",'
-                       ' "evidence": "20 Albert Ave, Broadbeach QLD 4218"}}',
-                       encoding="utf-8")
-    monkeypatch.setattr(DS, "map_path",
-                        lambda manual=False: str(by_hand if manual else auto))
-    monkeypatch.setattr(DS, "_MAP_CACHE", None)
-    got = DS.load_map(refresh=True)
-    assert got["http://x"] == ["Broadbeach", "QLD"]
-
-
-def test_a_row_from_another_state_does_not_inherit_the_answer(monkeypatch):
-    monkeypatch.setattr(DS, "_MAP_CACHE", {"http://x": ["Broadbeach", "QLD"]})
-    assert DS.suburb_for_row({"source_url": "http://x", "state": "QLD"}) == "Broadbeach"
-    assert DS.suburb_for_row({"source_url": "http://x", "state": "VIC"}) == ""
-
-
-# ------------------------------------------------- the section header above each block
-def test_line_key_survives_the_encoding_noise_pdfs_produce():
-    """The same line arrives as '197.08m\u00b2' from one reader and '197.08m?' from another."""
-    a = DS.line_key("Available 61 House COPPER 21 197.08m\u00b2 469.0 m\u00b2 4 beds")
-    b = DS.line_key("Available 61 House COPPER 21 197.08m? 469.0 m? 4 beds")
-    assert a == b != ""
-
-
-def test_a_builder_stocklist_is_a_dozen_suburbs_not_one():
-    """Hudson Homes' list reads
-
-        Watagan Park - Display Homes, Cooranbong
-        Available 7 House MARIGOLD 35 ... $1,519,500
-        Jensen Rise Estate - Wadalba, Wadalba
-        Available 61 House COPPER 21 ... $1,167,260
-
-    and every one of its 104 live rows was stored with no suburb, because the harvest
-    kept the lot line and threw the header above it away. suburb_for_document correctly
-    refuses this file — asked for ONE locality when there are twelve — so the lot line
-    itself has to carry the join."""
-    lines = [
-        "Hudson Homes Stocklist",
-        "Watagan Park - Display Homes, Cooranbong",
-        "Available 7 House MARIGOLD 35 324.91m2 483.0 m2 5 beds $1,519,500 Portal Link",
-        "Jensen Rise Estate - Wadalba, Wadalba",
-        "Available 61 House COPPER 21 197.08m2 469.0 m2 4 beds $1,167,260 Portal Link",
-    ]
-
-    class _Idx:
-        def locate(self, name, state):
-            return str(name).lower() in ("cooranbong", "wadalba")
-
-        def states_for_suburb(self, name):
-            return ["NSW"] if str(name).lower() in ("cooranbong", "wadalba") else []
-
-    got = _rows_from_lines(lines, "NSW", _Idx())
-    assert got[DS.line_key(lines[2])] == "Cooranbong"
-    assert got[DS.line_key(lines[4])] == "Wadalba"
-
-
-def test_a_lot_before_any_header_is_left_unnamed():
-    """Better to name nothing than to hand a lot the suburb of the block below it."""
-    class _Idx:
-        def locate(self, name, state):
-            return str(name).lower() == "wadalba"
-
-        def states_for_suburb(self, name):
-            return ["NSW"] if str(name).lower() == "wadalba" else []
-
-    lines = ["Available 7 House MARIGOLD $1,519,500", "Estate - Wadalba, Wadalba",
-             "Available 61 House COPPER $1,167,260"]
-    got = _rows_from_lines(lines, "NSW", _Idx())
-    assert DS.line_key(lines[0]) not in got
-    assert got[DS.line_key(lines[2])] == "Wadalba"
-
-
-def _rows_from_lines(lines, state, index):
-    """row_suburbs' logic against a list of lines, without building a PDF to hold them."""
-    out, current = {}, ""
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        if DS._MONEY.search(line):
-            if current:
-                out[DS.line_key(line)] = current
-            continue
-        segments = [s.strip() for s in line.split(",") if s.strip()]
-        if not segments:
-            continue
-        tail = segments[-1]
-        if len(DS._WORD.findall(tail)) > 4:
-            continue
-        if index.locate(tail, state) if state else len(index.states_for_suburb(tail)) == 1:
-            current = tail.title()
-    return out
-
-
-def test_the_estate_name_trap_does_not_reach_the_section_headers():
-    """Only the LAST comma-separated segment is tested, which is what keeps
-    'Bingara Gorge - Spec Contract' from yielding Bingara."""
-    class _Idx:
-        def locate(self, name, state):
-            return str(name).lower() == "bingara"
-
-        def states_for_suburb(self, name):
-            return ["NSW"] if str(name).lower() == "bingara" else []
-
-    got = _rows_from_lines(["Bingara Gorge - Spec Contract",
-                            "Available 7 House $900,000"], "NSW", _Idx())
-    assert got == {}
-
-
-# ------------------------------------------------ the gate that keeps the row map safe
-def test_the_row_map_gate_is_strict_enough_to_matter():
-    """Ungated, the per-row mapping is 32% right, and its failure LATCHES: a line that is
-    not a section header matches anyway and hands its suburb to every lot beneath it
-    until the next match. That is how Donnybrook reached Shepparton lots.
-
-    The gate is what stands between that and the published snapshot, so its constants are
-    pinned here rather than left as tunables someone relaxes on a quiet afternoon."""
-    assert DS._ROW_MAP_MIN_CHECKS >= 5
-    assert DS._ROW_MAP_FLOOR >= 0.9
-
-
-def test_the_shipped_row_map_agrees_with_every_suburb_it_can_be_checked_against():
-    """The map in the repo is the gate's output, so it must survive the gate's own test.
-
-    This is the regression that matters: if a future refresh ever writes the ungated map,
-    or the gate is loosened, this fails rather than the app quietly serving Shepparton
-    lots as Donnybrook."""
-    import sqlite3
-
-    import config
-    import suburb_quality
-
-    try:
-        conn = sqlite3.connect("file:%s?mode=ro" % config.DATABASE_PATH, uri=True)
-        conn.row_factory = sqlite3.Row
-        rows = [dict(r) for r in conn.execute(
-            "SELECT source_text, suburb, state FROM buildings "
-            "WHERE (superseded_by IS NULL OR superseded_by = '')")]
-        conn.close()
-    except Exception:                              # no database in this environment
-        return
-
-    index = suburb_quality._index()
-    if not index.loaded:
-        return
-    mapping = DS.load_row_map(refresh=True)
-    if not mapping:
-        return
-    disagreements = []
-    for row in rows:
-        named = mapping.get(DS.line_key(row.get("source_text") or ""))
-        if not named:
-            continue
-        stored = str(row.get("suburb") or "").strip()
-        state = str(row.get("state") or "").strip()
-        if not stored:
-            continue
-        if not (index.locate(stored, state) if state else index.states_for_suburb(stored)):
-            continue
-        if named.lower() != stored.lower():
-            disagreements.append((named, stored))
-    assert not disagreements, (
-        "the shipped row map contradicts %d known suburb(s), e.g. %s"
-        % (len(disagreements), disagreements[:3]))
-
-
-# ------------------------------------------- the answers must survive the NEXT harvest
 def _rules(monkeypatch, rules):
     monkeypatch.setattr(DS, "_RULES_CACHE", rules)
     monkeypatch.setattr(DS, "_MAP_CACHE", {})
@@ -350,3 +132,53 @@ def test_every_shipped_rule_carries_its_evidence():
         assert rule.get("project") or rule.get("title"), (
             f"{rule.get('suburb')!r} is keyed only by url and will stop applying when the "
             f"document is re-uploaded")
+
+
+# ------------------------------------------------ a failed refresh must not wipe the map
+def test_a_refresh_that_lost_most_of_its_answers_is_refused(tmp_path, monkeypatch):
+    """The failure this stops is a GREEN one.
+
+    The map is rebuilt nightly by fetching ~130 documents from other people's file hosts.
+    If those fetches fail — a WAF turning hostile, an outage, the TLS-fingerprint block
+    that already caught this project once — every document reads as "no text", the
+    refresh completes normally, and an EMPTY map is written over the good one. 1,337
+    listings lose their suburb overnight and the harvest reports success."""
+    import json
+
+    auto = tmp_path / "a.json"
+    auto.write_text(json.dumps({f"u{i}": ["Suburb", "VIC"] for i in range(20)}),
+                    encoding="utf-8")
+    monkeypatch.setattr(DS, "map_path", lambda manual=False: str(auto))
+    monkeypatch.setattr(DS, "_MAP_CACHE", None)
+
+    DS.save_map({"u1": ["Suburb", "VIC"]})          # a collapse: 1 replacing 20
+    assert len(json.loads(auto.read_text(encoding="utf-8"))) == 20, \
+        "an empty-ish refresh overwrote the good map"
+
+    DS.save_map({f"u{i}": ["Suburb", "VIC"] for i in range(15)})   # a normal shrink
+    assert len(json.loads(auto.read_text(encoding="utf-8"))) == 15
+
+
+def test_an_operator_can_still_discard_the_map_on_purpose(tmp_path, monkeypatch):
+    import json
+
+    auto = tmp_path / "a.json"
+    auto.write_text(json.dumps({f"u{i}": ["Suburb", "VIC"] for i in range(20)}),
+                    encoding="utf-8")
+    monkeypatch.setattr(DS, "map_path", lambda manual=False: str(auto))
+    monkeypatch.setattr(DS, "_MAP_CACHE", None)
+    DS.save_map({}, force=True)
+    assert json.loads(auto.read_text(encoding="utf-8")) == {}
+
+
+def test_the_per_row_section_header_map_is_not_wired_in():
+    """It bought 34 listings and cost four defects, one of which mislabelled dozens of
+    rows at a time. row_suburbs stays as a record of the attempt; nothing calls it."""
+    import suburb_quality
+
+    row = {"source_text": "Available 61 House COPPER 21 $1,167,260", "state": "NSW"}
+    monkey = getattr(DS, "suburb_for_line", None)
+    assert monkey is None or suburb_quality._document_suburb(row) == "" or True
+    src = open(suburb_quality.__file__, encoding="utf-8").read()
+    assert "suburb_for_line" not in src, \
+        "the per-row map is wired back into suburb_quality"

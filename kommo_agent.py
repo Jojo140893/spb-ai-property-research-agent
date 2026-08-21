@@ -140,6 +140,16 @@ class KommoPropertyResearchAgent:
                 'state': raw_pkg.get('state') or brief.state,
                 'lot_address': raw_pkg.get('lot_address') or '',
                 'source_text': raw_pkg.get('estate_context') or '',
+                # THE GRADE, or this call cannot do the job it is here for.
+                #
+                # Rebuilt from four keys and no provenance, resolve() sees a locality name
+                # that has already passed a lookup and returns STATED — so is_located() is
+                # True for a suburb the pipeline had just graded as a GUESS, and pkg_suburb
+                # is set from it. That suburb then drives benchmark_package and
+                # distance_km_from_target below: a lot whose suburb was read off a house
+                # design ("Magnolia", "Dalton 18") gets distance-scored and benchmarked
+                # against a real place it has no connection to.
+                'suburb_source': raw_pkg.get('suburb_source') or '',
             })
             pkg_suburb = _resolved if suburb_quality.is_located(_why) else ''
             if pkg_suburb:
@@ -214,6 +224,9 @@ class KommoPropertyResearchAgent:
                 # Blank, never the client's target suburb and never the literal string
                 # 'Target Suburb' — see the note above the benchmark call.
                 suburb=raw_pkg.get('suburb') or '',
+                # The grade travels with the suburb, so the benchmark gate downstream can
+                # still tell a stated locality from one we inferred.
+                suburb_source=raw_pkg.get('suburb_source') or '',
                 state=raw_pkg.get('state', brief.state),
                 builder_name=builder_name,
                 developer_name=raw_pkg.get('developer_name', 'Developer'),

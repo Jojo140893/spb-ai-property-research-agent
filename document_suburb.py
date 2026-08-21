@@ -376,14 +376,41 @@ def _rule_for_project(row: Dict[str, object]) -> Optional[dict]:
     return None
 
 
-def save_map(mapping: Dict[str, List[str]]) -> None:
+# A refresh may not throw away most of what it knew. See save_map.
+_COLLAPSE_FLOOR = 0.5
+
+
+def save_map(mapping: Dict[str, List[str]], force: bool = False) -> None:
+    """Write the automatic map, refusing a run that lost most of its answers.
+
+    THE FAILURE THIS EXISTS TO STOP IS A GREEN ONE. This map is rebuilt nightly by
+    fetching ~130 documents from other people's file hosts. If those fetches fail --
+    a WAF turning hostile, an outage, a proxy, a DNS blip, the TLS-fingerprint block that
+    already caught this project once -- every document reads as "no text", the refresh
+    completes normally, and an EMPTY map is written over the good one. 1,337 listings
+    lose their suburb overnight, the harvest reports success, and nothing anywhere says
+    what happened.
+
+    Losing entries is legitimate when a document genuinely stops naming a suburb, so this
+    is a floor rather than a freeze: keep at least half of what was known, or refuse and
+    say so. An operator who really is discarding the map passes force.
+    """
     import json
     import os
     global _MAP_CACHE
+    previous = _read(map_path())
+    if not force and len(previous) and len(mapping) < len(previous) * _COLLAPSE_FLOOR:
+        logger.error(
+            "REFUSING to overwrite the document map: %d entries would replace %d. "
+            "That is the shape of a failed fetch, not a smaller catalogue -- the old map "
+            "is kept and the listings behind it keep their suburb. Re-run when the "
+            "documents are reachable, or pass force=True to discard them.",
+            len(mapping), len(previous))
+        return
     os.makedirs(os.path.dirname(map_path()), exist_ok=True)
     with open(map_path(), "w", encoding="utf-8", newline="\n") as handle:
         json.dump(mapping, handle, indent=1, sort_keys=True)
-    _MAP_CACHE = dict(mapping)
+    _MAP_CACHE = None                              # forced to re-merge the manual rules
 
 
 def suburb_for_row(row: Dict[str, object]) -> str:
@@ -448,67 +475,8 @@ def refresh_from_database(db_path: Optional[str] = None, limit: int = 0) -> Dict
         if suburb_quality.is_located(why) and why != suburb_quality.FROM_DOCUMENT:
             located[url] += 1
 
-    # PER-ROW MAPPING, for every document that still has an unnamed row on it — not
-    # only the wholly-unnamed ones. A builder stocklist can have half its sections
-    # recognised and half not, and the half that is not is invisible to the orphan test.
-    row_map: Dict[str, str] = {}
-    partial = [(u, rs) for u, rs in members.items() if located[u] < len(rs)]
-    partial.sort(key=lambda pair: -len(pair[1]))
-    for url, group in (partial[:limit] if limit else partial):
-        states = collections.Counter(
-            str(r.get("state") or "").strip().upper() for r in group)
-        state = states.most_common(1)[0][0] if states else ""
-        found = row_suburbs(fetch(url), state, index)
-        if not found:
-            continue
-
-        # EVERY DOCUMENT MUST EARN ITS PLACE, and most do not.
-        #
-        # Ungated, this mapping is 32% right. The Hudson Homes list is read perfectly --
-        # 104 of 104 -- because its headers are clean "Estate - Stage, Suburb" lines, and
-        # that success does not generalise: on other layouts a line that is not a header
-        # matches anyway, and then LATCHES, handing its suburb to every lot line beneath
-        # it until the next match. That is how "Donnybrook" ended up on Shepparton lots
-        # and "Melton" on Tarneit ones. One bad header silently mislabels dozens of rows.
-        #
-        # So the document is asked to reproduce what is already known about it: the rows
-        # on it that carry a checked suburb from a stronger source. Agree with enough of
-        # them and its remaining rows are trusted; disagree and the whole document is
-        # dropped, not just the lines that disagreed.
-        #
-        # This is strict on purpose and it costs almost everything: 2 documents of 28
-        # pass, 63 lines of 1,138 survive. It is kept because those 34 new suburbs are
-        # RIGHT, and because the alternative is a nightly job that quietly republishes a
-        # 32%-accurate map every morning with every check still green.
-        agree = disagree = 0
-        unknown: List[str] = []
-        for row in group:
-            key = line_key(row.get("source_text") or "")
-            named = found.get(key)
-            if not named:
-                continue
-            stored = str(row.get("suburb") or "").strip()
-            row_state = str(row.get("state") or "").strip()
-            checked = stored and (index.locate(stored, row_state) if row_state
-                                  else index.states_for_suburb(stored))
-            if not checked:
-                unknown.append(key)
-            elif named.lower() == stored.lower():
-                agree += 1
-            else:
-                disagree += 1
-        checks = agree + disagree
-        if checks < _ROW_MAP_MIN_CHECKS or agree / checks < _ROW_MAP_FLOOR:
-            logger.warning("      rejected %s (%d/%d agree)",
-                           url.split("/")[-1][:40], agree, checks)
-            continue
-        for key in unknown:
-            row_map[key] = found[key]
-        logger.warning("%5d lines named in %s (%d/%d agree)",
-                       len(unknown), url.split("/")[-1][:40], agree, checks)
-    save_row_map(row_map)
-    logger.warning("per-row map: %d line(s) across %d document(s)",
-                   len(row_map), len(partial))
+    # THE PER-ROW SECTION-HEADER MAP USED TO BE BUILT HERE. It is gone; see
+    # row_suburbs below for what it did, what it cost and why it is not worth having.
 
     orphans = [(u, rs) for u, rs in members.items() if not located[u]]
     orphans.sort(key=lambda pair: -len(pair[1]))
@@ -581,7 +549,32 @@ def line_key(text: str) -> str:
 
 
 def row_suburbs(data: bytes, state: str, index) -> Dict[str, str]:
-    """{lot line key: suburb} for one document, from the headers above each block."""
+    """{lot line key: suburb} for one document, from the headers above each block.
+
+    KEPT AS A RECORD OF A REJECTED APPROACH. Nothing calls this any more.
+
+    It reads a builder stocklist the way a person does -- remember the section header,
+    apply it to the lots beneath it -- and on the Hudson Homes list that is perfect: 104
+    of 104 rows, twelve suburbs. It does not generalise. Measured against rows whose
+    suburb was already known: 65 agreed and 136 did not.
+
+    Four separate defects, three of them found by an adversarial audit rather than by the
+    measurement above:
+      * a line that is not a header matches anyway and then LATCHES, handing its suburb
+        to every lot below it until the next match -- Donnybrook onto Shepparton lots,
+        Melton onto Tarneit ones;
+      * `current` is never cleared, so the latch survives a page break and a table
+        restart;
+      * the validation gate scored agreement against the raw `suburb` column rather than
+        what the app actually resolves, so it was checking the wrong thing;
+      * the gate demanded five agreeing rows of the WHOLE DOCUMENT, never of the section
+        an answer came from -- a document could pass on five rows in one section and
+        mislabel every row in another.
+
+    Gated hard enough to be safe it admitted 2 documents of 28 and 34 listings. Four
+    defects for 34 listings is not a trade worth making, and the failure mode is the one
+    that matters most: wrong, plausible, and silent.
+    """
     if not data[:4] == b"%PDF":
         return {}
     try:

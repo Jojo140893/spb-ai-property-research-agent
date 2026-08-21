@@ -24,6 +24,7 @@ answer a direct request with HTML rather than the file.
 """
 
 import collections
+import hashlib
 import json
 import re
 import shutil
@@ -93,6 +94,16 @@ BUILDING_DERIVED_FIELDS = ["source_link_url", "source_link_opens", "source_link_
                            # data we lost; with the reason it is data the source never
                            # gave. Same contract as state_source.
                            "suburb_source",
+                           # WHICH DOCUMENT THIS ROW CAME FROM, as a hash. The deployed
+                           # search groups rows by their source document so a lot with no
+                           # locality can borrow one from the lots beside it on the same
+                           # price list. That grouping was keyed on source_url, which is
+                           # deliberately NOT exported (a Dropbox folder link is a
+                           # capability and this deployment is public) -- so the page
+                           # sibling map and the state borrow were both permanently empty
+                           # in production while measuring perfectly against the local
+                           # database. The hash groups identically and discloses nothing.
+                           "source_doc",
                            # "Compare on realestate.com.au" -- a SEARCH URL for this
                            # row's suburb, built by rea_link.py from the RESOLVED suburb
                            # a few lines below. No key, no API, no request from us: the
@@ -467,6 +478,17 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         before = (b.get("suburb") or "").strip()
         b["suburb"], why = suburb_quality.resolve(b)
         b["suburb_source"] = why
+        # WHICH DOCUMENT THIS ROW CAME FROM, as a hash rather than the URL.
+        #
+        # The deployed search groups rows by their source document to let a lot with no
+        # locality borrow one from the lots beside it on the same price list. It was
+        # keyed on source_url, which this build deliberately does NOT export — a Dropbox
+        # folder link is a capability and the deployment is public — so that whole layer
+        # was empty in production while measuring perfectly against the local database.
+        # A hash groups the rows identically and discloses nothing about the link.
+        _doc = str(b.get("source_url") or "").strip()
+        b["source_doc"] = (hashlib.sha256(_doc.encode("utf-8")).hexdigest()[:16]
+                           if _doc else "")
         _suburb_reasons[why] = _suburb_reasons.get(why, 0) + 1
         if b["suburb"] != before:
             _resuburbed += 1

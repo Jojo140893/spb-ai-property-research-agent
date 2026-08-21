@@ -328,6 +328,19 @@ def run_research(payload):
         for _p in result['shortlist']:
             _row_for_benchmark = {
                 'suburb': _p.suburb, 'state': _p.state,
+                # HOW WE KNOW THE SUBURB, or the gate below cannot refuse anything.
+                #
+                # benchmark_competitive and benchmark_market both call
+                # suburb_quality.resolve() on this dict and gate on is_located(). Handed
+                # only a locality name that has already passed a lookup, resolve() has
+                # nothing to grade and returns STATED every time — so the check that
+                # exists to keep a GUESSED location out of a client's comparables was
+                # passing unconditionally. A listing whose suburb was inferred from a
+                # house design ("Magnolia", "Dalton 18") or an apartment type label
+                # ("Theodore", a Banana Shire town 550 km from the Brisbane lot) was
+                # getting suburb medians and REA comparables built for it and printed
+                # under "How this compares to the suburb".
+                'suburb_source': getattr(_p, 'suburb_source', ''),
                 'bedrooms': _p.bedrooms, 'land_sqm': _p.land_size_sqm,
                 'price': _p.price_breakdown.advertised_package_price,
                 # CandidateProperty carries no product_type, so price_kind would call

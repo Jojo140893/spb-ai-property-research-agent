@@ -208,10 +208,38 @@ def resolve(row: Dict[str, Any], index=None) -> Tuple[str, str]:
     # reported every one of them as "the source did not state one", collapsing "we
     # refused this value" and "there was never a value" into a single number and losing
     # the more useful half.
+    carried = str(row.get("suburb_source") or "").strip()
     if not raw:
-        carried = str(row.get("suburb_source") or "").strip()
-        if carried in (BLANK_NOT_A_PLACE, BLANK_NO_STATE):
+        if carried in (BLANK_NOT_A_PLACE, BLANK_NO_STATE, BLANK_OVERSEAS):
             return "", carried
+    elif carried and (carried in _INFERRED or carried in _LOCATED):
+        # A GRADE THIS FUNCTION GAVE, SURVIVING THE ROUND TRIP THROUGH THE SNAPSHOT.
+        #
+        # This is the line that makes the located/inferred split mean anything on the
+        # deployed path, and without it the split was decorative. build_web writes the
+        # RESOLVED suburb back into the published `suburb` column and puts the grade
+        # beside it in suburb_source. The API then re-resolves each snapshot row — and
+        # the first branch below sees a non-empty value that IS a locality in the row's
+        # state and calls it STATED. Measured on the shipped snapshot: of 2,849 rows
+        # published as INFERRED, 1,933 came back as "stated by the source" with
+        # is_located() True, and 436 of those were live, available and priced.
+        #
+        # The consequence was not cosmetic. is_located() is the gate every consumer that
+        # needs a TRUE position asks — benchmark_competitive, benchmark_market,
+        # kommo_agent's distance scoring — so a suburb we had GUESSED was being used to
+        # build comparables and suburb medians for a client report. 'Theodore' is an
+        # apartment-type label on a Brisbane listing and a Banana Shire town 550 km away;
+        # 'Magnolia' and 'Dalton 18' are house designs; 'Denver' came off a lot in
+        # Montana estate. Each was benchmarked as a real location.
+        #
+        # suburb_source is only ever written by this function, so trusting it is trusting
+        # our own earlier answer, not the source's claim about itself.
+        # EVERY grade is carried, not only the weak ones. Carrying just the inferred
+        # ones fixed the safety hole but flattened the rest: 1,337 rows read off their
+        # own source document came back as "stated by the source", so the snapshot could
+        # no longer tell a value a stocklist published from one this app read off a price
+        # list. Both are located and neither is wrong -- but the provenance is the point.
+        return _canonical_spelling(raw, state, index) if index.loaded else raw, carried
 
     if not index.loaded:                       # no locality data in this environment
         return raw, STATED if raw else BLANK_ABSENT
@@ -258,7 +286,12 @@ def resolve(row: Dict[str, Any], index=None) -> Tuple[str, str]:
         # are exactly that: a spec-string lot on a price list that says on page one which
         # suburb it is selling. Checked here because the no-state return below is final.
         named = _document_suburb(row)
-        if named:
+        # STILL HAS TO BE A PLACE. The main path below only ever returns FROM_DOCUMENT
+        # after index.locate has agreed; this branch returned whatever the map held. The
+        # map is built from localities so it should never differ — but "should never"
+        # is what the rest of this module exists to stop trusting, and a hand-edited
+        # entry in document_suburbs_manual.json reaches production through here.
+        if named and index.states_for_suburb(named):
             return _canonical_spelling(named, "", index), FROM_DOCUMENT
         # And the last-resort read, for the same reason: this return is final, so a
         # stateless row would otherwise never reach it. It only accepts a nationally
@@ -433,13 +466,13 @@ def _document_suburb(row: Dict[str, Any]) -> str:
     one. Import is lazy so suburb_quality stays usable in environments that do not ship
     the map at all.
     """
+    # THE PER-ROW SECTION-HEADER MAP WAS TRIED HERE AND REMOVED. See
+    # document_suburb.row_suburbs for what it did and the four ways it went wrong; the
+    # short version is that it bought 34 listings and cost four defects, one of which
+    # silently mislabelled dozens of rows at a time.
     try:
         import document_suburb
-        # PER-ROW FIRST. A builder's stocklist is a dozen suburbs, not one, and the line
-        # this row was read from has its own section header above it. The whole-document
-        # answer is only right for a single-project price list.
-        line = document_suburb.suburb_for_line(row)
-        return line or document_suburb.suburb_for_row(row)
+        return document_suburb.suburb_for_row(row)
     except Exception:                              # missing module, unreadable map
         return ""
 

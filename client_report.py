@@ -17,6 +17,29 @@ def _money(v) -> str:
     return f"${v:,.0f}" if v is not None else "TBC"
 
 
+def _suburb_caveat(p) -> str:
+    """A visible mark when the suburb is OUR reading rather than the source's statement.
+
+    This document is read by the buyer. A suburb the pipeline inferred from a listing's
+    own text is right about 85% of the time, which is fine for deciding what to show a
+    consultant and not fine for a line a client will take as the property's address. The
+    inferred ones came from things like a house design named "Magnolia" or an apartment
+    type labelled "Theodore", so the failure is not a near-miss suburb — it is a town
+    hundreds of kilometres away.
+
+    Printed inline, not as a footnote, because the address is what gets copied out of
+    here into an email.
+    """
+    try:
+        import suburb_quality
+    except ImportError:                            # pragma: no cover
+        return ""
+    why = str(getattr(p, "suburb_source", "") or "")
+    if why and not suburb_quality.is_located(why) and str(getattr(p, "suburb", "")):
+        return " (suburb not stated by the source &mdash; confirm before relying on it)"
+    return ""
+
+
 def _esc(v) -> str:
     """Any value that came from a brief or a vendor file, made safe to put in HTML.
 
@@ -219,7 +242,7 @@ class ClientReportGenerator:
             cards.append(f"""
     <div class="card">
       <div class="rank">Option {rank}</div>
-      <h2>{_esc(p.lot_address)}, {_esc(p.suburb)} {_esc(p.state)}</h2>
+      <h2>{_esc(p.lot_address)}, {_esc(p.suburb)}{_suburb_caveat(p)} {_esc(p.state)}</h2>
       <p class="sub">{spec}{dist_line}</p>
       <div class="row"><span class="label">Your price</span><span>{value_line}</span></div>
       {rent_row}
