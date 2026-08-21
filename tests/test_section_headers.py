@@ -61,7 +61,7 @@ def test_the_running_title_does_not_reset_the_section():
         ("Hudson Homes Stocklist", []),                       # page 2's running header
         ("Available 66 House Gallium 20 450.0 m2 4 beds $1,151,300", []),
     ]
-    out, context, banner = _rows_to_listings(rows, "", "test", "")
+    out, context, banner, _hint = _rows_to_listings(rows, "", "test", "")
     assert len(out) == 2, out
     assert "Wadalba" in context, context
     assert all("Wadalba" in str(listing.get("estate_context") or listing.get("suburb") or
@@ -77,7 +77,7 @@ def test_a_genuinely_new_section_still_replaces_the_old_one():
         ("Mt View Grange - Bellbird, Bellbird", []),
         ("Available 527 House COPPER 19A 753.0 m2 $941,230", []),
     ]
-    _out, context, _banner = _rows_to_listings(rows, "", "test", "")
+    _out, context, _banner, _hint = _rows_to_listings(rows, "", "test", "")
     assert "Bellbird" in context, context
 
 
@@ -193,3 +193,52 @@ def test_a_real_banner_made_of_ordinary_words_survives_both_rules():
     for line in ("Millfield Rise, Millfield NSW", "Park Lane - Stage 1, Joyner",
                  "House and Land Packages, Adelaide", "Southern Suburbs, Seaford"):
         assert _is_group_header(line, {}), line
+
+
+# --------------------------------------------- a region row sets the state, not the estate
+def test_a_region_row_names_a_state_and_never_a_section():
+    """"SE QLD" passes the section test, and reading it as the estate is exactly what took
+    the estate off 26 Hudson lots. Throwing it away entirely loses the only state forty
+    Prosperity rows have. It sets one and not the other."""
+    from sources.spreadsheet_extract import _region_state
+
+    assert _region_state("SE QLD") == "QLD"
+    assert _region_state("VIC") == "VIC"
+    assert _region_state("New South Wales") == "NSW"
+    assert _region_state("Nth QLD") == "QLD"
+    assert _region_state("Rosewood Green Rosewood") == ""
+    assert _region_state("Watagan Park - Display Homes, Cooranbong") == ""
+    assert _region_state("SE") == ""
+
+
+def test_the_region_state_makes_an_ambiguous_estate_readable():
+    """The Prosperity workbook marks its blocks "SE QLD" then lists estate-then-suburb
+    with no state on any row:
+
+        SE QLD
+        Rosewood Green | Rosewood
+        Lot 162 | Clover | Inv/OO | 320 sqm | ... | 405000
+
+    Rosewood is a locality in QLD and another in NSW. Without the region row nothing can
+    choose between them; with it, 38 of that sheet's 40 rows resolve where 5 did."""
+    rows = [("SE QLD", []),
+            ("Rosewood Green Rosewood", []),
+            ("Lot 162 Clover Inv/OO 320 sqm 175 sqm 4 2 2 2 $405,000", [])]
+    out, _ctx, _ban, hint = _rows_to_listings(rows, "", "t", "")
+    assert hint == "QLD"
+    assert out and out[0].get("suburb") == "Rosewood", out
+    assert out[0].get("state") == "QLD"
+
+
+def test_a_later_region_row_switches_the_state_mid_document():
+    """That workbook covers both states: Lara and Mambourin are Victorian and sit under a
+    VIC block further down the same sheet."""
+    rows = [("SE QLD", []),
+            ("Rosewood Green Rosewood", []),
+            ("Lot 162 Clover 320 sqm $405,000", []),
+            ("VIC", []),
+            ("Coridale Lara", []),
+            ("Lot 9 Clover 320 sqm $405,000", [])]
+    out, _ctx, _ban, hint = _rows_to_listings(rows, "", "t", "")
+    assert hint == "VIC"
+    assert [l.get("suburb") for l in out] == ["Rosewood", "Lara"], out

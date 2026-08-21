@@ -1033,9 +1033,44 @@ def _listing_from_row(text: str, links: LinkList, context: str, source_label: st
     }
 
 
+# A ROW THAT NAMES A REGION, NOT A SECTION. "SE QLD", "VIC", "NSW / ACT".
+#
+# _is_group_header refuses these on purpose: "NSW" sits three lines under the title of
+# every Hudson stocklist and, read as a section, took the estate off 26 lots. But refusing
+# it threw away the one thing it does say, which is the STATE -- and a state is what every
+# suburb rule in this pipeline needs before it will read anything.
+#
+# The Prosperity workbook is the case: it marks its blocks "SE QLD" and then lists
+# "Rosewood Green Rosewood", "Arbourwood Morayfield", "Coridale Lara", "Windermere
+# Mambourin" -- estate then suburb, forty rows, not one of them carrying a state. Rosewood
+# is in QLD and NSW; Lara and Mambourin are Victorian. Without the region row nothing here
+# can choose, and with it every one of them resolves.
+#
+# So a region row sets the running STATE and never the context.
+_REGION_ROW = re.compile(
+    r"^(?:s\.?e\.?|n\.?e\.?|s\.?w\.?|n\.?w\.?|nth|sth|east|west|north|south|"
+    r"regional|metro|greater)?\s*"
+    r"(vic|victoria|nsw|new south wales|qld|queensland|sa|south australia|"
+    r"wa|western australia|tas|tasmania|nt|northern territory|act)\s*"
+    r"(?:region|state|stock|list)?$", re.I)
+
+_REGION_TO_STATE = {
+    "vic": "VIC", "victoria": "VIC", "nsw": "NSW", "new south wales": "NSW",
+    "qld": "QLD", "queensland": "QLD", "sa": "SA", "south australia": "SA",
+    "wa": "WA", "western australia": "WA", "tas": "TAS", "tasmania": "TAS",
+    "nt": "NT", "northern territory": "NT", "act": "ACT",
+}
+
+
+def _region_state(text: str) -> str:
+    """The state a region row names, or "". Never a section header -- see _REGION_ROW."""
+    match = _REGION_ROW.match(str(text or "").strip().strip("-–—:|").strip())
+    return _REGION_TO_STATE.get(match.group(1).lower(), "") if match else ""
+
+
 def _rows_to_listings(rows: List[Any], context: str, source_label: str,
-                      builder_hint: str,
-                      banner: str = "") -> Tuple[List[Dict[str, Any]], str, str]:
+                      builder_hint: str, banner: str = "",
+                      state_hint: str = "") -> Tuple[List[Dict[str, Any]], str, str, str]:
     """Parse a batch of rows, carrying the estate/group header context through them.
 
     Returns (listings, context, banner) rather than mutating, so two competing PDF
@@ -1057,6 +1092,14 @@ def _rows_to_listings(rows: List[Any], context: str, source_label: str,
             continue
         if _is_column_header(text):
             continue                         # column names: neither a lot nor a banner
+        # A REGION ROW SETS THE STATE AND NEVER THE CONTEXT. See _region_state: "SE QLD"
+        # passes the section test but naming it as the estate is what took the estate off
+        # 26 Hudson lots, while throwing it away entirely loses the only state forty
+        # Prosperity rows have.
+        found_state = _region_state(text)
+        if found_state:
+            state_hint = found_state
+            continue
         listing = _listing_from_row(text, links, context, source_label, builder_hint,
                                     columns)
         if listing is None:
@@ -1077,9 +1120,18 @@ def _rows_to_listings(rows: List[Any], context: str, source_label: str,
                 context = text
                 banner = banner or text
             continue
+        # THE REGION'S STATE, where the row itself never gave one -- and then the suburb
+        # that state makes readable. "Rosewood Green Rosewood" names a place in QLD and
+        # another in NSW; only the "SE QLD" row above it can choose.
+        if state_hint and not str(listing.get("state") or "").strip():
+            listing["state"] = state_hint
+            if not str(listing.get("suburb") or "").strip():
+                recovered = _context_suburb(context, state_hint)
+                if recovered:
+                    listing["suburb"] = recovered
         listing["source_banner"] = banner
         out.append(listing)
-    return out, context, banner
+    return out, context, banner, state_hint
 
 
 def _assign_variant_ordinals(rows: List[Dict[str, Any]]) -> int:
@@ -1137,6 +1189,10 @@ def extract_from_xlsx(data: bytes, source_label: str = "", builder_hint: str = "
     out: List[Dict[str, Any]] = []
     context, sheet, money = "", -1, _MoneyColumns()
     banner = ""
+    # The state a region row last named — carried across rows the way context and banner
+    # are, because this reader hands _rows_to_listings ONE row at a time and a local
+    # inside it would reset on every call. See _region_state.
+    state_hint = ""
     for si, cells, links, sheet_name, row_no in rows:
         if si != sheet:
             context, sheet, money = "", si, _MoneyColumns()   # headers are per sheet
@@ -1164,8 +1220,8 @@ def extract_from_xlsx(data: bytes, source_label: str = "", builder_hint: str = "
         money.feed_header(cells, is_header)
         if is_header:
             continue
-        listings, context, banner = _rows_to_listings(
-            [(rendered, links)], context, source_label, builder_hint, banner)
+        listings, context, banner, state_hint = _rows_to_listings(
+            [(rendered, links)], context, source_label, builder_hint, banner, state_hint)
         _apply_header_specs(listings, money.specs(cells))
         # Stamped on every listing this row produced. One row can yield several (priced
         # siblings that differ only by package), and they all genuinely live on that row —
@@ -1187,7 +1243,7 @@ def extract_from_pdf(data: bytes, source_label: str = "", builder_hint: str = ""
     pages_total = 0
     try:
         with pdfplumber.open(io.BytesIO(data)) as pdf:
-            context, banner = "", ""
+            context, banner, state_hint = "", "", ""
             pages_total = len(pdf.pages)
             for page in pdf.pages[:PDF_PAGE_CAP]:
                 # ONE BAD PAGE COSTS ONE PAGE.
@@ -1205,14 +1261,15 @@ def extract_from_pdf(data: bytes, source_label: str = "", builder_hint: str = ""
                 except Exception:                                       # noqa: BLE001
                     annots = []
                 best, best_ctx, best_banner, best_name = [], context, banner, ""
+                best_hint = state_hint
                 others, failed = [], 0
                 for name, strategy in _PDF_STRATEGIES:
                     # PER STRATEGY, not per page. `lines` failing on a page whose text
                     # layer is broken must not cost the `tables` read of the same page.
                     try:
-                        listings, ctx, ban = _rows_to_listings(
+                        listings, ctx, ban, hint = _rows_to_listings(
                             strategy(page, annots), context, source_label, builder_hint,
-                            banner)
+                            banner, state_hint)
                     except Exception as e:                              # noqa: BLE001
                         failed += 1
                         logger.warning("pdf %s: page %s failed the %s strategy (%s)",
@@ -1223,6 +1280,7 @@ def extract_from_pdf(data: bytes, source_label: str = "", builder_hint: str = ""
                         if best:
                             others.append(best)
                         best, best_ctx, best_banner, best_name = listings, ctx, ban, name
+                        best_hint = hint
                     elif listings:
                         others.append(listings)
                 if failed == len(_PDF_STRATEGIES):
@@ -1268,6 +1326,8 @@ def extract_from_pdf(data: bytes, source_label: str = "", builder_hint: str = ""
                     _l["source_page"] = getattr(page, "page_number", 0) or 0
                 out.extend(best)
                 context, banner = best_ctx, best_banner
+                if best_hint:
+                    state_hint = best_hint
                 if best_name:
                     used[best_name] = used.get(best_name, 0) + len(best)
     except Exception as e:
@@ -1307,7 +1367,7 @@ def extract_from_csv(data: bytes, source_label: str = "", builder_hint: str = ""
     # cells it came from. Batching them lost that mapping, and with it any chance of
     # reading a fact out of the column its header names.
     out: List[Dict[str, Any]] = []
-    context, banner = "", ""
+    context, banner, state_hint = "", "", ""
     money = _MoneyColumns()
     # THE SUBURB COLUMN, WHICH THIS READER WAS THROWING AWAY.
     #
@@ -1342,8 +1402,9 @@ def extract_from_csv(data: bytes, source_label: str = "", builder_hint: str = ""
         columns = {name: _clean(raw_cells[i])
                    for i, name in csv_colmap.items()
                    if i < len(raw_cells) and raw_cells[i]}
-        listings, context, banner = _rows_to_listings(
-            [(rendered, [], columns)], context, source_label, builder_hint, banner)
+        listings, context, banner, state_hint = _rows_to_listings(
+            [(rendered, [], columns)], context, source_label, builder_hint, banner,
+            state_hint)
         _apply_header_specs(listings, money.specs(cells))
         for _l in listings:
             _l["source_row"] = line_no

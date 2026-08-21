@@ -91,7 +91,7 @@ def test_the_stated_column_beats_the_banner():
         pytest.skip("suburb index not available in this environment")
     row = ("Lot 12 Armstrong Creek Palomino Titled 350 4 2 2 $820,000",
            [], {"suburb": "Armstrong Creek"})
-    out, _, _ = SE._rows_to_listings([row], "Palomino Estate - Wyee - NSW", "f.pdf", "")
+    out, _, _, _ = SE._rows_to_listings([row], "Palomino Estate - Wyee - NSW", "f.pdf", "")
     assert len(out) == 1
     assert out[0]["suburb"] == "Armstrong Creek"
 
@@ -100,7 +100,7 @@ def test_a_row_with_no_stated_column_still_falls_back_to_the_banner():
     if not _geo_loaded():
         pytest.skip("suburb index not available in this environment")
     row = ("Lot 12 Palomino Titled 350 4 2 2 $820,000", [], {})
-    out, _, _ = SE._rows_to_listings([row], "Palomino Estate - Wyee - NSW", "f.pdf", "")
+    out, _, _, _ = SE._rows_to_listings([row], "Palomino Estate - Wyee - NSW", "f.pdf", "")
     assert len(out) == 1
     assert (out[0]["suburb"] or "").lower() == "wyee"
 
@@ -108,7 +108,7 @@ def test_a_row_with_no_stated_column_still_falls_back_to_the_banner():
 def test_two_member_rows_are_still_accepted():
     """The spreadsheet readers state no columns and were never asked to."""
     row = ("Lot 12 Palomino Titled 350 4 2 2 $820,000", [])
-    out, _, _ = SE._rows_to_listings([row], "", "f.pdf", "")
+    out, _, _, _ = SE._rows_to_listings([row], "", "f.pdf", "")
     assert len(out) == 1
 
 
