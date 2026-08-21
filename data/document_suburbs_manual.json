@@ -107,6 +107,13 @@
    "state": "QLD",
    "project": "st clair",
    "evidence": "St Clair, 11 Waterside Retreat, Birtinya QLD 4575 (Habitat Development Group) - two towers on Lake Kawana, which is why the rows read 'Lake View'. Not St Clair NSW or St Clair SA, both of which are localities"
+  },
+  {
+   "suburb": "Kings Forest",
+   "state": "NSW",
+   "project": "kings forest",
+   "overrides_state": true,
+   "evidence": "Stockland's Kings Forest, an 869-hectare masterplanned community on the Tweed Coast in the Tweed Shire, NSW, adjacent to Casuarina and near Kingscliff. Kings Forest is a locality in NSW and nowhere else. The ten rows record QLD and their state_source reads 'e-agent page' - the state was taken from the page the flyer was listed on, not the property, and four are already flagged 'conflicting signals'"
   }
  ]
 }

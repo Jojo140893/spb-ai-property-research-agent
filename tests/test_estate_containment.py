@@ -71,3 +71,45 @@ def test_it_does_not_scan_the_whole_catalogue_per_row():
         _state_by_estate_containment({"estate_name": "somewhere else entirely"},
                                      candidates)
     assert time.time() - start < 5.0, "containment lookup is too slow for a request path"
+
+
+# ------------------------------- the one place a human assertion outranks stored data
+def test_only_a_rule_that_says_so_may_contradict_the_rows_state():
+    """Ten Kings Forest listings record QLD, and their state_source reads "e-agent page" —
+    the state was taken from the page the flyer was listed on, not from the property, and
+    four of the ten are already flagged "conflicting signals". Kings Forest is a locality
+    in New South Wales and nowhere else, and the development is Stockland's, in the Tweed
+    Shire.
+
+    That correction is allowed, and ONLY because the rule says overrides_state. Every
+    other rule keeps the default: the row's state wins, and a rule that disagrees with it
+    is refused."""
+    import document_suburb as DS
+
+    rules = [{"suburb": "Kings Forest", "state": "NSW", "project": "kings forest",
+              "overrides_state": True, "evidence": "Stockland, Tweed Shire NSW"},
+             {"suburb": "Birtinya", "state": "QLD", "project": "st clair",
+              "evidence": "11 Waterside Retreat, Birtinya QLD"}]
+    DS._RULES_CACHE = rules
+    DS._MAP_CACHE = {}
+    try:
+        assert DS.override_for_row({"builder_name": "Kings Forest Stage One"}) == (
+            "Kings Forest", "NSW")
+        # The non-overriding rule is invisible to this path, whatever the row says.
+        assert DS.override_for_row({"builder_name": "St Clair"}) == ("", "")
+        # And it still refuses a state mismatch through the normal path.
+        assert DS.suburb_for_row({"builder_name": "St Clair", "state": "NSW",
+                                  "source_url": "x"}) == ""
+    finally:
+        DS._RULES_CACHE = None
+        DS._MAP_CACHE = None
+
+
+def test_every_overriding_rule_records_why():
+    """These contradict stored data. The evidence is what makes that auditable rather
+    than arbitrary, so it is required, and required to be substantial."""
+    import document_suburb as DS
+
+    for rule in DS.manual_rules(refresh=True):
+        if rule.get("overrides_state"):
+            assert len(str(rule.get("evidence") or "")) > 60, rule.get("suburb")

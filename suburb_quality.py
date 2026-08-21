@@ -103,6 +103,9 @@ FROM_ADDRESS_TAIL = "read from the locality named in the row's own address"
 FROM_DOCUMENT = "read from the front page of the row's own source document"
 # The source named a locality and misspelled it by exactly one character.
 FROM_TYPO = "the suburb the source stated, corrected for a single-character misspelling"
+# A hand-checked correction where the row's own STATE is the thing that was wrong.
+FROM_VERIFIED = ("checked by hand against the development's published address; the "
+                 "state recorded on the row was taken from the page it was listed on")
 # NOT AUSTRALIAN. 633 live listings are Dubai and Manila off-plan apartments (DAMAC
 # Islands, SAFA GATE, SMDC Sail/Sands/Gold/Jade/Glade Residences) sitting in the same
 # pool as Melbourne house-and-land. They will never have an Australian suburb, so
@@ -112,7 +115,7 @@ BLANK_OVERSEAS = "the listing is not in Australia"
 
 # Reasons whose suburb may be used AS A LOCATION.
 _LOCATED = (STATED, FROM_COMPOSITE, FROM_POSTCODE, FROM_ADDRESS,
-            FROM_ADDRESS_TAIL, FROM_DOCUMENT, FROM_TYPO)
+            FROM_ADDRESS_TAIL, FROM_DOCUMENT, FROM_TYPO, FROM_VERIFIED)
 
 # INFERRED, and deliberately not LOCATED.
 #
@@ -256,6 +259,17 @@ def resolve(row: Dict[str, Any], index=None) -> Tuple[str, str]:
 
     if not index.loaded:                       # no locality data in this environment
         return raw, STATED if raw else BLANK_ABSENT
+
+    # A HAND-CHECKED RULE THAT CONTRADICTS THE ROW'S STATE. The only path here that
+    # overrides stored data, used where the state itself is the error -- see
+    # document_suburb.override_for_row for the evidence each one carries.
+    try:
+        import document_suburb as _ds
+        _sub, _st = _ds.override_for_row(row)
+    except Exception:                              # missing module, unreadable rules
+        _sub, _st = "", ""
+    if _sub and _st and index.locate(_sub, _st):
+        return _canonical_spelling(_sub, _st, index), FROM_VERIFIED
 
     # BEFORE any Australian reasoning, because none of it applies. These rows reach the
     # end of this function as "the source did not state one", which reads as a scraping

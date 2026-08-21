@@ -413,6 +413,33 @@ def save_map(mapping: Dict[str, List[str]], force: bool = False) -> None:
     _MAP_CACHE = None                              # forced to re-merge the manual rules
 
 
+def override_for_row(row: Dict[str, object]):
+    """(suburb, state) where a hand-checked rule says the row's own state is WRONG.
+
+    THE ONLY PLACE ANYTHING HERE CONTRADICTS THE DATA, and it needs the evidence to earn
+    it. Ten Kings Forest listings record QLD, and their state_source says "e-agent page"
+    -- the state was taken from the page the flyer was listed on, not from the property,
+    and four of the ten are already flagged "conflicting signals". Kings Forest is a
+    locality in New South Wales and nowhere else, and the development is Stockland's, on
+    the Tweed Coast, in the Tweed Shire. The recorded state is an artefact of where the
+    document was found.
+
+    A rule only reaches this path when it says overrides_state, so the default remains
+    what it should be: the row's state wins and a rule that disagrees is simply refused.
+    """
+    haystack = " ".join(str(row.get(field) or "")
+                        for field in ("builder_name", "estate_name")).lower()
+    if not haystack.strip():
+        return "", ""
+    for rule in manual_rules():
+        if not rule.get("overrides_state"):
+            continue
+        needle = str(rule.get("project") or "").strip().lower()
+        if needle and needle in haystack:
+            return str(rule.get("suburb") or ""), str(rule.get("state") or "")
+    return "", ""
+
+
 def suburb_for_row(row: Dict[str, object]) -> str:
     """The suburb this row's own source document names, or ''.
 
