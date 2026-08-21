@@ -470,6 +470,24 @@ _BANNER_WORD = re.compile(r"[A-Za-z][A-Za-z'\-]*")
 _BANNER_GEO = None
 
 
+_BANNER_POSTCODE = re.compile(r"(?<!\d)(\d{4})(?!\d)")
+
+
+def _state_from_banner_postcode(header: str) -> str:
+    """The state a section banner's own postcode proves, or "".
+
+    Only used where the rows record no state at all -- see the note in _context_suburb.
+    Every postcode in the banner must agree, so a header carrying two of them (a range,
+    or two projects on one line) proves nothing and is refused.
+    """
+    from state_resolver import state_from_postcode
+
+    found = {state_from_postcode(code) for code in _BANNER_POSTCODE.findall(header or "")}
+    found.discard("")
+    found.discard(None)
+    return next(iter(found)) if len(found) == 1 else ""
+
+
 def _context_suburb(header: str, state: str = "") -> Optional[str]:
     """The LOCALITY named in a section banner, or None.
 
@@ -540,6 +558,18 @@ def _context_suburb(header: str, state: str = "") -> Optional[str]:
     # removes the whole class. "Donnybrook" itself exists in QLD, VIC and WA.
     #
     # Longest tail first, so "Armstrong Creek" wins over "Creek".
+    #
+    # THE BANNER'S OWN POSTCODE COUNTS AS THE STATE. A stocklist that records no state on
+    # its rows still writes it into the section header: "Toolern Waters , Melton South
+    # 3338", "Mambourin Green Estate , Mambourin 3024", "Lyra Estate, Beveridge 3753".
+    # 3338 is a Victorian postcode, so the locality beside it is the Victorian one, and
+    # the ambiguity this rule exists to refuse is not present.
+    #
+    # Without this the whole document is refused: the Goldstate list names its suburb
+    # above every block and carries no state column, so 76 of its 89 lots had no suburb
+    # while the answer sat two words to the left of the number that proves it.
+    if not state:
+        state = _state_from_banner_postcode(header)
     if not state:
         return None
     for bit in _BANNER_SPLIT.split(cleaned):

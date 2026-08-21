@@ -111,3 +111,33 @@ def test_a_lot_row_is_still_never_a_section():
     for row in ("Available Lot 20 388.0 m2 $630,000 January 2027 House Baron LH",
                 "Available 61 House COPPER 21 197.08m2 469.0 m2 4 beds $1,167,260"):
         assert not _is_group_header(row, {}), row
+
+
+def test_the_banners_own_postcode_supplies_the_missing_state():
+    """The rule that a locality needs a state is what keeps 'Springs' from landing in WA.
+    It also refused whole documents that state their suburb perfectly well.
+
+    The Goldstate list has no state column at all and names its section as
+    "Toolern Waters , Melton South 3338" — and 3338 is a Victorian postcode, so the
+    locality beside it is the Victorian one and the ambiguity the rule guards against is
+    not present. 11 of 89 rows carried a suburb before this; 73 after."""
+    from sources.spreadsheet_extract import _context_suburb
+    assert _context_suburb("Toolern Waters , Melton South 3338", "") == "Melton South"
+    assert _context_suburb("Lyra Estate, Beveridge 3753", "") == "Beveridge"
+    assert _context_suburb("Mambourin Green Estate , Mambourin 3024", "") == "Mambourin"
+
+
+def test_a_stated_state_still_wins_over_the_postcode():
+    from sources.spreadsheet_extract import _context_suburb
+    assert _context_suburb("Toolern Waters , Melton South 3338", "VIC") == "Melton South"
+    # A banner whose postcode belongs to another state cannot name a locality for THIS
+    # row's state -- the row's own state is the stronger claim and is checked first.
+    assert _context_suburb("Somewhere, Melton South 3338", "QLD") != "Melton South"
+
+
+def test_two_postcodes_in_one_banner_prove_nothing():
+    """A range, or two projects on one line, is not evidence of a single state."""
+    from sources.spreadsheet_extract import _state_from_banner_postcode
+    assert _state_from_banner_postcode("Melton South 3338") == "VIC"
+    assert _state_from_banner_postcode("Stage 3338 and 4000") == ""
+    assert _state_from_banner_postcode("no postcode here") == ""
