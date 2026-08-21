@@ -841,6 +841,108 @@ def _pdf_rows_from_lines(page: Any, annots: List[Tuple[float, float, str]]
 # handful of spurious regions, and merely producing rows was enough to suppress the
 # text-line path that reads them correctly.
 # How many pages of one PDF are read. Named so the log can say when it binds.
+# ---------------------------------------------------------------- a grid with no rules
+#
+# pdfplumber finds a table when the page DRAWS one. Some stocklists lay their columns out
+# with whitespace and draw nothing, so extract_tables returns nothing and the row arrives
+# as one flat string:
+#
+#     Lot Project Name Address Suburb Type Status Bed Bath Car Land Size Build Price ...
+#     4A 4 Pilny Street Camira Banksia 183 - Urban Available 4 2 2 501 $ 430,900 ...
+#
+# The suburb is printed on every row, in a column called Suburb, and was unreachable: 0 of
+# 63 lots on that document had a location.
+#
+# THIS IS AN ENRICHMENT, NOT A STRATEGY, and that distinction is the whole lesson. Written
+# first as a third entry in _PDF_STRATEGIES it competed for the row-count tie-break, won
+# pages it read worse than the existing readers, and cost two documents everything they
+# had -- 82 of 82 rows down to 0 of 86, 67 of 67 down to 51 of 69 -- for a net gain of 5
+# across ten documents. Here it cannot displace anything: the winning reader keeps its
+# rows, and this only fills a suburb that is otherwise blank.
+_GRID_HEADERS = ("suburb", "locality", "town")
+
+
+def _grid_suburbs(page: Any) -> Dict[str, str]:
+    """{row text: suburb} read off a whitespace-aligned grid, or {} if there is no grid.
+
+    Returns nothing unless a header row names a locality column, so a page without one
+    costs a dictionary lookup and no behaviour.
+    """
+    try:
+        words = page.extract_words(use_text_flow=False) or []
+    except Exception:                                       # pragma: no cover
+        return {}
+    if not words:
+        return {}
+    rows: Dict[int, List[dict]] = {}
+    for w in words:
+        rows.setdefault(round(float(w.get("top", 0)) / 3.0), []).append(w)
+    ordered = [sorted(ws, key=lambda w: float(w.get("x0", 0)))
+               for _, ws in sorted(rows.items())]
+
+    header = None
+    for ws in ordered[:12]:
+        labels = [str(w.get("text", "")).strip().lower() for w in ws]
+        if len(ws) >= 4 and any(l in _GRID_HEADERS for l in labels):
+            header = ws
+            break
+    if header is None:
+        return {}
+    labels = [str(w.get("text", "")).strip().lower() for w in header]
+    where = next(i for i, l in enumerate(labels) if l in _GRID_HEADERS)
+    edges = [float(w.get("x0", 0)) for w in header] + [1e9]
+
+    out: Dict[str, str] = {}
+    for ws in ordered:
+        if ws is header:
+            continue
+        text = _clean(" ".join(str(w.get("text", "")) for w in ws))
+        if not text:
+            continue
+        # The named column, then the one to its LEFT. Never the one to its right.
+        #
+        # On the document this was written for, "Camira" sits under the header word
+        # "Address" rather than under "Suburb", because the Address column is empty for
+        # every row and the layout closed the gap leftward. So the neighbour worth
+        # checking is the previous column.
+        #
+        # The column to the RIGHT is the trap, and a test caught it: immediately right of
+        # Suburb is Type, holding "Banksia 183 - Urban" -- and Banksia is a real NSW
+        # suburb. Searching rightward finds the house design and calls it a place on
+        # every row that genuinely has no suburb. Left only.
+        for index in (where, where - 1):
+            if not 0 <= index < len(header):
+                continue
+            cell = " ".join(str(w.get("text", "")) for w in ws
+                            if edges[index] - 2 <= float(w.get("x0", 0)) < edges[index + 1] - 2)
+            if _looks_like_one_locality(cell.strip()):
+                out[text] = cell.strip()
+                break
+    return out
+
+
+def _looks_like_one_locality(value: str) -> bool:
+    """Is this cell a locality NAME and nothing else? Checked against the same index the
+    rest of the pipeline uses, so a design name only passes if it really is a place."""
+    text = (value or "").strip()
+    words = text.split()
+    if not (1 <= len(words) <= 3):
+        return False
+    if not all(w.replace("-", "").replace("'", "").isalpha() for w in words):
+        return False
+    global _BANNER_GEO
+    if _BANNER_GEO is None:
+        try:
+            from geo import SuburbGeoIndex
+            _BANNER_GEO = SuburbGeoIndex()
+        except Exception:                                   # pragma: no cover
+            return False
+    try:
+        return bool(_BANNER_GEO.states_for_suburb(text))
+    except Exception:                                       # pragma: no cover
+        return False
+
+
 PDF_PAGE_CAP = int(os.environ.get("SPB_PDF_PAGE_CAP", "25"))
 
 _PDF_STRATEGIES = (("tables", _pdf_rows_from_tables), ("lines", _pdf_rows_from_lines))
@@ -1148,6 +1250,19 @@ def extract_from_pdf(data: bytes, source_label: str = "", builder_hint: str = ""
                 # spreadsheet, so this is the answer to Colin's ask for most of the stock.
                 # page_number is pdfplumber's own 1-based value — the page the reader
                 # shows, not an index.
+                # The grid enrichment, on rows the winning reader left without one.
+                if any(not str(_l.get("suburb") or "").strip() for _l in best):
+                    try:
+                        grid = _grid_suburbs(page)
+                    except Exception:                       # pragma: no cover
+                        grid = {}
+                    for _l in best:
+                        if str(_l.get("suburb") or "").strip():
+                            continue
+                        named = grid.get(_clean(str(_l.get("source_text") or "")))
+                        if named:
+                            _l["suburb"] = named
+
                 for _l in best:
                     _l["source_page"] = getattr(page, "page_number", 0) or 0
                 out.extend(best)
