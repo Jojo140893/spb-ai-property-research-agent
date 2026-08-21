@@ -129,7 +129,18 @@ _LOCATED = (STATED, FROM_COMPOSITE, FROM_POSTCODE, FROM_ADDRESS,
 # costs a client a wrong valuation.
 INFERRED_FROM_TEXT = ("inferred from the row's own text - the source did not state a "
                       "suburb, so this is our best reading and may be wrong")
-_INFERRED = (INFERRED_FROM_TEXT,)
+# UNCHECKED_NO_STATE joins them, for the same reason and with the same limits.
+#
+# These are rows where the SOURCE stated a real locality name — 'Kialla', 'Bald Hills',
+# 'One Mile', 'The Gap', 'Toowoomba' — and the only thing missing is a state to check it
+# against. That is strictly STRONGER evidence than INFERRED_FROM_TEXT, which is a name
+# this app dug out of a listing's own text and which is already accepted as searchable.
+# Dropping the stated ones while keeping the inferred ones was incoherent.
+#
+# Searchable, never located: the reason a state is required has not gone away. A fifth of
+# Australian locality names exist in more than one state, so these cannot be geocoded,
+# distance-filtered or benchmarked, and is_located() still says no.
+_INFERRED = (INFERRED_FROM_TEXT, UNCHECKED_NO_STATE)
 
 
 def is_located(why: str) -> bool:

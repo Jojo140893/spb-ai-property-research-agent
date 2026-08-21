@@ -815,7 +815,13 @@ def build_packages(brief_dict, rows, today=None):
                 _borrowed = _state_of.get(
                     (_field, str(row.get(_field) or "").strip().lower()))
                 if _borrowed:
-                    row = {**row, "state": _borrowed}
+                    # AND DROP THE GRADE THE ROW ARRIVED WITH. suburb_source was decided
+                    # at build time under the facts of that moment — for these rows,
+                    # "no state recorded, so the value cannot be checked". resolve()
+                    # honours a carried reason, and would keep honouring that one after
+                    # the state it complains about has just been supplied, so the borrow
+                    # would buy nothing. Cleared, the row is graded again from scratch.
+                    row = {**row, "state": _borrowed, "suburb_source": ""}
                     row_state = _borrowed
                     counts["state_borrowed"] = counts.get("state_borrowed", 0) + 1
                     break

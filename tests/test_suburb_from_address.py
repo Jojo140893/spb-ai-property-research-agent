@@ -167,3 +167,39 @@ def test_a_stated_suburb_is_never_downgraded_to_inferred():
     suburb, why = SQ.resolve({"lot_address": "anything at all", "suburb": "Officer",
                               "state": "VIC"})
     assert (suburb, why) == ("Officer", SQ.STATED)
+
+
+def test_a_stated_locality_with_no_state_is_searchable_but_not_located():
+    """'Kialla', 'Bald Hills', 'One Mile', 'The Gap' and 'Toowoomba' were stated by their
+    source and dropped from every search for one reason: no state to check them against.
+
+    That is STRONGER evidence than the free-text inference this module already accepts as
+    searchable, so keeping one and discarding the other was incoherent. The limit stands
+    though — a fifth of Australian locality names exist in more than one state, so these
+    still cannot be geocoded, distance-filtered or benchmarked."""
+    suburb, why = SQ.resolve({"suburb": "Kialla", "state": "",
+                              "lot_address": "Lot 30, Sanctuary Park"})
+    assert suburb == "Kialla"
+    assert why == SQ.UNCHECKED_NO_STATE
+    assert SQ.is_searchable(why), "a source-stated locality must be findable"
+    assert not SQ.is_located(why), "with no state it still cannot be a position"
+
+
+def test_a_carried_blank_reason_does_not_outlive_the_fact_behind_it():
+    """suburb_source is decided under the facts of the moment it was written. A row graded
+    'no state recorded' and then GIVEN a state by its siblings must be graded again, or
+    the borrow buys nothing."""
+    borrowed = {"suburb": "Officer", "state": "VIC", "suburb_source": ""}
+    assert SQ.is_located(SQ.resolve(borrowed)[1])
+
+    # The one that actually bites: NO suburb value, carrying "no state recorded", and a
+    # state has since been borrowed. The carried reason is returned before the state is
+    # ever looked at, so the row stays blank and the borrow buys nothing —
+    # api/_candidates clears suburb_source at the moment it borrows, which is what makes
+    # these rows reachable at all.
+    stale = {"suburb": "", "state": "QLD", "suburb_source": SQ.BLANK_NO_STATE,
+             "lot_address": "12 Example St, Toowoomba"}
+    assert SQ.resolve(stale)[1] == SQ.BLANK_NO_STATE, "carried reason should short-circuit"
+    cleared = {**stale, "suburb_source": ""}
+    assert SQ.is_searchable(SQ.resolve(cleared)[1]), \
+        "clearing the stale grade must let the borrowed state be used"
