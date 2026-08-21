@@ -83,15 +83,46 @@ _STREET_TYPES = frozenset("""
 """.split())
 
 
-def fetch(url: str, opener=urllib.request.urlopen) -> bytes:
+# BE A GOOD GUEST. This reads ~70 documents in a run, and they belong to other people's
+# file hosts. Fetching them back-to-back got e-agent.com.au to start returning empty
+# bodies partway through a session -- not an error, just nothing, which reads exactly
+# like "this document has no text" and would have quietly emptied the map on the next
+# nightly run. A pause between requests and a retry on an empty body costs a couple of
+# minutes once a night and removes both problems.
+_PAUSE_SECONDS = 1.5
+_EMPTY_RETRIES = 3
+_last_fetch_at = [0.0]
+
+
+def fetch(url: str, opener=urllib.request.urlopen, sleep=None) -> bytes:
     """The document's bytes, or b'' if it cannot be read. Never raises."""
-    try:
-        request = urllib.request.Request(url, headers={"User-Agent": _UA})
-        with opener(request, timeout=_TIMEOUT) as response:
-            return response.read(_MAX_BYTES)
-    except Exception as exc:                       # network, auth, redirect, anything
-        logger.info("document %s could not be fetched (%s)", url[:80], type(exc).__name__)
-        return b""
+    import time
+
+    napper = sleep or time.sleep
+    for attempt in range(1, _EMPTY_RETRIES + 1):
+        gap = time.monotonic() - _last_fetch_at[0]
+        if gap < _PAUSE_SECONDS:
+            napper(_PAUSE_SECONDS - gap)
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": _UA})
+            with opener(request, timeout=_TIMEOUT) as response:
+                data = response.read(_MAX_BYTES)
+        except Exception as exc:                   # network, auth, redirect, anything
+            logger.info("document %s could not be fetched (%s)",
+                        url[:80], type(exc).__name__)
+            data = b""
+        finally:
+            _last_fetch_at[0] = time.monotonic()
+        if data:
+            return data
+        # An EMPTY body is the shape rate limiting takes here, and it is indistinguishable
+        # from a genuinely empty file, so it is worth backing off for rather than
+        # accepting as an answer.
+        if attempt < _EMPTY_RETRIES:
+            logger.info("empty body for %s — backing off (%d/%d)",
+                        url[:60], attempt, _EMPTY_RETRIES)
+            napper(_PAUSE_SECONDS * 4 * attempt)
+    return b""
 
 
 # The top-left block of a spreadsheet, which is where a stock list puts its banner —
