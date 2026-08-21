@@ -265,10 +265,19 @@ def run_research(payload):
     # "Hard Rejection" pill. It is the pipeline accounting for what it did and did
     # not score — the opposite of a rejection, and the single most useful line in the
     # response for understanding a thin shortlist.
+    # THE COUNTS, NOT ONLY THE SENTENCE. Two listings have now been reported as missing
+    # from the app when they were in it — a Liverpool apartment with no bedroom count and
+    # a Donnybrook lot with no suburb. Both were named in this paragraph, and the paragraph
+    # is a wall of numbers nobody can act on. Structured, the UI can say the one thing that
+    # helps: which minimum to drop, and how much stock comes back if you do.
     coverage_entry = {'property_id': 'SNAPSHOT-COVERAGE',
                       'kind': 'coverage',
                       'address': 'Snapshot coverage (deployed build, no live scrape)',
-                      'reason': coverage}
+                      'reason': coverage,
+                      'missing_fields': counts.get('missing_fields') or {},
+                      'no_suburb': counts.get('no_suburb', 0),
+                      'suburb_not_a_locality': counts.get('suburb_not_a_locality', 0),
+                      'incomplete_facts': counts.get('incomplete_facts', 0)}
 
     if not packages:
         # Deliberately NOT calling the pipeline: candidate_packages=[] is falsy and

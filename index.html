@@ -198,6 +198,15 @@
     }
     .cmp-pick input { width: auto; margin: 0; }
 
+    .gap-note{background:#fffbeb;border:1px solid #fde68a;border-left:4px solid #f59e0b;
+               border-radius:8px;padding:0.8rem 1rem;margin:0 0 1rem;font-size:0.86rem;
+               color:#78350f;line-height:1.5}
+    .gap-note .gap-row{margin-top:0.4rem}
+    .gap-clear{margin-left:0.5rem;padding:0.15rem 0.55rem;border:1px solid #f59e0b;
+               background:#fff;color:#92400e;border-radius:5px;cursor:pointer;
+               font:inherit;font-size:0.8rem}
+    .gap-clear:hover{background:#fef3c7}
+
     /* The rejection log, folded. Thirty red cards below five results made a working
            page look like a failed one; the reasoning is still one click away. */
         .reject-log {
@@ -3191,6 +3200,58 @@ python state_sync.py push</pre>
                     // Re-tick anything still selected from an earlier search, and paint the
                     // count — the cards were just rebuilt, so their checked state is stale.
                     paintCompareBar();
+                }
+
+                /* WHAT A MINIMUM COST YOU, said where it can be acted on.
+                 *
+                 * A listing dropped because it states 4 bedrooms against a required 5 is
+                 * a correct decision. A listing dropped because its source never stated a
+                 * bedroom count AT ALL is a data gap — and the two were reported the same
+                 * way, folded into "N listings ruled out". Coleen has twice told Ahsan a
+                 * property was missing from the app when it was in it, filtered out by a
+                 * fact the source never published.
+                 *
+                 * Measured on the live snapshot: 70% of stock states no house size, 46%
+                 * no car spaces, 30% no bedrooms. A house-size minimum alone removes
+                 * seven listings in ten, silently. So this says which minimum did it, how
+                 * much it cost, and offers to run the search again without it. */
+                const cov = (data.rejected_log || []).find(
+                    r => r.kind === 'coverage' || r.property_id === 'SNAPSHOT-COVERAGE');
+                const MIN_FIELD = {
+                    'bedroom count': 'bedrooms', 'bedrooms': 'bedrooms',
+                    'bathroom count': 'bathrooms', 'bathrooms': 'bathrooms',
+                    'car space count': 'carSpaces', 'car spaces': 'carSpaces',
+                    'house size': 'houseSize',
+                };
+                const gaps = Object.entries((cov && cov.missing_fields) || {})
+                    .filter(([, n]) => n > 0)
+                    .sort((a, b) => b[1] - a[1]);
+                if (gaps.length) {
+                    const box = document.createElement('div');
+                    box.className = 'gap-note';
+                    box.innerHTML = '<strong>Some listings could not be judged against '
+                        + 'your minimums.</strong> Their source never stated the figure, '
+                        + 'so they were set aside rather than guessed at.'
+                        + gaps.map(([label, n]) => {
+                            const id = MIN_FIELD[label] || '';
+                            const btn = id
+                                ? ` <button type="button" class="gap-clear" data-field="${esc(id)}">`
+                                  + `search without this minimum</button>`
+                                : '';
+                            return `<div class="gap-row">${n.toLocaleString()} listing`
+                                + `${n === 1 ? '' : 's'} state no ${esc(label)}${btn}</div>`;
+                        }).join('');
+                    resultsDiv.appendChild(box);
+                    box.querySelectorAll('.gap-clear').forEach(b => {
+                        b.onclick = () => {
+                            const el = document.getElementById(b.dataset.field);
+                            if (el) el.value = '';
+                            const form = document.getElementById('propertyForm');
+                            if (form) form.requestSubmit ? form.requestSubmit()
+                                                         : form.dispatchEvent(
+                                                             new Event('submit', {cancelable: true}));
+                        };
+                    });
                 }
 
                 // Filtered Rejection Log.
