@@ -247,6 +247,20 @@ def suburb_for_document(url: str, state: str, index, fetcher=fetch) -> str:
     text = front_page_text(fetcher(url))
     if not text:
         return ""
+    # A HAND-CHECKED RULE MATCHING THE DOCUMENT'S OWN TITLE, first.
+    #
+    # Two of these documents name neither their suburb nor anything the rows carry --
+    # "Collins Wharf - Ancora" and "DAIRY FARMERS TOWERS" have no usable builder_name or
+    # estate_name between them. The title is the only durable handle they have, and it
+    # keeps working when the file is re-uploaded to a new link.
+    lowered = text.lower()
+    for rule in manual_rules():
+        needle = str(rule.get("title") or "").strip().lower()
+        if needle and needle in lowered:
+            rule_state = str(rule.get("state") or "").upper()
+            if rule_state and state and rule_state != state.upper():
+                continue
+            return str(rule["suburb"])
     names = localities_in(text, state, index)
     # EXACTLY ONE. A price list covering several projects cannot be collapsed to a single
     # suburb, and taking the first would quietly mislabel every lot in the others.
@@ -307,6 +321,26 @@ def _read(path: str) -> dict:
         return {}
 
 
+_RULES_CACHE: Optional[List[dict]] = None
+
+
+def manual_rules(refresh: bool = False) -> List[dict]:
+    """The hand-checked rules, each able to match by url, project or document title."""
+    global _RULES_CACHE
+    if _RULES_CACHE is not None and not refresh:
+        return _RULES_CACHE
+    raw = _read(map_path(manual=True))
+    rules = raw.get("rules") if isinstance(raw, dict) else None
+    if isinstance(rules, list):
+        _RULES_CACHE = [r for r in rules if isinstance(r, dict) and r.get("suburb")]
+    else:
+        # The original shape: {url: {suburb, state, evidence}}. Still read, so an older
+        # checkout of this file keeps working.
+        _RULES_CACHE = [dict(v, url=k) for k, v in (raw or {}).items()
+                        if isinstance(v, dict) and v.get("suburb")]
+    return _RULES_CACHE
+
+
 def load_map(refresh: bool = False) -> Dict[str, List[str]]:
     """{url: [suburb, state]} — what each document says, manual answers taking priority."""
     global _MAP_CACHE
@@ -314,14 +348,32 @@ def load_map(refresh: bool = False) -> Dict[str, List[str]]:
         return _MAP_CACHE
     merged = {str(k): list(v) for k, v in _read(map_path()).items()
               if isinstance(v, (list, tuple))}
-    for url, entry in _read(map_path(manual=True)).items():
-        # The manual file is written for a reader, so it is a dict with its evidence.
-        if isinstance(entry, dict) and entry.get("suburb"):
-            merged[str(url)] = [str(entry["suburb"]), str(entry.get("state") or "")]
-        elif isinstance(entry, (list, tuple)) and entry:
-            merged[str(url)] = list(entry)
+    for rule in manual_rules(refresh=refresh):
+        if rule.get("url"):
+            merged[str(rule["url"])] = [str(rule["suburb"]), str(rule.get("state") or "")]
     _MAP_CACHE = merged
     return _MAP_CACHE
+
+
+def _rule_for_project(row: Dict[str, object]) -> Optional[dict]:
+    """A hand-checked rule matching this row's own builder or estate.
+
+    WHY THIS EXISTS AND THE URL KEY IS NOT ENOUGH. A builder re-uploads its price list to
+    a fresh Dropbox link every few weeks. The rows follow the new URL on the next harvest,
+    so a rule keyed only to the old one silently stops applying and 637 listings go back
+    to having no suburb -- with nothing failing and nothing to notice. The project name
+    travels with the row, so it keeps working across the swap and applies to lots added to
+    that project later.
+    """
+    haystack = " ".join(str(row.get(field) or "")
+                        for field in ("builder_name", "estate_name")).lower()
+    if not haystack.strip():
+        return None
+    for rule in manual_rules():
+        needle = str(rule.get("project") or "").strip().lower()
+        if needle and needle in haystack:
+            return rule
+    return None
 
 
 def save_map(mapping: Dict[str, List[str]]) -> None:
@@ -337,17 +389,30 @@ def save_map(mapping: Dict[str, List[str]]) -> None:
 def suburb_for_row(row: Dict[str, object]) -> str:
     """The suburb this row's own source document names, or ''.
 
-    The state must still agree. A document's answer was read under one state and a row
-    from another state on the same URL is not covered by it.
+    Tried by exact URL first, then by the project the row belongs to -- see
+    _rule_for_project for why the URL alone is not durable.
+
+    The state must still agree either way. An answer was read under one state and a row
+    from another state is not covered by it.
     """
-    entry = load_map().get(str(row.get("source_url") or ""))
-    if not entry:
-        return ""
-    suburb, state = (list(entry) + ["", ""])[:2]
     row_state = str(row.get("state") or "").strip().upper()
-    if state and row_state and state != row_state:
-        return ""
-    return str(suburb or "")
+
+    def _agrees(suburb, state):
+        if state and row_state and str(state).upper() != row_state:
+            return ""
+        return str(suburb or "")
+
+    entry = load_map().get(str(row.get("source_url") or ""))
+    if entry:
+        suburb, state = (list(entry) + ["", ""])[:2]
+        found = _agrees(suburb, state)
+        if found:
+            return found
+
+    rule = _rule_for_project(row)
+    if rule:
+        return _agrees(rule.get("suburb"), rule.get("state"))
+    return ""
 
 
 def refresh_from_database(db_path: Optional[str] = None, limit: int = 0) -> Dict[str, List[str]]:

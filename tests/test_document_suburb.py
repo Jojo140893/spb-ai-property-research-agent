@@ -291,3 +291,62 @@ def test_the_shipped_row_map_agrees_with_every_suburb_it_can_be_checked_against(
     assert not disagreements, (
         "the shipped row map contradicts %d known suburb(s), e.g. %s"
         % (len(disagreements), disagreements[:3]))
+
+
+# ------------------------------------------- the answers must survive the NEXT harvest
+def _rules(monkeypatch, rules):
+    monkeypatch.setattr(DS, "_RULES_CACHE", rules)
+    monkeypatch.setattr(DS, "_MAP_CACHE", {})
+
+
+def test_a_new_price_list_at_a_new_link_still_resolves(monkeypatch):
+    """The failure this prevents is silent and total.
+
+    Builders re-upload their price list to a fresh Dropbox link every few weeks. The rows
+    follow the new URL on the next harvest, so a hand-checked answer keyed only to the old
+    link stops applying — 637 listings go back to having no suburb, nothing fails, and
+    nothing says so. The project name travels with the row, so it survives the swap."""
+    _rules(monkeypatch, [{"suburb": "Broadbeach", "state": "QLD", "project": "vanda",
+                          "url": "https://old.example/VandA%20Price%20Jul.pdf"}])
+    fresh = {"source_url": "https://new.example/VandA%20Price%20Sep.pdf",
+             "builder_name": "Vanda", "state": "QLD"}
+    assert DS.suburb_for_row(fresh) == "Broadbeach"
+
+
+def test_it_also_covers_lots_added_to_that_project_later(monkeypatch):
+    """A new release in a project already checked by hand needs no new checking."""
+    _rules(monkeypatch, [{"suburb": "Murrumbeena", "state": "VIC",
+                          "project": "murrumbeena"}])
+    assert DS.suburb_for_row({"source_url": "https://any/where.pdf",
+                              "estate_name": "Murrumbeena Place Stage 2",
+                              "state": "VIC"}) == "Murrumbeena"
+
+
+def test_a_project_rule_never_crosses_a_state(monkeypatch):
+    _rules(monkeypatch, [{"suburb": "Broadbeach", "state": "QLD", "project": "vanda"}])
+    assert DS.suburb_for_row({"source_url": "https://x", "builder_name": "Vanda",
+                              "state": "VIC"}) == ""
+
+
+def test_an_unrelated_builder_matches_nothing(monkeypatch):
+    _rules(monkeypatch, [{"suburb": "Broadbeach", "state": "QLD", "project": "vanda"}])
+    assert DS.suburb_for_row({"source_url": "https://x",
+                              "builder_name": "Someone Else", "state": "QLD"}) == ""
+
+
+def test_a_row_with_no_builder_or_estate_matches_nothing(monkeypatch):
+    """An empty haystack must not match an empty-ish needle and label everything."""
+    _rules(monkeypatch, [{"suburb": "Broadbeach", "state": "QLD", "project": "vanda"},
+                         {"suburb": "Nowhere", "state": "QLD", "project": ""}])
+    assert DS.suburb_for_row({"source_url": "https://x", "state": "QLD"}) == ""
+
+
+def test_every_shipped_rule_carries_its_evidence():
+    """These are claims about the real world made by a person, not read off a file. The
+    address each was checked against is what lets the next reader re-verify it."""
+    for rule in DS.manual_rules(refresh=True):
+        assert rule.get("evidence"), f"{rule.get('suburb')!r} has no evidence recorded"
+        assert rule.get("suburb") and rule.get("state")
+        assert rule.get("project") or rule.get("title"), (
+            f"{rule.get('suburb')!r} is keyed only by url and will stop applying when the "
+            f"document is re-uploaded")

@@ -1,68 +1,82 @@
 {
- "https://www.dropbox.com/scl/fo/1zvdwk2mmknms9k51qo96/ALoMhvVUMM38-rY75TjRox0/report_murcia-Pricelist%20%281%29.pdf?rlkey=5b45ytunki9p8mfwuv657tsqr&dl=1": {
-  "evidence": "Murcia Residences, 9 Overend St East Brisbane QLD 4169",
-  "rows": 25,
-  "state": "QLD",
-  "suburb": "East Brisbane"
- },
- "https://www.dropbox.com/scl/fo/ahump3y5wsaryrt6yvz5d/AB3pSjSPevMIamM34jYvOFg/Pricelist.pdf?rlkey=z5zzhj71cqo5slaq0veblf38p&dl=1": {
-  "evidence": "Ancora at Collins Wharf, 971 Collins St Docklands VIC 3008",
-  "rows": 130,
-  "state": "VIC",
-  "suburb": "Docklands"
- },
- "https://www.dropbox.com/scl/fo/c1f6v2x6cixpq0f1oogj1/AOFVkWuRhjLi55Pa8lIiGc8/report_murrumbeena-pricelist.pdf?rlkey=9kgljkgrqcv6d6zxp40qcos2c&dl=1": {
-  "evidence": "Murrumbeena Place, Murrumbeena VIC",
-  "rows": 59,
-  "state": "VIC",
-  "suburb": "Murrumbeena"
- },
- "https://www.dropbox.com/scl/fo/db9kwomup9qkyxo5c9ifo/AMldxx73oGFLOC976V04r_w/VandA%20Pricelist%20%282%29%20%281%29.pdf?rlkey=mdymvdm5qqm5usogxo3qntzbm&dl=1": {
-  "evidence": "Victoria & Albert, 20 Albert Ave Broadbeach QLD 4218",
-  "rows": 178,
-  "state": "QLD",
-  "suburb": "Broadbeach"
- },
- "https://www.dropbox.com/scl/fo/imt3l11vrewxt42y5pond/APbkXITlA3Os-ymDLsrra8U/report_the-brightly_pricelist%20%281%29.pdf?rlkey=pxildaywwv43k8tdc8079vhgo&dl=1": {
-  "evidence": "The Brightly, 9-15 Brighton St Richmond VIC 3121",
-  "rows": 39,
-  "state": "VIC",
-  "suburb": "Richmond"
- },
- "https://www.dropbox.com/scl/fo/it2mw67hz01oa1lrzdt1d/AMP3jz-opkJH4h9sloYQBpw/Hope%20Island%20Serene%20Price%20List.pdf?rlkey=taxu55a6ayxvpxjf2du9q3rol&dl=1": {
-  "evidence": "Serene, Hope Island QLD",
-  "rows": 9,
-  "state": "QLD",
-  "suburb": "Hope Island"
- },
- "https://www.dropbox.com/scl/fo/j8ixbm9mtl5gf8dx00apw/ANl4wfoGlUjihDcjP-8vhdk/Balmain%20Price%20List%2020.06.26.pdf?rlkey=mv4y3v5016kslyjkhn1f84lbd&dl=1": {
-  "evidence": "Balmain estate, Donnybrook VIC",
-  "rows": 16,
-  "state": "VIC",
-  "suburb": "Donnybrook"
- },
- "https://www.dropbox.com/scl/fo/n3hz1ob6gfa39bwzhbtsa/APG25SP4hwuCRqpAgfqFoEw/The%20Albertine%20-%20External%20Agent%20Pricelist%20-%2007.02.26.xlsx?rlkey=ghglxohxf0vnzml98yugug6bm&dl=1": {
-  "evidence": "The Albertine by Mirvac, 31 Queens Lane Melbourne VIC 3004",
-  "rows": 39,
-  "state": "VIC",
-  "suburb": "Melbourne"
- },
- "https://www.dropbox.com/scl/fo/n5ye4qrx0jmx82mnocvb3/AIN1I_RojrUOkricdYA4zFE/DFT%20New%20Price%20%281%29.pdf?rlkey=ktn9tb2cu25di9m1injzq1gi6&dl=1": {
-  "evidence": "Dairy Farmers Towers, 924 Hunter St Newcastle West NSW 2302",
-  "rows": 41,
-  "state": "NSW",
-  "suburb": "Newcastle West"
- },
- "https://www.dropbox.com/scl/fo/r4oq78aldoqxodajrqsnv/ADxH-FvGS8cfZxypYE1clY8/Pricelist2026.xlsx?rlkey=lak5v8t1ef49cgrfw3e7rkmoz&dl=1": {
-  "evidence": "Senso by DASCO, 242-244 Beecroft Rd Epping NSW 2121",
-  "rows": 75,
-  "state": "NSW",
-  "suburb": "Epping"
- },
- "https://www.dropbox.com/scl/fo/tmvs52av16h3wbp43zfyi/ACHsXbHm4qLUmMK-MUqXiQY/CREEKBANK-Pricing-MASTER%2015-6-26%20%281%29%20%281%29.pdf?rlkey=2d5g32bicf57t1epc69zrv88h&dl=1": {
-  "evidence": "Creekbank, Deanside VIC",
-  "rows": 26,
-  "state": "VIC",
-  "suburb": "Deanside"
- }
+ "_README": "Suburbs a stock document cannot state for itself, checked by hand against the developer's own published address. Each rule may match three ways, most precise first: `url` is the exact source_url; `project` is a lowercase substring tested against the row's builder_name and estate_name; `title` is a lowercase substring tested against the document's own front page. url alone is NOT enough -- builders re-upload price lists to fresh links and the rows follow the new URL, so a url-only rule silently stops applying and those listings go back to having no suburb. Keep `evidence` filled in: it is what lets the next person re-check the claim instead of trusting it.",
+ "rules": [
+  {
+   "suburb": "Broadbeach",
+   "state": "QLD",
+   "evidence": "Victoria & Albert, 20 Albert Ave Broadbeach QLD 4218",
+   "url": "https://www.dropbox.com/scl/fo/db9kwomup9qkyxo5c9ifo/AMldxx73oGFLOC976V04r_w/VandA%20Pricelist%20%282%29%20%281%29.pdf?rlkey=mdymvdm5qqm5usogxo3qntzbm&dl=1",
+   "project": "vanda"
+  },
+  {
+   "suburb": "Docklands",
+   "state": "VIC",
+   "evidence": "Ancora at Collins Wharf, 971 Collins St Docklands VIC 3008",
+   "url": "https://www.dropbox.com/scl/fo/ahump3y5wsaryrt6yvz5d/AB3pSjSPevMIamM34jYvOFg/Pricelist.pdf?rlkey=z5zzhj71cqo5slaq0veblf38p&dl=1",
+   "title": "collins wharf"
+  },
+  {
+   "suburb": "Epping",
+   "state": "NSW",
+   "evidence": "Senso by DASCO, 242-244 Beecroft Rd Epping NSW 2121",
+   "url": "https://www.dropbox.com/scl/fo/r4oq78aldoqxodajrqsnv/ADxH-FvGS8cfZxypYE1clY8/Pricelist2026.xlsx?rlkey=lak5v8t1ef49cgrfw3e7rkmoz&dl=1",
+   "project": "senso"
+  },
+  {
+   "suburb": "Murrumbeena",
+   "state": "VIC",
+   "evidence": "Murrumbeena Place, Murrumbeena VIC",
+   "url": "https://www.dropbox.com/scl/fo/c1f6v2x6cixpq0f1oogj1/AOFVkWuRhjLi55Pa8lIiGc8/report_murrumbeena-pricelist.pdf?rlkey=9kgljkgrqcv6d6zxp40qcos2c&dl=1",
+   "project": "murrumbeena"
+  },
+  {
+   "suburb": "Newcastle West",
+   "state": "NSW",
+   "evidence": "Dairy Farmers Towers, 924 Hunter St Newcastle West NSW 2302",
+   "url": "https://www.dropbox.com/scl/fo/n5ye4qrx0jmx82mnocvb3/AIN1I_RojrUOkricdYA4zFE/DFT%20New%20Price%20%281%29.pdf?rlkey=ktn9tb2cu25di9m1injzq1gi6&dl=1",
+   "title": "dairy farmers"
+  },
+  {
+   "suburb": "Richmond",
+   "state": "VIC",
+   "evidence": "The Brightly, 9-15 Brighton St Richmond VIC 3121",
+   "url": "https://www.dropbox.com/scl/fo/imt3l11vrewxt42y5pond/APbkXITlA3Os-ymDLsrra8U/report_the-brightly_pricelist%20%281%29.pdf?rlkey=pxildaywwv43k8tdc8079vhgo&dl=1",
+   "project": "the brightly"
+  },
+  {
+   "suburb": "Melbourne",
+   "state": "VIC",
+   "evidence": "The Albertine by Mirvac, 31 Queens Lane Melbourne VIC 3004",
+   "url": "https://www.dropbox.com/scl/fo/n3hz1ob6gfa39bwzhbtsa/APG25SP4hwuCRqpAgfqFoEw/The%20Albertine%20-%20External%20Agent%20Pricelist%20-%2007.02.26.xlsx?rlkey=ghglxohxf0vnzml98yugug6bm&dl=1",
+   "project": "the albertine"
+  },
+  {
+   "suburb": "Deanside",
+   "state": "VIC",
+   "evidence": "Creekbank, Deanside VIC",
+   "url": "https://www.dropbox.com/scl/fo/tmvs52av16h3wbp43zfyi/ACHsXbHm4qLUmMK-MUqXiQY/CREEKBANK-Pricing-MASTER%2015-6-26%20%281%29%20%281%29.pdf?rlkey=2d5g32bicf57t1epc69zrv88h&dl=1",
+   "project": "creekbank deanside"
+  },
+  {
+   "suburb": "East Brisbane",
+   "state": "QLD",
+   "evidence": "Murcia Residences, 9 Overend St East Brisbane QLD 4169",
+   "url": "https://www.dropbox.com/scl/fo/1zvdwk2mmknms9k51qo96/ALoMhvVUMM38-rY75TjRox0/report_murcia-Pricelist%20%281%29.pdf?rlkey=5b45ytunki9p8mfwuv657tsqr&dl=1",
+   "project": "murcia"
+  },
+  {
+   "suburb": "Donnybrook",
+   "state": "VIC",
+   "evidence": "Balmain estate, Donnybrook VIC",
+   "url": "https://www.dropbox.com/scl/fo/j8ixbm9mtl5gf8dx00apw/ANl4wfoGlUjihDcjP-8vhdk/Balmain%20Price%20List%2020.06.26.pdf?rlkey=mv4y3v5016kslyjkhn1f84lbd&dl=1",
+   "project": "balmain donnybrook"
+  },
+  {
+   "suburb": "Hope Island",
+   "state": "QLD",
+   "evidence": "Serene, Hope Island QLD",
+   "url": "https://www.dropbox.com/scl/fo/it2mw67hz01oa1lrzdt1d/AMP3jz-opkJH4h9sloYQBpw/Hope%20Island%20Serene%20Price%20List.pdf?rlkey=taxu55a6ayxvpxjf2du9q3rol&dl=1",
+   "project": "hope island serene"
+  }
+ ]
 }
