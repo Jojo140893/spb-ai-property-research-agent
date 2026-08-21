@@ -724,6 +724,67 @@ def _sibling_state_map(rows, floor=0.95):
     return out
 
 
+# An estate string that CONTAINS a known one, and how long it has to be to count.
+#
+# The same project is written several ways across a catalogue: "Central Springs" on one
+# builder's sheet and "Caboolture Central Springs" on another's, "Rosewood Green" and
+# "Rosewood Rosewood Green". Exact-match state borrowing sees those as different estates
+# and lends nothing, so the longer spelling stays stateless -- and without a state no
+# suburb rule will run on it at all.
+#
+# ONLY THE INFORMATIVE DIRECTION. The row's estate must contain a KNOWN one, never the
+# reverse: "south east" appears inside plenty of estate names, is evidence of nothing, and
+# lent VIC to a Queensland row when this was first measured the other way round.
+#
+# Ten characters, on a word boundary, and exactly one state among the matches. Measured
+# across the catalogue: 47 rows gain a state and NOT ONE is ambiguous. At eight characters
+# it is 79 rows and one ambiguous, which is the wrong side of the line for a fact every
+# other rule here depends on.
+_ESTATE_CONTAINS_MIN = 10
+_GENERIC_ESTATE = re.compile(
+    r"^(north|south|east|west|central|region|regional|metro|city|inner|outer|land|house|"
+    r"south east|south west|north east|north west|stage)$", re.I)
+
+
+def _containment_candidates(state_map):
+    """[(estate string, state)] worth testing for containment, longest first.
+
+    Built ONCE per request. The first version of this scanned every known estate for
+    every stateless row with an uncompiled regex -- roughly a million pattern compiles on
+    the live catalogue -- and turned a search into a ten-minute wait. This is the same
+    filtering hoisted out of the row loop.
+    """
+    out = [(group, state) for (field, group), state in state_map.items()
+           if field == "estate_name"
+           and len(group) >= _ESTATE_CONTAINS_MIN
+           and not _GENERIC_ESTATE.match(group)]
+    out.sort(key=lambda pair: -len(pair[0]))
+    return out
+
+
+def _state_by_estate_containment(row, candidates):
+    """A state from a KNOWN estate name spelled out inside this row's own, or ''."""
+    estate = str(row.get("estate_name") or "").strip().lower()
+    if not estate:
+        return ""
+    found = set()
+    for group, state in candidates:
+        # Plain `in` first: it is a C-speed scan and rejects almost everything. Only a
+        # hit pays for the boundary check, which is what stops "rosewood" matching
+        # inside "rosewoodlands".
+        start = estate.find(group)
+        if start < 0:
+            continue
+        before = estate[start - 1] if start else " "
+        after_index = start + len(group)
+        after = estate[after_index] if after_index < len(estate) else " "
+        if not before.isalpha() and not after.isalpha():
+            found.add(state)
+            if len(found) > 1:
+                return ""
+    return next(iter(found)) if len(found) == 1 else ""
+
+
 def build_packages(brief_dict, rows, today=None):
     """(packages, coverage) — coverage is a plain dict of counts, all reported.
 
@@ -771,6 +832,7 @@ def build_packages(brief_dict, rows, today=None):
     # 95%, not 80%. A state is a stronger claim than a suburb — one estate sits in one
     # state, and a page mixing two is a page whose state cannot be borrowed at all.
     _state_of = _sibling_state_map(rows)
+    _containment = _containment_candidates(_state_of)
     budget_max = _num(brief_dict.get("budget_max")) or 0.0
     ceiling = budget_max + BUDGET_HEADROOM if budget_max else None
     # storeys_max < 2 is the only brief that a missing storey figure could slip past,
@@ -819,9 +881,14 @@ def build_packages(brief_dict, rows, today=None):
             # It has to be here, before the drop, and before the suburb rules further
             # down — all of which are keyed by state and none of which can run without
             # one.
-            for _field in ("estate_name", "source_doc", "source_url", "builder_name"):
-                _borrowed = _state_of.get(
-                    (_field, str(row.get(_field) or "").strip().lower()))
+            # None is the containment pass — an estate spelled longer here than where its
+            # state is known. Last, because every named field above is an exact claim.
+            for _field in ("estate_name", "source_doc", "source_url", "builder_name",
+                           None):
+                _borrowed = (
+                    _state_by_estate_containment(row, _containment) if _field is None
+                    else _state_of.get(
+                        (_field, str(row.get(_field) or "").strip().lower())))
                 if _borrowed:
                     # AND DROP THE GRADE THE ROW ARRIVED WITH. suburb_source was decided
                     # at build time under the facts of that moment — for these rows,
