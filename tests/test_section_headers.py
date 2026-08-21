@@ -79,3 +79,35 @@ def test_a_genuinely_new_section_still_replaces_the_old_one():
     ]
     _out, context, _banner = _rows_to_listings(rows, "", "test", "")
     assert "Bellbird" in context, context
+
+
+def test_a_header_may_carry_street_and_stage_numbers():
+    """"152-156 Bancroft Terrace - Stage 1, Deception Bay" has seven digits, and the digit
+    ceiling that keeps lot rows out was throwing it away with them — so every lot beneath
+    it kept the previous section's suburb."""
+    assert _is_group_header("152-156 Bancroft Terrace - Stage 1, Deception Bay", {})
+    assert _is_group_header("Park Lane - Stage 1, Joyner", {})
+    assert _is_group_header("Paradise in Parkinson - Stage 2, Parkinson", {})
+
+
+def test_a_wrapped_word_or_a_bare_year_is_not_a_section():
+    """"Under offer" and "January 2026" wrap, dropping "offer" and "2026" onto lines of
+    their own. On the FRD Homes stocklist those two took the estate of 35 rows."""
+    for fragment in ("offer", "2026", "2026 RH", "hold", "pending"):
+        assert not _is_group_header(fragment, {}), fragment
+
+
+def test_the_page_disclaimer_is_not_a_section():
+    """Short, digit-free, and at the foot of every page — it passed every other test and
+    claimed 6 rows."""
+    for line in ("For further details or clarification, please contact us.",
+                 "All images, renders and floor plans are conceptual, indicative only",
+                 "Prices subject to change without notice. E&OE"):
+        assert not _is_group_header(line, {}), line
+
+
+def test_a_lot_row_is_still_never_a_section():
+    """The relaxations above must not start swallowing stock."""
+    for row in ("Available Lot 20 388.0 m2 $630,000 January 2027 House Baron LH",
+                "Available 61 House COPPER 21 197.08m2 469.0 m2 4 beds $1,167,260"):
+        assert not _is_group_header(row, {}), row

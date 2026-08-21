@@ -399,7 +399,14 @@ _NOT_A_SECTION = re.compile(
     r"|duplex|dual\s*key|house|townhouse|apartment|villa|terrace|unit|land"
     r"|single|double|storey|traditional|medium|narrow"
     r"|available|sold|titled|registered|under\s*offer|on\s*hold"
+    r"|offer|hold|pending|reserved|deposit|contract|settled"
     r"|total|subtotal|continued|cont\.?|page)$", re.I)
+
+# A sentence, not a banner. Every page of these stocklists ends with a disclaimer, and it
+# is short and digit-free enough to pass every other test here.
+_PROSE = re.compile(
+    r"\b(please|contact us|further details|clarification|disclaimer|subject to change"
+    r"|indicative only|terms and conditions|images|renders|floor plans|e&oe)\b", re.I)
 
 
 def _is_group_header(text: str, fields: Dict[str, Any]) -> bool:
@@ -415,9 +422,40 @@ def _is_group_header(text: str, fields: Dict[str, Any]) -> bool:
         return False
     if _NOT_A_SECTION.match(stripped):
         return False
+    # A NUMBER IS NEVER A SECTION. "January 2026" wraps and drops "2026" on a line of its
+    # own, four characters of pure digits, which slipped under the ceiling below and took
+    # the estate of 9 rows on the FRD Homes stocklist.
+    if re.fullmatch(r"[\d\s.,/-]+(?:\s+[A-Z]{1,3})?", stripped):
+        return False
+    # PROSE IS NEVER A SECTION. The disclaimer at the foot of every page — "For further
+    # details or clarification, please contact us." — is short enough and digit-free
+    # enough to pass every test here, and it claimed 6 rows.
+    if _PROSE.search(stripped):
+        return False
     # short-ish line, mostly words, few digits
     digits = sum(c.isdigit() for c in text)
-    return bool(text) and len(text) < 90 and digits <= 4
+    if bool(text) and len(text) < 90 and digits <= 4:
+        return True
+    # A HEADER MAY CARRY A STREET NUMBER AND A STAGE NUMBER AND STILL BE A HEADER.
+    #
+    # The digit ceiling above is what a lot row trips over, and it also throws away real
+    # sections: "152-156 Bancroft Terrace - Stage 1, Deception Bay" has seven digits, so
+    # every lot beneath it kept the previous section's suburb. On the FRD Homes stocklist
+    # that was 43 of 98 rows — the same document shape as Hudson's, failing for a
+    # different reason.
+    #
+    # These lists name the section as "<place or street> - Stage N, SUBURB", so the tail
+    # after the last comma is the tell: a short run of plain words, no digits, no money.
+    # A lot row cannot look like that — it ends in a price, a date or a bed/bath count.
+    if not text or len(text) >= 120 or "$" in text:
+        return False
+    if "," not in text:
+        return False
+    tail = text.rsplit(",", 1)[-1].strip()
+    words = tail.split()
+    return (1 <= len(words) <= 3
+            and all(w.replace("-", "").replace("'", "").isalpha() for w in words)
+            and not _NOT_A_SECTION.match(tail))
 
 
 _BANNER_SPLIT = re.compile(r"\s*[|/,\-–—]\s*")
