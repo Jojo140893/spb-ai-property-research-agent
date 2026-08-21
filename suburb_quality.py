@@ -101,6 +101,8 @@ FROM_ADDRESS_TAIL = "read from the locality named in the row's own address"
 # estate and no sibling that knows better. Nothing in the database can name those; the
 # price list they were read from can, and still answers at the URL they came from.
 FROM_DOCUMENT = "read from the front page of the row's own source document"
+# The source named a locality and misspelled it by exactly one character.
+FROM_TYPO = "the suburb the source stated, corrected for a single-character misspelling"
 # NOT AUSTRALIAN. 633 live listings are Dubai and Manila off-plan apartments (DAMAC
 # Islands, SAFA GATE, SMDC Sail/Sands/Gold/Jade/Glade Residences) sitting in the same
 # pool as Melbourne house-and-land. They will never have an Australian suburb, so
@@ -110,7 +112,7 @@ BLANK_OVERSEAS = "the listing is not in Australia"
 
 # Reasons whose suburb may be used AS A LOCATION.
 _LOCATED = (STATED, FROM_COMPOSITE, FROM_POSTCODE, FROM_ADDRESS,
-            FROM_ADDRESS_TAIL, FROM_DOCUMENT)
+            FROM_ADDRESS_TAIL, FROM_DOCUMENT, FROM_TYPO)
 
 # INFERRED, and deliberately not LOCATED.
 #
@@ -321,6 +323,13 @@ def resolve(row: Dict[str, Any], index=None) -> Tuple[str, str]:
     if anchor:
         return _canonical_spelling(anchor, state, index), FROM_POSTCODE
 
+    # A SINGLE-CHARACTER SLIP IN A VALUE THE SOURCE DID STATE, before falling back to
+    # reading the address. See _typo_correction: 'Soutbank' is Southbank on 77 listings.
+    if raw:
+        corrected = _typo_correction(raw, state, index)
+        if corrected:
+            return _canonical_spelling(corrected, state, index), FROM_TYPO
+
     # LAST, and only once everything better has failed. A postcode-anchored read is
     # stronger evidence and runs above; this is what is left for the rows that have an
     # address and nothing else. See _address_locality for the measured accuracy and for
@@ -418,6 +427,62 @@ _OVERSEAS = re.compile(
     r"\b(dubai|dxb|abu\s*dhabi|u\.?a\.?e|damac|emaar|safa\s*gate|"
     r"iloilo|manila|makati|philippines|smdc|brgy\.?|barangay|"
     r"bali|phuket|bangkok|singapore|kuala\s*lumpur)\b", re.I)
+
+
+# A SPELLING SLIP IS NOT A MISSING SUBURB.
+#
+# 'Soutbank' is Southbank with a letter dropped, on 77 live listings. 'CRESSNOCK' is
+# Cessnock with one doubled. Both were refused outright -- the value is not a locality, so
+# the row had no location at all -- when the source plainly said where the property is and
+# simply mistyped it.
+#
+# Four constraints keep this from becoming fuzzy matching, which would be far worse than
+# the problem. Measured across every stored suburb value: it corrects 78 rows and finds
+# nothing ambiguous at all.
+#
+#   exactly one character   an insertion, a deletion or a substitution. Not two.
+#   at least 7 characters   short words collide: 'Land' is one edit from 'Lang', a real
+#                           Victorian locality, and 'Lane' from several. Nothing under
+#                           seven characters is worth the risk.
+#   the row's own state     the candidate pool is that state's localities and no others.
+#   exactly one candidate   two localities a single edit away is not a typo, it is a
+#                           coin toss. Refused, and the row stays blank.
+_TYPO_MIN_LENGTH = 7
+
+
+def _one_edit_apart(a: str, b: str) -> bool:
+    """True when a and b differ by exactly one insertion, deletion or substitution."""
+    if a == b or abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        return sum(x != y for x, y in zip(a, b)) == 1
+    short, long_ = (a, b) if len(a) < len(b) else (b, a)
+    i = j = 0
+    skipped = False
+    while i < len(short) and j < len(long_):
+        if short[i] != long_[j]:
+            if skipped:
+                return False
+            skipped = True
+            j += 1
+            continue
+        i += 1
+        j += 1
+    return True
+
+
+def _typo_correction(raw: str, state: str, index) -> str:
+    """The one locality in this state that `raw` is a single character away from, or ''."""
+    value = (raw or "").strip()
+    if len(value) < _TYPO_MIN_LENGTH or not state:
+        return ""
+    try:
+        entries = index._by_state.get(state.upper()) or []
+    except Exception:                                  # pragma: no cover - index shape
+        return ""
+    lowered = value.lower()
+    hits = {name for name, *_rest in entries if _one_edit_apart(lowered, name.lower())}
+    return next(iter(hits)) if len(hits) == 1 else ""
 
 
 def _longest_locality_in_text(row: Dict[str, Any], state: str, index) -> str:

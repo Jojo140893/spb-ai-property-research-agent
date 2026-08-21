@@ -413,7 +413,8 @@ _PROSE = re.compile(
     # and the lots below inherited "EOI Form". 59 rows on one sheet.
     r"|eoi|expression of interest|unconditional|conditional offer|deposit"
     r"|balance of|contract signing|finance terms|pre-?approval|initial dep"
-    r"|purchase price|payable within)\b", re.I)
+    r"|purchase price|payable within|brochure|flyer|floorplan|price list|pricelist"
+    r"|tba|tbc|coming soon|register|enquire)\b", re.I)
 
 
 # The vocabulary a table's column row is built from. A line made of nothing else is that
