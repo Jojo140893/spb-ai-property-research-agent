@@ -44,16 +44,20 @@ def test_a_street_named_after_a_town_is_not_the_suburb():
     assert not SQ.is_located(why)
 
 
-def test_a_flattened_table_row_is_refused_outright():
+def test_a_flattened_table_row_is_never_read_as_an_ADDRESS():
     """Half of lot_address is not an address but a row of table cells, and its tail is a
     HOUSE DESIGN. London, Madrid, Paddington, Ormond, Belmont and Bright are all builder
-    design names AND real Australian localities — no locality rule survives that input,
-    so the input is rejected instead of parsed."""
+    design names AND real Australian localities.
+
+    The address rule must never claim one of these as a located suburb. A later,
+    explicitly-inferred pass may still offer a best reading of the same text — that is a
+    different promise, and it is the one that is allowed to be wrong."""
     for junk in ("West 316 Sunrise Deanside Available London 22 Bright $365,000",
                  "2120 Stage 21 400 $627,000 July 2026 Madrid 190 Paddington",
                  "20 Land Only CNR 344.3 Q1 2026 $1,037,820 $997,820 AVAILABLE"):
         suburb, why = resolve(junk, "VIC")
-        assert suburb == "", f"{junk[:40]!r} -> {suburb!r}"
+        assert why != SQ.FROM_ADDRESS_TAIL, f"{junk[:40]!r} -> {suburb!r} as an address"
+        assert not SQ.is_located(why), f"{junk[:40]!r} -> {suburb!r} treated as located"
 
 
 def test_it_will_not_answer_without_a_state():
@@ -62,10 +66,14 @@ def test_it_will_not_answer_without_a_state():
     assert resolve("12 Smith St, Caboolture Central Springs", "")[0] == ""
 
 
-def test_a_segment_that_calls_itself_an_estate_is_not_a_locality():
-    """'Rangewood Estate, Lot 109' is in Lowood; Rangewood is the development."""
-    suburb, _why = resolve("Rangewood Estate, Lot 109", "QLD")
-    assert suburb != "Rangewood"
+def test_a_segment_that_calls_itself_an_estate_is_not_a_located_locality():
+    """'Rangewood Estate, Lot 109' is in Lowood; Rangewood is the development.
+
+    As above, the address rule must not claim it. The inferred pass may still surface it
+    as a best reading, marked as such."""
+    suburb, why = resolve("Rangewood Estate, Lot 109", "QLD")
+    assert not (suburb == "Rangewood" and why == SQ.FROM_ADDRESS_TAIL)
+    assert not (suburb == "Rangewood" and SQ.is_located(why))
 
 
 def test_the_longer_locality_wins():
@@ -118,3 +126,35 @@ def test_an_overseas_listing_is_labelled_not_counted_as_a_gap(addr, estate):
 def test_an_australian_listing_is_not_called_overseas():
     row = {"lot_address": "LOT 1312 BASIL DR, WALLAN", "state": "VIC"}
     assert SQ.resolve(row)[1] != SQ.BLANK_OVERSEAS
+
+
+# ----------------------------------------------------------- inferred, not believed
+def test_an_inferred_suburb_is_searchable_but_never_located():
+    """The whole safety of the last-resort rule is this split.
+
+    Ahsan, 21 Aug: fill the remainder from their own text, he would rather listings be
+    findable than invisible. On holdout that rule is 83.8%-86.8% right, so the value is
+    produced and marked, and everything that needs the position to be TRUE keeps
+    refusing it: distance filtering, benchmarking and comparables all gate on
+    is_located. A wrong suburb costs a noisier search; a wrong comparable costs a client
+    a wrong valuation."""
+    row = {"lot_address": "2120 Stage 21 400 $627,000 July 2026 Madrid 190 Paddington",
+           "state": "VIC"}
+    suburb, why = SQ.resolve(row)
+    if not suburb:
+        return                                  # declining is always allowed
+    assert SQ.is_inferred(why), why
+    assert SQ.is_searchable(why), "an inferred suburb must still be findable"
+    assert not SQ.is_located(why), "an inferred suburb must never be benchmarked"
+
+
+def test_the_reason_says_it_may_be_wrong():
+    """It is shown to a consultant who forwards it to a buyer. It has to say so itself."""
+    text = SQ.INFERRED_FROM_TEXT.lower()
+    assert "may be wrong" in text and "did not state" in text
+
+
+def test_a_stated_suburb_is_never_downgraded_to_inferred():
+    suburb, why = SQ.resolve({"lot_address": "anything at all", "suburb": "Officer",
+                              "state": "VIC"})
+    assert (suburb, why) == ("Officer", SQ.STATED)

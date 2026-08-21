@@ -149,19 +149,38 @@ def test_a_postcode_anchor_recovers_only_when_the_postcode_fits_the_state():
     bad = _r(suburb="Dual Key", state="QLD",
              source_text="DUAL PR8756 21 Raceview 2026-08-01 00:00:00 534")
     got2, why2 = suburb_quality.resolve(bad)
-    assert got2 == "", f"a date was read as a postcode: {got2!r}"
-    assert why2 == suburb_quality.BLANK_NOT_A_PLACE, why2
+    # The claim is about THE ANCHOR, not about the row ending up blank. Since 21 Aug a
+    # last-resort text scan may still offer a suburb for a row nothing else can place --
+    # here 'Raceview', which is a real QLD locality on a QLD row, so plausibly right. It
+    # arrives as INFERRED. What must never happen is the date 2026-08-01 being read as a
+    # NSW postcode and the answer being dressed up as a postcode-anchored fact.
+    assert why2 != suburb_quality.FROM_POSTCODE, \
+        f"a date was read as a postcode and trusted: {got2!r}"
+    assert not suburb_quality.is_located(why2), (got2, why2)
 
 
-def test_free_text_alone_never_fills_a_suburb():
-    """The rejected technique, kept rejected. Over the 953 live rows where a free-text
-    scan finds something it returns the row's own street, its house design or a region
-    header often enough that the result cannot be published."""
+def test_free_text_alone_is_never_treated_as_LOCATED():
+    """The rejected technique, now allowed to fill but never allowed to be believed.
+
+    This test used to assert a free-text scan filled nothing at all, because over the 953
+    live rows where such a scan finds something it returns the row's own street, its
+    house design or a region header often enough that the result cannot be published as
+    fact. That measurement still holds: on holdout the rule is 83.8%-86.8% right.
+
+    Ahsan overrode the blank on 21 Aug -- he would rather 1,870 listings be findable than
+    invisible, having been shown the accuracy. So the value is now produced, and the
+    protection moved rather than disappeared: it is INFERRED, never LOCATED, so distance
+    filtering, benchmarking and comparables still refuse it. That is the guarantee this
+    test now pins, and it is the one that was actually load-bearing.
+    """
     row = _r(suburb="BRISBANE NORTH", state="QLD",
              source_text="12 Windsor Street, BRISBANE NORTH 12 Windsor Street Woodford")
     got, why = suburb_quality.resolve(row)
-    assert got == "", f"a free-text scan filled the suburb with {got!r}"
-    assert why == suburb_quality.BLANK_NOT_A_PLACE, why
+    assert not suburb_quality.is_located(why), \
+        f"a free-text scan produced {got!r} and it was treated as a located suburb"
+    if got:
+        assert suburb_quality.is_inferred(why), why
+        assert suburb_quality.is_searchable(why), why
 
 
 def test_one_locality_one_spelling():

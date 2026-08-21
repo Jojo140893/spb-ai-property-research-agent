@@ -828,7 +828,16 @@ def build_packages(brief_dict, rows, today=None):
                     suburb, suburb_why = suburb_quality.resolve(row)
                     if suburb_quality.is_located(suburb_why):
                         break
-        if not suburb_quality.is_located(suburb_why):
+        # SEARCHABLE, not LOCATED. A listing whose suburb we inferred from its own text
+        # is real stock at a real price, and dropping it here is exactly what made Coleen
+        # report properties as missing that the app had. It comes through, carrying
+        # suburb_source so the caveat travels with it.
+        #
+        # is_located is still the gate everywhere the position has to be TRUE — distance
+        # filtering, benchmarking and comparables all ask that question separately and
+        # still refuse these rows. A wrong suburb costs a noisier search; a wrong
+        # comparable costs a client a wrong valuation.
+        if not suburb_quality.is_searchable(suburb_why):
             # SHOWN is not LOCATED. A value can be a real locality name and still be
             # unusable here: with no state recorded there is nothing to check it against,
             # geo.locate needs both halves, and a fifth of Australian locality names

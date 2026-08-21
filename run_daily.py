@@ -267,6 +267,13 @@ def _chain(args) -> int:
         # advertised at its capture date, and leaving those in the peer pool drags every
         # median toward stale numbers.
         ("4/7  Supersede older captures of the same lot", ["supersede_duplicates.py"], False),
+        # AFTER superseding, so it only reads documents that still have live rows, and
+        # BEFORE the snapshot, so today's answers are in what gets published. Optional:
+        # it makes network calls to third-party file hosts, and a Dropbox link that has
+        # been rotated must not take the whole run down — the previous map stays in place
+        # and the affected listings simply keep the suburb they already had.
+        ("4/7  Read the suburb off orphan source documents",
+         ["document_suburb.py"], True),
         ("5/7  Benchmark against comparable stock", ["benchmark_buildings.py"], True),
         ("6/7  Export CSV + Excel", ["export_csv.py"], False),
         ("6/7  Export Excel workbook", ["export_excel.py"], False),

@@ -95,6 +95,12 @@ BLANK_ABSENT = "the source did not state one"
 # 4,230 live rows had no usable suburb and 2,873 of them had no value in the column to
 # check, so every one of them was invisible to a suburb search.
 FROM_ADDRESS_TAIL = "read from the locality named in the row's own address"
+# The row's own source document says where the project is, on its front page. Used only
+# where NOT ONE row on that document has a suburb between them — 1,857 live listings whose
+# lot_address is a bare spec string ("001 $1,888,000 4BED 2 BATH 2 CAR 272SQM") with no
+# estate and no sibling that knows better. Nothing in the database can name those; the
+# price list they were read from can, and still answers at the URL they came from.
+FROM_DOCUMENT = "read from the front page of the row's own source document"
 # NOT AUSTRALIAN. 633 live listings are Dubai and Manila off-plan apartments (DAMAC
 # Islands, SAFA GATE, SMDC Sail/Sands/Gold/Jade/Glade Residences) sitting in the same
 # pool as Melbourne house-and-land. They will never have an Australian suburb, so
@@ -104,12 +110,47 @@ BLANK_OVERSEAS = "the listing is not in Australia"
 
 # Reasons whose suburb may be used AS A LOCATION.
 _LOCATED = (STATED, FROM_COMPOSITE, FROM_POSTCODE, FROM_ADDRESS,
-            FROM_ADDRESS_TAIL)
+            FROM_ADDRESS_TAIL, FROM_DOCUMENT)
+
+# INFERRED, and deliberately not LOCATED.
+#
+# Ahsan, 21 Aug, after being shown the accuracy: fill the rest from their addresses, he
+# wants every listing findable. These are the rows where nothing states a suburb, no
+# postcode anchors one, the address is not address-shaped, no sibling agrees and the
+# source document does not name one — so the only thing left is the longest locality
+# appearing anywhere in the row's own text. Measured on holdout that is 83.8% to 86.8%
+# right, against 97.2% for the address rule proper.
+#
+# The split between LOCATED and INFERRED is what makes that acceptable. A row here is
+# SEARCHABLE, so Coleen finds it when she searches its suburb and it stops being missing
+# stock. It is NOT located, so it is still refused by everything that needs the position
+# to be true: distance filtering, benchmarking and comparables all gate on is_located and
+# keep doing so. A wrong suburb costs a slightly noisy search result; a wrong comparable
+# costs a client a wrong valuation.
+INFERRED_FROM_TEXT = ("inferred from the row's own text - the source did not state a "
+                      "suburb, so this is our best reading and may be wrong")
+_INFERRED = (INFERRED_FROM_TEXT,)
 
 
 def is_located(why: str) -> bool:
     """Whether resolve()'s answer is safe to geocode, distance-filter or benchmark."""
     return why in _LOCATED
+
+
+def is_inferred(why: str) -> bool:
+    """Whether the suburb is our reading of the row rather than the source's statement."""
+    return why in _INFERRED
+
+
+def is_searchable(why: str) -> bool:
+    """Whether a suburb search should return this row.
+
+    Wider than is_located on purpose. A listing whose suburb we inferred is worth finding
+    — it is real stock at a real price, and leaving it out is what made Coleen report the
+    app as missing properties it had. It is still not safe to benchmark, which is why
+    the two questions are asked separately.
+    """
+    return is_located(why) or is_inferred(why)
 
 # "<Place> <4-digit postcode>". The postcode is what makes this safe: on its own a
 # capitalised word before a number matches lot numbers, years and floor areas. Live
@@ -213,6 +254,12 @@ def resolve(row: Dict[str, Any], index=None) -> Tuple[str, str]:
             return _canonical_spelling(raw, "", index), UNCHECKED_NO_STATE
 
     if not state:
+        # A stateless row can still be named by its own document, and 400-odd of these
+        # are exactly that: a spec-string lot on a price list that says on page one which
+        # suburb it is selling. Checked here because the no-state return below is final.
+        named = _document_suburb(row)
+        if named:
+            return _canonical_spelling(named, "", index), FROM_DOCUMENT
         return "", BLANK_NO_STATE if raw else BLANK_ABSENT
 
     if raw:
@@ -231,6 +278,19 @@ def resolve(row: Dict[str, Any], index=None) -> Tuple[str, str]:
     tail = _address_locality(row, state, index)
     if tail:
         return _canonical_spelling(tail, state, index), FROM_ADDRESS_TAIL
+
+    # THE DOCUMENT'S OWN FRONT PAGE, last of all. It is only ever consulted for rows that
+    # have nothing else, because the map behind it is built only for source documents on
+    # which not one row carries a suburb — see document_suburb.refresh_from_database.
+    named = _document_suburb(row)
+    if named and index.locate(named, state):
+        return _canonical_spelling(named, state, index), FROM_DOCUMENT
+
+    # THE LAST RESORT, and the only rule here that is allowed to be wrong. See
+    # INFERRED_FROM_TEXT for why it exists and what is withheld from it.
+    guess = _longest_locality_in_text(row, state, index)
+    if guess:
+        return _canonical_spelling(guess, state, index), INFERRED_FROM_TEXT
 
     return "", BLANK_NOT_A_PLACE if raw else BLANK_ABSENT
 
@@ -308,6 +368,51 @@ _OVERSEAS = re.compile(
     r"\b(dubai|dxb|abu\s*dhabi|u\.?a\.?e|damac|emaar|safa\s*gate|"
     r"iloilo|manila|makati|philippines|smdc|brgy\.?|barangay|"
     r"bali|phuket|bangkok|singapore|kuala\s*lumpur)\b", re.I)
+
+
+def _longest_locality_in_text(row: Dict[str, Any], state: str, index) -> str:
+    """The longest locality named anywhere in the row's own text, or ''.
+
+    This is the rule every other one in this module was written to avoid. It reads a
+    whole flattened row rather than a structured address, so a house design named after
+    a suburb ('Paddington', 'Ormond') or a street named after a town can win. Measured
+    83.8% to 86.8% correct on holdout.
+
+    It runs only after everything else has declined, and its answer is marked
+    INFERRED_FROM_TEXT so nothing that needs a true position will accept it.
+
+    The street guard and the not-a-locality list still apply — they cost nothing and each
+    removes a whole class of the errors this rule is prone to.
+    """
+    if not state:
+        return ""
+    words = _ADDR_WORD.findall(_row_text(row))
+    for size in (3, 2, 1):
+        for start in range(len(words) - size + 1):
+            candidate = " ".join(words[start:start + size])
+            if size == 1 and _NOT_ALONE.match(candidate):
+                continue
+            after = start + size
+            if after < len(words) and words[after].lower().strip(".") in _STREET_TOKENS:
+                continue
+            if index.locate(candidate, state):
+                return candidate
+    return ""
+
+
+def _document_suburb(row: Dict[str, Any]) -> str:
+    """What this row's own source document names, or ''. Never raises, never fetches.
+
+    The map is built by the harvest (document_suburb.refresh_from_database) because
+    reading a document needs the network and a serverless request has no business making
+    one. Import is lazy so suburb_quality stays usable in environments that do not ship
+    the map at all.
+    """
+    try:
+        import document_suburb
+        return document_suburb.suburb_for_row(row)
+    except Exception:                              # missing module, unreadable map
+        return ""
 
 
 def is_overseas(row: Dict[str, Any]) -> bool:

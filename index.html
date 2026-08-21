@@ -198,6 +198,12 @@
     }
     .cmp-pick input { width: auto; margin: 0; }
 
+    /* An inferred suburb, marked on the cell itself. Small enough not to shout, present
+       enough that nobody copies it into a client email believing the source said it. */
+    .inferred{display:inline-block;margin-left:0.25rem;padding:0 0.3rem;font-size:0.7rem;
+              font-weight:700;line-height:1.4;color:#92400e;background:#fef3c7;
+              border:1px solid #fcd34d;border-radius:4px;cursor:help;vertical-align:top}
+
     .gap-note{background:#fffbeb;border:1px solid #fde68a;border-left:4px solid #f59e0b;
                border-radius:8px;padding:0.8rem 1rem;margin:0 0 1rem;font-size:0.86rem;
                color:#78350f;line-height:1.5}
@@ -2092,6 +2098,22 @@ python state_sync.py push</pre>
                 const why = String(b[c.blankReason] || '').trim();
                 return `<td class="${c.cls || ''}" style="color:var(--text-muted);"
                     ${why ? `title="${esc(why)}"` : ''}>${why ? '&mdash;' : ''}</td>`;
+            }
+            // A VALUE WE INFERRED HAS TO LOOK DIFFERENT FROM ONE WE WERE TOLD.
+            //
+            // Since 21 Aug a listing whose source never stated a suburb can still show
+            // one, read out of the row's own text, so that it is findable rather than
+            // invisible. That reading is 83.8%-86.8% right — good enough to search on,
+            // not good enough to put in front of a buyer as fact. The cell says so on
+            // its face, not only on hover, because a consultant copying this into a
+            // client email will not hover first.
+            if (c.blankReason) {
+                const why = String(b[c.blankReason] || '').trim();
+                if (/^inferred from the row/i.test(why)) {
+                    return `<td class="${c.cls || ''}" title="${esc(why)}">${esc(v ?? '')}
+                        <span class="inferred" aria-label="inferred, not stated by the
+                        source">?</span></td>`;
+                }
             }
             return `<td class="${c.cls || ''}">${esc(v ?? '')}</td>`;
         }).join('') + '</tr>';
