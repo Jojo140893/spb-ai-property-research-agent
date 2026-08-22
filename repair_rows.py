@@ -400,7 +400,14 @@ def find_suburbs_in_own_document(rows, fetch=None, extract=None):
             continue
         for r in group:
             suburb = named.get(_row_key(r["source_text"]))
-            if suburb:
+            # ONLY A VALUE THAT STANDS UP. The re-read offered 'Whiterock' (an estate),
+            # 'Subury' (the document's own misspelling) and four rows of 'Warnervale'
+            # with no state to check it against -- five of seven candidates were values
+            # suburb_quality refuses, which is the exact condition that qualified those
+            # rows for repair in the first place. Writing them would swap one refused
+            # value for another and call it a fix.
+            if suburb and suburb_quality.is_searchable(
+                    suburb_quality.resolve(dict(r, suburb=suburb, suburb_source=""))[1]):
                 found.append((r, suburb))
     return found
 

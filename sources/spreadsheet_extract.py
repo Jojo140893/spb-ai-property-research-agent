@@ -159,8 +159,22 @@ def _place_suffix(text: str, after: int) -> Optional[str]:
     keeps its ", Alluvium" instead of being trimmed to the street alone."""
     for seg in _PRICE_ANY.sub(" ", text[after:]).split(","):
         seg = _clean(seg).strip(" -")
-        if seg and _PLACE_SEG.match(seg) and not _NOT_A_PLACE.search(seg):
+        if not seg:
+            continue
+        if _PLACE_SEG.match(seg) and not _NOT_A_PLACE.search(seg):
             return seg
+        # THE LAST COMMA SEGMENT RUNS ON INTO THE ROW'S OWN COLUMNS.
+        #
+        # A flattened row separates its address from its data with spaces, not commas:
+        # "1012 Taylors Rd, Fraser Rise 1008 10.5 28 294 $390,000 DEPOSIT East Q1 2027".
+        # The segment after the comma is the suburb followed by every remaining column,
+        # so the 1-to-3-word test above fails on it and the address kept the street
+        # alone -- 34 of the 35 lots on the Taylors Run price list had no location.
+        # The suburb ends where the numbers begin, so take the run of words in front of
+        # the first digit and hold it to exactly the same bar.
+        lead = re.match(r"[A-Za-z][A-Za-z'\-]*(?: [A-Za-z'\-]+){0,2}(?= \d)", seg)
+        if lead and not _NOT_A_PLACE.search(lead.group(0)):
+            return lead.group(0)
     return None
 
 
@@ -213,6 +227,8 @@ portal link links suburb estate address frontage storey storeys total totals yie
 rental house houses furniture date dates stage release avail available availability
 region state postcode deposit gross net weekly annual comments notes ref code product
 completion settlement developer builder agent width depth aspect orientation
+level levels collection collections store storage int internal ext external config
+configuration stock id extras views view balcony courtyard tower block unit units apt
 """.split())
 
 
@@ -435,11 +451,52 @@ _WEB = re.compile(r"https?://|www\.|\.com|\.au\b|privacy policy|terms of", re.I)
 _PHONE = re.compile(r"(?:\+?61|0)[\s-]?[2-478](?:[\s-]?\d){8}|\b1[38]00[\s-]?\d{3}[\s-]?\d{3}\b")
 
 
+# A BANNER MAY SAY WHEN IT WAS PRINTED, AND THAT IS NOT PART OF ITS NAME.
+#
+# The Hali stocklist titles page one "Hali Dromana - Current as of 25/02/2026". That is a
+# banner naming Dromana, but the date carries eight digits past the ceiling in
+# `_is_group_header`, so the line is not read as a section at all; and `_context_suburb`
+# is handed the whole string and finds no locality in it. Strip the currency note and
+# both work -- 'Hali Dromana' alone already resolves to Dromana.
+#
+# Only a clause that ENDS in a date is stripped. "Current" is a real word and an estate
+# is entitled to use it; a trailing date is what makes the clause a print stamp.
+_MONTH = (r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|"
+          r"aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?")
+_VALIDITY = re.compile(
+    r"\s*[•|/,;\-–—]*\s*"
+    r"(?:price\s*list\s+)?"
+    r"(?:current|correct|updated?|revised|valid|effective|accurate|pricing|prices?)\s*"
+    r"(?:as\s+(?:of|at)|from|until|to|on)?\s*:?\s*"
+    r"(?:\d{1,2}\s*[./-]\s*\d{1,2}\s*[./-]\s*\d{2,4}"
+    r"|(?:\d{1,2}(?:st|nd|rd|th)?\s+)?(?:" + _MONTH + r")\.?\s+\d{4}"
+    r"|\d{1,2}\s+(?:" + _MONTH + r")\.?(?:\s+\d{4})?)\s*$",
+    re.I)
+
+
+def _strip_validity(text: str) -> str:
+    """A banner without its 'current as of <date>' tail. Unchanged if it has none."""
+    out = _VALIDITY.sub("", str(text or "")).strip(" •|/,;:-–—")
+    return out if len(out) >= 4 else str(text or "")
+
+
 def _is_group_header(text: str, fields: Dict[str, Any]) -> bool:
     """Estate/builder/region banner rather than a lot row."""
     if fields.get("advertised_package_price"):
         return False
     if LOT_TOKEN.search(text):
+        return False
+    text = _strip_validity(text)
+    # A COLUMN HEADER THAT NAMES NO PLACE IS NEVER A SECTION. The two tests keep separate
+    # word lists, so a header the column test recognises could still pass here and become
+    # the estate: the Solara price list stored "Lot Collection Level Bed Bath Car Store
+    # Int Ext Total Price" as the estate of all 14 of its apartments.
+    #
+    # The locality check is not optional. Vetoing on _is_column_header alone broke the
+    # Alete stocklist, whose section header is "House and Land Packages, Adelaide" --
+    # House, Land and Packages are all column vocabulary, and that line locates 44 lots.
+    # A line that names a locality is a section whatever words it shares with a header.
+    if _is_column_header(text) and not _context_suburb(text):
         return False
     stripped = str(text or "").strip().strip("-–—:|").strip()
     # Too short to be a name, or the encoding fragments a PDF leaves behind ("m²" comes
@@ -564,6 +621,7 @@ def _context_suburb(header: str, state: str = "") -> Optional[str]:
     """
     if not header:
         return None
+    header = _strip_validity(header)          # 'Hali Dromana - Current as of 25/02/2026'
     global _BANNER_GEO
     if _BANNER_GEO is None:
         from geo import SuburbGeoIndex
@@ -1308,6 +1366,10 @@ def extract_from_xlsx(data: bytes, source_label: str = "", builder_hint: str = "
             _l["source_sheet"] = sheet_name
             _l["source_row"] = row_no
         out.extend(listings)
+    _titled = _suburb_from_document_title(out)
+    if _titled:
+        logger.info("xlsx %s: document title named the suburb for %d row(s)",
+                    source_label or "(file)", _titled)
     _log_yield("xlsx", source_label, out)
     return out
 
@@ -1424,6 +1486,10 @@ def extract_from_pdf(data: bytes, source_label: str = "", builder_hint: str = ""
     if len(used) > 1:
         logger.info("pdf %s: mixed page layouts — %s", source_label or "(file)",
                     ", ".join(f"{k} {v}" for k, v in used.items()))
+    _titled = _suburb_from_document_title(out)
+    if _titled:
+        logger.info("pdf %s: document title named the suburb for %d row(s)",
+                    source_label or "(file)", _titled)
     _log_yield("pdf", source_label, out)
     return out
 
@@ -1487,8 +1553,45 @@ def extract_from_csv(data: bytes, source_label: str = "", builder_hint: str = ""
         for _l in listings:
             _l["source_row"] = line_no
         out.extend(listings)
+    _titled = _suburb_from_document_title(out)
+    if _titled:
+        logger.info("csv %s: document title named the suburb for %d row(s)",
+                    source_label or "(file)", _titled)
     _log_yield("csv", source_label, out)
     return out
+
+
+def _suburb_from_document_title(listings: List[Dict[str, Any]], state_hint: str = "") -> int:
+    """Fill the suburb from the document's OWN title row, when nothing else named one.
+
+    The Hali price list is titled "Hali Dromana - Current as of 25/02/2026" and every one
+    of its 34 townhouses had no location. The title is captured already (`source_banner`),
+    it just was never read for a place: the line beneath it, "Sales by Product Type",
+    is also a group header, so it replaced the title as context before any lot was read.
+    A sub-heading that names no place should not un-name the place, and this is the
+    narrowest form of that rule I can defend.
+
+    THE GUARD IS THE POINT. This only runs when NOT ONE listing in the whole document got
+    a suburb from anywhere else, and only when every title row in it names the SAME
+    locality. A document that locates even one of its rows is a document with sections,
+    and a single title must not be spread across sections that name their own towns --
+    that is how "Brisbane" would end up stamped on a lot in Caboolture. A single-project
+    price list has one title and one town, and that is the only case this touches.
+    """
+    if not listings or any(str(l.get("suburb") or "").strip() for l in listings):
+        return 0
+    titles = {str(l.get("source_banner") or "").strip() for l in listings}
+    titles.discard("")
+    if len(titles) != 1:
+        return 0
+    state = state_hint or next((str(l.get("state") or "").strip()
+                                for l in listings if str(l.get("state") or "").strip()), "")
+    suburb = _context_suburb(titles.pop(), state)
+    if not suburb:
+        return 0
+    for l in listings:
+        l["suburb"] = suburb
+    return len(listings)
 
 
 def extract_stocklist(data: bytes, source_label: str = "", builder_hint: str = "") -> List[Dict[str, Any]]:

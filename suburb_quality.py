@@ -484,11 +484,27 @@ _TYPO_MIN_LENGTH = 7
 
 
 def _one_edit_apart(a: str, b: str) -> bool:
-    """True when a and b differ by exactly one insertion, deletion or substitution."""
+    """True when a and b differ by one insertion, deletion, substitution or swap.
+
+    THE SWAP IS THE FOURTH TYPO and it was missing: 'Mickelham' for Mickleham is two
+    substitutions to this function and one slip of the fingers to a person. Transposing
+    a pair counts as one edit (Damerau), which is what the name of this function has
+    always claimed.
+
+    THE LENGTH FLOOR STAYS WHERE IT IS. Lowering _TYPO_MIN_LENGTH to 6 would also fix
+    'Subury' -> Sunbury, one row -- and turn 'LOGAN' into 'Kogan' on nine, moving them
+    from metropolitan Brisbane to a town of 300 people 250 km west. Measured across the
+    whole catalogue: at 7 characters the swap adds one correction and no errors; at 6 it
+    adds two corrections and nine errors.
+    """
     if a == b or abs(len(a) - len(b)) > 1:
         return False
     if len(a) == len(b):
-        return sum(x != y for x, y in zip(a, b)) == 1
+        differs = [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
+        if len(differs) == 2 and differs[1] == differs[0] + 1 \
+                and a[differs[0]] == b[differs[1]] and a[differs[1]] == b[differs[0]]:
+            return True
+        return len(differs) == 1
     short, long_ = (a, b) if len(a) < len(b) else (b, a)
     i = j = 0
     skipped = False

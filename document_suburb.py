@@ -195,12 +195,18 @@ def front_page_text(data: bytes) -> str:
         try:
             book = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
             sheet = book[book.sheetnames[0]]
-            cells = []
+            # ONE LINE PER SHEET ROW. Flattening the whole grid into a single string put
+            # the column header and the table body on the same line, so `_above_the_table`
+            # had nothing to cut at and the ARCA price list still answered "Theodore" --
+            # the name of its BUILDING column, on every row. Sheet rows are lines.
+            lines = []
             for row in sheet.iter_rows(min_row=1, max_row=_SHEET_ROWS,
                                        max_col=_SHEET_COLS, values_only=True):
-                cells.extend(str(v) for v in row if v is not None)
+                cells = [str(v) for v in row if v is not None]
+                if cells:
+                    lines.append(" ".join(cells))
             book.close()
-            return " ".join(cells)[:_MAX_CHARS]
+            return "\n".join(lines)[:_MAX_CHARS]
         except Exception as exc:
             logger.info("workbook unreadable (%s)", type(exc).__name__)
             return ""
@@ -242,7 +248,82 @@ def localities_in(text: str, state: str, index) -> List[str]:
     return found
 
 
-def suburb_for_document(url: str, state: str, index, fetcher=fetch) -> str:
+def _above_the_table(text: str) -> str:
+    """The document's head — every line before its first column-header row.
+
+    Returns "" when the very first line is already the header, which is how a file that
+    opens straight onto its table says it has no title.
+    """
+    from sources.spreadsheet_extract import _is_column_header
+
+    head = []
+    for line in str(text or "").splitlines():
+        if _is_column_header(line):
+            break
+        head.append(line)
+        if len(head) > 12:                 # a title block, not a whole page of prose
+            break
+    return "\n".join(head).strip()
+
+
+# What is left of a company name once its distinctive part is removed. Used only by
+# _names_the_builder below, to tell "Hudson" + "Homes" from "Eastbury" + "Wheelers Hill".
+_COMPANY_WORD = frozenset("""
+    homes home group groups builders builder building buildings developments development
+    developer developers projects project property properties living residential
+    constructions construction communities estates land co pty ltd australia aust the and
+    stocklist stock list price pricelist new nsw vic qld sa wa nt act tas
+""".split())
+
+
+def _addressed_place(line: str) -> str:
+    """The locality of a street address on this line, or "".
+
+    "1012 Taylors Rd, Fraser Rise 1008 10.5 28 294 $390,000 ..." -> "Fraser Rise".
+    Reuses the extractor's own address reader, so the two agree on what an address is.
+    """
+    try:
+        from sources.spreadsheet_extract import _address_label
+    except Exception:                                   # pragma: no cover - import guard
+        return ""
+    label = _address_label(str(line or ""), {}, "") or ""
+    if "," not in label:
+        return ""
+    place = label.rsplit(",", 1)[-1].strip()
+    return "" if _NOT_A_PLACE.match(place) else place
+
+
+def _names_the_builder(candidate: str, builder: str) -> bool:
+    """True when the 'locality' IS the builder, dressed in generic company words.
+
+    "Hudson Homes Stocklist" is the whole title of a 19-row Hudson Homes list covering
+    Bald Hills, Bellbird Park and Bethania. Hudson is also a real QLD locality — 1,500 km
+    north, near Innisfail — and it was the only place named above the table, so it was
+    about to be stamped on all 19.
+
+    THE TEST IS WHAT IS LEFT OVER, not mere containment. E-Agent derives a project's name
+    from its own link label, and those labels routinely CONTAIN the suburb: "Eastbury
+    Wheelers Hill", "Villea Palm Beach", "Smith by Valli Collingwood". Rejecting any
+    candidate found in the builder name threw away six correct answers to remove one
+    wrong one. Take the candidate out and look at the rest: "Hudson Homes" leaves
+    {homes}, which is a company suffix and nothing else, so the name is the builder.
+    "Eastbury Wheelers Hill" leaves {eastbury} — a project, so the suburb stands.
+    """
+    if not candidate or not builder:
+        return False
+    cand = set(re.findall(r"[a-z]+", str(candidate).lower()))
+    words = set(re.findall(r"[a-z]+", str(builder).lower()))
+    if not cand or not cand <= words:
+        return False
+    # A leftover is required. Builder "Rockdale" on the Rockdale price list leaves
+    # nothing, and a project named exactly after its own suburb is the ordinary case —
+    # it is the trailing "Homes" that makes a name a company rather than a place.
+    left = words - cand
+    return bool(left) and all(w in _COMPANY_WORD for w in left)
+
+
+def suburb_for_document(url: str, state: str, index, fetcher=fetch,
+                        builder: str = "") -> str:
     """The one locality this document is for, or '' if it does not name exactly one."""
     text = front_page_text(fetcher(url))
     if not text:
@@ -261,7 +342,37 @@ def suburb_for_document(url: str, state: str, index, fetcher=fetch) -> str:
             if rule_state and state and rule_state != state.upper():
                 continue
             return str(rule["suburb"])
-    names = localities_in(text, state, index)
+    # A DOCUMENT NAMES ITS PLACE ABOVE THE TABLE, NEVER INSIDE IT.
+    #
+    # "Price List_ARCA, Stafford.xlsx" is 35 apartments in Stafford, Brisbane. Its front
+    # page has no title at all -- it opens on the column header, and the column after
+    # "Lot" is "Building", whose value on every single row is "Theodore". Theodore is
+    # also a real QLD town, 500 km north west, and it was the ONLY locality on the page:
+    # this function would have returned it and moved 35 Brisbane apartments to the
+    # Banana Shire. Reading exactly one locality is not enough of a test when a column
+    # of the table can supply it.
+    #
+    # So only the head counts -- everything before the first column-header line. A title
+    # sits there ("Hali Dromana - Current as of 25/02/2026") and a table body cannot.
+    # A document with no title has no answer here, which is the right answer.
+    head = _above_the_table(text)
+    names = [n for n in localities_in(head, state, index)
+             if not _names_the_builder(n, builder)] if head else []
+    # A STREET ADDRESS NAMES A PLACE WHEREVER IT IS PRINTED.
+    #
+    # Cutting at the table is right for a bare word -- "Theodore" in a Building column,
+    # "North Flemington Racecourse" in a View column -- but it also threw away the one
+    # line the Taylors Run price list uses to say where it is: "1012 Taylors Rd, Fraser
+    # Rise", printed inside the table beside a lot, worth 34 rows. Its lots carry no
+    # address of their own, so nothing else in the pipeline can reach it.
+    #
+    # A street address is not a column value. It has a number, a street and a street
+    # type in front of the place, and no amount of "Building: Theodore" produces that
+    # shape. Same one-answer rule: two different addressed places and this returns "".
+    if not names:
+        names = sorted({p for p in (_addressed_place(l) for l in text.splitlines()) if p
+                        and not _names_the_builder(p, builder)})
+        names = [n for n in names if index.locate(n, state)] if len(names) == 1 else []
     # EXACTLY ONE. A price list covering several projects cannot be collapsed to a single
     # suburb, and taking the first would quietly mislabel every lot in the others.
     return names[0] if len(names) == 1 else ""
@@ -490,7 +601,8 @@ def refresh_from_database(db_path: Optional[str] = None, limit: int = 0) -> Dict
     conn.close()
     index = SuburbGeoIndex()
 
-    located = collections.Counter()
+    located = collections.defaultdict(set)
+    unnamed = collections.Counter()
     members = collections.defaultdict(list)
     for row in rows:
         row.pop("suburb_source", None)
@@ -498,14 +610,37 @@ def refresh_from_database(db_path: Optional[str] = None, limit: int = 0) -> Dict
         if not url.startswith("http"):
             continue
         members[url].append(row)
-        _suburb, why = suburb_quality.resolve(row)
+        suburb, why = suburb_quality.resolve(row)
         if suburb_quality.is_located(why) and why != suburb_quality.FROM_DOCUMENT:
-            located[url] += 1
+            located[url].add(suburb)
+        else:
+            # Counts a row this map ALREADY answers (FROM_DOCUMENT), on purpose: a
+            # document drops out of its own map otherwise. Filtering on rows that still
+            # look unnamed shrank the map from 13 entries to 3 in one run, because a
+            # document the map had already fixed no longer had an unnamed row to qualify
+            # it. save_map's collapse floor caught it; this is the cause it caught.
+            unnamed[url] += 1
 
     # THE PER-ROW SECTION-HEADER MAP USED TO BE BUILT HERE. It is gone; see
     # row_suburbs below for what it did, what it cost and why it is not worth having.
 
-    orphans = [(u, rs) for u, rs in members.items() if not located[u]]
+    # ONE LOCATED ROW USED TO DISQUALIFY A WHOLE DOCUMENT.
+    #
+    # The filter was `not located[url]` -- read a document only when NOTHING in it is
+    # located. The Hali price list is titled "Hali Dromana - Current as of 25/02/2026"
+    # and names Dromana on its front page, but seven of its 34 townhouses carry the
+    # suburb 'Central Park' -- the PRECINCT in column one, which happens to also be a
+    # real VIC locality 55 km away in Malvern East. Seven wrong rows were enough to stop
+    # the other 27 ever being read, and this shape holds 102 rows across 8 documents.
+    #
+    # What actually protects a multi-project price list is `suburb_for_document`, which
+    # returns "" unless the front page names EXACTLY ONE locality -- so the count here
+    # only ever needed to answer "does this document have sections?". Distinct suburbs
+    # answers that; a row count does not. A document naming two or more places has
+    # sections and is still skipped, which keeps the 856 unnamed rows in the 30 sectioned
+    # documents (AVIA, Hudson, Gallery) away from a single document-level answer.
+    orphans = [(u, rs) for u, rs in members.items()
+               if unnamed[u] and len(located[u]) <= 1]
     orphans.sort(key=lambda pair: -len(pair[1]))
     if limit:
         orphans = orphans[:limit]
@@ -515,7 +650,10 @@ def refresh_from_database(db_path: Optional[str] = None, limit: int = 0) -> Dict
         states = collections.Counter(
             str(r.get("state") or "").strip().upper() for r in group)
         state = states.most_common(1)[0][0] if states else ""
-        suburb = suburb_for_document(url, state, index)
+        builders = collections.Counter(
+            str(r.get("builder_name") or "").strip() for r in group)
+        builder = builders.most_common(1)[0][0] if builders else ""
+        suburb = suburb_for_document(url, state, index, builder=builder)
         if suburb:
             mapping[url] = [suburb, state]
             logger.warning("%5d rows -> %s (%s)  %s",

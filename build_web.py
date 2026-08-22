@@ -828,6 +828,13 @@ _FUNCTION_ROOT_MODULES = (
     # _candidates.py imports this to decide whether a row's suburb is a place at all.
     # Omitting it would not fail the build — it would fail every deployed search.
     "suburb_quality.py",
+    # THE DOCUMENT MAP HAD NEVER SHIPPED. suburb_quality imports this lazily inside a
+    # try/except for both FROM_DOCUMENT and FROM_VERIFIED, so its absence in the bundle
+    # was not an error anywhere: the deployed API simply answered "" to both and 941
+    # listings that resolve locally had no suburb on the live site, along with all 17
+    # hand-verified rules. Exactly the shape the note above this one warns about — it
+    # worked on my machine because my machine has the file.
+    "document_suburb.py",
     # Benchmark A. Omitting these did not break the build — api/research.py catches the
     # ImportError so a benchmark failure cannot cost a consultant their search — so the
     # deployed endpoint simply returned no verdict at all while it worked locally. That
@@ -1373,6 +1380,12 @@ def _bundle_research_function(app: Path, out_dir: Path) -> int:
     if (app / "data" / "au_suburbs.csv").is_file():
         shutil.copyfile(app / "data" / "au_suburbs.csv", lib / "data" / "au_suburbs.csv")
         n += 1
+    # document_suburb.map_path() resolves these beside its own file, which in the bundle
+    # is api/_lib/. The module without its maps is the same silent "" as no module.
+    for _map in ("document_suburbs.json", "document_suburbs_manual.json"):
+        if (app / "data" / _map).is_file():
+            shutil.copyfile(app / "data" / _map, lib / "data" / _map)
+            n += 1
     # The report logo. client_report.py resolves it relative to its own file, which in
     # the bundle is api/_lib/, so the brand folder has to travel with it. Without this
     # the report generated locally carried the logo and the DEPLOYED one silently did
@@ -1428,6 +1441,12 @@ try:
 finally:
     pathlib.Path.mkdir = _real_mkdir
 assert (not %r) or client_report._logo_html(), 'logo missing from bundle'
+# THE MAP, NOT JUST THE MODULE. suburb_quality imports document_suburb inside a
+# try/except, so neither a missing module nor a missing data file is an error -- both
+# just answer "" forever. Assert the bundle can actually name a document's suburb.
+import document_suburb as _ds
+assert _ds.load_map(refresh=True), 'document_suburbs.json missing from bundle'
+assert _ds.manual_rules(refresh=True), 'document_suburbs_manual.json missing from bundle'
 print('imports-ok')
 """
 
