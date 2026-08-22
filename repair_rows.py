@@ -53,6 +53,7 @@ Three repairs:
 
 import argparse
 import collections
+import os
 import re
 import sqlite3
 import sys
@@ -329,6 +330,67 @@ def find_suburb_twins(rows):
     return pairs
 
 
+
+# ---------------------------------------------------------------------------------
+def _row_key(text):
+    """A stable key for one source row, tolerant of the noise a PDF reader leaves."""
+    cleaned = re.sub(r"[^A-Za-z0-9$,./ -]", " ", str(text or ""))
+    return re.sub(r"\s+", " ", cleaned).strip().lower()[:120]
+
+
+def find_suburbs_in_own_document(rows, fetch=None, extract=None):
+    """Rows whose OWN source document names their suburb when read with today's code.
+
+    NOT AN INFERENCE. The same document, the same row, re-parsed by a better extractor --
+    matched on the row's own text, so a listing only takes the suburb of the line it was
+    read from. Nothing here reasons about which suburb a row might belong to.
+
+    THE CASE IT EXISTS FOR. Every extractor fix only helps rows harvested after it, and a
+    document that stops being published is never harvested again -- so its rows keep
+    whatever the parser of the day made of them, forever. Two FRD stocklists last read on
+    29 July and 6 August extract at 80 of 80 and 82 of 82 today, while their stored rows
+    sit at 28 of 30 and 34 of 35, because E-Agent no longer lists those files. 224 of the
+    385 rows with no suburb are in that state.
+
+    Only fills a BLANK. A row that already resolves keeps what it has, so re-reading can
+    never overwrite a value some other rule earned.
+    """
+    import suburb_quality
+
+    if fetch is None or extract is None:                # imported lazily: needs network
+        import document_suburb
+        from sources.spreadsheet_extract import extract_stocklist
+        fetch = fetch or document_suburb.fetch
+        extract = extract or extract_stocklist
+
+    wanted = collections.defaultdict(list)
+    for r in rows:
+        if r["superseded_by"] or str(r["suburb"] or "").strip():
+            continue
+        url = str(r["source_url"] or "")
+        if url.startswith("http"):
+            wanted[url].append(r)
+
+    found = []
+    for url, group in sorted(wanted.items(), key=lambda kv: -len(kv[1])):
+        data = fetch(url)
+        if not data:
+            continue
+        try:
+            listings = extract(data, source_label="repair", builder_hint="")
+        except Exception:                               # a document we cannot parse today
+            continue
+        named = {_row_key(l.get("source_text")): str(l.get("suburb") or "").strip()
+                 for l in listings if str(l.get("suburb") or "").strip()}
+        if not named:
+            continue
+        for r in group:
+            suburb = named.get(_row_key(r["source_text"]))
+            if suburb:
+                found.append((r, suburb))
+    return found
+
+
 def main(apply_changes):
     conn = sqlite3.connect(str(config.DATABASE_PATH))
     rows = _rows(conn)
@@ -393,6 +455,20 @@ def main(apply_changes):
             print(f"     drop  suburb=''            checked {r['date_checked']} "
                   f"${float(r['price'] or 0):,.0f}  {str(r['lot_address'])[:44]}")
 
+    # 6. RE-READ EACH BLANK ROW'S OWN DOCUMENT with today's extractor. Network-bound, so
+    #    it runs last, and a document that cannot be fetched costs that document alone.
+    #    SPB_SKIP_REREAD=1 turns it off for an offline run.
+    reread = []
+    if os.environ.get("SPB_SKIP_REREAD") != "1":
+        try:
+            reread = find_suburbs_in_own_document(rows)
+        except Exception as exc:                        # noqa: BLE001 - never fatal
+            print("\n6. re-reading source documents failed (%s)" % type(exc).__name__)
+    print("\n6. blank rows whose own document names their suburb today: %d" % len(reread))
+    for r, suburb in reread[:6]:
+        print(f"     {suburb:<18} checked {r['date_checked']}  "
+              f"{str(r['lot_address'])[:52]}")
+
     if not apply_changes:
         print("\n(report only — pass --apply to write these corrections)")
         return 0
@@ -423,13 +499,23 @@ def main(apply_changes):
         for r in rest:
             cur.execute("UPDATE buildings SET superseded_by=?, superseded_at=? WHERE id=?",
                         (keep["content_hash"] or str(keep["id"]), now, r["id"]))
+    for r, suburb in reread:
+        # The stored content_hash goes stale here, exactly as it does for every other
+        # correction above. That is the documented trade: the identity is recomputed at
+        # the next insert, and find_suburb_twins collapses the pair if one appears.
+        # `suburb` only. suburb_source is NOT a stored column -- build_web computes it
+        # from suburb_quality.resolve on the way out, which is the whole point of that
+        # module. Writing to it here failed the transaction and rolled back every other
+        # repair in the same run.
+        cur.execute("UPDATE buildings SET suburb=? WHERE id=?", (suburb, r["id"]))
     conn.commit()
     print(f"\napplied: {len(fabricated)} postcode(s) withdrawn "
           f"({states_dropped} state(s) cleared), {len(cheap)} implausible price(s) cleared, "
           f"{len(understated)} understated price(s) corrected, "
           f"{len(land_only)} row(s) typed as land, "
           f"{len(losers)} duplicate row(s) superseded, "
-          f"{len(twin_losers)} suburb-less twin(s) superseded")
+          f"{len(twin_losers)} suburb-less twin(s) superseded, "
+          f"{len(reread)} suburb(s) re-read from the row's own document")
     after = len([r for r in _rows(conn) if not r["superseded_by"]])
     print(f"live rows: {len(live)} -> {after}")
     return 0
