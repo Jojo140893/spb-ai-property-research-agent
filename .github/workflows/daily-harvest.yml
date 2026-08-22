@@ -306,6 +306,33 @@ jobs:
           fi
           echo "Every channel that holds stock read something tonight."
 
+      - name: Fail the run if a data step died quietly
+        # THE SILENT HALF OF THE ONE ABOVE. Three steps in run_daily.py are optional --
+        # repair_rows.py --apply, document_suburb.py and benchmark_buildings.py -- so any
+        # of them can crash while the run prints "Data refreshed." and exits 0. All three
+        # write data the build then bundles, so the snapshot goes out carrying yesterday's
+        # repairs, yesterday's document-suburb map or yesterday's medians, and looks
+        # identical to a healthy one.
+        #
+        # The only other signal is the DEGRADED email, and that needs SPB_ALERT_TO, which
+        # is not set on this runner: a real run on 12 Aug aborted having read 0 of 8,580
+        # listings and logged "[alert] SPB_ALERT_TO is not set - nobody was notified of
+        # this run." Same treatment as a dead channel: publish first, then go red.
+        if: always()
+        run: |
+          if [ -f _run_degraded ]; then
+            echo "::error::A data step failed but the run still published: $(paste -sd'; ' - < _run_degraded)"
+            echo "The snapshot went out carrying the previous run's output for that step."
+            echo ""
+            echo "--- what failed ---"
+            cat _run_degraded
+            echo ""
+            echo "--- the error ---"
+            grep -E "FAILED \(optional|Traceback|ERROR" _daily.log | tail -10               || echo "(no error line found)"
+            exit 1
+          fi
+          echo "Every optional data step ran."
+
       - name: Log tail on failure
         if: failure()
         run: tail -120 _daily.log || echo "no _daily.log written"

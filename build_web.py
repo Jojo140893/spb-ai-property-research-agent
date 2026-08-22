@@ -273,6 +273,44 @@ def _assert_no_folder_capability_urls(path: Path) -> None:
             f"URL. Export the per-document link instead, or nothing.")
 
 
+# The floor a suburb-blind harvest would fall through. See _assert_suburb_coverage.
+SUBURB_COVERAGE_FLOOR = 0.95
+
+
+def _assert_suburb_coverage(coverage):
+    """Refuse to publish a catalogue that has lost its suburbs.
+
+    THE FAILURE THIS CATCHES IS INVISIBLE EVERYWHERE ELSE, and it is the one this module
+    spent a day earning. Every other health check in the pipeline counts ROWS:
+    harvest_buildings scores a channel on how many listings it read, deploy.ps1 guards a
+    row-count floor and a 20% drop. A night where every row arrives with a blank suburb
+    scores identically to a perfect one -- and worse than identically, because suburb_norm
+    is one of the eight inputs to content_hash, so blank-suburb rows take a NEW identity
+    and are inserted alongside the old ones. The row count RISES. Every existing guard
+    passes. The dashboard quietly loses its suburb filter and nothing anywhere says so.
+
+    suburb_quality.summarise() was written for exactly this -- "Counts by reason, for the
+    daily run and the build to report" -- and had no caller anywhere in the tree.
+
+    A FLOOR, NOT A COMPARISON WITH YESTERDAY, because the runner is fresh every night: CI
+    tees _daily.log into a new workspace and uploads nothing, so there is no previous run
+    to compare against. An absolute floor needs no history, and it is the same shape as
+    the two guards this codebase already trusts -- document_suburb._COLLAPSE_FLOOR and
+    deploy.ps1's row-count floor.
+    """
+    if not coverage or not coverage.get("australian"):
+        return
+    share = coverage["share"]
+    if share < SUBURB_COVERAGE_FLOOR:
+        raise SystemExit(
+            "[abort] only %d of %d Australian listings (%.1f%%) can be found by suburb; "
+            "the floor is %.0f%%. Something upstream stopped reading suburbs. Check "
+            "whether document_suburb.py or repair_rows.py failed tonight -- both are "
+            "optional steps in run_daily.py and neither of them fails the run."
+            % (coverage["findable"], coverage["australian"], share * 100,
+               SUBURB_COVERAGE_FLOOR * 100))
+
+
 def _assert_a_benchmark_names_its_place(path: Path) -> None:
     """A published benchmark must say which suburb it is a benchmark FOR.
 
@@ -745,6 +783,27 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     if _guessed:
         print(f"    {_guessed} listing(s) took a suburb from their builder's or "
               f"document's other lots (inferred, badged, never benchmarked)")
+    # WHAT THE APP WILL ACTUALLY RESOLVE, measured here because this is the only place
+    # that holds both the graded rows and the sibling maps at once. The stored grade
+    # alone understates it -- the estate and page maps run per REQUEST in
+    # api/_candidates.py, so a row that says nothing in the snapshot may still be found
+    # by its siblings. Counting the snapshot alone reported 98.99% for a catalogue that
+    # answers 100%, and a floor set against the wrong number is a floor that fires on a
+    # healthy night or misses a sick one.
+    _au = _findable = _located = 0
+    for b in buildings:
+        if b.get("superseded_by"):
+            continue
+        _why = b.get("suburb_source") or ""
+        if _why == suburb_quality.BLANK_OVERSEAS:
+            continue
+        _au += 1
+        if suburb_quality.is_located(_why):
+            _located += 1
+        if suburb_quality.is_searchable(_why) or _siblings_answer(b):
+            _findable += 1
+    _coverage = {"australian": _au, "findable": _findable, "located": _located,
+                 "share": (_findable / _au) if _au else 0.0}
     by_channel = [{"source_channel": r[0], "n": r[1]} for r in conn.execute(
         "SELECT source_channel, COUNT(*) FROM buildings GROUP BY 1 ORDER BY 2 DESC")]
     stamp = datetime.now().strftime("%d %b %Y, %H:%M")
@@ -923,6 +982,7 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         "assets": len(assets), "registry": len(regs), "copied": copied,
         "relabelled": _relabelled,
         "suburb_reasons": _suburb_reasons,
+        "suburb_coverage": _coverage,
         # The compare-on-REA half, which works with no key at all. Reported so the
         # coverage is a number in the build log rather than something a reader has to
         # infer from how many em-dashes they scroll past.
@@ -1720,6 +1780,13 @@ if __name__ == "__main__":
     if m.get("relabelled"):
         print(f"    {m['relabelled']} row(s) re-labelled to one name per builder "
               f"(the database keeps its spellings — see _display_name_canonicaliser)")
+    _cov = m.get("suburb_coverage") or {}
+    _assert_suburb_coverage(_cov)
+    if _cov:
+        print("    Suburbs: %(findable)s of %(australian)s Australian listing(s) findable "
+              "(%(pct).2f%%) · %(located)s located, the rest inferred and badged"
+              % {"findable": f"{_cov['findable']:,}", "australian": f"{_cov['australian']:,}",
+                 "pct": _cov["share"] * 100, "located": f"{_cov['located']:,}"})
     _assert_no_folder_capability_urls(where / "stock.json")
     _assert_a_benchmark_names_its_place(where / "stock.json")
     _assert_every_benchmark_listing_opens_somewhere(where / "benchmarks.json")

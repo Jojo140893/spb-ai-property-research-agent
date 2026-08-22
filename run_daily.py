@@ -48,6 +48,9 @@ APP = Path(__file__).resolve().parent
 # A file rather than an exit code: the publish step is gated on the run succeeding, and
 # the channels that DID read must still reach the dashboard. See _chain().
 _PARTIAL_MARKER = APP / "_harvest_partial"
+# The same idea for a step that failed while the run carried on -- see where it is
+# written, at the end of main().
+_DEGRADED_MARKER = APP / "_run_degraded"
 # Portals that cannot be signed into without a human. Their saved session is the whole
 # mechanism, so its age is the thing worth reporting.
 INTERACTIVE_PORTALS = {"paramount": "invisible reCAPTCHA", "proxima": "2FA"}
@@ -309,6 +312,7 @@ def _chain(args) -> int:
     # perfectly healthy run and train everyone to ignore the signal — which is the same
     # way the [FAILED] line came to be ignored for three nights.
     _PARTIAL_MARKER.unlink(missing_ok=True)
+    _DEGRADED_MARKER.unlink(missing_ok=True)
     for label, cmd, optional in steps:
         if not _run(label, cmd, optional):
             failed.append(label)
@@ -367,6 +371,23 @@ def _chain(args) -> int:
                + "\n  - ".join(_DEGRADED)
                + "\n\nAnything they produce is now stale in the published snapshot.\n\n"
                + "Last 40 lines of the log:\n\n" + _log_tail())
+        # AND A MARKER, for the same reason _PARTIAL has one. The email above is the only
+        # other signal and it needs SPB_ALERT_TO, which is not set on the runner — a real
+        # run on 12 Aug printed "nobody was notified of this run" and went green.
+        #
+        # Three of these steps write data the build then bundles: repair_rows.py --apply,
+        # document_suburb.py and benchmark_buildings.py are all optional, so any of them
+        # can die while the run still prints "Data refreshed." and exits 0.
+        # document_suburb.py failing means every source document that arrived that day
+        # keeps no suburb, and the coverage floor in build_web only catches that once it
+        # has cost 5% of the catalogue — days later, if ever.
+        #
+        # Exit stays 0 so the publish step still runs: the rows that DID refresh are worth
+        # publishing. The CI job is failed AFTER publishing, exactly as PARTIAL is.
+        try:
+            _DEGRADED_MARKER.write_text("\n".join(_DEGRADED), encoding="utf-8")
+        except Exception as exc:                                       # noqa: BLE001
+            print(f"  (could not write the degraded marker: {exc})")
     if args.no_deploy:
         print("  Deploy skipped (--no-deploy). To publish: deploy.ps1")
     else:
