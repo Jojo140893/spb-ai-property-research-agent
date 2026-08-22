@@ -245,6 +245,49 @@ def _line_identity(text):
     return re.sub(r"\s+", " ", _VOLATILE_DATE.sub(" ", str(text or ""))).strip()
 
 
+# A row whose ADDRESS is one line of a spec table. See find_spec_fragments.
+_SPEC_FRAGMENT = re.compile(r"^\s*(?:land|house|build|home)\s+size\s*:", re.I)
+
+
+def find_spec_fragments(rows):
+    """Rows that are half a spec table, not a property.
+
+    The Torsion builder portal prints each lot as a pair of lines --
+
+        LAND SIZE : 408 m2   LAND PRICE : $ 549,000
+        HOUSE SIZE : 160 m2  HOUSE PRICE : $ 395,529
+
+    -- and the scraper stored each line as its own listing. All 26 carry a price and
+    nothing else: no lot number, no bedrooms, no suburb, no address beyond the fragment
+    itself. 23 of the 26 repeat a price that a NAMED Torsion row already records as its
+    land_price or build_price, so the property is in the catalogue twice over, once
+    whole and once in halves.
+
+    They were being counted as listings missing a suburb. They are not listings. A
+    search for a $549,000 property would return one, showing a land-size line where the
+    address goes.
+
+    Every one of the four conditions is required: an address that is a spec line, and no
+    lot number, no bedrooms and no usable suburb. A real listing that happens to print
+    its land size first still has one of those.
+    """
+    import suburb_quality
+
+    out = []
+    for r in rows:
+        if r["superseded_by"]:
+            continue
+        if not _SPEC_FRAGMENT.match(str(r["lot_address"] or "")):
+            continue
+        if r["lot_number"] or r["bedrooms"]:
+            continue
+        _sub, why = suburb_quality.resolve(dict(r, suburb_source=""))
+        if suburb_quality.is_searchable(why):
+            continue
+        out.append(r)
+    return out
+
+
 def find_duplicate_groups(rows):
     """Groups of live rows sharing a source_text, reduced to strictly redundant copies."""
     by = collections.defaultdict(list)
@@ -495,6 +538,12 @@ def main(apply_changes):
             print(f"     drop  [{r['source_channel']}] builder={r['builder_name']!r} "
                   f"state={r['state']} score={_completeness(r)[0]}")
 
+    fragments = find_spec_fragments(live)
+    print(f"\n7. spec-table fragments stored as listings: {len(fragments)}")
+    for r in fragments[:3]:
+        print(f"     ${float(r['price'] or 0):>10,.0f}  {(r['builder_name'] or '?')[:20]:20} "
+              f"{str(r['lot_address'])[:52]}")
+
     twins = find_suburb_twins(live)
     twin_losers = [r for _, rest in twins for r in rest]
     print(f"\n5. one package stored twice, the older copy missing only its suburb: "
@@ -550,6 +599,9 @@ def main(apply_changes):
         for r in rest:
             cur.execute("UPDATE buildings SET superseded_by=?, superseded_at=? WHERE id=?",
                         (keep["content_hash"] or str(keep["id"]), now, r["id"]))
+    for r in fragments:
+        cur.execute("UPDATE buildings SET superseded_by=?, superseded_at=? WHERE id=?",
+                    ("spec-table fragment, not a listing", now, r["id"]))
     for r, suburb in reread:
         # The stored content_hash goes stale here, exactly as it does for every other
         # correction above. That is the documented trade: the identity is recomputed at
@@ -566,6 +618,7 @@ def main(apply_changes):
           f"{len(land_only)} row(s) typed as land, "
           f"{len(losers)} duplicate row(s) superseded, "
           f"{len(twin_losers)} suburb-less twin(s) superseded, "
+          f"{len(fragments)} spec fragment(s) withdrawn, "
           f"{len(reread)} suburb(s) re-read from the row's own document")
     after = len([r for r in _rows(conn) if not r["superseded_by"]])
     print(f"live rows: {len(live)} -> {after}")

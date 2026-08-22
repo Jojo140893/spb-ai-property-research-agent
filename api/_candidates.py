@@ -687,6 +687,50 @@ def _estate_suburb_map(rows):
     return _sibling_suburb_map(rows, "estate_name")
 
 
+def _unambiguous_estate_map(rows):
+    """{(builder, estate): (state, suburb)} where the estate sits in exactly one place.
+
+    THE SIBLING MAP IS KEYED ON (estate, STATE), which is what makes it safe -- estate
+    names repeat across the country. That key is also unreachable for a row whose state
+    is missing or wrong, and those are exactly the rows with nothing else left:
+
+      32 rows carry no state at all, while their estate's located siblings agree on one.
+      10 rows carry a state that CONTRADICTS their estate's, all of them Hattan's
+         "Penrose Place" lots, which say NSW where the estate's other ten say VIC and
+         name Officer. Their state_source is 'suburb' -- the state was derived from the
+         suburb column, and that column holds 'Penrose Place', which is the estate, not
+         a locality. The state is downstream of a value this module already refuses, so
+         it is not independent evidence of anything.
+
+    Stricter than the sibling map in every other respect: keyed on builder AND estate,
+    and the located siblings must agree on ONE state and ONE suburb, not merely 80%.
+    """
+    seen = {}
+    for r in rows:
+        if r.get("superseded_by"):
+            continue
+        estate = str(r.get("estate_name") or "").strip().lower()
+        if not estate:
+            continue
+        sub, why = suburb_quality.resolve(r)
+        if not (sub and suburb_quality.is_located(why)):
+            continue
+        key = (str(r.get("builder_name") or "").strip().lower(), estate)
+        seen.setdefault(key, set()).add((str(r.get("state") or "").strip().upper(), sub))
+    return {k: next(iter(v)) for k, v in seen.items() if len(v) == 1}
+
+
+def _estate_is_the_only_evidence(row):
+    """True when this row's own state cannot be trusted over its estate's.
+
+    Either it has none, or the only thing it rests on is the suburb column -- and this
+    function is reached only for rows whose suburb column has already been refused.
+    """
+    if not str(row.get("state") or "").strip():
+        return True
+    return str(row.get("state_source") or "").strip().lower() == "suburb"
+
+
 def _sibling_state_map(rows, floor=0.95):
     """{(field, group): state} where a group's rows agree overwhelmingly on one state.
 
@@ -833,6 +877,8 @@ def build_packages(brief_dict, rows, today=None):
     # state, and a page mixing two is a page whose state cannot be borrowed at all.
     _state_of = _sibling_state_map(rows)
     _containment = _containment_candidates(_state_of)
+    # LAST RESORT, for rows the two maps above cannot key at all — see the call site.
+    _unambiguous_estate = _unambiguous_estate_map(rows)
     budget_max = _num(brief_dict.get("budget_max")) or 0.0
     ceiling = budget_max + BUDGET_HEADROOM if budget_max else None
     # storeys_max < 2 is the only brief that a missing storey figure could slip past,
@@ -900,6 +946,24 @@ def build_packages(brief_dict, rows, today=None):
                     row_state = _borrowed
                     counts["state_borrowed"] = counts.get("state_borrowed", 0) + 1
                     break
+        # AN ESTATE THAT SITS IN EXACTLY ONE PLACE, for the rows the maps above cannot
+        # key. Both suburb maps need (estate, STATE), so a row whose state is missing or
+        # wrong is unreachable by either -- and 42 rows are in that position with nothing
+        # else left. Hattan's ten "Penrose Place" lots say NSW where the estate's other
+        # ten say VIC and name Officer; their state_source is 'suburb', so the state was
+        # derived from the suburb column, and that column holds the estate name. Runs
+        # only where the row's own state is absent or rests on that refused value.
+        if _estate_is_the_only_evidence(row):
+            _sub, _why = suburb_quality.resolve(row)
+            if not suburb_quality.is_searchable(_why):
+                _only = _unambiguous_estate.get(
+                    (str(row.get("builder_name") or "").strip().lower(),
+                     str(row.get("estate_name") or "").strip().lower()))
+                if _only and _only[0]:
+                    row = {**row, "state": _only[0], "suburb": _only[1],
+                           "suburb_source": ""}
+                    row_state = _only[0]
+                    counts["estate_only_place"] = counts.get("estate_only_place", 0) + 1
         if not row_state:
             counts["state_unknown"] += 1
             continue

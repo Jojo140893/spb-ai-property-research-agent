@@ -113,3 +113,45 @@ def test_every_overriding_rule_records_why():
     for rule in DS.manual_rules(refresh=True):
         if rule.get("overrides_state"):
             assert len(str(rule.get("evidence") or "")) > 60, rule.get("suburb")
+
+
+def test_an_estate_that_sits_in_one_place_answers_a_row_whose_state_is_wrong():
+    """Hattan's ten "Penrose Place" lots say NSW. The estate's other ten say VIC and
+    name Officer, which is where Penrose Place is.
+
+    Their state_source is 'suburb' -- the state was derived from the suburb column, and
+    that column holds 'Penrose Place', the estate name, which suburb_quality refuses.
+    The state is downstream of a value already rejected, so it is not independent
+    evidence. Both sibling suburb maps are keyed on (estate, STATE) and so cannot reach
+    a row whose state is wrong; this is the one rule that can.
+    """
+    from api._candidates import _unambiguous_estate_map, _estate_is_the_only_evidence
+
+    located = [{"builder_name": "Hattan Homes", "estate_name": "Penrose Place",
+                "state": "VIC", "suburb": "Officer"} for _ in range(3)]
+    stray = {"builder_name": "Hattan Homes", "estate_name": "Penrose Place",
+             "state": "NSW", "suburb": "Penrose Place", "state_source": "suburb"}
+    m = _unambiguous_estate_map(located + [stray])
+    assert m[("hattan homes", "penrose place")] == ("VIC", "Officer")
+    assert _estate_is_the_only_evidence(stray)
+
+
+def test_but_a_state_the_row_earned_itself_is_not_overridden():
+    """The guard. A state read off the page, or from a postcode, outranks the estate --
+    an estate name that repeats across the country is exactly why the sibling maps are
+    keyed by state in the first place."""
+    from api._candidates import _estate_is_the_only_evidence
+
+    assert not _estate_is_the_only_evidence(
+        {"state": "NSW", "state_source": "e-agent page"})
+    assert not _estate_is_the_only_evidence({"state": "NSW", "state_source": "postcode"})
+
+
+def test_an_estate_in_two_states_answers_nothing():
+    from api._candidates import _unambiguous_estate_map
+
+    rows = [{"builder_name": "B", "estate_name": "Parkview", "state": "VIC",
+             "suburb": "Officer"},
+            {"builder_name": "B", "estate_name": "Parkview", "state": "QLD",
+             "suburb": "Ripley"}]
+    assert ("b", "parkview") not in _unambiguous_estate_map(rows)
