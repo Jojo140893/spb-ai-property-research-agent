@@ -739,20 +739,39 @@ def last_resort_map(rows):
     searchable and badged, and no benchmark, distance filter or client comparable will
     touch it.
     """
-    votes = {}
+    # TWO TIERS. Located siblings vote first; inferred ones are counted only where a key
+    # has no located voter at all.
+    #
+    # Counting located rows alone left two documents unable to answer themselves. All
+    # seven rows of the VIC SQ price list are one building, three of them read Flemington
+    # out of their own text, and the other four got nothing -- the three that had an
+    # answer were inferred, so they were not allowed to speak for their own siblings.
+    # Fifteen of sixteen Woodchester rows read Gatton the same way, and the sixteenth,
+    # which differs from them only in having no state recorded, got nothing.
+    #
+    # An inferred voter is weak evidence. It is also the only evidence these rows have,
+    # and the answer it produces is graded INFERRED_FROM_SIBLINGS either way -- badged,
+    # never located, never benchmarked.
+    strong, weak = {}, {}
     for r in rows:
         if r.get("superseded_by"):
             continue
         sub, why = suburb_quality.resolve(r)
-        if not (sub and suburb_quality.is_located(why)):
+        if not sub:
+            continue
+        into = strong if suburb_quality.is_located(why) else (
+            weak if suburb_quality.is_inferred(why) else None)
+        if into is None:
             continue
         for field in ("builder_name", _DOC_KEY, "source_url"):
             value = str(r.get(field) or "").strip().lower()
             if value:
-                votes.setdefault((field, value), {})
-                key = votes[(field, value)]
-                key[sub] = key.get(sub, 0) + 1
-    return {k: max(v.items(), key=lambda kv: kv[1])[0] for k, v in votes.items()}
+                counts = into.setdefault((field, value), {})
+                counts[sub] = counts.get(sub, 0) + 1
+    out = {k: max(v.items(), key=lambda kv: kv[1])[0] for k, v in strong.items()}
+    for k, v in weak.items():
+        out.setdefault(k, max(v.items(), key=lambda kv: kv[1])[0])
+    return out
 
 
 def last_resort_suburb(row, table):

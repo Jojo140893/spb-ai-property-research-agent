@@ -464,6 +464,7 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     _resuburbed = 0
     _suburb_reasons = {}
     _emails = {}          # email subject -> its rows; see the stash inside the loop
+    _texts = {}           # id(row) -> its source_text, stashed before it is popped
     for b in buildings:
         # IS THIS A PLACE? 3,854 published rows answered no and were shown as suburbs
         # anyway — '2026', 'offer', 'GARAGE', 'Logan City Council', 'Rooms Rooms m2 m2
@@ -492,8 +493,16 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         # emailed stocklist has no document to read, and its subject line is the only
         # thing the sender wrote about it; the pass that uses it runs after every row is
         # graded, by which time this field is gone.
-        if _doc.startswith("email:") and not b.get("superseded_by"):
+        # NOT ONLY THE ONES PREFIXED "email:". Some arrive as the bare subject line --
+        # "Fw: $989K - REGISTERED SECONDARY DWELLING - COLLINGWOOD PARK" -- with no
+        # scheme at all, and that row went unlocated while its subject named the suburb
+        # in capitals. Anything that is not an http(s) link is a label, not a document.
+        if (_doc and not _doc.startswith("http") and not b.get("superseded_by")):
             _emails.setdefault(_doc, []).append(b)
+        # Same reason as the subject above: source_text is popped further down this loop,
+        # and the pass that reads a locality out of it runs after every row is graded.
+        if not b.get("superseded_by"):
+            _texts[id(b)] = str(b.get("source_text") or "")
         b["source_doc"] = (hashlib.sha256(_doc.encode("utf-8")).hexdigest()[:16]
                            if _doc else "")
         _suburb_reasons[why] = _suburb_reasons.get(why, 0) + 1
@@ -617,6 +626,7 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
                         suburb_quality.resolve(dict(g, suburb_source=""))[1])}
         if len(_settled) > 1:
             continue                       # several towns in one email: it is a round-up
+        _subject = _src[6:] if _src.startswith("email:") else _src
         _state = next((str(g.get("state") or "").strip() for g in _group
                        if str(g.get("state") or "").strip()), "")
         if not _state and _settled:
@@ -629,12 +639,12 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         # the subject has to name the SAME one place in only one of them -- "Colac" is a
         # Victorian town and nothing else, which is what makes it usable.
         if _state:
-            _named = document_suburb.localities_in(_src[6:], _state, _geo)
+            _named = document_suburb.localities_in(_subject, _state, _geo)
             _subject_states = {_state.strip().upper()} if _named else set()
         else:
             _named, _subject_states = [], set()
             for _try in ("VIC", "NSW", "QLD", "SA", "WA", "NT", "ACT", "TAS"):
-                _found = document_suburb.localities_in(_src[6:], _try, _geo)
+                _found = document_suburb.localities_in(_subject, _try, _geo)
                 if _found:
                     _named += _found
                     _subject_states.add(_try)
@@ -647,6 +657,17 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
             if _only not in set(_named):
                 continue
             _named, _subject_states = [_only], {"-"}
+        # LONGEST NAME WINS ACROSS STATES, as it already does within one. The subject
+        # "Fw: $989K - REGISTERED SECONDARY DWELLING - COLLINGWOOD PARK" finds
+        # Collingwood Park in Queensland and Collingwood in Victoria, and refusing on
+        # that is refusing to read a subject that could not be clearer. One is a prefix
+        # of the other, so it is the same word read short.
+        if len(set(_named)) > 1:
+            _longest = max(_named, key=len)
+            if all(_longest.lower().startswith(n.lower()) for n in set(_named)):
+                _named = [_longest]
+                _subject_states = {st for st in _subject_states
+                                   if _geo.locate(_longest, st)}
         if len(set(_named)) != 1 or len(_subject_states) != 1:
             continue
         for g in _group:
@@ -657,6 +678,46 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
             _from_subject += 1
     if _from_subject:
         print(f"    {_from_subject} listing(s) took the suburb their email subject names")
+
+    # THE ROW'S OWN TEXT, WHEN IT HAS NO STATE TO READ IT AGAINST.
+    #
+    # _longest_locality_in_text needs a state -- deliberately, because 'Springs' is a
+    # real place in WA and turns up inside Queensland estate names. A row with no state
+    # can never reach it. Trying all eight and taking the answer only when exactly one
+    # locality is found in exactly one state restores it for those rows.
+    #
+    # Measured by holdout on located Australian rows, hiding the suburb and reading it
+    # back: 2,490 of 2,775, 89.7%. My first run of that same measurement said 33% and I
+    # nearly threw the rule away on it -- the comparison was case-sensitive, so 'Wallan'
+    # against 'WALLAN' counted as an error. The failures that are real are the family
+    # this module already knows: a house design named Magnolia or Verona, a village
+    # called March. That is why the answer is graded INFERRED_FROM_TEXT, the same reason
+    # and the same badge as the stated-state version of this rule.
+    _AU_STATES = ("VIC", "NSW", "QLD", "SA", "WA", "NT", "ACT", "TAS")
+    _from_text = 0
+    for b in buildings:
+        if b.get("superseded_by") or str(b.get("state") or "").strip():
+            continue
+        why = b.get("suburb_source") or ""
+        if suburb_quality.is_searchable(why) or why == suburb_quality.BLANK_OVERSEAS:
+            continue
+        _found = set()
+        for _try in _AU_STATES:
+            _got = suburb_quality._longest_locality_in_text(
+                {**b, "source_text": _texts.get(id(b), ""), "suburb": "", "state": _try},
+                _try, _geo)
+            if _got:
+                _found.add((_got, _try))
+        if len({n.lower() for n, _s in _found}) != 1 or len({s for _n, s in _found}) != 1:
+            continue
+        _name, _state_of = next(iter(_found))
+        b["suburb"] = _name
+        b["state"] = _state_of
+        b["suburb_source"] = suburb_quality.INFERRED_FROM_TEXT
+        _from_text += 1
+    if _from_text:
+        print(f"    {_from_text} listing(s) read a suburb out of their own text "
+              f"(no state recorded; inferred, badged)")
 
     _last_resort = last_resort_map(buildings)
     _guessed = 0

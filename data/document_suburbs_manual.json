@@ -180,6 +180,18 @@
       "state": "QLD",
       "evidence": "UNIQ, 2-4 Waterford Court, Bundall QLD 4217 (DevLink Group), 22 townhomes with self-contained multi-purpose rooms - the price list's rows read '3 bed plus MPR Tandem'.",
       "project": "uniq"
+    },
+    {
+      "suburb": "Collingwood Park",
+      "state": "QLD",
+      "evidence": "The email subject names it: 'Fw: $989K - REGISTERED SECONDARY DWELLING - COLLINGWOOD PARK'. Collingwood Park is a locality in QLD and in WA, which is why the subject reader refuses it on its own. The row's address settles it: Cypress Street is a real street in Collingwood Park QLD 4301, and 7000 Cypress St there was a 32-lot residential subdivision sold in March 2026 - new dual-occupancy stock at $989K. Collingwood Park WA is a rural locality near Albany with no such street.",
+      "url": "email:Fw: $989K - REGISTERED SECONDARY DWELLING - COLLINGWOOD PARK"
+    },
+    {
+      "suburb": "Gatton",
+      "state": "QLD",
+      "evidence": "The row's own text reads '99 Woodchester Gatton Cooper D 203' - Woodchester is the estate and Gatton the town, and 15 other rows in this catalogue carrying the same text resolve to Gatton QLD. It is refused automatically because Woodchester is ALSO a locality in South Australia, so the row's text names one place in QLD and another in SA and the reader will not choose between them. Scope note: this is keyed to one dated round-up email; if that subject ever carries a second project the rule would be wrong for it.",
+      "url": "email:Fw: H&L Current Availability - 28th of July"
     }
   ]
 }

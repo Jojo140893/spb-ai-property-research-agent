@@ -386,10 +386,15 @@ def find_duplicate_groups(rows):
         if r["superseded_by"]:
             continue
         text = _line_identity(r["source_text"])
-        # Same document, or the same line from two documents is a genuine cross-listing
-        # and `subsumed_by` should decide it, not a date.
+        # THE LINE ALONE, across documents. Keying on (source_url, text) was a caution
+        # too far and it disabled the case this function was written for -- see the
+        # docstring above: the same row reaching us through more than one channel, an
+        # e-agent file and the emailed price list. 11 unnamed rows have a byte-identical
+        # twin in another document that IS named, "Available Officer Q3 2027 House Lot
+        # 152 400 25.2 Porter 13 Single Storey" on both sides, and the pair could not
+        # meet. `subsumed_by` still decides whether either copy loses anything.
         if text:
-            by[(str(r["source_url"] or ""), text)].append(r)
+            by[text].append(r)
     groups = []
     for text, g in by.items():
         if len(g) < 2:

@@ -129,6 +129,15 @@ def test_every_shipped_rule_carries_its_evidence():
     for rule in DS.manual_rules(refresh=True):
         assert rule.get("evidence"), f"{rule.get('suburb')!r} has no evidence recorded"
         assert rule.get("suburb") and rule.get("state")
+        # AN EMAIL SUBJECT IS EXEMPT, and only an email subject. What this guards against
+        # is a Dropbox or Wix link rotating and taking the rule with it, which is why a
+        # rule needs a handle on the project or the document's own title as well. A
+        # source_url of "email:Fw: $989K - REGISTERED SECONDARY DWELLING - COLLINGWOOD
+        # PARK" is not a link that can rotate: it is the message, and it is the only
+        # durable handle that row has -- no builder_name, no estate_name, and no document
+        # to read a title from.
+        if str(rule.get("url") or "").startswith("email:"):
+            continue
         assert rule.get("project") or rule.get("title"), (
             f"{rule.get('suburb')!r} is keyed only by url and will stop applying when the "
             f"document is re-uploaded")
