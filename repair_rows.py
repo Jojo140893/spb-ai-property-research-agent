@@ -248,6 +248,78 @@ def _line_identity(text):
 # A row whose ADDRESS is one line of a spec table. See find_spec_fragments.
 _SPEC_FRAGMENT = re.compile(r"^\s*(?:land|house|build|home)\s+size\s*:", re.I)
 
+# A TRANSPOSED table puts its attributes down the page and its units across it, so a
+# "row" is one attribute holding a number for every unit at once. See
+# find_spec_fragments.
+_TRANSPOSED_LABEL = re.compile(
+    r"^\s*(?:total|internal|external|beds?|bath|balcony|carpark|car|unit\s*no|"
+    r"reserved|level|storage|aspect|price|body\s*corp)\b", re.I)
+_BARE_NUMBER = re.compile(r"(?<![\w$.])\d+(?:\.\d+)?(?![\w%])")
+
+
+def _is_transposed_row(text):
+    """True for one attribute line of a table written sideways."""
+    value = str(text or "")
+    return (bool(_TRANSPOSED_LABEL.match(value))
+            and len(_BARE_NUMBER.findall(value)) >= 5)
+
+
+def find_refuted_states(rows):
+    """Rows whose stored state is contradicted by their own suburb and by their document.
+
+    "West End" is a locality in Queensland and Western Australia and in neither New South
+    Wales nor anywhere else. One of the eight West End Commercial tenancies records NSW;
+    its seven siblings on the same price list record no state at all. So the state is
+    refuted twice over -- by the suburb sitting beside it, and by every other row read
+    from the same file -- and it costs the row its only location, because a suburb that
+    is not a locality in the stated state is refused.
+
+    The state goes and the suburb stays, unchecked, exactly as its siblings are. This
+    does not decide WHICH West End the tenancies are in; that would be inventing an
+    answer. It stops a value we know to be wrong from suppressing one we do not.
+
+    Deliberately narrow: the suburb must be a real locality SOMEWHERE (or this is just a
+    junk suburb, not a wrong state), the row must currently resolve to nothing, and no
+    other live row on the same document may carry the same state.
+    """
+    import collections
+
+    import suburb_quality
+    from geo import SuburbGeoIndex
+
+    index = SuburbGeoIndex()
+    if not index.loaded:
+        return []
+    by_document = collections.defaultdict(list)
+    for r in rows:
+        if not r["superseded_by"]:
+            by_document[str(r["source_url"] or "")].append(r)
+
+    out = []
+    for r in rows:
+        if r["superseded_by"]:
+            continue
+        suburb = str(r["suburb"] or "").strip()
+        state = str(r["state"] or "").strip().upper()
+        if not (suburb and state):
+            continue
+        if suburb_quality.is_searchable(
+                suburb_quality.resolve(dict(r, suburb_source=""))[1]):
+            continue
+        if index.locate(suburb, state):
+            continue                       # the state agrees with the suburb: nothing here
+        if not any(index.locate(suburb, s) for s in
+                   ("VIC", "NSW", "QLD", "SA", "WA", "NT", "ACT", "TAS")):
+            continue                       # not a locality anywhere: a junk suburb, not a
+                                           # wrong state, and clearing the state gains it
+                                           # nothing
+        siblings = by_document[str(r["source_url"] or "")]
+        if any(o is not r and str(o["state"] or "").strip().upper() == state
+               for o in siblings):
+            continue                       # its own document backs the state up
+        out.append(r)
+    return out
+
 
 def find_spec_fragments(rows):
     """Rows that are half a spec table, not a property.
@@ -277,9 +349,28 @@ def find_spec_fragments(rows):
     for r in rows:
         if r["superseded_by"]:
             continue
-        if not _SPEC_FRAGMENT.match(str(r["lot_address"] or "")):
+        text = str(r["lot_address"] or "")
+        # TWO SHAPES, one cause: a table the reader could not follow.
+        #
+        # The second is a table written SIDEWAYS -- the Lakeview price list runs its
+        # units across the page and its attributes down it, so "Total 151 151 42 50 50
+        # 42 External 22 22 3 0 0 0 0" is the Total row holding a figure for six units
+        # at once. Seven rows of that document are attribute lines, and not one of them
+        # is a property: no lot, no bedrooms, and no price at all.
+        # THREE SHAPES, one cause: a page the reader could not follow.
+        #
+        # The third is the general case the first two are instances of -- a row carrying
+        # NO property fact at all. Not a price, not a lot number, not a bedroom count,
+        # not a land or house size. Six rows in the whole catalogue are in that state and
+        # every one is a sentence: "OUR PROMISE At Strike Developments, we are dedicated
+        # to delivering more than just a home", "We can convert our 2-Part packages from
+        # our stock list into a 1-Part Contract", and four attribute lines off sideways
+        # tables. A property has at least one of those five facts; a paragraph has none.
+        _no_facts = not (r["price"] or r["lot_number"] or r["bedrooms"]
+                         or r["land_sqm"] or r["house_sqm"])
+        if not (_SPEC_FRAGMENT.match(text) or _is_transposed_row(text) or _no_facts):
             continue
-        if r["lot_number"] or r["bedrooms"]:
+        if r["lot_number"] or r["bedrooms"] or r["price"]:
             continue
         _sub, why = suburb_quality.resolve(dict(r, suburb_source=""))
         if suburb_quality.is_searchable(why):
@@ -538,6 +629,12 @@ def main(apply_changes):
             print(f"     drop  [{r['source_channel']}] builder={r['builder_name']!r} "
                   f"state={r['state']} score={_completeness(r)[0]}")
 
+    refuted = find_refuted_states(live)
+    print(f"\n8. states refuted by the row's own suburb and its document: {len(refuted)}")
+    for r in refuted[:3]:
+        print(f"     {(r['builder_name'] or '?')[:22]:22} suburb={r['suburb']!r} "
+              f"state={r['state']!r} -> state cleared")
+
     fragments = find_spec_fragments(live)
     print(f"\n7. spec-table fragments stored as listings: {len(fragments)}")
     for r in fragments[:3]:
@@ -599,6 +696,9 @@ def main(apply_changes):
         for r in rest:
             cur.execute("UPDATE buildings SET superseded_by=?, superseded_at=? WHERE id=?",
                         (keep["content_hash"] or str(keep["id"]), now, r["id"]))
+    for r in refuted:
+        cur.execute("UPDATE buildings SET state=NULL, state_source=? WHERE id=?",
+                    ("withdrawn: refuted by the row's own suburb", r["id"]))
     for r in fragments:
         cur.execute("UPDATE buildings SET superseded_by=?, superseded_at=? WHERE id=?",
                     ("spec-table fragment, not a listing", now, r["id"]))
@@ -619,6 +719,7 @@ def main(apply_changes):
           f"{len(losers)} duplicate row(s) superseded, "
           f"{len(twin_losers)} suburb-less twin(s) superseded, "
           f"{len(fragments)} spec fragment(s) withdrawn, "
+          f"{len(refuted)} refuted state(s) cleared, "
           f"{len(reread)} suburb(s) re-read from the row's own document")
     after = len([r for r in _rows(conn) if not r["superseded_by"]])
     print(f"live rows: {len(live)} -> {after}")

@@ -162,6 +162,24 @@
       "state": "QLD",
       "evidence": "The project names its own town: 'Canvas Cooroy'. Cooroy is a QLD locality (Noosa hinterland, 4563) and the rows record QLD. The price list itself names no locality anywhere in its text.",
       "project": "canvas cooroy"
+    },
+    {
+      "suburb": "Southport",
+      "state": "QLD",
+      "evidence": "Imperial Square by Azzura, 59-73 Meron Street, Southport QLD 4215. 'Regal Azzura Luxury Apartments' and 'Regal Residences' are the same development - both price lists sit in one Dropbox folder (rlkey f0c1qw0raf...), which is what suggested they were one project before the address confirmed it.",
+      "project": "regal azzura"
+    },
+    {
+      "suburb": "Southport",
+      "state": "QLD",
+      "evidence": "Imperial Square by Azzura, 59-73 Meron Street, Southport QLD 4215. Same development and same folder as the Regal Azzura price list.",
+      "project": "regal residences"
+    },
+    {
+      "suburb": "Bundall",
+      "state": "QLD",
+      "evidence": "UNIQ, 2-4 Waterford Court, Bundall QLD 4217 (DevLink Group), 22 townhomes with self-contained multi-purpose rooms - the price list's rows read '3 bed plus MPR Tandem'.",
+      "project": "uniq"
     }
   ]
 }

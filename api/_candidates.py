@@ -983,6 +983,23 @@ def build_packages(brief_dict, rows, today=None):
                     else _state_of.get(
                         (_field, str(row.get(_field) or "").strip().lower())))
                 if _borrowed:
+                    # A BORROWED STATE MUST NOT COST THE ROW ITS OWN SUBURB.
+                    #
+                    # This borrow exists for rows that have nothing; it must not take
+                    # from rows that have something. The eight West End Commercial
+                    # tenancies store the suburb "West End" and no state, which resolves
+                    # on its own as unchecked-but-usable. One of the eight also carries
+                    # NSW -- wrongly; there is no West End in New South Wales -- and that
+                    # single row was enough to map the whole document to NSW, after which
+                    # "West End" failed the locality check and seven rows that had an
+                    # answer had none. A state is only worth borrowing if the row is no
+                    # worse for it.
+                    _before = suburb_quality.resolve(dict(row, suburb_source=""))[1]
+                    _after = suburb_quality.resolve(
+                        {**row, "state": _borrowed, "suburb_source": ""})[1]
+                    if (suburb_quality.is_searchable(_before)
+                            and not suburb_quality.is_searchable(_after)):
+                        continue                  # try the next field, or borrow nothing
                     # AND DROP THE GRADE THE ROW ARRIVED WITH. suburb_source was decided
                     # at build time under the facts of that moment — for these rows,
                     # "no state recorded, so the value cannot be checked". resolve()
