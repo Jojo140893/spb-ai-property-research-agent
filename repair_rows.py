@@ -165,8 +165,16 @@ def _completeness(r):
     score = 0
     if (r["builder_name"] or "").strip():
         score += 40                      # the field a client sorts and filters on first
-    if (r["suburb"] or "").strip():
-        score += 12
+    suburb = (r["suburb"] or "").strip()
+    if suburb:
+        # A SUBURB THAT DOES NOT RESOLVE IS NOT A SUBURB. 'EOI Form' is a non-empty
+        # string and scored the same 12 as 'Redbank Plains', so which copy of AVIA lot
+        # 1392 survived the collapse rested on the last_seen tiebreak below rather than
+        # on which copy knows where the property is. It happened to pick correctly; that
+        # is not the same as being correct.
+        import suburb_quality
+        score += 12 if suburb_quality.is_searchable(
+            suburb_quality.resolve(dict(r, suburb_source=""))[1]) else 2
     if r["state"] and str(r["state_source"] or "").strip().lower() != "postcode":
         score += 8                       # a state from the page beats one from a number
     elif r["state"]:
@@ -217,15 +225,37 @@ def subsumed_by(loser, keeper):
     return True
 
 
+# The vendor's own "last updated" column, which changes without the listing changing.
+_VOLATILE_DATE = re.compile(r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b")
+
+
+def _line_identity(text):
+    """A row's line with the vendor's date stamp removed.
+
+    THE DATE COLUMN MINTS A NEW LISTING EVERY TIME IT IS TOUCHED. suburb is part of
+    content_hash and so is source_text, so AVIA's sheet -- which prints an "updated"
+    date on every row -- produces a brand new row each time that date ticks, and the
+    previous one is never superseded because its hash no longer matches anything. Lot
+    1392 is in the catalogue three times: 01.08, 05.08 and 21.08, same price, same
+    everything, and the two older copies still carry 'EOI Form' where the suburb goes.
+
+    Grouping on the exact text could not see it. 78 live rows repeat another row's line
+    once the date is ignored, 50 of them at an identical price.
+    """
+    return re.sub(r"\s+", " ", _VOLATILE_DATE.sub(" ", str(text or ""))).strip()
+
+
 def find_duplicate_groups(rows):
     """Groups of live rows sharing a source_text, reduced to strictly redundant copies."""
     by = collections.defaultdict(list)
     for r in rows:
         if r["superseded_by"]:
             continue
-        text = (r["source_text"] or "").strip()
+        text = _line_identity(r["source_text"])
+        # Same document, or the same line from two documents is a genuine cross-listing
+        # and `subsumed_by` should decide it, not a date.
         if text:
-            by[text].append(r)
+            by[(str(r["source_url"] or ""), text)].append(r)
     groups = []
     for text, g in by.items():
         if len(g) < 2:

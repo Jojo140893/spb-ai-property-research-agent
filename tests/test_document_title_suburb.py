@@ -183,3 +183,38 @@ def test_the_builder_guard_is_load_bearing_and_needs_the_builder():
     text = "Hudson Homes Stocklist\nLee Gilmour - sales@e-agent.com.au\nNSW"
     assert _document_says(text, "QLD") == "Hudson", "the trap, with no builder to check"
     assert _document_says(text, "QLD", builder="Hudson Homes") == ""
+
+
+# ------------------------------------------------------- the state, and which half wins
+
+
+def test_a_title_carrying_the_state_supplies_it():
+    """"CREATION HOMES NSW STOCK LIST" is the first line of that stocklist and the only
+    place it says which state it is in. _region_state answers "" because the line is not
+    a bare region row, so nothing set the hint -- and _context_suburb refuses a bare
+    locality with no state to check it against, by design, since 'Springs' is a real
+    place in WA. "Emerald Grove at Jordan Springs" resolves the moment NSW is known."""
+    from sources.spreadsheet_extract import _state_in_banner
+
+    assert _state_in_banner("CREATION HOMES NSW STOCK LIST") == "NSW"
+    assert _context_suburb("Emerald Grove at Jordan Springs", "") is None
+    assert _context_suburb("Emerald Grove at Jordan Springs", "NSW") == "Jordan Springs"
+
+
+def test_two_states_named_is_no_state():
+    from sources.spreadsheet_extract import _state_in_banner
+
+    assert _state_in_banner("NSW / QLD Stock") == ""
+    assert _state_in_banner("Warrawong") == "", "not a state token inside a word"
+
+
+def test_suburb_bracket_city_names_the_suburb():
+    """"HIGHFIELDS (TOOWOOMBA)" is an estate in Highfields. The trailing-locality rule
+    took Toowoomba -- a real town 12 km away -- for 5 rows."""
+    assert _context_suburb("HIGHFIELDS (TOOWOOMBA)", "QLD") == "Highfields"
+
+
+def test_but_one_locality_in_the_bracket_still_wins():
+    """The guard: the outer half has to be a locality too, or the bracket is the only
+    thing naming a place and must keep its answer."""
+    assert _context_suburb("Stage 3 (Wyee)", "NSW") == "Wyee"

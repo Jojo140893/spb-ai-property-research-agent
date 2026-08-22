@@ -629,6 +629,18 @@ def _context_suburb(header: str, state: str = "") -> Optional[str]:
     if not _BANNER_GEO.loaded:
         return None
 
+    # "SUBURB (CITY)" NAMES THE SUBURB. The bracket is a gloss telling a reader which
+    # city the place is near -- "HIGHFIELDS (TOOWOOMBA)" is an estate in Highfields, and
+    # the trailing-locality rule below took Toowoomba, the town 12 km away, for 5 rows.
+    # Only when BOTH halves are localities: "Stage 3 (Wyee)" has just the one, and must
+    # keep answering Wyee.
+    bracketed = re.match(r"^\s*(.+?)\s*\(([^()]+)\)\s*$", header)
+    if bracketed and state:
+        outer, inner = bracketed.group(1).strip(), bracketed.group(2).strip()
+        if outer and inner and _BANNER_GEO.locate(outer, state) \
+                and _BANNER_GEO.locate(inner, state):
+            header = outer
+
     cleaned = re.sub(r"^[^A-Za-z0-9]+", "", header)
     found = None
     for bit in _BANNER_SPLIT.split(cleaned):
@@ -1182,6 +1194,17 @@ def _region_state(text: str) -> str:
     return _REGION_TO_STATE.get(match.group(1).lower(), "") if match else ""
 
 
+def _state_in_banner(text: str) -> str:
+    """The one state named as a whole word in a banner, or "".
+
+    Two states named is no state: "NSW / QLD Stock" covers both and picking either is a
+    coin toss on every row beneath it.
+    """
+    found = {m.upper() for m in re.findall(r"\b(?:VIC|NSW|QLD|SA|WA|NT|ACT|TAS)\b",
+                                           str(text or ""), re.I)}
+    return found.pop() if len(found) == 1 else ""
+
+
 def _banner_key(text: str) -> str:
     """A page title, normalised for comparison across pages: case and spacing vary."""
     return " ".join(str(text or "").split()).strip(" -–—:|").lower()
@@ -1231,6 +1254,21 @@ def _rows_to_listings(rows: List[Any], context: str, source_label: str,
         if found_state:
             state_hint = found_state
             continue
+        # A TITLE MAY CARRY THE STATE WITHOUT BEING A REGION ROW.
+        #
+        # "CREATION HOMES NSW STOCK LIST" is the first line of that stocklist and the only
+        # place it says which state it is in. _region_state answers "" because the line is
+        # not a bare region row, so state_hint stayed empty -- and _context_suburb refuses
+        # a bare locality with no state to check it against, by design, since 'Springs' is
+        # a real place in WA. "Emerald Grove at Jordan Springs" resolves the moment NSW is
+        # known and not before.
+        #
+        # Only ever FILLS an empty hint: a region row further down still overrides it, and
+        # a title naming two states names none.
+        if not state_hint:
+            titled = _state_in_banner(text)
+            if titled:
+                state_hint = titled
         listing = _listing_from_row(text, links, context, source_label, builder_hint,
                                     columns)
         if listing is None:
