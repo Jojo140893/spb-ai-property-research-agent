@@ -430,6 +430,11 @@ _COLUMN_WORDS = frozenset("""
 """.split())
 
 
+# An Australian phone number, in the shapes a stocklist footer uses.
+_WEB = re.compile(r"https?://|www\.|\.com|\.au\b|privacy policy|terms of", re.I)
+_PHONE = re.compile(r"(?:\+?61|0)[\s-]?[2-478](?:[\s-]?\d){8}|\b1[38]00[\s-]?\d{3}[\s-]?\d{3}\b")
+
+
 def _is_group_header(text: str, fields: Dict[str, Any]) -> bool:
     """Estate/builder/region banner rather than a lot row."""
     if fields.get("advertised_package_price"):
@@ -463,6 +468,19 @@ def _is_group_header(text: str, fields: Dict[str, Any]) -> bool:
     # orphaned second line is short, capitalised and digit-free, so it read as a banner.
     _tokens = re.findall(r"[A-Za-z]+", stripped)
     if _tokens and all(w.lower() in _COLUMN_WORDS for w in _tokens):
+        return False
+    # A CONTACT LINE IS NEVER A SECTION. The FRD stocklist prints
+    # "Lee Gilmour - sales@e-agent.com.au" under its title on every page, and a person's
+    # name reads as a perfectly good banner -- short, capitalised, no digits. It took the
+    # section off 42 lots on one document and the same header sits on its siblings.
+    # A CONTACT LINE, A URL OR A POLICY LINE IS NEVER A SECTION. The FRD stocklist prints
+    # "Lee Gilmour - sales@e-agent.com.au" under its title and "FRD Homes Privacy Policy:
+    # https://frdhomes..." at the foot of page one. Both read as perfectly good banners --
+    # short, capitalised, no digits -- and the footer became the section for every lot on
+    # pages two through six, 42 of that document's 80.
+    if "@" in stripped or _PHONE.search(stripped):
+        return False
+    if _WEB.search(stripped):
         return False
     # PROSE IS NEVER A SECTION. The disclaimer at the foot of every page — "For further
     # details or clarification, please contact us." — is short enough and digit-free

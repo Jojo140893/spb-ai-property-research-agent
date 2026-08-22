@@ -270,3 +270,29 @@ def test_a_real_column_row_is_still_skipped():
     _out, ctx, _ban, _hint = R([("Estate : Ooranya Beveridge", []), (columns, []),
                                 ("Available Lot 4 House 130m2 $743,800", [])], "", "t", "")
     assert "Ooranya" in ctx, ctx
+
+
+def test_a_contact_line_is_not_a_section():
+    """The FRD stocklist prints "Lee Gilmour - sales@e-agent.com.au" under its title on
+    every page. A person's name reads as a perfectly good banner — short, capitalised, no
+    digits."""
+    for line in ("Lee Gilmour - sales@e-agent.com.au",
+                 "Call Sam on 0412 345 678", "1300 123 456"):
+        assert not _is_group_header(line, {}), line
+
+
+def test_a_footer_url_is_not_a_section():
+    """"FRD Homes Privacy Policy: https://frdhomes.com.au/privacy" sits at the foot of
+    page one and became the section for every lot on pages two through six — 42 of that
+    document's 80. Fixing it took all three FRD stocklists to 100%: 80/80, 82/82, 98/98."""
+    for line in ("FRD Homes Privacy Policy: https://frdhomes.com.au/privacy",
+                 "www.example.com.au", "Terms of sale apply"):
+        assert not _is_group_header(line, {}), line
+
+
+def test_the_estate_banners_around_them_are_untouched():
+    """Every exclusion above is one a real banner must survive."""
+    for line in ("Paradise in Parkinson - Stage 2, Parkinson",
+                 "Watagan Park - Display Homes, Cooranbong",
+                 "Mount Barker, Mount Barker", "Millfield Rise, Millfield NSW"):
+        assert _is_group_header(line, {}), line
