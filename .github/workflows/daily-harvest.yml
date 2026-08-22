@@ -134,6 +134,17 @@ jobs:
       EMAIL_INBOX_USERNAME: ${{ secrets.EMAIL_INBOX_USERNAME }}
       EMAIL_INBOX_PASSWORD: ${{ secrets.EMAIL_INBOX_PASSWORD }}
 
+      # WHO GETS TOLD WHEN A RUN FAILS. run_daily._alert() sends through the inbox
+      # credentials above and returns early when this is empty — and it was empty on
+      # every run this workflow has ever done, so all three alert paths (FAILED, PARTIAL,
+      # DEGRADED) printed "nobody was notified of this run" and stopped there. The 12 Aug
+      # run aborted at step 1/7 having read 0 of 8,580 stored listings and told no one.
+      #
+      # A secret rather than a literal only because it is a personal address and this file
+      # is read by everyone with repo access; it is not sensitive in the way the rest of
+      # this block is.
+      SPB_ALERT_TO: ${{ secrets.SPB_ALERT_TO }}
+
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SPB_STATE_SYNC: "1"
 
