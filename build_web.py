@@ -463,6 +463,7 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     _rea_linked = 0
     _resuburbed = 0
     _suburb_reasons = {}
+    _emails = {}          # email subject -> its rows; see the stash inside the loop
     for b in buildings:
         # IS THIS A PLACE? 3,854 published rows answered no and were shown as suburbs
         # anyway — '2026', 'offer', 'GARAGE', 'Logan City Council', 'Rooms Rooms m2 m2
@@ -487,6 +488,12 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         # was empty in production while measuring perfectly against the local database.
         # A hash groups the rows identically and discloses nothing about the link.
         _doc = str(b.get("source_url") or "").strip()
+        # STASHED HERE BECAUSE source_url IS POPPED further down this same loop. An
+        # emailed stocklist has no document to read, and its subject line is the only
+        # thing the sender wrote about it; the pass that uses it runs after every row is
+        # graded, by which time this field is gone.
+        if _doc.startswith("email:") and not b.get("superseded_by"):
+            _emails.setdefault(_doc, []).append(b)
         b["source_doc"] = (hashlib.sha256(_doc.encode("utf-8")).hexdigest()[:16]
                            if _doc else "")
         _suburb_reasons[why] = _suburb_reasons.get(why, 0) + 1
@@ -545,6 +552,9 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     # filtered, not benchmarked, and cannot enter a client's comparables. That grade
     # travels in suburb_source and survives the snapshot round trip -- see resolve().
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import document_suburb
+    from geo import SuburbGeoIndex
+    _geo = SuburbGeoIndex()
     from api._candidates import (last_resort_map, last_resort_suburb,
                                  _sibling_suburb_map, _sibling_state_map,
                                  _containment_candidates, _state_by_estate_containment,
@@ -586,6 +596,67 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
             if only and only[0]:
                 return only[1]
         return ""
+
+    # THE EMAIL'S OWN SUBJECT LINE, before any guessing. A stocklist that arrives by mail
+    # has no document to read, but the subject is the sender's own words about what is
+    # in it: "Lakeside Living! $590k in Colac" is four Clearwater Estate lots in Colac.
+    # Held to the same bar as a document title -- exactly ONE locality in the subject,
+    # and only for an email where nothing else is located, so a round-up covering several
+    # projects cannot hand its headline town to all of them.
+    _by_email = _emails
+    _from_subject = 0
+    for _src, _group in _by_email.items():
+        # WHAT THE EMAIL'S OWN ROWS ALREADY SAY. This started as "skip any email that has
+        # a located row", meant to stop a round-up spreading its headline town -- and it
+        # blocked the one case worth having: of the twelve rows on "Lakeside Living! $590k
+        # in Colac", four resolve to Colac on their own. Agreement is the strongest
+        # evidence in the group, not a reason to walk away from it. Disagreement still is.
+        _settled = {suburb_quality.resolve(dict(g, suburb_source=""))[0]
+                    for g in _group
+                    if suburb_quality.is_located(
+                        suburb_quality.resolve(dict(g, suburb_source=""))[1])}
+        if len(_settled) > 1:
+            continue                       # several towns in one email: it is a round-up
+        _state = next((str(g.get("state") or "").strip() for g in _group
+                       if str(g.get("state") or "").strip()), "")
+        if not _state and _settled:
+            _state = next((str(g.get("state") or "").strip() for g in _group
+                           if suburb_quality.is_located(
+                               suburb_quality.resolve(dict(g, suburb_source=""))[1])
+                           and str(g.get("state") or "").strip()), "")
+        # NO STATE IS THE NORMAL CASE HERE, not the exception: an emailed stocklist has
+        # no page to read one off. So when the rows do not say, every state is tried and
+        # the subject has to name the SAME one place in only one of them -- "Colac" is a
+        # Victorian town and nothing else, which is what makes it usable.
+        if _state:
+            _named = document_suburb.localities_in(_src[6:], _state, _geo)
+            _subject_states = {_state.strip().upper()} if _named else set()
+        else:
+            _named, _subject_states = [], set()
+            for _try in ("VIC", "NSW", "QLD", "SA", "WA", "NT", "ACT", "TAS"):
+                _found = document_suburb.localities_in(_src[6:], _try, _geo)
+                if _found:
+                    _named += _found
+                    _subject_states.add(_try)
+        if _settled:
+            # The group already names a town. The subject only has to agree with it --
+            # "Lakeside" is a QLD locality and "Colac" a Victorian one, so a blind
+            # multi-state read of this subject finds two names and refuses; the rows
+            # settle which one the email is about.
+            _only = next(iter(_settled))
+            if _only not in set(_named):
+                continue
+            _named, _subject_states = [_only], {"-"}
+        if len(set(_named)) != 1 or len(_subject_states) != 1:
+            continue
+        for g in _group:
+            if suburb_quality.is_searchable(g.get("suburb_source") or ""):
+                continue
+            g["suburb"] = _named[0]
+            g["suburb_source"] = suburb_quality.FROM_DOCUMENT
+            _from_subject += 1
+    if _from_subject:
+        print(f"    {_from_subject} listing(s) took the suburb their email subject names")
 
     _last_resort = last_resort_map(buildings)
     _guessed = 0
