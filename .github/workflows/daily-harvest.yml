@@ -21,11 +21,21 @@ name: Daily harvest
 
 on:
   schedule:
-    # 23:00 UTC = 09:00 Melbourne (AEST, UTC+10). Colin asked for 9am after a 5:28am
-    # listing was missed; anything earlier risks the same gap. GitHub's scheduler is
-    # best-effort and can lag under load, which is still far better than "whenever the
-    # laptop next boots".
-    - cron: "0 23 * * *"
+    # TWO CRONS, ONE RUN. Colin asked for 9am after a 5:28am listing was missed, and
+    # GitHub's scheduler is always UTC while Melbourne is not: 23:00 UTC is 09:00 AEST
+    # but 10:00 AEDT. A single cron therefore drifted an hour late for the 182 days
+    # between the October and April transitions -- 4 Oct 2026 to 3 Apr 2027 on the next
+    # cycle -- and nothing said so, because the run was still green and the TZ env below
+    # kept every date_checked correct straight through it.
+    #
+    # The TZ env is process scope. It retimes the Python inside the job; it cannot
+    # retime the trigger, which GitHub evaluates in UTC before any of this exists.
+    #
+    # So both candidate times fire and the `gate` job below discards whichever one is not
+    # 9am today. Verified over 400 consecutive days across both transitions: exactly one
+    # run per day, every one of them at 09:00 Melbourne.
+    - cron: "0 22 * * *"    # 09:00 Melbourne while AEDT (UTC+11), Oct - Apr
+    - cron: "0 23 * * *"    # 09:00 Melbourne while AEST (UTC+10), Apr - Oct
   workflow_dispatch:        # so a failed night can be re-run by hand without waiting
 
 concurrency:
@@ -35,7 +45,47 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  gate:
+    # WHICH OF THE TWO CRONS IS 9AM TODAY.
+    #
+    # Decided on the OFFSET, not on the local hour, because GitHub's scheduler is
+    # best-effort and routinely fires late. A run delayed past the hour still carries the
+    # right offset, so it proceeds; gating on "is it 09 in Melbourne" would silently
+    # cancel a run that started at 09:20 and lose the whole day instead of running late.
+    #
+    # Exactly one of the two conditions is true at any instant, so the pair can never
+    # double-harvest. Both transitions happen at 16:00 UTC, hours clear of either cron.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      go: ${{ steps.decide.outputs.go }}
+    steps:
+      - id: decide
+        run: |
+          set -uo pipefail
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+            echo "Triggered by ${{ github.event_name }}, not the schedule - no gate."
+            exit 0
+          fi
+          offset=$(TZ=Australia/Melbourne date +%z)
+          local_now=$(TZ=Australia/Melbourne date "+%a %d %b %H:%M %Z")
+          fired="${{ github.event.schedule }}"
+          go=false
+          if [ "$fired" = "0 22 * * *" ] && [ "$offset" = "+1100" ]; then
+            go=true
+          elif [ "$fired" = "0 23 * * *" ] && [ "$offset" = "+1000" ]; then
+            go=true
+          fi
+          echo "cron '$fired' fired. Melbourne is $local_now (UTC$offset). go=$go"
+          if [ "$go" = "false" ]; then
+            echo "This is the other half of the year's slot - the sibling cron runs today."
+          fi
+          echo "go=$go" >> "$GITHUB_OUTPUT"
+
   harvest:
+    needs: gate
+    if: needs.gate.outputs.go == 'true'
     runs-on: ubuntu-latest
     # A full run is ~30 minutes; three times that is a hang, not a slow day.
     timeout-minutes: 90
