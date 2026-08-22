@@ -365,11 +365,25 @@ def find_suburbs_in_own_document(rows, fetch=None, extract=None):
 
     wanted = collections.defaultdict(list)
     for r in rows:
-        if r["superseded_by"] or str(r["suburb"] or "").strip():
+        if r["superseded_by"]:
             continue
         url = str(r["source_url"] or "")
-        if url.startswith("http"):
-            wanted[url].append(r)
+        if not url.startswith("http"):
+            continue
+        # BLANK, OR A VALUE TODAY'S CODE REFUSES. Not the same as overwriting a good one.
+        #
+        # Filling only blanks missed the rows that need this most. Two FRD stocklists
+        # store '2026', 'offer' and 'RH' in the suburb column -- wrapped fragments the
+        # extractor read as section headers before those were fixed today -- and 48 rows
+        # were skipped because a junk value is not a blank. suburb_quality already refuses
+        # every one of them, so the published column shows nothing either way; the
+        # difference is whether the row can be repaired.
+        stored = str(r["suburb"] or "").strip()
+        if stored:
+            _sub, why = suburb_quality.resolve(dict(r, suburb_source=""))
+            if suburb_quality.is_searchable(why):
+                continue                       # a value that stands up today is kept
+        wanted[url].append(r)
 
     found = []
     for url, group in sorted(wanted.items(), key=lambda kv: -len(kv[1])):
