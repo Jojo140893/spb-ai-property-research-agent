@@ -267,6 +267,20 @@ def _chain(args) -> int:
         # advertised at its capture date, and leaving those in the peer pool drags every
         # median toward stale numbers.
         ("4/7  Supersede older captures of the same lot", ["supersede_duplicates.py"], False),
+        # AFTER superseding, because it finds a class supersede_duplicates cannot.
+        #
+        # `suburb_norm` is one of the eight fields in content_hash, so the day an extractor
+        # starts reading a suburb the affected rows acquire a NEW identity: the harvest
+        # inserts the improved row and the old suburb-less one is never matched again, so
+        # it is never updated and never superseded. It sits there live -- a second copy of
+        # a property Coleen can sell once, and the copy without a location.
+        #
+        # This is not hypothetical and it is not rare. Every extractor fix in this codebase
+        # creates a fresh batch: AVIA Homes carried 191 live rows against 103 in the
+        # current harvest, the other 88 being captures from five earlier days, some with
+        # "Estate Brochure" sitting in the suburb column. repair_rows has had the repair
+        # for it since it was written and nothing ever ran it.
+        ("4/7  Repair rows older extractors wrote", ["repair_rows.py", "--apply"], True),
         # AFTER superseding, so it only reads documents that still have live rows, and
         # BEFORE the snapshot, so today's answers are in what gets published. Optional:
         # it makes network calls to third-party file hosts, and a Dropbox link that has
