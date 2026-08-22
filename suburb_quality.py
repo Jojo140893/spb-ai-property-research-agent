@@ -145,7 +145,27 @@ INFERRED_FROM_TEXT = ("inferred from the row's own text - the source did not sta
 # Searchable, never located: the reason a state is required has not gone away. A fifth of
 # Australian locality names exist in more than one state, so these cannot be geocoded,
 # distance-filtered or benchmarked, and is_located() still says no.
-_INFERRED = (INFERRED_FROM_TEXT, UNCHECKED_NO_STATE)
+# THE LAST RESORT, and the weakest thing this module will put a name to.
+#
+# Asked for on the standing instruction "if you can not find suburb assign them using
+# their address i want all 100% in there fixed", after every evidence-based route was
+# exhausted on the rows it covers. It is NOT evidence. Measured by holdout across the
+# whole catalogue -- hide a row's known suburb, ask its siblings to name it:
+#
+#     the estate's other lots      92%   (already used, and LOCATED)
+#     the builder's other lots     50%
+#     the document's other lots    37%
+#
+# So roughly one row in two carries the wrong town under this reason. It is INFERRED,
+# never located: is_located() stays false, so nothing here is geocoded, distance-filtered
+# or benchmarked, and it cannot reach a client's comparables. It shows in the app with
+# the inferred badge and in the client report with a caveat, which is the whole reason
+# the two grades exist.
+INFERRED_FROM_SIBLINGS = ("inferred from other listings by the same builder or on the "
+                          "same document - the source did not state one and the row's "
+                          "own text names no locality")
+
+_INFERRED = (INFERRED_FROM_TEXT, UNCHECKED_NO_STATE, INFERRED_FROM_SIBLINGS)
 
 
 def is_located(why: str) -> bool:

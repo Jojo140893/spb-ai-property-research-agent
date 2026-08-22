@@ -720,6 +720,53 @@ def _unambiguous_estate_map(rows):
     return {k: next(iter(v)) for k, v in seen.items() if len(v) == 1}
 
 
+def last_resort_map(rows):
+    """{(field, value): suburb} -- the majority suburb of a row's siblings.
+
+    THE FLOOR, and it is a low one. Every rule above this needs the row, its document or
+    its estate to actually name a place; these are the rows where none of them does --
+    "$620,000.00 $461,312.00 $0.00 Click here Click here", or a Hudson lot whose only
+    word is its builder's name, which is also a town 1,500 km away.
+
+    Asked for on the standing instruction to fill every listing. Holdout across the whole
+    catalogue, hiding each located row's suburb and asking its siblings:
+
+        builder_name   50%
+        source_doc     37%
+
+    Ordered by that measurement, best first. Roughly one row in two gets the wrong town,
+    which is why the answer is graded INFERRED_FROM_SIBLINGS and never located -- it is
+    searchable and badged, and no benchmark, distance filter or client comparable will
+    touch it.
+    """
+    votes = {}
+    for r in rows:
+        if r.get("superseded_by"):
+            continue
+        sub, why = suburb_quality.resolve(r)
+        if not (sub and suburb_quality.is_located(why)):
+            continue
+        for field in ("builder_name", _DOC_KEY, "source_url"):
+            value = str(r.get(field) or "").strip().lower()
+            if value:
+                votes.setdefault((field, value), {})
+                key = votes[(field, value)]
+                key[sub] = key.get(sub, 0) + 1
+    return {k: max(v.items(), key=lambda kv: kv[1])[0] for k, v in votes.items()}
+
+
+def last_resort_suburb(row, table):
+    """The best guess this row's siblings can offer, or "". Ordered by measured accuracy."""
+    for field in ("builder_name", _DOC_KEY, "source_url"):
+        value = str(row.get(field) or "").strip().lower()
+        if not value:
+            continue
+        got = table.get((field, value))
+        if got:
+            return got
+    return ""
+
+
 def _estate_is_the_only_evidence(row):
     """True when this row's own state cannot be trusted over its estate's.
 

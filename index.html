@@ -2109,7 +2109,12 @@ python state_sync.py push</pre>
             // client email will not hover first.
             if (c.blankReason) {
                 const why = String(b[c.blankReason] || '').trim();
-                if (/^inferred from the row/i.test(why)) {
+                // ANY inferred reason, not just the one that existed when this was
+                // written. It tested /^inferred from the row/ and a second inferred
+                // grade was added -- "inferred from other listings by the same builder
+                // or on the same document", the weakest one we publish -- which would
+                // have shown with no badge at all, reading as a stated suburb.
+                if (/^inferred/i.test(why)) {
                     return `<td class="${c.cls || ''}" title="${esc(why)}">${esc(v ?? '')}
                         <span class="inferred" aria-label="inferred, not stated by the
                         source">?</span></td>`;

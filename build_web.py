@@ -531,6 +531,88 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         b["rea_search_search"] = rea.get("search") or ""
         if b["rea_search_url"]:
             _rea_linked += 1
+    # THE LAST RESORT, a second pass because it needs every row graded first.
+    #
+    # Asked for on the standing instruction to leave no listing unfindable. Everything
+    # above needs the row, its document or its estate to name a place; these are the rows
+    # where none of them does -- a Gallery Group line that is four prices and two "Click
+    # here" links, a Hudson lot whose only word is its builder's name. They take the
+    # majority suburb of their builder's or their document's other lots, which holdout
+    # says is right 50% and 37% of the time.
+    #
+    # Graded INFERRED_FROM_SIBLINGS, never located. The row becomes searchable and shows
+    # the inferred badge; is_located() stays false, so it is not geocoded, not distance
+    # filtered, not benchmarked, and cannot enter a client's comparables. That grade
+    # travels in suburb_source and survives the snapshot round trip -- see resolve().
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from api._candidates import (last_resort_map, last_resort_suburb,
+                                 _sibling_suburb_map, _sibling_state_map,
+                                 _containment_candidates, _state_by_estate_containment,
+                                 _unambiguous_estate_map, _estate_is_the_only_evidence)
+    # THE SIBLING CASCADE RUNS AT SEARCH TIME, NOT HERE, and that is why this pass has to
+    # repeat it. Applied straight to the snapshot, the last resort claimed 1,865 rows --
+    # ten times its real population -- because every row waiting on an estate sibling
+    # still looked unanswered. It would have overwritten a 92% rule with a 50% one.
+    _est = _sibling_suburb_map(buildings, "estate_name")
+    _page = _sibling_suburb_map(buildings, "source_doc")
+    _states = _sibling_state_map(buildings)
+    _contain = _containment_candidates(_states)
+    _unambiguous = _unambiguous_estate_map(buildings)
+
+    def _siblings_answer(row):
+        """What the search-time rules would make of this row. "" if they decline."""
+        probe = dict(row)
+        if not str(probe.get("state") or "").strip():
+            got = None
+            for field in ("estate_name", "source_doc", "builder_name"):
+                got = _states.get((field, str(probe.get(field) or "").strip().lower()))
+                if got:
+                    break
+            if not got:
+                got = _state_by_estate_containment(probe, _contain)
+            if got:
+                probe = {**probe, "state": got, "suburb_source": ""}
+        key_state = str(probe.get("state") or "").strip().upper()
+        for table, field in ((_est, "estate_name"), (_page, "source_doc")):
+            found = table.get((str(probe.get(field) or "").strip().lower(), key_state))
+            if found and suburb_quality.is_searchable(
+                    suburb_quality.resolve({**probe, "suburb": found,
+                                            "suburb_source": ""})[1]):
+                return found
+        if _estate_is_the_only_evidence(probe):
+            only = _unambiguous.get(
+                (str(probe.get("builder_name") or "").strip().lower(),
+                 str(probe.get("estate_name") or "").strip().lower()))
+            if only and only[0]:
+                return only[1]
+        return ""
+
+    _last_resort = last_resort_map(buildings)
+    _guessed = 0
+    for b in buildings:
+        if suburb_quality.is_searchable(b.get("suburb_source") or ""):
+            continue
+        # NOT A SUPERSEDED ROW, and above all NOT AN OVERSEAS ONE. The ten Sanaya
+        # Residences villas in Uluwatu are blank because they are in Bali, and this pass
+        # would have handed each of them an Australian suburb off a sibling -- turning a
+        # correct blank into a listing that claims to be somewhere it is not.
+        if b.get("superseded_by"):
+            continue
+        if (b.get("suburb_source") or "") == suburb_quality.BLANK_OVERSEAS:
+            continue
+        if _siblings_answer(b):
+            continue                    # a better rule already has this row at search time
+        _fallback = last_resort_suburb(b, _last_resort)
+        if not _fallback:
+            continue
+        b["suburb"] = _fallback
+        b["suburb_source"] = suburb_quality.INFERRED_FROM_SIBLINGS
+        _suburb_reasons[suburb_quality.INFERRED_FROM_SIBLINGS] = _suburb_reasons.get(
+            suburb_quality.INFERRED_FROM_SIBLINGS, 0) + 1
+        _guessed += 1
+    if _guessed:
+        print(f"    {_guessed} listing(s) took a suburb from their builder's or "
+              f"document's other lots (inferred, badged, never benchmarked)")
     by_channel = [{"source_channel": r[0], "n": r[1]} for r in conn.execute(
         "SELECT source_channel, COUNT(*) FROM buildings GROUP BY 1 ORDER BY 2 DESC")]
     stamp = datetime.now().strftime("%d %b %Y, %H:%M")
