@@ -61,7 +61,7 @@ def test_the_running_title_does_not_reset_the_section():
         ("Hudson Homes Stocklist", []),                       # page 2's running header
         ("Available 66 House Gallium 20 450.0 m2 4 beds $1,151,300", []),
     ]
-    out, context, banner, _hint = _rows_to_listings(rows, "", "test", "")
+    out, context, banner, _hint, _pl = _rows_to_listings(rows, "", "test", "")
     assert len(out) == 2, out
     assert "Wadalba" in context, context
     assert all("Wadalba" in str(listing.get("estate_context") or listing.get("suburb") or
@@ -77,7 +77,7 @@ def test_a_genuinely_new_section_still_replaces_the_old_one():
         ("Mt View Grange - Bellbird, Bellbird", []),
         ("Available 527 House COPPER 19A 753.0 m2 $941,230", []),
     ]
-    _out, context, _banner, _hint = _rows_to_listings(rows, "", "test", "")
+    _out, context, _banner, _hint, _pl = _rows_to_listings(rows, "", "test", "")
     assert "Bellbird" in context, context
 
 
@@ -224,7 +224,7 @@ def test_the_region_state_makes_an_ambiguous_estate_readable():
     rows = [("SE QLD", []),
             ("Rosewood Green Rosewood", []),
             ("Lot 162 Clover Inv/OO 320 sqm 175 sqm 4 2 2 2 $405,000", [])]
-    out, _ctx, _ban, hint = _rows_to_listings(rows, "", "t", "")
+    out, _ctx, _ban, hint, _pl = _rows_to_listings(rows, "", "t", "")
     assert hint == "QLD"
     assert out and out[0].get("suburb") == "Rosewood", out
     assert out[0].get("state") == "QLD"
@@ -239,7 +239,7 @@ def test_a_later_region_row_switches_the_state_mid_document():
             ("VIC", []),
             ("Coridale Lara", []),
             ("Lot 9 Clover 320 sqm $405,000", [])]
-    out, _ctx, _ban, hint = _rows_to_listings(rows, "", "t", "")
+    out, _ctx, _ban, hint, _pl = _rows_to_listings(rows, "", "t", "")
     assert hint == "VIC"
     assert [l.get("suburb") for l in out] == ["Rosewood", "Lara"], out
 
@@ -253,7 +253,7 @@ def test_a_line_that_names_a_locality_is_a_section_whatever_words_it_shares():
 
     line = "House and Land Packages, Adelaide"
     assert _is_column_header(line), "the premise: this DOES look like a column row"
-    out, ctx, _ban, _hint = _rows_to_listings(
+    out, ctx, _ban, _hint, _pl = _rows_to_listings(
         [("SA", []), (line, []), ("Available Lot 4 House 130.0m2 628.0 m2 $743,800", [])],
         "", "t", "")
     assert ctx == line, ctx
@@ -267,7 +267,7 @@ def test_a_real_column_row_is_still_skipped():
     from sources.spreadsheet_extract import _rows_to_listings as R
 
     columns = "Status Lot/ Building Design Name Floor Area Land Size Bed / Bath / Car"
-    _out, ctx, _ban, _hint = R([("Estate : Ooranya Beveridge", []), (columns, []),
+    _out, ctx, _ban, _hint, _pl = R([("Estate : Ooranya Beveridge", []), (columns, []),
                                 ("Available Lot 4 House 130m2 $743,800", [])], "", "t", "")
     assert "Ooranya" in ctx, ctx
 
@@ -296,3 +296,45 @@ def test_the_estate_banners_around_them_are_untouched():
                  "Watagan Park - Display Homes, Cooranbong",
                  "Mount Barker, Mount Barker", "Millfield Rise, Millfield NSW"):
         assert _is_group_header(line, {}), line
+
+
+def test_a_wrapped_cell_moves_the_estate_but_not_the_suburb():
+    """The Gallery Group list splits each lot over six lines:
+
+        Est Custom Wide          <- title status + design, wrapped
+        4 350m2                  <- lot and land size
+        05/02/2027               <- title date
+        Traditional              <- facade
+        Double 219               <- design, continued
+        $1,014,290.00 ...        <- the prices, and the only line that makes a listing
+
+    The first and fifth of those are short, capitalised and digit-light, so each passed
+    _is_group_header and replaced "Crest, Algester" before its own lots were read. Pages
+    5 and 6 of that document produced 7 listings with no suburb between them.
+
+    The estate NAME still follows the line, because that is what the line looks like.
+    The PLACE only moves when a header actually names one.
+    """
+    from sources.spreadsheet_extract import _rows_to_listings as R
+
+    rows = [("Crest, Algester", []),
+            ("Est Custom Wide", []),
+            ("Double 219", []),
+            ("Available 4 House Double 219 350m2 4 2 2 $1,014,290.00", [])]
+    out, _ctx, _ban, _hint, place = R(rows, "", "t", "", "", "QLD")
+    assert out, "the priced line is a listing"
+    assert out[0]["suburb"] == "Algester", out[0].get("suburb")
+    assert place == "Crest, Algester"
+
+
+def test_but_a_header_that_names_a_place_still_moves_the_suburb():
+    """The counterweight: a real new section must still take over, or one estate's
+    suburb would run to the end of the document."""
+    from sources.spreadsheet_extract import _rows_to_listings as R
+
+    rows = [("Crest, Algester", []),
+            ("Dawn, Walloon", []),
+            ("Available 4 House Double 219 350m2 4 2 2 $1,014,290.00", [])]
+    out, _ctx, _ban, _hint, place = R(rows, "", "t", "", "", "QLD")
+    assert out[0]["suburb"] == "Walloon", out[0].get("suburb")
+    assert place == "Dawn, Walloon"
