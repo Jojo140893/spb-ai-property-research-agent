@@ -1435,6 +1435,27 @@ CHANNEL_DEAD_DAYS = 7
 # would cry wolf until nobody read the tab at all.
 CHANNEL_PARTIAL_PCT = 50
 
+# SOURCES THAT PUSH RATHER THAN RE-LIST. The "partial" test asks what fraction of a
+# source's stored stock it handed back on its newest day, which only means anything for a
+# source that re-lists everything it holds each run. An inbox does not: a builder emails a
+# price list when they have one and does not re-send it daily, so its rows keep the date
+# the email arrived — 73 rows stamped 24 Aug, 34 stamped 20 Aug, 10 today. Judged that way
+# "digital email" reads 6% and is flagged as failing on a day it worked perfectly.
+#
+# Being quiet is still caught: the age tests below are untouched, so an inbox that stops
+# delivering goes stale after CHANNEL_STALE_DAYS exactly as any other source does.
+CHANNEL_PUSH_SOURCES = frozenset({"digital email"})
+
+# A FRACTION OF A HANDFUL IS NOISE. Bathla Development is 14 live rows on the direct
+# portal and one of them refreshed, which reads 7% and flags as "only part of its stock" —
+# while 168 of Bathla's other 182 rows come through Proxima and 135 of those refreshed
+# today. The stock is fine; the alarm is arithmetic on a rump.
+#
+# The failure this rule was written for had 1,396 rows behind it (Proxima returning 16 of
+# them on 17 Aug), so a floor costs nothing there and removes a standing false alarm here.
+# A small source that dies outright still goes stale on age.
+CHANNEL_PARTIAL_MIN_LIVE = 25
+
 
 def _export_channel_health(out_dir: Path, conn) -> dict:
     """When each source last actually produced stock, for the Settings tab.
@@ -1540,8 +1561,12 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
             state = "dead"
         elif age > CHANNEL_STALE_DAYS:
             state = "stale"
-        elif pct < CHANNEL_PARTIAL_PCT:
-            # Recent but thin: it ran, and brought back a fraction.
+        elif (pct < CHANNEL_PARTIAL_PCT
+              and name not in CHANNEL_PUSH_SOURCES
+              and live >= CHANNEL_PARTIAL_MIN_LIVE):
+            # Recent but thin: it ran, and brought back a fraction. Only asked of a
+            # source that re-lists its whole stock each run, and only where there is
+            # enough of it for the fraction to mean anything — see the two constants.
             state = "partial"
         else:
             state = "ok"
@@ -1572,6 +1597,8 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
         "generated": datetime.now().strftime("%d/%m/%Y %H:%M"),
         "stale_after_days": CHANNEL_STALE_DAYS, "dead_after_days": CHANNEL_DEAD_DAYS,
         "partial_below_pct": CHANNEL_PARTIAL_PCT,
+        "partial_min_live": CHANNEL_PARTIAL_MIN_LIVE,
+        "push_sources": sorted(CHANNEL_PUSH_SOURCES),
         "channels": channels,
         "portals": portals,
         # Portals are named individually here too: "Direct Builder Portal (live)" tells

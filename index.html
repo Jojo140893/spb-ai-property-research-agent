@@ -1342,6 +1342,11 @@
             less than ${CHANNELS.partial_below_pct || 50}% of what we hold
             (&ldquo;Refreshed&rdquo;) &mdash; a source that returns a fraction stamps that
             fraction as current and lets the rest go stale.
+            That second test is only asked of a source that re-lists everything it holds
+            each run, and only where it holds at least
+            ${CHANNELS.partial_min_live || 25} listings. An inbox is not re-sent daily, so
+            a low &ldquo;Refreshed&rdquo; on the email channel is how it always looks
+            &mdash; it is judged on whether anything arrived, like every source is.
           </p>
           ${bad.length ? `
           <div style="margin-top:1rem; padding:0.9rem 1.1rem; border:1px solid var(--border-light);

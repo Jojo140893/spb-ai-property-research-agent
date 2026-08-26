@@ -967,7 +967,17 @@ def build_packages(brief_dict, rows, today=None):
         "truncated": 0, "stale_unverified": 0, "same_listing_collapsed": 0,
         "suburb_not_a_locality": 0, "superseded": 0, "availability_unstated": 0,
         "price_unverified": 0, "other_product_type": 0, "no_incentive": 0,
+        "available_by_the_sheet": 0,
     }
+    # WHICH DOCUMENTS SAY ANYTHING ABOUT AVAILABILITY AT ALL. See the filter below.
+    # Built once, outside the row loop: the estate-containment lookup was written inside
+    # one and took ten minutes a request before it was hoisted.
+    _states_availability = set()
+    for _r in rows:
+        _a = str(_r.get("availability_status") or "").strip().lower()
+        if _a in IS_AVAILABLE or _a in NOT_AVAILABLE:
+            _states_availability.add(str(_r.get(_DOC_KEY) or ""))
+    _states_availability.discard("")
     missing_field_counts = {}
     unstated_but_scored = {}
     entries = []
@@ -1102,11 +1112,36 @@ def build_packages(brief_dict, rows, today=None):
         if avail in NOT_AVAILABLE:
             counts["not_available"] += 1
             continue
+        by_the_sheet = False
         if avail not in IS_AVAILABLE:
-            # Unstated, or a word we do not recognise as a positive signal. Not
-            # recommended — see IS_AVAILABLE for why "unstated" is not "available".
-            counts["availability_unstated"] += 1
-            continue
+            # A SHEET WITH NO STATUS COLUMN IS ITSELF THE AVAILABILITY STATEMENT.
+            #
+            # Blank means two different things and this told them apart the wrong way.
+            # The Irving Domain price list — Box Hill, 6 apartments at $450k-$499k —
+            # prints Residence, Bedrooms, Bathrooms, Internal, External, Total, Car,
+            # Price, Carpark, OC. There is no status column anywhere on it, because the
+            # vendor lists what is for sale and deletes a unit when it sells. Being on
+            # the list IS the signal. Coleen searched Box Hill under $500k on 26 Aug and
+            # got nothing while all six sat in the catalogue, priced and current.
+            #
+            # So the question is not "is this cell blank" but "does this document ever
+            # state availability". If it does and THIS row is blank, the cell is a real
+            # gap and the row stays out — 569 rows, unchanged. If the document is silent
+            # throughout, the sheet is the list — 1,068 rows, recoverable. A row with no
+            # document key cannot be told apart either way and stays out (57).
+            #
+            # Counted separately and flagged on the entry rather than quietly folded in
+            # with the stated ones, because a consultant putting this in front of a buyer
+            # should know the source never said the word.
+            doc = str(row.get(_DOC_KEY) or "")
+            if doc and doc not in _states_availability:
+                by_the_sheet = True
+                counts["available_by_the_sheet"] += 1
+            else:
+                # Unstated on a document that states it elsewhere, or unattributable.
+                # See IS_AVAILABLE for why "unstated" is not "available".
+                counts["availability_unstated"] += 1
+                continue
 
         price = _num(row.get("price"))
         if not price or price <= 0:
@@ -1227,6 +1262,11 @@ def build_packages(brief_dict, rows, today=None):
             # — see the note on SNAPSHOT_FIELDS. Never rendered; it is an identity, not a
             # fact about the property.
             "content_hash": str(row.get("content_hash") or "").strip(),
+            # True when this row is on a price list that never states availability, so
+            # its being listed is the only evidence it is still for sale. The row is
+            # recommended — see the filter above for why — but a consultant should know
+            # the source did not say the word before quoting it to a buyer.
+            "availability_by_the_sheet": by_the_sheet,
             # The rebate, as the source stated it. Coleen's target one-pager has a "Rebate"
             # and an "Effective Price" column ($728,500 package - $10,000 rebate =
             # $718,500), and neither could be filled because these two never left the
