@@ -1112,6 +1112,31 @@ def _is_a_control_row(text: str) -> bool:
     return len(_CONTROL_GLYPH.findall(str(text or ""))) >= 2
 
 
+# "Price ranges from $288,000- $719,800 (ex g.s.t)" -- a sentence out of an email body.
+_PRICE_RANGE_SENTENCE = re.compile(r"\bprices?\s+rang\w*\s+from\b|\brang\w*\s+from\s*\$", re.I)
+
+
+def _is_a_price_range_sentence(text: str, fields: Dict[str, Any]) -> bool:
+    """True for a marketing line quoting a RANGE, which is a project summary not a lot.
+
+    Two of these are live, both from the same email: "Price ranges from $288,000-
+    $719,800 (ex g.s.t)". They carry two prices and no property at all -- no lot number,
+    no bedrooms, no suburb -- and the higher figure was stored as the asking price, so
+    the catalogue held a $795,000 listing that is not a property.
+
+    _is_price_fragment already refuses a bare run of figures, and deliberately lets this
+    through: it has words of its own, which is exactly the test that stops it deleting
+    the apartment rows that are almost entirely numeric.
+
+    The lot-identity guard is what keeps it narrow. A real listing that happens to quote
+    a range still has a lot number or a bedroom count; measured across 9,310 live rows
+    this selects exactly the two and nothing else.
+    """
+    if fields.get("lot_number") or fields.get("bedrooms") or fields.get("land_size_sqm"):
+        return False
+    return bool(_PRICE_RANGE_SENTENCE.search(str(text or "")))
+
+
 def _is_price_fragment(text: str, fields: Dict[str, Any]) -> bool:
     """True when a row is a PRICE BROKEN OUT OF a listing, not a listing.
 
@@ -1152,6 +1177,8 @@ def _listing_from_row(text: str, links: LinkList, context: str, source_label: st
     if _is_price_fragment(text, fields):
         return None
     if _is_a_control_row(text):
+        return None
+    if _is_a_price_range_sentence(text, fields):
         return None
     # A row that is nothing but a wall of prices is a summary or a transposed layout, not a
     # listing — seen live on the commercial pages ("$1,300,000 $1,250,000 $1,250,000 ...").

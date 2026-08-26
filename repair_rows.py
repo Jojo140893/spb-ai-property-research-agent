@@ -337,9 +337,12 @@ def find_control_rows(rows):
     sources.spreadsheet_extract._is_a_control_row now refuses them at the door, which
     only helps rows harvested after it. These three are already stored.
     """
-    from sources.spreadsheet_extract import _is_a_control_row
+    from sources.spreadsheet_extract import (_is_a_control_row,
+                                             _is_a_price_range_sentence)
 
-    return [r for r in rows if _is_a_control_row(r["source_text"])]
+    return [r for r in rows
+            if _is_a_control_row(r["source_text"])
+            or _is_a_price_range_sentence(r["source_text"], r)]
 
 
 def find_spec_fragments(rows):

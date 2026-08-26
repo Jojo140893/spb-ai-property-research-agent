@@ -448,6 +448,14 @@ _STREET_WORDS = (
 _HAS_STREET = re.compile(r"\b(" + _STREET_WORDS + r")\b\.?", re.I)
 _STREET_TOKENS = frozenset(_STREET_WORDS.split("|"))
 
+# Words that turn a locality name into the name of a THING IN it rather than the place
+# itself -- a park, a shopping centre, a tower. See the guard in
+# _longest_locality_in_text for the case that earned this list.
+_FEATURE_TOKENS = frozenset("""
+    park gardens garden reserve common square plaza quarter precinct estate towers
+    tower residences apartments village centre center mall arcade wetlands
+""".split())
+
 # Money, a settlement date, a status word or a size means these are table CELLS, not an
 # address. This is the gate that removed the house-design class of wrong answers.
 _TABLE_ROW = re.compile(
@@ -554,6 +562,19 @@ def _typo_correction(raw: str, state: str, index) -> str:
     return next(iter(hits)) if len(hits) == 1 else ""
 
 
+def _is_the_builders_own_name(candidate, builder) -> bool:
+    """True when the locality is just the builder's name in company clothing.
+
+    Shares document_suburb._names_the_builder so the two rules cannot drift apart --
+    imported lazily because that module reaches back into this one.
+    """
+    try:
+        from document_suburb import _names_the_builder
+    except Exception:                               # pragma: no cover - import guard
+        return False
+    return _names_the_builder(candidate, builder)
+
+
 def _longest_locality_in_text(row: Dict[str, Any], state: str, index) -> str:
     """The longest locality named anywhere in the row's own text, or ''.
 
@@ -577,7 +598,22 @@ def _longest_locality_in_text(row: Dict[str, Any], state: str, index) -> str:
     # "Bahrs Scrub Brookhaven", "Coridale Lara", "Central Springs Caboolture", "Logan
     # Reserve Riverleigh". Reading it is 68%-87% right on its own, which is why it is
     # confined to this function and its answer is marked INFERRED.
-    text = " ".join([_row_text(row), str(row.get("estate_name") or "")])
+    # THE PROJECT NAME IS READ HERE TOO, for the same reason the estate name is.
+    # E-Agent derives a project's name from its own link label and those labels
+    # routinely carry the suburb -- "Eastbury Wheelers Hill", "Villea Palm Beach",
+    # "Arca, Stafford". When a vendor withdraws the price list the name is all that is
+    # left: Eastbury's Dropbox link now answers with an HTML page instead of the PDF,
+    # so the document map lost it and 16 live rows went unnameable overnight.
+    #
+    # Measured on every row that already HAS a located suburb: 94% agreement once the
+    # feature guard below is applied, against 83% without it. Of the disagreements
+    # that remain, the four "Arca, Stafford" rows are this rule being RIGHT and the
+    # stored value being the Building column ("Theodore"), and fourteen are Coburg
+    # against Coburg North -- a neighbour, not a different town. That is at or above
+    # the accuracy of this function's existing sources, which is why it lands at the
+    # same INFERRED grade and not a better one.
+    text = " ".join([_row_text(row), str(row.get("estate_name") or ""),
+                     str(row.get("builder_name") or "")])
     words = _ADDR_WORD.findall(text)
     stateless_hits: list = []
     for size in (3, 2, 1):
@@ -587,6 +623,20 @@ def _longest_locality_in_text(row: Dict[str, Any], state: str, index) -> str:
                 continue
             after = start + size
             if after < len(words) and words[after].lower().strip(".") in _STREET_TOKENS:
+                continue
+            # A LOCALITY FOLLOWED BY A FEATURE WORD NAMES THE FEATURE. "Fawkner Park
+            # West" is a development beside Fawkner PARK, on St Kilda Road; reading
+            # "Fawkner" out of it moves the listing 15 km. Same shape as the street
+            # guard above, and worth 11 points of accuracy on its own.
+            if after < len(words) and words[after].lower().strip(".") in _FEATURE_TOKENS:
+                continue
+            # AND THE BUILDER IS NOT A TOWN. Reading the project name pulled 'Hudson'
+            # out of "Hudson Homes" -- a real QLD locality 1,500 km from the Bald Hills
+            # and Bethania lots that list carries. document_suburb refuses the same
+            # candidate when it is offered as a document title; the test is what is LEFT
+            # OVER once the candidate is removed, so "Eastbury Wheelers Hill" keeps its
+            # suburb and "Hudson Homes" does not.
+            if _is_the_builders_own_name(candidate, row.get("builder_name")):
                 continue
             if state:
                 if index.locate(candidate, state):

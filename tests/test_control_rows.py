@@ -79,3 +79,36 @@ def test_the_repair_finds_them_in_stored_rows():
     found = repair_rows.find_control_rows(rows)
     assert len(found) == len(REAL_FILTER_ROWS)
     assert {r["id"] for r in found} == set(range(len(REAL_FILTER_ROWS)))
+
+
+# ---------------------------------------------------------------- a sentence, not a lot
+
+PRICE_RANGE_SENTENCES = [
+    "Price ranges from $288,000- $719,800 (ex g.s.t)",
+    "Price ranges from $725,000 to $795,000(excl. GST)",
+]
+
+
+def test_a_price_range_sentence_is_not_a_listing():
+    """Both are live rows from one email. They carry two prices and no property at all,
+    and the higher figure was stored as the asking price -- so the catalogue held a
+    $795,000 listing that is not a property."""
+    from sources.spreadsheet_extract import _is_a_price_range_sentence
+
+    for text in PRICE_RANGE_SENTENCES:
+        assert _is_a_price_range_sentence(text, {}), text
+        assert _listing_from_row(text, [], "", "t", "") is None, text
+
+
+def test_a_real_listing_quoting_a_range_survives():
+    """The lot-identity guard. _is_price_fragment deliberately lets a sentence through
+    because it has words of its own -- that test is what stops it deleting the apartment
+    rows that are almost entirely numeric -- so this one needs its own narrow guard."""
+    from sources.spreadsheet_extract import _is_a_price_range_sentence
+
+    assert not _is_a_price_range_sentence("Lot 42 ranges from $500,000",
+                                          {"lot_number": "42"})
+    assert not _is_a_price_range_sentence("501 2 1 1 70 27 97 SE $913,000",
+                                          {"bedrooms": 2})
+    for text in REAL_LISTINGS:
+        assert not _is_a_price_range_sentence(text, {}), text
