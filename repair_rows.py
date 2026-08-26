@@ -321,6 +321,27 @@ def find_refuted_states(rows):
     return out
 
 
+def find_control_rows(rows):
+    """A spreadsheet's FILTER row, stored as a property.
+
+    A sheet published with its filters left on prints the control strip as a row of its
+    own -- "All [v] Storage [v] All [v] All [v] $225,500.00 $1,298,154.00 All [v]", each
+    [v] a dropdown arrow from an icon font, each "All" a column's unfiltered state. Two
+    prices was enough to look like a listing, so it was stored as one.
+
+    Three are live. Two are the ONLY rows builder "mcmullanbird.com.au" has; the third
+    has "STOCKLIST" in its suburb column. They were the last rows in the catalogue that
+    no suburb rule could reach, and none should have tried: "All" is not a place and
+    these are not properties.
+
+    sources.spreadsheet_extract._is_a_control_row now refuses them at the door, which
+    only helps rows harvested after it. These three are already stored.
+    """
+    from sources.spreadsheet_extract import _is_a_control_row
+
+    return [r for r in rows if _is_a_control_row(r["source_text"])]
+
+
 def find_spec_fragments(rows):
     """Rows that are half a spec table, not a property.
 
@@ -640,6 +661,10 @@ def main(apply_changes):
         print(f"     {(r['builder_name'] or '?')[:22]:22} suburb={r['suburb']!r} "
               f"state={r['state']!r} -> state cleared")
 
+    controls = find_control_rows(live)
+    print(f"\n8. spreadsheet filter rows stored as listings: {len(controls)}")
+    for r in controls[:3]:
+        print(f"     {str(r['builder_name'] or '?')[:24]:<26} {str(r['source_text'])[:58]!r}")
     fragments = find_spec_fragments(live)
     print(f"\n7. spec-table fragments stored as listings: {len(fragments)}")
     for r in fragments[:3]:
@@ -707,6 +732,9 @@ def main(apply_changes):
     for r in fragments:
         cur.execute("UPDATE buildings SET superseded_by=?, superseded_at=? WHERE id=?",
                     ("spec-table fragment, not a listing", now, r["id"]))
+    for r in controls:
+        cur.execute("UPDATE buildings SET superseded_by=?, superseded_at=? WHERE id=?",
+                    ("spreadsheet filter row, not a listing", now, r["id"]))
     for r, suburb in reread:
         # The stored content_hash goes stale here, exactly as it does for every other
         # correction above. That is the documented trade: the identity is recomputed at
@@ -724,6 +752,7 @@ def main(apply_changes):
           f"{len(losers)} duplicate row(s) superseded, "
           f"{len(twin_losers)} suburb-less twin(s) superseded, "
           f"{len(fragments)} spec fragment(s) withdrawn, "
+          f"{len(controls)} filter row(s) withdrawn, "
           f"{len(refuted)} refuted state(s) cleared, "
           f"{len(reread)} suburb(s) re-read from the row's own document")
     after = len([r for r in _rows(conn) if not r["superseded_by"]])

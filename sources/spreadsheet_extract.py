@@ -1083,6 +1083,35 @@ _MONEY_LABEL = re.compile(
     r"deposit|balance|rrp|est|approx|only|now|was|save|saving|plus)\b", re.I)
 
 
+# A dropdown arrow, a filter funnel, a sort caret. Icon fonts put these in the Unicode
+# private use area, so they carry no meaning outside the font that drew them.
+_CONTROL_GLYPH = re.compile(r"[-]")
+
+
+def _is_a_control_row(text: str) -> bool:
+    """True for a spreadsheet's FILTER row, which is furniture rather than stock.
+
+    A published sheet with its filters left on prints the control strip as a row of its
+    own: "All [v] Storage [v] All [v] All [v] $225,500.00 $1,298,154.00 All [v]" -- every
+    [v] a dropdown arrow drawn from an icon font, every "All" the unfiltered state of a
+    column. It carries two prices, so it looked like a listing worth keeping, and it was
+    stored as one. Three of these are live: two under builder "mcmullanbird.com.au",
+    which has no other rows at all, and one whose suburb reads "STOCKLIST".
+
+    They are the last two rows in the catalogue that no suburb rule can reach, and no
+    rule should: "All" is not a place and these are not properties. The private use area
+    is the tell -- those code points mean nothing except to the font that drew them, so
+    no address, estate or builder name can legitimately contain a run of them.
+
+    MEASURED BEFORE IT WAS WRITTEN, because the cautionary tale is one function below:
+    a first attempt at _is_price_fragment deleted 112 rows and most were real. Across
+    9,705 live rows, ONE glyph already selects exactly these three and nothing else. The
+    floor is two so that a stray bullet in an otherwise real row can never trip it -- at
+    today's data the two thresholds are identical, and the looser one costs nothing.
+    """
+    return len(_CONTROL_GLYPH.findall(str(text or ""))) >= 2
+
+
 def _is_price_fragment(text: str, fields: Dict[str, Any]) -> bool:
     """True when a row is a PRICE BROKEN OUT OF a listing, not a listing.
 
@@ -1121,6 +1150,8 @@ def _listing_from_row(text: str, links: LinkList, context: str, source_label: st
     if not fields.get("advertised_package_price"):
         return None
     if _is_price_fragment(text, fields):
+        return None
+    if _is_a_control_row(text):
         return None
     # A row that is nothing but a wall of prices is a summary or a transposed layout, not a
     # listing — seen live on the commercial pages ("$1,300,000 $1,250,000 $1,250,000 ...").
