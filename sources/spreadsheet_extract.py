@@ -932,6 +932,66 @@ def _pdf_rows_from_tables(page: Any, annots: List[Tuple[float, float, str]]
     return rows
 
 
+_OCR_DPI = 200
+_OCR = [None]          # the engine, built once and only if a page actually needs it
+
+
+def _ocr_rows(page: Any) -> List[str]:
+    """Table rows read off a page that carries no text, or [] if OCR is unavailable.
+
+    WHY THIS EXISTS. On 27 Aug E-Agent served 143 stocklists and 57 of them extracted
+    zero listings -- 39%, whole projects missing. Sampled, thirteen of fourteen were PDFs
+    holding ONE IMAGE and no text at all: a price list exported as a picture. pdfplumber
+    reads nothing and PyMuPDF agrees, so no text reader can recover them. Coleen found one
+    by hand -- "Koops Price.pdf", 12 Koop Cls -- and its own first line turns out to read
+    "HIGHTON (GEELONG)- 12 KOOP CLS", a suburb the catalogue never had.
+
+    ONLY WHERE THERE IS NOTHING TO LOSE. This runs on a page with no extractable text, so
+    the alternative is not a worse answer, it is no answer. Measured against six PDFs we
+    CAN read, over 458 real prices: OCR recovered 424 of them (92%) and produced ZERO
+    prices that were not in the document. Missing a listing is the failure it has; putting
+    a wrong price in front of a buyer is the one it does not.
+
+    Boxes come back in detection order, not reading order, so they are grouped into rows
+    by vertical position and sorted left to right -- a stocklist row is a horizontal band.
+    """
+    try:
+        import fitz
+        from rapidocr_onnxruntime import RapidOCR
+    except Exception:                                   # pragma: no cover - optional dep
+        return []
+    try:
+        pdf = getattr(page, "pdf", None)
+        stream = getattr(getattr(pdf, "stream", None), "getvalue", lambda: None)()
+        if not stream:
+            return []
+        number = (getattr(page, "page_number", 1) or 1) - 1
+        doc = fitz.open(stream=stream, filetype="pdf")
+        if number >= doc.page_count:
+            return []
+        png = doc[number].get_pixmap(dpi=_OCR_DPI).tobytes("png")
+        if _OCR[0] is None:
+            _OCR[0] = RapidOCR()
+        found, _elapsed = _OCR[0](png)
+    except Exception as exc:                            # noqa: BLE001
+        logger.info("OCR unavailable for this page (%s)", type(exc).__name__)
+        return []
+    bands: Dict[int, List[Tuple[float, str]]] = {}
+    for box, text, _score in (found or []):
+        ys = [pt[1] for pt in box]
+        xs = [pt[0] for pt in box]
+        # 12 px at 200 dpi is well under a table row's height and well over jitter.
+        bands.setdefault(int(round(sum(ys) / len(ys) / 12.0)), []).append(
+            (min(xs), str(text).strip()))
+    rows = []
+    for key in sorted(bands):
+        cells = [t for _x, t in sorted(bands[key]) if t]
+        if cells:
+            rows.append(" ".join(cells))
+    logger.info("OCR read %d row(s) from an image-only page", len(rows))
+    return rows
+
+
 def _pdf_rows_from_lines(page: Any, annots: List[Tuple[float, float, str]]
                          ) -> List["PdfRow"]:
     try:
@@ -1561,6 +1621,25 @@ def extract_from_pdf(data: bytes, source_label: str = "", builder_hint: str = ""
                         best_hint, best_place = hint, plc
                     elif listings:
                         others.append(listings)
+                # A PAGE THAT IS A PICTURE. Both text strategies read nothing because
+                # there is no text: the page holds one image. OCR is tried ONLY here, so
+                # it can add listings and can never displace a text read -- see _ocr_rows
+                # for the measurement that makes that safe (zero invented prices).
+                if not best and not others:
+                    _lines = _ocr_rows(page)
+                    if _lines:
+                        try:
+                            listings, ctx, ban, hint, plc = _rows_to_listings(
+                                [(t, []) for t in _lines], context, source_label,
+                                builder_hint, banner, state_hint, place)
+                        except Exception as e:                          # noqa: BLE001
+                            logger.warning("pdf %s: OCR rows failed to parse (%s)",
+                                           source_label or "(file)", e)
+                            listings = []
+                        if listings:
+                            best, best_ctx, best_banner, best_name = listings, ctx, ban, "ocr"
+                            best_hint, best_place = hint, plc
+                            failed = 0
                 if failed == len(_PDF_STRATEGIES):
                     # Every way of reading this page failed. Say so — an unreadable page
                     # and a blank one both yield nothing, and only one is a problem.

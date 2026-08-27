@@ -16,3 +16,10 @@ keyring>=24.0.0
 # and the run reported success at step 1 having read almost nothing.
 openpyxl>=3.1.0
 requests>=2.31.0
+
+# Reads a price list that was exported as a PICTURE. 57 of 143 E-Agent stocklists on
+# 27 Aug held one image and no text at all, so no text reader could recover them and
+# whole projects were missing. Pure pip, no system binary, so the Linux runner installs
+# it the same way this machine does. Used ONLY on a page with no extractable text -- see
+# sources.spreadsheet_extract._ocr_rows and the measurement that made it safe.
+rapidocr-onnxruntime>=1.3.0
