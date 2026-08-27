@@ -538,7 +538,20 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         # -- the same evidence api/_candidates already trusts at request time, which is
         # why these rows resolve for a search and were still published unlocated. 218 of
         # the 318 are settled this way; the other 100 keep the caveat.
-        if why == suburb_quality.UNCHECKED_NO_STATE:
+        # ANY row the state is the only thing missing from — not just the one reason.
+        #
+        # This first fired only on UNCHECKED_NO_STATE and caught 218. But a stateless row
+        # whose suburb column DOES hold a locality never reaches that reason: with no
+        # state to check against, resolve falls through to reading the row's own text and
+        # answers INFERRED_FROM_TEXT instead. Same missing state, same document able to
+        # settle it, a different label — and 787 more rows sitting one fact away from
+        # being located. "1-Part (SMFS) North 10 Havenwood Mernda Q4 2026" comes back
+        # 'Mernda', STATED, the moment VIC is supplied.
+        #
+        # It can only ever upgrade: the borrowed state is kept only if the row then
+        # resolves to a LOCATED reason, so a suburb that is not in that state changes
+        # nothing and keeps the answer it had.
+        if not str(b.get("state") or "").strip() and not suburb_quality.is_located(why):
             _borrowed = None
             for _f in ("source_url", "estate_name", "builder_name"):
                 _borrowed = _state_by_document.get((_f, str(b.get(_f) or "").strip().lower()))
