@@ -334,6 +334,22 @@ def resolve(row: Dict[str, Any], index=None) -> Tuple[str, str]:
             # 'Paramatta' from '132 Paramatta Street', and both were published as places.
             if _looks_like_a_street(raw, row):
                 return "", BLANK_NOT_A_PLACE
+            # NOR IS A COLUMN HEADING, and with no state there is nothing to catch it.
+            #
+            # A stated value is checked against the gazetteer only when a state is known.
+            # Without one this branch publishes whatever the column held, and OCR feeds
+            # it more than a text reader does: reading the 57 image-only stocklists
+            # produced "Price" on 6 listings, "City" on 8 and "Haven" on 5. Two of those
+            # ARE localities -- Price and Vista in SA, Haven in VIC -- so a gazetteer
+            # would not have saved them even with a state; they are a Price column, a
+            # City View aspect and a Haven floorplan.
+            #
+            # _NOT_ALONE is the list already used to stop exactly this on the inferred
+            # path, and a one-word value that is a column heading is not a suburb on any
+            # path. A multi-word name is untouched: 'Mango Hill' x38 and 'Clyde North'
+            # x32 are why this branch exists.
+            if _NOT_ALONE.match(raw.strip()):
+                return "", BLANK_NOT_A_PLACE
             return _canonical_spelling(raw, "", index), UNCHECKED_NO_STATE
 
     if not state:
@@ -442,7 +458,16 @@ _NOT_ALONE = re.compile(
     r"and|the|of|at|in|on|to|for|with|from|"
     r"available|sold|titled|registered|deposit|star|energy|rating|discount|rebate|"
     r"total|price|package|contract|part|detached|duplex|villa|townhouse|granny|flat|"
-    r"bed|bath|car|garage|sqm|approx|tba|tbc|na|nil|inc|incl|gst|resale|owner|occupier)$",
+    r"bed|bath|car|garage|sqm|approx|tba|tbc|na|nil|inc|incl|gst|resale|owner|occupier|"
+    # Column headings, aspects and floorplan names that OCR turns into one-word
+    # "suburbs". Reading the 57 image-only stocklists produced 'City' on 8 listings
+    # (a City View aspect) and 'Haven' on 5 (a floorplan). Haven and Vista are real
+    # localities, so no gazetteer would have caught them even with a state -- the
+    # only thing that separates a place from a column heading here is the word.
+    r"city|view|views|haven|vista|aspect|storage|store|balcony|courtyard|internal|"
+    r"external|int|ext|size|area|plan|plans|floorplan|design|facade|status|item|"
+    r"items|page|stock|list|project|building|config|configuration|collection|"
+    r"reg|registered|settlement|completion|title|titled)$",
     re.I)
 
 _ADDR_WORD = re.compile(r"[A-Za-z][A-Za-z'\-]*")
