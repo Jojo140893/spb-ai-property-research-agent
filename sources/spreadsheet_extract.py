@@ -1561,13 +1561,34 @@ def extract_from_pdf(data: bytes, source_label: str = "", builder_hint: str = ""
                 # page_number is pdfplumber's own 1-based value — the page the reader
                 # shows, not an index.
                 # The grid enrichment, on rows the winning reader left without one.
-                if any(not str(_l.get("suburb") or "").strip() for _l in best):
+                # A COLUMN HEADED "SUBURB" BEATS A VALUE THAT IS NOT A PLACE.
+                #
+                # This used to fill a BLANK suburb only, and that is why the Eternal Homes
+                # stock list published 47 listings as "Dual Key", "Duplex" and "Land" --
+                # the TYPE column. Its header reads
+                #     TYPE STATE SUBURB LOTS FLOORPLAN PROJECT ESTATE LAND SIZE ...
+                # so the grid reader had the right answer for every row (Millfield,
+                # Nulkaba, Grantham Farm, Hunterview, Dora Creek, Lochinvar, Bellbird)
+                # and was skipped, because a wrong value is not a blank one.
+                #
+                # Nothing else on a price list is better evidence than the column its own
+                # author headed "Suburb", so it now also replaces a value the resolver
+                # refuses. It still never overwrites a value that IS a locality: where the
+                # grid and a real suburb disagree, the stored one stands and the
+                # disagreement is a data question, not one to settle silently here.
+                def _needs_a_place(_row):
+                    _v = str(_row.get("suburb") or "").strip()
+                    if not _v:
+                        return True
+                    return not _looks_like_one_locality(_v)
+
+                if any(_needs_a_place(_l) for _l in best):
                     try:
                         grid = _grid_suburbs(page)
                     except Exception:                       # pragma: no cover
                         grid = {}
                     for _l in best:
-                        if str(_l.get("suburb") or "").strip():
+                        if not _needs_a_place(_l):
                             continue
                         named = grid.get(_clean(str(_l.get("source_text") or "")))
                         if named:

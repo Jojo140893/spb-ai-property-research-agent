@@ -1,197 +1,209 @@
 {
-  "_README": "Suburbs a stock document cannot state for itself, checked by hand against the developer's own published address. Each rule may match three ways, most precise first: `url` is the exact source_url; `project` is a lowercase substring tested against the row's builder_name and estate_name; `title` is a lowercase substring tested against the document's own front page. url alone is NOT enough -- builders re-upload price lists to fresh links and the rows follow the new URL, so a url-only rule silently stops applying and those listings go back to having no suburb. Keep `evidence` filled in: it is what lets the next person re-check the claim instead of trusting it.",
-  "rules": [
-    {
-      "suburb": "Broadbeach",
-      "state": "QLD",
-      "evidence": "Victoria & Albert, 20 Albert Ave Broadbeach QLD 4218",
-      "url": "https://www.dropbox.com/scl/fo/db9kwomup9qkyxo5c9ifo/AMldxx73oGFLOC976V04r_w/VandA%20Pricelist%20%282%29%20%281%29.pdf?rlkey=mdymvdm5qqm5usogxo3qntzbm&dl=1",
-      "project": "vanda"
-    },
-    {
-      "suburb": "Docklands",
-      "state": "VIC",
-      "evidence": "Ancora at Collins Wharf, 971 Collins St Docklands VIC 3008",
-      "url": "https://www.dropbox.com/scl/fo/ahump3y5wsaryrt6yvz5d/AB3pSjSPevMIamM34jYvOFg/Pricelist.pdf?rlkey=z5zzhj71cqo5slaq0veblf38p&dl=1",
-      "title": "collins wharf"
-    },
-    {
-      "suburb": "Epping",
-      "state": "NSW",
-      "evidence": "Senso by DASCO, 242-244 Beecroft Rd Epping NSW 2121",
-      "url": "https://www.dropbox.com/scl/fo/r4oq78aldoqxodajrqsnv/ADxH-FvGS8cfZxypYE1clY8/Pricelist2026.xlsx?rlkey=lak5v8t1ef49cgrfw3e7rkmoz&dl=1",
-      "project": "senso"
-    },
-    {
-      "suburb": "Murrumbeena",
-      "state": "VIC",
-      "evidence": "Murrumbeena Place, Murrumbeena VIC",
-      "url": "https://www.dropbox.com/scl/fo/c1f6v2x6cixpq0f1oogj1/AOFVkWuRhjLi55Pa8lIiGc8/report_murrumbeena-pricelist.pdf?rlkey=9kgljkgrqcv6d6zxp40qcos2c&dl=1",
-      "project": "murrumbeena"
-    },
-    {
-      "suburb": "Newcastle West",
-      "state": "NSW",
-      "evidence": "Dairy Farmers Towers, 924 Hunter St Newcastle West NSW 2302",
-      "url": "https://www.dropbox.com/scl/fo/n5ye4qrx0jmx82mnocvb3/AIN1I_RojrUOkricdYA4zFE/DFT%20New%20Price%20%281%29.pdf?rlkey=ktn9tb2cu25di9m1injzq1gi6&dl=1",
-      "title": "dairy farmers"
-    },
-    {
-      "suburb": "Richmond",
-      "state": "VIC",
-      "evidence": "The Brightly, 9-15 Brighton St Richmond VIC 3121",
-      "url": "https://www.dropbox.com/scl/fo/imt3l11vrewxt42y5pond/APbkXITlA3Os-ymDLsrra8U/report_the-brightly_pricelist%20%281%29.pdf?rlkey=pxildaywwv43k8tdc8079vhgo&dl=1",
-      "project": "the brightly"
-    },
-    {
-      "suburb": "Melbourne",
-      "state": "VIC",
-      "evidence": "The Albertine by Mirvac, 31 Queens Lane Melbourne VIC 3004",
-      "url": "https://www.dropbox.com/scl/fo/n3hz1ob6gfa39bwzhbtsa/APG25SP4hwuCRqpAgfqFoEw/The%20Albertine%20-%20External%20Agent%20Pricelist%20-%2007.02.26.xlsx?rlkey=ghglxohxf0vnzml98yugug6bm&dl=1",
-      "project": "the albertine"
-    },
-    {
-      "suburb": "Deanside",
-      "state": "VIC",
-      "evidence": "Creekbank, Deanside VIC",
-      "url": "https://www.dropbox.com/scl/fo/tmvs52av16h3wbp43zfyi/ACHsXbHm4qLUmMK-MUqXiQY/CREEKBANK-Pricing-MASTER%2015-6-26%20%281%29%20%281%29.pdf?rlkey=2d5g32bicf57t1epc69zrv88h&dl=1",
-      "project": "creekbank deanside"
-    },
-    {
-      "suburb": "East Brisbane",
-      "state": "QLD",
-      "evidence": "Murcia Residences, 9 Overend St East Brisbane QLD 4169",
-      "url": "https://www.dropbox.com/scl/fo/1zvdwk2mmknms9k51qo96/ALoMhvVUMM38-rY75TjRox0/report_murcia-Pricelist%20%281%29.pdf?rlkey=5b45ytunki9p8mfwuv657tsqr&dl=1",
-      "project": "murcia"
-    },
-    {
-      "suburb": "Donnybrook",
-      "state": "VIC",
-      "evidence": "Balmain estate, Donnybrook VIC",
-      "url": "https://www.dropbox.com/scl/fo/j8ixbm9mtl5gf8dx00apw/ANl4wfoGlUjihDcjP-8vhdk/Balmain%20Price%20List%2020.06.26.pdf?rlkey=mv4y3v5016kslyjkhn1f84lbd&dl=1",
-      "project": "balmain donnybrook"
-    },
-    {
-      "suburb": "Hope Island",
-      "state": "QLD",
-      "evidence": "Serene, Hope Island QLD",
-      "url": "https://www.dropbox.com/scl/fo/it2mw67hz01oa1lrzdt1d/AMP3jz-opkJH4h9sloYQBpw/Hope%20Island%20Serene%20Price%20List.pdf?rlkey=taxu55a6ayxvpxjf2du9q3rol&dl=1",
-      "project": "hope island serene"
-    },
-    {
-      "suburb": "St Kilda Road",
-      "state": "VIC",
-      "project": "fawkner park west",
-      "evidence": "The Fawkner, Fawkner Park / St Kilda Road, Melbourne VIC 3004 - the tower fronts St Kilda Road; 'Fawkner Park West' is the release name, and Fawkner itself is a suburb 15 km north that this project has nothing to do with"
-    },
-    {
-      "suburb": "Maroochydore",
-      "state": "QLD",
-      "project": "millwell",
-      "evidence": "The Millwell, 2 Millwell Road East, Maroochydore QLD 4558 (Habitat Development Group). Millwell Road is in Maroochydore, not Morayfield"
-    },
-    {
-      "suburb": "Bayswater",
-      "state": "VIC",
-      "project": "aston junction",
-      "evidence": "Aston Junction, 493 Mountain Highway, Bayswater VIC 3153 - industrial unit development. Bayswater also exists in WA, so the state is pinned here"
-    },
-    {
-      "suburb": "Waterloo",
-      "state": "NSW",
-      "project": "danks st",
-      "evidence": "Danks St District, 903-921 Bourke Street, Waterloo NSW 2017 (DASCO). The price list's own header reads 'Danks St. District - [Bourke St Residences]', which is why an earlier filename rule tried to call it Bourke -- a NSW town 760 km west"
-    },
-    {
-      "suburb": "Birtinya",
-      "state": "QLD",
-      "project": "st clair",
-      "evidence": "St Clair, 11 Waterside Retreat, Birtinya QLD 4575 (Habitat Development Group) - two towers on Lake Kawana, which is why the rows read 'Lake View'. Not St Clair NSW or St Clair SA, both of which are localities"
-    },
-    {
-      "suburb": "Kings Forest",
-      "state": "NSW",
-      "project": "kings forest",
-      "overrides_state": true,
-      "evidence": "Stockland's Kings Forest, an 869-hectare masterplanned community on the Tweed Coast in the Tweed Shire, NSW, adjacent to Casuarina and near Kingscliff. Kings Forest is a locality in NSW and nowhere else. The ten rows record QLD and their state_source reads 'e-agent page' - the state was taken from the page the flyer was listed on, not the property, and four are already flagged 'conflicting signals'"
-    },
-    {
-      "suburb": "Kings Beach",
-      "state": "QLD",
-      "evidence": "Solara Kings Beach, 19-21 Verney Street, Kings Beach QLD 4551 (Citimax). apartments.com.au lists 7 floors, 23 residences, apartments AND skyhomes, three and four bedroom - the price list has exactly that shape: lots 01-22, Skyhome from level 6, 3-4 bed. The document itself names no locality anywhere in its full text.",
-      "url": "https://www.dropbox.com/scl/fo/d6093l7itzabgqvslmuwc/AG9moDLlhgoxrnQsOTS7o0U/Solara%20Price%20List%20April%202026.pdf?rlkey=5o2n7ydzwijnr6s95k9j8jixu&dl=1",
-      "project": "solara"
-    },
-    {
-      "suburb": "Highgate Hill",
-      "state": "QLD",
-      "evidence": "The Highgate, Dornoch Terrace, Highgate Hill QLD 4101 (Pointcorp) - a 10-storey apartment building, matching the price list's Level / Apt # / Aspect / Body Corp columns. Every QLD development named Highgate is in Highgate Hill; there is no other QLD locality called Highgate.",
-      "url": "https://www.dropbox.com/scl/fo/w9e1f0wfd39myo6zbdnus/h/Highgate%20Price%20New.pdf?rlkey=r6u7rkpo9l027q5x5u2utim43&dl=1",
-      "project": "highgate"
-    },
-    {
-      "suburb": "Alphington",
-      "state": "VIC",
-      "evidence": "Yarra Park Townhomes Stage 1, 65 Parkview Road, Alphington VIC 3078 (U-Home Oceania, Rothelowman). Corroborated inside this catalogue: the separate Parkview Properties price list already resolves to Alphington off its own address.",
-      "url": "https://www.dropbox.com/scl/fo/0m6lwu01auwgqnzi7fddo/h/Yarra%20Park%20Stage%201%20Bonus%20Price%20List.pdf?rlkey=w0zc3npmcarg0ydyxsp6ct802&dl=1",
-      "project": "yarra park"
-    },
-    {
-      "suburb": "South Kingsville",
-      "state": "VIC",
-      "evidence": "KNEW, 82 New Street, South Kingsville VIC 3015 (Frater Group, IN8 Architects) - 32 townhouses in two, three and four bedroom configurations; the price list carries 4/3.5/2 types.",
-      "url": "https://www.dropbox.com/scl/fo/nsvrshjtdqt0jdp82is29/AHz8B2f_HvWm270LQXDD7Hs/Knew%20Street_Pricelist_.xlsx?rlkey=o20obud12r1dkobcg8ynp3jfm&dl=1",
-      "project": "knew street"
-    },
-    {
-      "suburb": "Port Melbourne",
-      "state": "VIC",
-      "evidence": "Port Lane, 201 Williamstown Road, Port Melbourne VIC 3207 (ID_Land, Rothelowman). Decisive: 'Sea Breeze' is one of Port Lane's six named floorplans - 3 bed, 2 bath, 2 car - and appears verbatim in this stock list's rows.",
-      "url": "https://www.dropbox.com/scl/fo/xxs5sj2h0hsec790kfuab/AA3BniKOfdvHKCbx0hXJz6s/Stock%20List%20Port%20Lane.xlsx?rlkey=edgx8bbabb92n4o5sj6mlu0hk&dl=1",
-      "project": "port lane"
-    },
-    {
-      "suburb": "Albany Creek",
-      "state": "QLD",
-      "evidence": "The document says so itself, in a Comments column the extractor does not read: 'Large Terrace design with own street access. Fronting Greensill Rd' and 'looking over parkland area towards Creek'. Greensill Road is in Albany Creek QLD 4035, which also carries townhouse developments of this type.",
-      "url": "https://www.dropbox.com/scl/fo/v94yhnlkq03s9ks8w448o/AAR8V4HneQu0cQCloapp9ME/Albany%20Price%20AGENT.xlsx?rlkey=1twicl1z71706j8v1k4ciwa9n&dl=1",
-      "project": "albany"
-    },
-    {
-      "suburb": "Cooroy",
-      "state": "QLD",
-      "evidence": "The project names its own town: 'Canvas Cooroy'. Cooroy is a QLD locality (Noosa hinterland, 4563) and the rows record QLD. The price list itself names no locality anywhere in its text.",
-      "project": "canvas cooroy"
-    },
-    {
-      "suburb": "Southport",
-      "state": "QLD",
-      "evidence": "Imperial Square by Azzura, 59-73 Meron Street, Southport QLD 4215. 'Regal Azzura Luxury Apartments' and 'Regal Residences' are the same development - both price lists sit in one Dropbox folder (rlkey f0c1qw0raf...), which is what suggested they were one project before the address confirmed it.",
-      "project": "regal azzura"
-    },
-    {
-      "suburb": "Southport",
-      "state": "QLD",
-      "evidence": "Imperial Square by Azzura, 59-73 Meron Street, Southport QLD 4215. Same development and same folder as the Regal Azzura price list.",
-      "project": "regal residences"
-    },
-    {
-      "suburb": "Bundall",
-      "state": "QLD",
-      "evidence": "UNIQ, 2-4 Waterford Court, Bundall QLD 4217 (DevLink Group), 22 townhomes with self-contained multi-purpose rooms - the price list's rows read '3 bed plus MPR Tandem'.",
-      "project": "uniq"
-    },
-    {
-      "suburb": "Collingwood Park",
-      "state": "QLD",
-      "evidence": "The email subject names it: 'Fw: $989K - REGISTERED SECONDARY DWELLING - COLLINGWOOD PARK'. Collingwood Park is a locality in QLD and in WA, which is why the subject reader refuses it on its own. The row's address settles it: Cypress Street is a real street in Collingwood Park QLD 4301, and 7000 Cypress St there was a 32-lot residential subdivision sold in March 2026 - new dual-occupancy stock at $989K. Collingwood Park WA is a rural locality near Albany with no such street.",
-      "url": "email:Fw: $989K - REGISTERED SECONDARY DWELLING - COLLINGWOOD PARK"
-    },
-    {
-      "suburb": "Gatton",
-      "state": "QLD",
-      "evidence": "The row's own text reads '99 Woodchester Gatton Cooper D 203' - Woodchester is the estate and Gatton the town, and 15 other rows in this catalogue carrying the same text resolve to Gatton QLD. It is refused automatically because Woodchester is ALSO a locality in South Australia, so the row's text names one place in QLD and another in SA and the reader will not choose between them. Scope note: this is keyed to one dated round-up email; if that subject ever carries a second project the rule would be wrong for it.",
-      "url": "email:Fw: H&L Current Availability - 28th of July"
-    }
-  ]
+ "_README": "Suburbs a stock document cannot state for itself, checked by hand against the developer's own published address. Each rule may match three ways, most precise first: `url` is the exact source_url; `project` is a lowercase substring tested against the row's builder_name and estate_name; `title` is a lowercase substring tested against the document's own front page. url alone is NOT enough -- builders re-upload price lists to fresh links and the rows follow the new URL, so a url-only rule silently stops applying and those listings go back to having no suburb. Keep `evidence` filled in: it is what lets the next person re-check the claim instead of trusting it.",
+ "rules": [
+  {
+   "suburb": "Broadbeach",
+   "state": "QLD",
+   "evidence": "Victoria & Albert, 20 Albert Ave Broadbeach QLD 4218",
+   "url": "https://www.dropbox.com/scl/fo/db9kwomup9qkyxo5c9ifo/AMldxx73oGFLOC976V04r_w/VandA%20Pricelist%20%282%29%20%281%29.pdf?rlkey=mdymvdm5qqm5usogxo3qntzbm&dl=1",
+   "project": "vanda"
+  },
+  {
+   "suburb": "Docklands",
+   "state": "VIC",
+   "evidence": "Ancora at Collins Wharf, 971 Collins St Docklands VIC 3008",
+   "url": "https://www.dropbox.com/scl/fo/ahump3y5wsaryrt6yvz5d/AB3pSjSPevMIamM34jYvOFg/Pricelist.pdf?rlkey=z5zzhj71cqo5slaq0veblf38p&dl=1",
+   "title": "collins wharf"
+  },
+  {
+   "suburb": "Epping",
+   "state": "NSW",
+   "evidence": "Senso by DASCO, 242-244 Beecroft Rd Epping NSW 2121",
+   "url": "https://www.dropbox.com/scl/fo/r4oq78aldoqxodajrqsnv/ADxH-FvGS8cfZxypYE1clY8/Pricelist2026.xlsx?rlkey=lak5v8t1ef49cgrfw3e7rkmoz&dl=1",
+   "project": "senso"
+  },
+  {
+   "suburb": "Murrumbeena",
+   "state": "VIC",
+   "evidence": "Murrumbeena Place, Murrumbeena VIC",
+   "url": "https://www.dropbox.com/scl/fo/c1f6v2x6cixpq0f1oogj1/AOFVkWuRhjLi55Pa8lIiGc8/report_murrumbeena-pricelist.pdf?rlkey=9kgljkgrqcv6d6zxp40qcos2c&dl=1",
+   "project": "murrumbeena"
+  },
+  {
+   "suburb": "Newcastle West",
+   "state": "NSW",
+   "evidence": "Dairy Farmers Towers, 924 Hunter St Newcastle West NSW 2302",
+   "url": "https://www.dropbox.com/scl/fo/n5ye4qrx0jmx82mnocvb3/AIN1I_RojrUOkricdYA4zFE/DFT%20New%20Price%20%281%29.pdf?rlkey=ktn9tb2cu25di9m1injzq1gi6&dl=1",
+   "title": "dairy farmers"
+  },
+  {
+   "suburb": "Richmond",
+   "state": "VIC",
+   "evidence": "The Brightly, 9-15 Brighton St Richmond VIC 3121",
+   "url": "https://www.dropbox.com/scl/fo/imt3l11vrewxt42y5pond/APbkXITlA3Os-ymDLsrra8U/report_the-brightly_pricelist%20%281%29.pdf?rlkey=pxildaywwv43k8tdc8079vhgo&dl=1",
+   "project": "the brightly"
+  },
+  {
+   "suburb": "Melbourne",
+   "state": "VIC",
+   "evidence": "The Albertine by Mirvac, 31 Queens Lane Melbourne VIC 3004",
+   "url": "https://www.dropbox.com/scl/fo/n3hz1ob6gfa39bwzhbtsa/APG25SP4hwuCRqpAgfqFoEw/The%20Albertine%20-%20External%20Agent%20Pricelist%20-%2007.02.26.xlsx?rlkey=ghglxohxf0vnzml98yugug6bm&dl=1",
+   "project": "the albertine"
+  },
+  {
+   "suburb": "Deanside",
+   "state": "VIC",
+   "evidence": "Creekbank, Deanside VIC",
+   "url": "https://www.dropbox.com/scl/fo/tmvs52av16h3wbp43zfyi/ACHsXbHm4qLUmMK-MUqXiQY/CREEKBANK-Pricing-MASTER%2015-6-26%20%281%29%20%281%29.pdf?rlkey=2d5g32bicf57t1epc69zrv88h&dl=1",
+   "project": "creekbank deanside"
+  },
+  {
+   "suburb": "East Brisbane",
+   "state": "QLD",
+   "evidence": "Murcia Residences, 9 Overend St East Brisbane QLD 4169",
+   "url": "https://www.dropbox.com/scl/fo/1zvdwk2mmknms9k51qo96/ALoMhvVUMM38-rY75TjRox0/report_murcia-Pricelist%20%281%29.pdf?rlkey=5b45ytunki9p8mfwuv657tsqr&dl=1",
+   "project": "murcia"
+  },
+  {
+   "suburb": "Donnybrook",
+   "state": "VIC",
+   "evidence": "Balmain estate, Donnybrook VIC",
+   "url": "https://www.dropbox.com/scl/fo/j8ixbm9mtl5gf8dx00apw/ANl4wfoGlUjihDcjP-8vhdk/Balmain%20Price%20List%2020.06.26.pdf?rlkey=mv4y3v5016kslyjkhn1f84lbd&dl=1",
+   "project": "balmain donnybrook"
+  },
+  {
+   "suburb": "Hope Island",
+   "state": "QLD",
+   "evidence": "Serene, Hope Island QLD",
+   "url": "https://www.dropbox.com/scl/fo/it2mw67hz01oa1lrzdt1d/AMP3jz-opkJH4h9sloYQBpw/Hope%20Island%20Serene%20Price%20List.pdf?rlkey=taxu55a6ayxvpxjf2du9q3rol&dl=1",
+   "project": "hope island serene"
+  },
+  {
+   "suburb": "St Kilda Road",
+   "state": "VIC",
+   "project": "fawkner park west",
+   "evidence": "The Fawkner, Fawkner Park / St Kilda Road, Melbourne VIC 3004 - the tower fronts St Kilda Road; 'Fawkner Park West' is the release name, and Fawkner itself is a suburb 15 km north that this project has nothing to do with"
+  },
+  {
+   "suburb": "Maroochydore",
+   "state": "QLD",
+   "project": "millwell",
+   "evidence": "The Millwell, 2 Millwell Road East, Maroochydore QLD 4558 (Habitat Development Group). Millwell Road is in Maroochydore, not Morayfield"
+  },
+  {
+   "suburb": "Bayswater",
+   "state": "VIC",
+   "project": "aston junction",
+   "evidence": "Aston Junction, 493 Mountain Highway, Bayswater VIC 3153 - industrial unit development. Bayswater also exists in WA, so the state is pinned here"
+  },
+  {
+   "suburb": "Waterloo",
+   "state": "NSW",
+   "project": "danks st",
+   "evidence": "Danks St District, 903-921 Bourke Street, Waterloo NSW 2017 (DASCO). The price list's own header reads 'Danks St. District - [Bourke St Residences]', which is why an earlier filename rule tried to call it Bourke -- a NSW town 760 km west"
+  },
+  {
+   "suburb": "Birtinya",
+   "state": "QLD",
+   "project": "st clair",
+   "evidence": "St Clair, 11 Waterside Retreat, Birtinya QLD 4575 (Habitat Development Group) - two towers on Lake Kawana, which is why the rows read 'Lake View'. Not St Clair NSW or St Clair SA, both of which are localities"
+  },
+  {
+   "suburb": "Kings Forest",
+   "state": "NSW",
+   "project": "kings forest",
+   "overrides_state": true,
+   "evidence": "Stockland's Kings Forest, an 869-hectare masterplanned community on the Tweed Coast in the Tweed Shire, NSW, adjacent to Casuarina and near Kingscliff. Kings Forest is a locality in NSW and nowhere else. The ten rows record QLD and their state_source reads 'e-agent page' - the state was taken from the page the flyer was listed on, not the property, and four are already flagged 'conflicting signals'"
+  },
+  {
+   "suburb": "Kings Beach",
+   "state": "QLD",
+   "evidence": "Solara Kings Beach, 19-21 Verney Street, Kings Beach QLD 4551 (Citimax). apartments.com.au lists 7 floors, 23 residences, apartments AND skyhomes, three and four bedroom - the price list has exactly that shape: lots 01-22, Skyhome from level 6, 3-4 bed. The document itself names no locality anywhere in its full text.",
+   "url": "https://www.dropbox.com/scl/fo/d6093l7itzabgqvslmuwc/AG9moDLlhgoxrnQsOTS7o0U/Solara%20Price%20List%20April%202026.pdf?rlkey=5o2n7ydzwijnr6s95k9j8jixu&dl=1",
+   "project": "solara"
+  },
+  {
+   "suburb": "Highgate Hill",
+   "state": "QLD",
+   "evidence": "The Highgate, Dornoch Terrace, Highgate Hill QLD 4101 (Pointcorp) - a 10-storey apartment building, matching the price list's Level / Apt # / Aspect / Body Corp columns. Every QLD development named Highgate is in Highgate Hill; there is no other QLD locality called Highgate.",
+   "url": "https://www.dropbox.com/scl/fo/w9e1f0wfd39myo6zbdnus/h/Highgate%20Price%20New.pdf?rlkey=r6u7rkpo9l027q5x5u2utim43&dl=1",
+   "project": "highgate"
+  },
+  {
+   "suburb": "Alphington",
+   "state": "VIC",
+   "evidence": "Yarra Park Townhomes Stage 1, 65 Parkview Road, Alphington VIC 3078 (U-Home Oceania, Rothelowman). Corroborated inside this catalogue: the separate Parkview Properties price list already resolves to Alphington off its own address.",
+   "url": "https://www.dropbox.com/scl/fo/0m6lwu01auwgqnzi7fddo/h/Yarra%20Park%20Stage%201%20Bonus%20Price%20List.pdf?rlkey=w0zc3npmcarg0ydyxsp6ct802&dl=1",
+   "project": "yarra park"
+  },
+  {
+   "suburb": "South Kingsville",
+   "state": "VIC",
+   "evidence": "KNEW, 82 New Street, South Kingsville VIC 3015 (Frater Group, IN8 Architects) - 32 townhouses in two, three and four bedroom configurations; the price list carries 4/3.5/2 types.",
+   "url": "https://www.dropbox.com/scl/fo/nsvrshjtdqt0jdp82is29/AHz8B2f_HvWm270LQXDD7Hs/Knew%20Street_Pricelist_.xlsx?rlkey=o20obud12r1dkobcg8ynp3jfm&dl=1",
+   "project": "knew street"
+  },
+  {
+   "suburb": "Port Melbourne",
+   "state": "VIC",
+   "evidence": "Port Lane, 201 Williamstown Road, Port Melbourne VIC 3207 (ID_Land, Rothelowman). Decisive: 'Sea Breeze' is one of Port Lane's six named floorplans - 3 bed, 2 bath, 2 car - and appears verbatim in this stock list's rows.",
+   "url": "https://www.dropbox.com/scl/fo/xxs5sj2h0hsec790kfuab/AA3BniKOfdvHKCbx0hXJz6s/Stock%20List%20Port%20Lane.xlsx?rlkey=edgx8bbabb92n4o5sj6mlu0hk&dl=1",
+   "project": "port lane"
+  },
+  {
+   "suburb": "Albany Creek",
+   "state": "QLD",
+   "evidence": "The document says so itself, in a Comments column the extractor does not read: 'Large Terrace design with own street access. Fronting Greensill Rd' and 'looking over parkland area towards Creek'. Greensill Road is in Albany Creek QLD 4035, which also carries townhouse developments of this type.",
+   "url": "https://www.dropbox.com/scl/fo/v94yhnlkq03s9ks8w448o/AAR8V4HneQu0cQCloapp9ME/Albany%20Price%20AGENT.xlsx?rlkey=1twicl1z71706j8v1k4ciwa9n&dl=1",
+   "project": "albany"
+  },
+  {
+   "suburb": "Cooroy",
+   "state": "QLD",
+   "evidence": "The project names its own town: 'Canvas Cooroy'. Cooroy is a QLD locality (Noosa hinterland, 4563) and the rows record QLD. The price list itself names no locality anywhere in its text.",
+   "project": "canvas cooroy"
+  },
+  {
+   "suburb": "Southport",
+   "state": "QLD",
+   "evidence": "Imperial Square by Azzura, 59-73 Meron Street, Southport QLD 4215. 'Regal Azzura Luxury Apartments' and 'Regal Residences' are the same development - both price lists sit in one Dropbox folder (rlkey f0c1qw0raf...), which is what suggested they were one project before the address confirmed it.",
+   "project": "regal azzura"
+  },
+  {
+   "suburb": "Southport",
+   "state": "QLD",
+   "evidence": "Imperial Square by Azzura, 59-73 Meron Street, Southport QLD 4215. Same development and same folder as the Regal Azzura price list.",
+   "project": "regal residences"
+  },
+  {
+   "suburb": "Bundall",
+   "state": "QLD",
+   "evidence": "UNIQ, 2-4 Waterford Court, Bundall QLD 4217 (DevLink Group), 22 townhomes with self-contained multi-purpose rooms - the price list's rows read '3 bed plus MPR Tandem'.",
+   "project": "uniq"
+  },
+  {
+   "suburb": "Collingwood Park",
+   "state": "QLD",
+   "evidence": "The email subject names it: 'Fw: $989K - REGISTERED SECONDARY DWELLING - COLLINGWOOD PARK'. Collingwood Park is a locality in QLD and in WA, which is why the subject reader refuses it on its own. The row's address settles it: Cypress Street is a real street in Collingwood Park QLD 4301, and 7000 Cypress St there was a 32-lot residential subdivision sold in March 2026 - new dual-occupancy stock at $989K. Collingwood Park WA is a rural locality near Albany with no such street.",
+   "url": "email:Fw: $989K - REGISTERED SECONDARY DWELLING - COLLINGWOOD PARK"
+  },
+  {
+   "suburb": "Gatton",
+   "state": "QLD",
+   "evidence": "The row's own text reads '99 Woodchester Gatton Cooper D 203' - Woodchester is the estate and Gatton the town, and 15 other rows in this catalogue carrying the same text resolve to Gatton QLD. It is refused automatically because Woodchester is ALSO a locality in South Australia, so the row's text names one place in QLD and another in SA and the reader will not choose between them. Scope note: this is keyed to one dated round-up email; if that subject ever carries a second project the rule would be wrong for it.",
+   "url": "email:Fw: H&L Current Availability - 28th of July"
+  },
+  {
+   "suburb": "Stafford",
+   "state": "QLD",
+   "evidence": "ARCA Stafford, 1 Theodore Street, Stafford QLD 4053 (apartments.com.au). The sheet's 'Theodore' is the STREET the building stands on, not a suburb - there is also a town called Theodore 500 km north west, which is what the column looked like.",
+   "project": "arca"
+  },
+  {
+   "suburb": "Millfield",
+   "state": "NSW",
+   "evidence": "Millfield Rise, 1721 Mount View Road, Millfield NSW - a 217-lot estate on the outskirts of Cessnock (Newcastle Herald).",
+   "project": "millfield rise"
+  }
+ ]
 }

@@ -574,8 +574,19 @@ def find_suburbs_in_own_document(rows, fetch=None, extract=None):
         stored = str(r["suburb"] or "").strip()
         if stored:
             _sub, why = suburb_quality.resolve(dict(r, suburb_source=""))
-            if suburb_quality.is_searchable(why):
-                continue                       # a value that stands up today is kept
+            # A DOCUMENT THAT NAMES THE SUBURB BEATS A GUESS AT IT.
+            #
+            # This kept any value today's resolve accepts, INCLUDING an inferred one, and
+            # that left the Eternal Homes rows sitting at 83-94% when their own price
+            # list states the answer outright. Those rows store "Dual Key" -- the TYPE
+            # column -- and resolve rescues them by finding "Millfield" elsewhere in the
+            # row's text, so they read correctly and are refused for geocoding and
+            # benchmarking. The document has a column headed SUBURB. Re-reading it
+            # replaces a reading with a statement.
+            #
+            # A LOCATED value is still never touched: only blank, refused, or inferred.
+            if suburb_quality.is_located(why):
+                continue                       # evidence already; nothing to improve
         wanted[url].append(r)
 
     found = []
@@ -599,9 +610,35 @@ def find_suburbs_in_own_document(rows, fetch=None, extract=None):
             # suburb_quality refuses, which is the exact condition that qualified those
             # rows for repair in the first place. Writing them would swap one refused
             # value for another and call it a fix.
-            if suburb and suburb_quality.is_searchable(
-                    suburb_quality.resolve(dict(r, suburb=suburb, suburb_source=""))[1]):
-                found.append((r, suburb))
+            # THE RE-READ MUST BE EVIDENCE, NOT JUST DIFFERENT.
+            #
+            # Widening this to upgrade an INFERRED value made the bar matter. Re-reading
+            # every document proposed 378 changes, and 260 of them were not localities at
+            # all -- 'COAST COUNCIL', 'Whiterock', and 'Dual Key' from the very TYPE
+            # column this run was meant to stop publishing. 63 would have REPLACED a
+            # correct suburb with one: Millfield -> Dual Key, Lochinvar -> Dual Key.
+            #
+            # is_searchable was too weak a test, because it accepts an inferred reading
+            # of the new value. A repair that swaps one guess for another is not a
+            # repair. The re-read is taken only when it makes the row LOCATED.
+            if not suburb:
+                continue
+            _why_new = suburb_quality.resolve(dict(r, suburb=suburb, suburb_source=""))[1]
+            if not suburb_quality.is_located(_why_new):
+                continue
+            # WHERE THE ROW ALREADY READS AS SOMEWHERE, THE DOCUMENT MUST AGREE.
+            #
+            # A blank row has nothing to lose and takes the document's answer. A row that
+            # already shows an inferred suburb is a different case: the re-read is only
+            # allowed to upgrade the EVIDENCE, not to change the answer. Of 118 re-reads,
+            # 9 disagreed and every one of them was a loss -- 'Seacliff' -> 'Adelaide'
+            # trades a suburb for a city, 'Bald Hills' -> 'Ripley' is 40 km. A
+            # disagreement between a document and a row is a data question and it is not
+            # settled by whichever ran last.
+            _shown = suburb_quality.resolve(dict(r, suburb_source=""))[0]
+            if _shown and _shown.strip().lower() != suburb.strip().lower():
+                continue
+            found.append((r, suburb))
     return found
 
 
