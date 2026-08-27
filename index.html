@@ -1357,6 +1357,21 @@
             a low &ldquo;Refreshed&rdquo; on the email channel is how it always looks
             &mdash; it is judged on whether anything arrived, like every source is.
           </p>
+          ${(CHANNELS.unreadable_stocklists && CHANNELS.unreadable_stocklists.count) ? `
+          <div style="margin-top:1rem; padding:0.9rem 1.1rem; border:1px solid var(--border-light);
+                      border-radius:8px; background:var(--bg-page);">
+            <strong style="color:var(--text-heading);">Price lists we could not read
+              (${CHANNELS.unreadable_stocklists.count})</strong>
+            <p style="margin:0.5rem 0 0.6rem; font-size:0.85rem; color:var(--text-body);">
+              These were downloaded successfully and produced no listings, so their
+              projects are missing from the catalogue. Nearly all are price lists saved as
+              a picture rather than text &mdash; there is nothing in the file to read. Ask
+              the builder for the spreadsheet or a text PDF and they will come straight in.
+            </p>
+            <div style="font-size:0.78rem; color:var(--text-muted); max-height:11rem; overflow:auto;">
+              ${CHANNELS.unreadable_stocklists.files.map(f => `<div>${esc(decodeURIComponent(f.split('/').pop().split('?')[0]))}</div>`).join('')}
+            </div>
+          </div>` : ''}
           ${bad.length ? `
           <div style="margin-top:1rem; padding:0.9rem 1.1rem; border:1px solid var(--border-light);
                       border-radius:8px; background:var(--bg-page);">

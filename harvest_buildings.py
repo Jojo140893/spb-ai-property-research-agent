@@ -315,8 +315,36 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
     #
     # The guard that matters is unchanged: a run where nothing was read still aborts, and
     # a partial run is reported loudly rather than passed off as success.
+    _record_unreadable_stocklists()
     any_read = any(v for v in read.values())
     return 2 if any_read else 1
+
+
+def _record_unreadable_stocklists() -> None:
+    """Write down the stocklists this run read nothing out of.
+
+    The harvest and the build are separate processes, so an in-memory list dies with the
+    run. This is what carries it across, and build_web publishes it to the Settings tab.
+
+    On 27 Aug E-Agent served 143 stocklists and 57 of them extracted zero listings --
+    whole projects absent from the catalogue with nothing anywhere saying so. Coleen
+    found one by hand. See sources.spreadsheet_extract.note_unreadable.
+    """
+    import json
+    from pathlib import Path
+
+    try:
+        from sources.spreadsheet_extract import UNREADABLE
+        out = Path(__file__).resolve().parent / "data" / "unreadable_stocklists.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(
+            {"generated": datetime.now().strftime("%d/%m/%Y %H:%M"),
+             "files": UNREADABLE}, indent=1), encoding="utf-8")
+        if UNREADABLE:
+            logger.warning("%d stocklist(s) produced no listings at all; "
+                           "their projects are missing from the catalogue.", len(UNREADABLE))
+    except Exception as exc:                                          # noqa: BLE001
+        logger.info("could not record unreadable stocklists: %s", exc)
 
 
 def _report_benchmark_health(configured: bool, read) -> None:

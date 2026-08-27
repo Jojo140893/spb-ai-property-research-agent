@@ -1410,6 +1410,31 @@ def _assign_variant_ordinals(rows: List[Dict[str, Any]]) -> int:
     return numbered
 
 
+# Stocklists this run read NOTHING out of. Recorded rather than merely logged -- see
+# note_unreadable() below.
+UNREADABLE: List[Dict[str, str]] = []
+
+
+def note_unreadable(kind: str, source_label: str, why: str) -> None:
+    """Record a stocklist that produced no listings, so somebody can see it.
+
+    A FILE THAT YIELDS NOTHING IS INVISIBLE, and that is the whole problem. On 27 Aug
+    E-Agent served 143 stocklists and 57 of them -- 39% -- extracted zero listings. Whole
+    projects are simply absent from the catalogue: Koops, Eastbury, Rockbank, Tunstall,
+    Rosebud, Westwood, Ceduna, Aurora Wollert, Oakleigh, Yarra Park. Coleen found one of
+    them by hand ("i can see there is a townhouse in Geelong ... tried search in the app
+    result not found") because nothing anywhere said the file had been read and discarded.
+
+    Sampled, the cause is nearly uniform: the PDF holds ONE IMAGE and no text at all --
+    a price list exported as a picture. pdfplumber and PyMuPDF both return zero
+    characters, so no text reader can recover them and only OCR could. That is a decision
+    with a real cost, because a misread price in a client report is worse than a missing
+    listing. Until it is made, the honest thing is to say which projects are missing
+    instead of letting them vanish.
+    """
+    UNREADABLE.append({"kind": kind, "file": source_label or "(file)", "why": why})
+
+
 def _log_yield(kind: str, source_label: str, out: List[Dict[str, Any]]) -> None:
     numbered = _assign_variant_ordinals(out)
     links = sum(1 for o in out if o.get("listing_url") or o.get("floorplan_url")
@@ -1417,6 +1442,8 @@ def _log_yield(kind: str, source_label: str, out: List[Dict[str, Any]]) -> None:
     logger.info("%s %s -> %d listing(s), %d with a per-lot link%s", kind,
                 source_label or "(file)", len(out), links,
                 f", {numbered} price-only sibling(s) numbered" if numbered else "")
+    if not out:
+        note_unreadable(kind, source_label, "no listings could be read from it")
 
 
 def extract_from_xlsx(data: bytes, source_label: str = "", builder_hint: str = "") -> List[Dict[str, Any]]:

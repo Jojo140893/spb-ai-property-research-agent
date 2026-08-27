@@ -1560,6 +1560,18 @@ CHANNEL_PUSH_SOURCES = frozenset({"digital email"})
 CHANNEL_PARTIAL_MIN_LIVE = 25
 
 
+def _unreadable_stocklists():
+    """What the last harvest fetched and could read nothing out of."""
+    path = Path(__file__).resolve().parent / "data" / "unreadable_stocklists.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:                                  # pragma: no cover - absent is fine
+        return {"generated": "", "count": 0, "files": []}
+    files = payload.get("files") or []
+    return {"generated": payload.get("generated", ""), "count": len(files),
+            "files": [str(f.get("file") or "")[:120] for f in files][:80]}
+
+
 def _export_channel_health(out_dir: Path, conn) -> dict:
     """When each source last actually produced stock, for the Settings tab.
 
@@ -1701,6 +1713,11 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
         "stale_after_days": CHANNEL_STALE_DAYS, "dead_after_days": CHANNEL_DEAD_DAYS,
         "partial_below_pct": CHANNEL_PARTIAL_PCT,
         "partial_min_live": CHANNEL_PARTIAL_MIN_LIVE,
+        # STOCKLISTS THAT WERE FETCHED AND YIELDED NOTHING. Written by the harvest; see
+        # sources.spreadsheet_extract.note_unreadable for why a file that reads as zero
+        # has to be named rather than logged. 57 of 143 on 27 Aug -- whole projects
+        # missing, and Coleen found one of them by hand before anything said so.
+        "unreadable_stocklists": _unreadable_stocklists(),
         "push_sources": sorted(CHANNEL_PUSH_SOURCES),
         "channels": channels,
         "portals": portals,
