@@ -237,6 +237,8 @@ def resolve(row: Dict[str, Any], index=None) -> Tuple[str, str]:
     # untested, so a bad parse became a suburb.
     raw = str(_display_suburb(row) or row.get("suburb") or "").strip()
     state = str(row.get("state") or "").strip().upper()
+    if not state:
+        state = _state_from_the_rows_own_postcode(row)
 
     # A row that has ALREADY been through here keeps the reason it was given. The
     # deployed search reads the published snapshot, where the suburb is blanked and the
@@ -748,6 +750,50 @@ def _address_locality(row: Dict[str, Any], state: str, index) -> str:
                     continue
                 if index.locate(cand, state):
                     return cand
+    return ""
+
+
+def _state_from_the_rows_own_postcode(row: Dict[str, Any]) -> str:
+    """The state a row's OWN postcode proves, when no state was recorded. '' otherwise.
+
+    Proxima publishes a complete address and no state column:
+
+        Lot 297 Unit 1406, 50CourtRoad, FAIRFIELD, NewSouthWales, 2165
+
+    Fairfield is right there, the postcode is stored in its own column, and 2165 is NSW
+    beyond argument -- but with state empty there was nothing to check "Fairfield"
+    against, so the row resolved to "the source did not state one" and was invisible to
+    every suburb search. 1,189 live rows record no state; 117 of them carry a postcode
+    that settles it.
+
+    THE POSTCODE MUST APPEAR IN THE ROW'S OWN TEXT, and that guard is the whole safety of
+    this. A stocklist line often OPENS with its lot number -- "2226 Whiterock White Rock
+    156 ..." -- and the old parser read that as NSW postcode 2226 on a property in White
+    Rock, Queensland; repair_rows.find_fabricated_postcodes exists to withdraw exactly
+    those. Requiring the stored postcode to also be written in the address means a lot
+    number that merely looks like a postcode cannot supply a state, because it is not in
+    the address as a postcode.
+
+    A postcode names its state deterministically, so this is evidence, not inference: the
+    suburbs it unlocks come back LOCATED, and nothing here relaxes that bar.
+    """
+    postcode = str(row.get("postcode") or "").strip()
+    if not (postcode.isdigit() and len(postcode) == 4):
+        return ""
+    settled = state_from_postcode(postcode)
+    if not settled:
+        return ""
+    # IT MUST BE WHERE A POSTCODE GOES: at the END of the address. Merely finding the
+    # digits somewhere in the text is not enough, and this is the case that proves it --
+    # "2226 Whiterock White Rock White Rock 156 - Facade A" OPENS with its lot number,
+    # 2226 is a real NSW postcode, and the property is in White Rock, Queensland. That is
+    # the precise error repair_rows.find_fabricated_postcodes was written to undo, and a
+    # contains-test walks straight back into it. An Australian address ends with its
+    # postcode; a lot number leads.
+    for field in ("lot_address", "address"):
+        text = str(row.get(field) or "").strip().rstrip(".,;")
+        if text.endswith(postcode) and len(text) > len(postcode):
+            return settled
     return ""
 
 
