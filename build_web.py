@@ -502,6 +502,14 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     _resuburbed = 0
     _suburb_reasons = {}
     _emails = {}          # email subject -> its rows; see the stash inside the loop
+    # Built ONCE, before the loop, and keyed on source_url because source_doc is only
+    # assigned inside it. See the UNCHECKED_NO_STATE branch below for what it is for.
+    try:
+        from api._candidates import _sibling_state_map as _state_map_of
+        _state_by_document = _state_map_of([b for b in buildings if not b.get("superseded_by")])
+    except Exception:                                  # pragma: no cover - import guard
+        _state_by_document = {}
+
     _texts = {}           # id(row) -> its source_text, stashed before it is popped
     for b in buildings:
         # IS THIS A PLACE? 3,854 published rows answered no and were shown as suburbs
@@ -517,6 +525,30 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         # re-identify the row and the next harvest would insert a duplicate.
         before = (b.get("suburb") or "").strip()
         b["suburb"], why = suburb_quality.resolve(b)
+        # A SUBURB THE SOURCE STATED, HELD BACK ONLY FOR WANT OF A STATE.
+        #
+        # 318 rows carry a locality the source plainly wrote and no state column to check
+        # it against, so they published as "stated by the source; no state recorded" --
+        # searchable, but refused for geocoding, distance and benchmarking. That refusal
+        # is right in the abstract: 'Lucknow' is a real place in VIC and another in NSW.
+        #
+        # It is not right when the row's OWN DOCUMENT answers the question. Every one of
+        # the 318 sits on a price list shared with other rows, and where those agree on a
+        # state to within _sibling_state_map's 95% floor, that is evidence about this row
+        # -- the same evidence api/_candidates already trusts at request time, which is
+        # why these rows resolve for a search and were still published unlocated. 218 of
+        # the 318 are settled this way; the other 100 keep the caveat.
+        if why == suburb_quality.UNCHECKED_NO_STATE:
+            _borrowed = None
+            for _f in ("source_url", "estate_name", "builder_name"):
+                _borrowed = _state_by_document.get((_f, str(b.get(_f) or "").strip().lower()))
+                if _borrowed:
+                    break
+            if _borrowed:
+                _sub, _why = suburb_quality.resolve({**b, "state": _borrowed,
+                                                     "suburb_source": ""})
+                if suburb_quality.is_located(_why):
+                    b["suburb"], why = _sub, _why
         b["suburb_source"] = why
         # WHICH DOCUMENT THIS ROW CAME FROM, as a hash rather than the URL.
         #
