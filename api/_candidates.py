@@ -1349,8 +1349,36 @@ def build_packages(brief_dict, rows, today=None):
     packages, counts["same_listing_collapsed"] = _collapse_same_listing(entries)
     packages.sort(key=lambda p: p["advertised_package_price"])
     if len(packages) > MAX_CANDIDATES:
+        # THE CAP USED TO CUT THE BRIEF'S OWN STOCK BEFORE THE BRIEF WAS APPLIED.
+        #
+        # Sorted by price ascending and truncated to the 600 cheapest -- and the suburb
+        # filter runs AFTERWARDS, in scoring_engine. So the cheapest 600 listings in the
+        # whole state were all a search could ever see, whatever was asked for. Measured
+        # on the live snapshot: in VIC the dearest listing that reached scoring was
+        # $666,800, and 2,254 were unreachable; NSW $886,500 and 2,060; QLD $1,216,360
+        # and 478. About half the catalogue could not be returned by any search.
+        #
+        # Coleen hit it on a $845,000 Geelong townhouse and reported the symptom exactly:
+        # "tried search in the app result not found, change the price to 900000, still
+        # not showing". Raising the ceiling made it WORSE -- a higher budget admits more
+        # cheap stock, which pushes the expensive listings further past 600.
+        #
+        # So the requested suburbs are kept first. The cap stays, because it is what
+        # bounds the scoring matrix, but it now spends its budget on stock that can
+        # actually match rather than on the cheapest thing in the state.
+        wanted = {str(s).strip().lower()
+                  for s in (brief_dict.get("primary_suburbs") or [])
+                  if str(s).strip()}
+        if wanted and not _num(brief_dict.get("search_radius_km")):
+            # Same test as scoring_engine's, and deliberately so: at radius 0 it keeps
+            # exactly the rows that will survive the suburb filter, and a radius search
+            # is left alone because the suburb is then not the thing being matched on.
+            asked = [p for p in packages if str(p.get("suburb") or "").strip().lower() in wanted]
+            rest = [p for p in packages if str(p.get("suburb") or "").strip().lower() not in wanted]
+            packages = asked + rest
         counts["truncated"] = len(packages) - MAX_CANDIDATES
         packages = packages[:MAX_CANDIDATES]
+        packages.sort(key=lambda p: p["advertised_package_price"])
     counts["scored"] = len(packages)
     counts["missing_fields"] = missing_field_counts
     counts["unstated_but_scored"] = unstated_but_scored
