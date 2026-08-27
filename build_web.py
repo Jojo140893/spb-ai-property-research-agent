@@ -510,6 +510,24 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     except Exception:                                  # pragma: no cover - import guard
         _state_by_document = {}
 
+    try:
+        from geo import SuburbGeoIndex as _SGI
+        _index_for_names = _SGI()
+    except Exception:                                  # pragma: no cover - import guard
+        _index_for_names = None
+
+    # WHAT THE LOCATED ROWS ON EACH DOCUMENT SAY, for the corroboration pass at the end.
+    _located_says = collections.defaultdict(collections.Counter)
+    for _b in buildings:
+        if _b.get("superseded_by"):
+            continue
+        _s, _w = suburb_quality.resolve(dict(_b, suburb_source=""))
+        if _s and suburb_quality.is_located(_w):
+            for _f in ("source_url", "estate_name"):
+                _k = str(_b.get(_f) or "").strip().lower()
+                if _k:
+                    _located_says[(_f, _k)][_s.strip().lower()] += 1
+
     _texts = {}           # id(row) -> its source_text, stashed before it is popped
     for b in buildings:
         # IS THIS A PLACE? 3,854 published rows answered no and were shown as suburbs
@@ -562,6 +580,41 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
                                                      "suburb_source": ""})
                 if suburb_quality.is_located(_why):
                     b["suburb"], why = _sub, _why
+        # TWO READINGS THAT AGREE IS EVIDENCE; EITHER ONE ALONE IS NOT.
+        #
+        # A row whose suburb was read out of its own text sits at 83-94% and is refused
+        # for geocoding, distance and benchmarking. Where the OTHER rows on its document
+        # have a suburb established independently and they all name the SAME place, and
+        # that place is the one this row read for itself, two separate routes have
+        # arrived at one answer and it is no longer a lone guess.
+        #
+        # ONLY WHERE THEY AGREE. Measured across the catalogue, 199 inferred rows have a
+        # located sibling to check against and 95 of them are CONTRADICTED by it -- and
+        # when they disagree the winner varies: the 26 "Arca, Stafford" rows read Stafford
+        # and their document says Theodore, where Stafford is right and Theodore is that
+        # sheet's Building column; the Warralily rows read Elwood where the document says
+        # Armstrong Creek and the document is right. There is no rule in the disagreement,
+        # which is the whole reason the inferred grade exists. So a contradiction changes
+        # nothing here and the row keeps its caveat.
+        if suburb_quality.is_searchable(why) and not suburb_quality.is_located(why):
+            _mine = str(b.get("suburb") or "").strip().lower()
+            for _f in ("source_url", "estate_name"):
+                _says = _located_says.get((_f, str(b.get(_f) or "").strip().lower()))
+                if _says and len(_says) == 1:
+                    # ...AND THE PROJECT'S OWN NAME MUST NOT NAME SOMEWHERE ELSE.
+                    # "Price List_ARCA, Stafford.xlsx" is 35 apartments in Stafford whose
+                    # suburb column holds "Theodore" -- the Building column of that sheet,
+                    # which is also a real QLD town 500 km away. Those rows agree with
+                    # each other because they share one mistake, so agreement alone
+                    # promoted five of them. The project name is an independent third
+                    # reading and it says Stafford, so it breaks the tie by refusing it.
+                    _project = suburb_quality._longest_locality_in_text(
+                        {"builder_name": b.get("builder_name"), "suburb": "",
+                         "lot_address": ""}, str(b.get("state") or ""), _index_for_names)
+                    _clash = _project and _project.strip().lower() != _mine
+                    if _mine and next(iter(_says)) == _mine and not _clash:
+                        why = suburb_quality.FROM_SIBLING_CONFIRMED
+                    break
         b["suburb_source"] = why
         # WHICH DOCUMENT THIS ROW CAME FROM, as a hash rather than the URL.
         #

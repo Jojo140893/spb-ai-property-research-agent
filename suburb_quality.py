@@ -111,11 +111,17 @@ FROM_VERIFIED = ("checked by hand against the development's published address; t
 # pool as Melbourne house-and-land. They will never have an Australian suburb, so
 # counting them as a suburb gap overstates the gap and hides that they are in there at
 # all. Coleen sells Australian property; this is the honest label for the rest.
+# The row's own reading of itself, CONFIRMED by listings on the same document whose
+# suburb is established independently. Two readings that agree is evidence; either
+# one alone is not. See the note where it is applied in build_web.
+FROM_SIBLING_CONFIRMED = ("read from the row's own text and confirmed by located "
+                          "listings on the same source document")
 BLANK_OVERSEAS = "the listing is not in Australia"
 
 # Reasons whose suburb may be used AS A LOCATION.
 _LOCATED = (STATED, FROM_COMPOSITE, FROM_POSTCODE, FROM_ADDRESS,
-            FROM_ADDRESS_TAIL, FROM_DOCUMENT, FROM_TYPO, FROM_VERIFIED)
+            FROM_ADDRESS_TAIL, FROM_DOCUMENT, FROM_TYPO, FROM_VERIFIED,
+            FROM_SIBLING_CONFIRMED)
 
 # INFERRED, and deliberately not LOCATED.
 #
