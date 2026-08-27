@@ -719,8 +719,17 @@
 
                 <div class="form-row">
                     <div class="form-group">
-                        <label>Max Budget ($)</label>
-                        <input type="number" id="budgetMax" placeholder="no maximum" step="10000">
+                        <label>Price Range ($)</label>
+                        <div style="display:flex; gap:0.5rem; align-items:center;">
+                            <input type="number" id="budgetMin" placeholder="no minimum" step="10000"
+                                   style="flex:1;">
+                            <span style="color:var(--text-muted);">&ndash;</span>
+                            <input type="number" id="budgetMax" placeholder="no maximum" step="10000"
+                                   style="flex:1;">
+                        </div>
+                        <div style="font-size:0.75rem; color:var(--text-muted); margin-top:0.25rem;">
+                            Both exclude. Leave either blank for open-ended.
+                        </div>
                     </div>
                     <!-- NOT A CAP, and calling it one was the problem. This value never
                          excludes anything: scoring_engine grades a package against it for
@@ -2904,6 +2913,7 @@ python state_sync.py push</pre>
             // right, but falling back to 0 would then reject every listing as "over the
             // budget ceiling" and read as a broken page — the same trap the pre-filled
             // "Max Storeys: 1" caused, which hard-rejected every two-storey house.
+            budget_min: numField('budgetMin', 0),
             budget_max: numField('budgetMax', Number.MAX_SAFE_INTEGER),
             preferred_spending_cap: numField('budgetPref',
                                              numField('budgetMax', Number.MAX_SAFE_INTEGER)),

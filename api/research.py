@@ -239,6 +239,34 @@ def run_research(payload):
     agent = _bootstrap.get_agent()
 
     rows, snapshot_path = _candidates.load_snapshot()
+
+    # A REGION NAME MEANS THE AREA, NOT THE ONE SUBURB THAT SHARES ITS NAME.
+    #
+    # Coleen searched "Geelong" and got nothing, then said what was wrong herself:
+    # "Geelong shows region here not the suburb". Of the 60 Geelong-area listings the
+    # catalogue holds, 24 are filed under Armstrong Creek and the rest under Lara,
+    # Leopold and Kensington -- only 4 say "Geelong". Suburbs are matched exactly, so a
+    # region name reached almost none of its own stock.
+    #
+    # Widened only for names on the list in _regions, and only to suburbs the catalogue
+    # actually holds stock in, so a search does not gain two hundred empty localities.
+    # What it covered is reported back in `region_expansion`, because answering a wider
+    # question than the one typed must be visible rather than silent.
+    _expanded = {}
+    try:
+        import _regions
+        from geo import SuburbGeoIndex
+        _index = SuburbGeoIndex()
+        _known = {str(r.get("suburb") or "").strip().lower() for r in rows
+                  if not r.get("superseded_by")}
+        _wider, _expanded = _regions.expand(
+            brief_dict.get("primary_suburbs") or [],
+            str(brief_dict.get("state") or "").strip().upper(), _index, _known)
+        if _expanded:
+            brief_dict = dict(brief_dict, primary_suburbs=_wider)
+    except Exception:                                  # pragma: no cover - import guard
+        _expanded = {}
+
     packages, counts = _candidates.build_packages(brief_dict, rows)
 
     # The local run dedupes captured packages before scoring (kommo_agent.py:79). Stored
@@ -306,6 +334,7 @@ def run_research(payload):
             'search_area': agent.geo.expand_search_suburbs(
                 [s for s in suburbs if s], str(brief_dict.get('state') or '').upper(),
                 coerce_number(brief_dict.get('search_radius_km'), 0) or 0),
+            'region_expansion': _expanded,
             'builder_coverage': {},
             'client_report_html': '',
             'client_report_path': '',
@@ -400,6 +429,7 @@ def run_research(payload):
         'shortlist': [_shortlist_entry(p) for p in result['shortlist']],
         'reports': result['reports'],
         'search_area': result.get('search_area', []),
+        'region_expansion': result.get('region_expansion') or _expanded,
         'builder_coverage': result.get('builder_coverage', {}),
         'client_report_html': result.get('client_report_html', ''),
         # Every pairing of the shortlist, pre-rendered. Colin's own workflow is "two

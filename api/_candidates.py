@@ -947,6 +947,7 @@ def build_packages(brief_dict, rows, today=None):
     _unambiguous_estate = _unambiguous_estate_map(rows)
     budget_max = _num(brief_dict.get("budget_max")) or 0.0
     ceiling = budget_max + BUDGET_HEADROOM if budget_max else None
+    floor = _num(brief_dict.get("budget_min")) or 0.0
     # storeys_max < 2 is the only brief that a missing storey figure could slip past,
     # because any real house-and-land storey value (1 or 2) satisfies a max of 2.
     storeys_max = _int(brief_dict.get("storeys_max"))
@@ -962,7 +963,8 @@ def build_packages(brief_dict, rows, today=None):
 
     counts = {
         "snapshot_rows": len(rows), "other_state": 0, "state_unknown": 0,
-        "not_available": 0, "no_price": 0, "over_budget": 0, "no_suburb": 0,
+        "not_available": 0, "no_price": 0, "over_budget": 0, "under_minimum": 0,
+        "no_suburb": 0,
         "incomplete_facts": 0, "storey_unknown_and_binding": 0, "scored": 0,
         "truncated": 0, "stale_unverified": 0, "same_listing_collapsed": 0,
         "suburb_not_a_locality": 0, "superseded": 0, "availability_unstated": 0,
@@ -1149,6 +1151,15 @@ def build_packages(brief_dict, rows, today=None):
             continue
         if ceiling is not None and price > ceiling:
             counts["over_budget"] += 1
+            continue
+        # A PRICE RANGE, NOT JUST A CEILING. Colin and Coleen search a bracket -- "three
+        # to four hundred" -- and with only a maximum the cheap end of the state filled
+        # the answer every time. A minimum is a real exclusion, unlike the preferred
+        # price, which only ranks; the floor is exact, with no headroom, because a
+        # consultant who types a minimum has ruled that price out rather than nearly
+        # ruled it out.
+        if floor and price < floor:
+            counts["under_minimum"] += 1
             continue
 
         # ONE ANSWER ABOUT WHAT COUNTS AS A PLACE, shared with the published snapshot.

@@ -90,6 +90,9 @@ class ClientBrief:
     # is where he was sitting with a client on the call.
     requires_incentive: bool = False
     additional_notes: str = ""
+    # A FLOOR, added alongside the ceiling: Colin and Coleen search a bracket.
+    # Optional so every existing caller and saved brief keeps working unchanged.
+    budget_min: float = 0.0
 
 
 @dataclass

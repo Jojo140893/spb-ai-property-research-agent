@@ -89,11 +89,13 @@ class ClientBriefParser:
             suburbs = [str(s).strip() for s in suburbs_raw if str(s).strip()]
 
         budget_max = _f(raw_data, 'budget_max', 0.0)
+        budget_min = _f(raw_data, 'budget_min', 0.0)
         preferred_cap = _f(raw_data, 'preferred_spending_cap', budget_max)
 
         return ClientBrief(
             client_name=raw_data.get('client_name') or 'Unnamed Client',
             budget_max=budget_max,
+            budget_min=budget_min,
             preferred_spending_cap=preferred_cap,
             deposit_amount=_f(raw_data, 'deposit_amount', 0.0),
             finance_status=raw_data.get('finance_status') or 'Pre-approved',
