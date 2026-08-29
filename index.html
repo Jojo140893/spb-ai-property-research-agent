@@ -2967,7 +2967,7 @@ python state_sync.py push</pre>
             // the deployed site is simply untrue: the endpoint IS there. Coleen hit
             // exactly that, with a populated shortlist badge from the automatic
             // load-time run sitting above a message telling her the feature was local-only.
-            let res = null, lastErr = null;
+            let res = null, lastErr = null, authExpired = false;
             for (let attempt = 1; attempt <= 2; attempt++) {
                 if (attempt === 2) {
                     resultsDiv.innerHTML = '<div style="text-align:center; padding:3rem; color:var(--accent-blue); font-weight:600;">Still working — retrying…</div>';
@@ -2980,12 +2980,28 @@ python state_sync.py push</pre>
                         body: JSON.stringify({ client_brief: brief })
                     });
                     if (res.ok && (res.headers.get('Content-Type') || '').includes('json')) break;
+                    // 401 IS NOT WORTH RETRYING, and telling somebody to press the button
+                    // again when their sign-in has expired just fails identically. The
+                    // middleware already answers {"error":"auth_required","login":"/login"}
+                    // for exactly this — a fetch gets JSON rather than 40 KB of login page —
+                    // and the page was throwing that away and printing "usually temporary".
+                    if (res.status === 401) { authExpired = true; res = null; break; }
                     lastErr = `the server answered ${res.status}`;
                     res = null;
                 } catch (e) {
                     lastErr = e.message || 'the connection dropped';
                     res = null;
                 }
+            }
+            if (!res && authExpired) {
+                // A 12-hour session (SESSION_SECONDS in middleware.js). The brief is still
+                // on the page, so signing in and pressing the button again costs nothing.
+                resultsDiv.innerHTML = `<div class="offline-note"><strong>Your sign-in has
+                    expired.</strong> Sessions last 12 hours.
+                    <a href="/login?next=${encodeURIComponent(location.pathname + location.search)}">Sign
+                    in again</a>, then press <em>Execute Property Research &amp; Benchmarking</em>.
+                    Your brief above has been kept.</div>`;
+                return;
             }
             if (!res) {
                 // 404 is the only status that really means "no pipeline here".
