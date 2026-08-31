@@ -414,6 +414,9 @@ def _dead_channels(read: Dict[str, int], stored: Dict[str, int]):
 #     run can lower it, so a second consecutive collapse is still caught.
 # The higher of the two applies. Both are deliberately generous — this exists to catch a
 # collapse, not ordinary movement, and a false alarm at 3am stops the whole daily run.
+# Channels that DELIVER rather than re-list. See _collapsed_channels.
+PUSH_CHANNELS = frozenset({"digital email"})
+
 _COLLAPSE_FLOOR = 0.5      # of the previous run's read
 _STORED_FLOOR = 0.25       # of the channel's stored rows
 # Below this, a day's ordinary churn is indistinguishable from a fault, so no floor is
@@ -434,6 +437,24 @@ def _collapsed_channels(read: Dict[str, int], stored: Dict[str, int],
     out = []
     for channel, n in sorted(read.items()):
         if n <= 0:
+            continue
+        if channel in PUSH_CHANNELS:
+            # A SOURCE THAT PUSHES CANNOT COLLAPSE, because it never re-lists. This test
+            # compares what a channel handed back against what it holds, which means
+            # something only for a channel that re-lists everything each run. A builder
+            # emails a price list when they have one; on a quiet day the inbox yields a
+            # handful and that is a normal day, not a failure.
+            #
+            # IT WAS FATAL. "digital email: read 9 this run, against 170 stored (expected
+            # at least 42)" failed the harvest step every night from 27 to 31 Aug. The
+            # database was still pushed each time -- 16,908 rows on the 31st -- but the
+            # workflow gates "Publish to Vercel" on success(), so the site went four days
+            # without being republished while the data underneath it was fresh. The same
+            # false positive was fixed on the Settings tab (build_web.CHANNEL_PUSH_SOURCES)
+            # and this copy of the reasoning was missed.
+            #
+            # Silence is still caught: _dead_channels handles a channel that reads NOTHING,
+            # and that test is untouched.
             continue
         floors = []
         prev = int(previous.get(channel) or 0)
