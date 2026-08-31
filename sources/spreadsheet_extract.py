@@ -1176,6 +1176,12 @@ def _is_a_control_row(text: str) -> bool:
 _PRICE_RANGE_SENTENCE = re.compile(r"\bprices?\s+rang\w*\s+from\b|\brang\w*\s+from\s*\$", re.I)
 
 
+# "PACKAGE PRICE HOUSE PRICE A$803,364 A$803,364 Disclaimer: Price based on home type..."
+# -- a totals line lifted out of a brochure, carrying the column LABELS with it.
+_PRICE_LABEL_ROW = re.compile(
+    r"\b(?:package|house|land|total|build)\s+price\b", re.I)
+
+
 def _is_a_price_range_sentence(text: str, fields: Dict[str, Any]) -> bool:
     """True for a marketing line quoting a RANGE, which is a project summary not a lot.
 
@@ -1194,7 +1200,20 @@ def _is_a_price_range_sentence(text: str, fields: Dict[str, Any]) -> bool:
     """
     if fields.get("lot_number") or fields.get("bedrooms") or fields.get("land_size_sqm"):
         return False
-    return bool(_PRICE_RANGE_SENTENCE.search(str(text or "")))
+    body = str(text or "")
+    # A TOTALS LINE CARRYING ITS OWN COLUMN LABELS is the same thing in another shape:
+    # "PACKAGE PRICE HOUSE PRICE A$803,364 A$803,364 Disclaimer: Price based on home type
+    # and floor plan". Two of these are live, and the damage is not only that they are not
+    # properties -- the extractor took "PRICE" out of that header as the SUBURB, and Price
+    # is a real town on the Yorke Peninsula, so with the row's SA state it passed the
+    # gazetteer, was graded located, and put two phantom listings on the map there.
+    #
+    # Measured across 9,628 live rows: 14 carry the word "Disclaimer" and 12 of those are
+    # real listings that merely quote one. Requiring a price COLUMN LABEL and no lot
+    # identity selects exactly the two and nothing else.
+    if _PRICE_LABEL_ROW.search(body):
+        return True
+    return bool(_PRICE_RANGE_SENTENCE.search(body))
 
 
 def _is_price_fragment(text: str, fields: Dict[str, Any]) -> bool:

@@ -112,3 +112,34 @@ def test_a_real_listing_quoting_a_range_survives():
                                           {"bedrooms": 2})
     for text in REAL_LISTINGS:
         assert not _is_a_price_range_sentence(text, {}), text
+
+
+def test_a_totals_line_carrying_its_column_labels_is_not_a_listing():
+    """"PACKAGE PRICE HOUSE PRICE A$803,364 A$803,364 Disclaimer: Price based on home
+    type and floor plan" — a totals line lifted out of a brochure, with the column
+    headings still attached.
+
+    The damage was not only that these are not properties. The extractor took "PRICE" out
+    of that header as the SUBURB, and Price is a real town on the Yorke Peninsula, so with
+    the row's SA state it passed the gazetteer, was graded LOCATED, and put two phantom
+    listings on the map there.
+    """
+    from sources.spreadsheet_extract import _is_a_price_range_sentence
+
+    line = ("PACKAGE PRICE HOUSE PRICE A$803,364 A$803,364 "
+            "Disclaimer: Price based on home type and floor plan")
+    assert _is_a_price_range_sentence(line, {})
+    assert _listing_from_row(line, [], "", "t", "") is None
+
+
+def test_a_real_listing_that_merely_quotes_a_price_label_survives():
+    """14 live rows carry the word "Disclaimer" and 12 of them are real listings. The lot
+    identity is what separates them, and without that guard this rule would delete stock."""
+    from sources.spreadsheet_extract import _is_a_price_range_sentence
+
+    assert not _is_a_price_range_sentence("Lot 42 Package Price $650,000",
+                                          {"lot_number": "42"})
+    assert not _is_a_price_range_sentence(
+        "4 Bed 2 Bath Total Price $780,000 Disclaimer applies", {"bedrooms": 4})
+    for text in REAL_LISTINGS:
+        assert not _is_a_price_range_sentence(text, {}), text
