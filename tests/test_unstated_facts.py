@@ -134,13 +134,21 @@ def test_an_unstated_fact_is_named_as_an_advisory_not_assumed():
 
 
 def test_the_client_report_omits_an_unstated_spec_rather_than_printing_none():
+    """An unstated spec is now a BLANK TO FILL rather than an omission — Colin asked for
+    an edit function on the bed/bath configuration, because the source portals leave it
+    empty more often than any other field. What must never change is that the client is
+    not shown the word None, and that a spec the source DID state is still on the page.
+    """
     brief = ClientBriefParser.parse_dict(_brief(bedrooms_min=0, house_size_min_sqm=0))
     prop = _prop(bedrooms=None, house_size_sqm=None)
     prop.scoring = ScoringEngine.evaluate_property(brief, prop)
     html = ClientReportGenerator.generate_html(brief, [prop])
     assert "None bed" not in html and "None m" not in html
     assert ">None<" not in html
-    assert "2 bath" in html, "the specs that ARE stated must still be shown"
+    # Stated: shown, and editable. The markup carries the value and the unit separately.
+    assert ">2</span> bath" in html, "the specs that ARE stated must still be shown"
+    # Unstated: a blank the consultant can fill, and one that print hides if they do not.
+    assert "spec empty" in html, "an unstated spec must be offered as a blank to fill"
 
 
 def test_the_markdown_summary_says_not_stated_rather_than_crashing():

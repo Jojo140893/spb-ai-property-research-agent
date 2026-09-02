@@ -17,6 +17,24 @@ def _money(v) -> str:
     return f"${v:,.0f}" if v is not None else "TBC"
 
 
+def _fillable(value, unit: str) -> str:
+    """A spec the consultant can correct in the report, blank where the source was silent.
+
+    Rendered as one contenteditable span per figure so a click lands on the number and
+    nothing else. A value the source DID state is still shown normally -- editing it is
+    allowed but not invited.
+    """
+    if value is None or value == "":
+        # The UNIT travels inside the wrapper so print can hide the pair together. Leave
+        # a stranded "bed" behind and the line reads as broken rather than incomplete.
+        return (f'<span class="spec empty">'
+                f'<span class="fill" contenteditable="true" '
+                f'title="not stated by the source - click to add">&nbsp;&nbsp;</span>'
+                f' {_esc(unit)}</span>')
+    return (f'<span class="spec"><span class="fill" contenteditable="true">'
+            f'{_esc(value)}</span> {_esc(unit)}</span>')
+
+
 def _suburb_caveat(p) -> str:
     """A visible mark when the suburb is OUR reading rather than the source's statement.
 
@@ -230,10 +248,22 @@ class ClientReportGenerator:
             # A spec the stocklist never stated is omitted from this line, not printed as
             # "None bed" and not formatted at all — f"{None:,.0f}" raises. The client sees
             # the facts that were verified; the gaps are named in the advisories instead.
+            # THE CONFIGURATION IS EDITABLE, because the source portals leave it blank.
+            #
+            # Colin, 31 Aug: reports need an edit function "specifically for the bedroom
+            # configuration field (e.g. 1/1), to correct data gaps from source portals".
+            # A stocklist that never stated a bed count is common -- it is the single most
+            # frequent gap in the catalogue -- and until now the report simply omitted it,
+            # so a consultant had no way to put the number in without editing the PDF.
+            #
+            # A MISSING value is now a blank to fill rather than nothing at all, so the
+            # gap is visible and clickable. The editing affordance is screen-only; see the
+            # print rules in the stylesheet, which also hide any blank left unfilled so a
+            # client never receives a dotted placeholder.
             spec = " &middot; ".join(bit for bit in (
-                f"{p.bedrooms} bed" if p.bedrooms is not None else "",
-                f"{p.bathrooms} bath" if p.bathrooms is not None else "",
-                f"{p.car_spaces} car" if p.car_spaces is not None else "",
+                _fillable(p.bedrooms, "bed"),
+                _fillable(p.bathrooms, "bath"),
+                _fillable(p.car_spaces, "car"),
                 f"{p.land_size_sqm:,.0f} m&sup2; land" if p.land_size_sqm else "",
                 f"{p.house_size_sqm:,.0f} m&sup2; house" if p.house_size_sqm else "",
                 _esc(p.builder_name),
@@ -281,7 +311,30 @@ class ClientReportGenerator:
   table.comps th, table.comps td {{ border: 1px solid #ddd; padding: .35rem .5rem; text-align: left; }}
   ul.risks {{ margin: .25rem 0; padding-left: 1.25rem; }}
   footer {{ font-size: .8rem; color: #666; border-top: 1px solid #ccc; margin-top: 2rem; padding-top: 1rem; }}
+  .fill {{ border-bottom: 1px dashed #1450c8; min-width: 1.1em; display: inline-block;
+           padding: 0 .15em; outline: none; }}
+  .fill:focus {{ background: #eef4ff; }}
+  .spec.empty .fill {{ background: #fffbe6; }}
+  .editnote {{ font-size: .8rem; color: #8a6d3b; font-style: italic; margin: .5rem 0 1rem; }}
+  @media print {{
+    /* A CLIENT NEVER SEES THE SCAFFOLDING. The dashes and the highlight are there to
+       invite a correction on screen; on paper they would read as a defect. A blank left
+       unfilled hides its unit too, so the line does not print a stranded 'bed'. */
+    .fill {{ border-bottom: none; background: none !important; }}
+    .spec.empty {{ display: none; }}
+    .editnote {{ display: none; }}
+  }}
 </style>
+<script>
+  // A FILLED BLANK MUST PRINT. The wrapper carries .empty so print can hide a gap the
+  // consultant chose to leave; the moment they type into it, it is no longer a gap.
+  document.addEventListener('input', function (e) {{
+    var fill = e.target.closest && e.target.closest('.fill');
+    if (!fill) return;
+    var spec = fill.parentNode;
+    spec.classList.toggle('empty', !fill.textContent.trim());
+  }});
+</script>
 <header>
   {_logo_html()}
   <div class="titles">
@@ -289,6 +342,7 @@ class ClientReportGenerator:
     <p class="meta">Prepared for <strong>{_esc(brief.client_name)}</strong> &middot; {date_str} &middot; Budget up to {_money(brief.budget_max)} &middot; {_esc(brief.state)}</p>
   </div>
 </header>
+<p class="editnote">Any figure with a dashed underline can be clicked and corrected before you print &mdash; the source portals leave the bed / bath / car configuration blank more often than anything else. A blank you leave unfilled is hidden when the report prints.</p>
 <p>Based on your requirements ({brief.bedrooms_min}+ bedrooms, {brief.bathrooms_min}+ bathrooms,
 {brief.car_spaces_min}+ car spaces{', ' + ', '.join(_esc(s) for s in brief.primary_suburbs) if brief.primary_suburbs else ''}),
 we reviewed available stock and shortlisted the following {len(selected)} option(s) for you.</p>
