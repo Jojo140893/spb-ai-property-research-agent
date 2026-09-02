@@ -366,13 +366,7 @@ FIND_CARDS_JS = r"""
   let oversize = 0;
   const priced = [...document.querySelectorAll('body *')].filter(el => {
     if (!el.innerText) return false;
-    // A TABLE ROW IS NOT A CONTAINER. The cap exists to stop a wrapper being mistaken
-    // for a card; a <tr>'s children are CELLS by definition, so a wide table trips it on
-    // width alone and loses every row. The 3 Sep harvest logged this on the Hermitage,
-    // Bathla and Torsion pages, each of which shows "only part of its stock" in the app.
-    const allCells = el.children.length > 0 &&
-                     [...el.children].every(c => c.tagName === 'TD' || c.tagName === 'TH');
-    if (el.children.length > 12 && !allCells) {
+    if (el.children.length > 12) {
       // Counted, not just skipped. A wide table whose cells all share a signature can
       // put every real row over this line and return nothing at all — measured: 0 of 6
       // rows on a 13-column table. Silent, it reads as "this page has no stock".
