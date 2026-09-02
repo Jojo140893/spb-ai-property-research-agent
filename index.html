@@ -1299,6 +1299,15 @@
             badge.textContent = bad.length ? `${bad.length} need attention` : 'all sources OK';
             badge.className = 'pill ' + (bad.length ? 'pill-conditions' : 'pill-recommend');
         }
+        // ONE BAD NAME MUST NOT TAKE THE TAB DOWN. decodeURIComponent throws a URIError
+        // on a truncated percent-escape ("...Kingsville%2"), and this list is built from
+        // filenames that were cut to a fixed length — so two of the 57 threw, the render
+        // died mid-way, and the whole Data Sources panel sat on "Loading..." forever.
+        // The name is decoration; the panel is not.
+        const prettyFile = f => {
+            const name = String(f || '').split('/').pop().split('?')[0];
+            try { return decodeURIComponent(name); } catch (e) { return name; }
+        };
         const pill = s => s === 'ok'
             ? '<span class="pill pill-recommend">sending stock</span>'
             : s === 'partial'
@@ -1369,7 +1378,7 @@
               the builder for the spreadsheet or a text PDF and they will come straight in.
             </p>
             <div style="font-size:0.78rem; color:var(--text-muted); max-height:11rem; overflow:auto;">
-              ${CHANNELS.unreadable_stocklists.files.map(f => `<div>${esc(decodeURIComponent(f.split('/').pop().split('?')[0]))}</div>`).join('')}
+              ${CHANNELS.unreadable_stocklists.files.map(f => `<div>${esc(prettyFile(f))}</div>`).join('')}
             </div>
           </div>` : ''}
           ${bad.length ? `

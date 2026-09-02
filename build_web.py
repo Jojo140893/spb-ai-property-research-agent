@@ -1560,6 +1560,12 @@ CHANNEL_PUSH_SOURCES = frozenset({"digital email"})
 CHANNEL_PARTIAL_MIN_LIVE = 25
 
 
+def _trimmed_url(value, limit=120):
+    """A URL cut to `limit` characters without leaving a half-written %-escape behind."""
+    text = str(value or "")[:limit]
+    return re.sub(r"%[0-9A-Fa-f]?$", "", text)
+
+
 def _unreadable_stocklists():
     """What the last harvest fetched and could read nothing out of."""
     path = Path(__file__).resolve().parent / "data" / "unreadable_stocklists.json"
@@ -1569,7 +1575,10 @@ def _unreadable_stocklists():
         return {"generated": "", "count": 0, "files": []}
     files = payload.get("files") or []
     return {"generated": payload.get("generated", ""), "count": len(files),
-            "files": [str(f.get("file") or "")[:120] for f in files][:80]}
+            # Truncating a URL can cut a percent-escape in half ("%20" -> "%2"), which
+            # is not merely ugly: decodeURIComponent throws on it in the browser. Trim any
+            # dangling escape off the end so the published name is always decodable.
+            "files": [_trimmed_url(f.get("file")) for f in files][:80]}
 
 
 def _export_channel_health(out_dir: Path, conn) -> dict:
