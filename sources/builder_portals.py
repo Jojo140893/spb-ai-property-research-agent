@@ -27,6 +27,114 @@ from builder_registry import BuilderRegistry
 logger = logging.getLogger("spb.scraper.portals")
 
 
+# How hard we try to reach the bottom of a stock list. 40 rounds at ~600ms is under a
+# minute per portal, and every portal seen so far settles in under 10.
+# Widens any "show N entries" control to its largest option. Returns the value chosen,
+# or "" when the page has no such control. Deliberately blind to the table library: it
+# only looks for a <select> whose options are numbers.
+_EXPAND_PAGE_LENGTH_JS = r"""
+() => {
+  const sel = [...document.querySelectorAll('select')].find(
+    e => [...e.options].length > 1 && [...e.options].every(o => /^-?\d+$/.test(o.value)));
+  if (!sel) return '';
+  const best = [...sel.options].map(o => o.value)
+      .sort((a, b) => Math.abs(+b) - Math.abs(+a))[0];
+  if (sel.value === best) return '';
+  sel.value = best;
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+  return best;
+}
+"""
+
+
+_SCROLL_ROUNDS = 40
+_MORE_BUTTON = ("button:has-text('Load more'), button:has-text('Show more'), "
+                "a:has-text('Load more'), a:has-text('Show more'), "
+                "button:has-text('Next'), a[rel=next]")
+
+
+def _load_every_card(scraper, cfg) -> None:
+    """Scroll and click until the stock list stops growing.
+
+    NOTHING IN THIS FILE PAGED. The listings URL was opened once and whatever had
+    rendered was taken as the whole stock, so a portal that lazy-loads or paginates gave
+    us its first screen and no more. On 3 Sep that read Hermitage at 92 against the 171
+    its own config records at /allpackages, and Torsion at exactly 80 -- a round number is
+    a render cap, not a coincidence, and this codebase has met one before: Proxima's
+    accordion serves 80 lots per project and needed a price-asc/price-desc union to get
+    past it. The dashboard showed all three as "ONLY PART OF ITS STOCK" and the cause was
+    on our side.
+
+    Counting is what makes it safe to stop: the loop ends when a round adds nothing, so a
+    portal that fits on one screen costs one extra count and a page that never settles is
+    bounded by _SCROLL_ROUNDS rather than running forever.
+    """
+    # COUNT WHAT THE HARVEST ACTUALLY READS. The configured listing_card_selector is a
+    # snapshot of a page's markup and goes stale: on Hermitage it now matches NOTHING,
+    # and the 92 listings the harvest reports come from the adaptive extractor instead.
+    # A loop that counted the selector saw 0, concluded the list was fully loaded, and
+    # returned before scrolling once.
+    from .adaptive_extract import FIND_CARDS_JS
+
+    selector = cfg.listing_card_selector or ""
+
+    def _count():
+        n = 0
+        if selector:
+            try:
+                n = len(scraper.page.query_selector_all(selector))
+            except Exception:                               # noqa: BLE001
+                n = 0
+        if n:
+            return n
+        try:
+            found = scraper.page.evaluate(FIND_CARDS_JS)
+            return len((found or {}).get("cards") or [])
+        except Exception:                                   # noqa: BLE001
+            return 0
+
+    # A PAGED TABLE SHOWS TEN ROWS AND CALLS IT THE STOCK LIST.
+    #
+    # Hermitage's /allpackages is a DataTables grid with a "1 2 3 4 5 ... 10" pager and a
+    # page-length select defaulting to 10. Nothing here ever touched either, so the
+    # harvest read the first page and reported it as the whole portal -- 92 listings
+    # against the 171 the portal's own config records, and "ONLY PART OF ITS STOCK" on
+    # the dashboard every day. Scrolling does not help: the pager is JS, not lazy load.
+    #
+    # Setting the length select to its largest option is one action and needs no
+    # knowledge of the pager's markup. Measured live on Hermitage: 92 -> 182.
+    try:
+        widened = scraper.page.evaluate(_EXPAND_PAGE_LENGTH_JS)
+        if widened:
+            scraper.page.wait_for_timeout(2500)
+            logger.info("[%s] page length set to %s so the whole table renders.",
+                        cfg.name, widened)
+    except Exception:                                       # noqa: BLE001
+        pass
+
+    seen = _count()
+    start = seen
+    for _ in range(_SCROLL_ROUNDS):
+        try:
+            scraper.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            more = scraper.page.query_selector(_MORE_BUTTON)
+            if more:
+                try:
+                    more.click(timeout=2000)
+                except Exception:                           # noqa: BLE001
+                    pass
+            scraper.page.wait_for_timeout(600)
+        except Exception:                                   # noqa: BLE001
+            break
+        now = _count()
+        if now <= seen:
+            break
+        seen = now
+    if seen > start:
+        logger.info("[%s] %d card(s) after loading the whole list, up from %d on first paint.",
+                    cfg.name, seen, start)
+
+
 class BuilderPortalSource(PropertySource):
     def __init__(self, registry: BuilderRegistry = None):
         self.registry = registry or BuilderRegistry()
@@ -153,6 +261,8 @@ class BuilderPortalSource(PropertySource):
                         scraper.page.wait_for_timeout(1200)
                     except Exception:
                         pass
+
+                _load_every_card(scraper, cfg)
 
                 # Re-probe adaptively (page may have changed after a login) and take
                 # whichever path actually yields listings. A loose generic selector
