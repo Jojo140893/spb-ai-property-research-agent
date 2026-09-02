@@ -23,3 +23,8 @@ requests>=2.31.0
 # it the same way this machine does. Used ONLY on a page with no extractable text -- see
 # sources.spreadsheet_extract._ocr_rows and the measurement that made it safe.
 rapidocr-onnxruntime>=1.3.0
+# Renders an image-only PDF page so it can be OCR'd, and reads text pdfplumber cannot.
+# NOT optional despite the lazy import: without it _ocr_rows returns no rows and the 57
+# picture price lists stay invisible -- which is exactly what happened on the 31 Aug run,
+# where OCR worked on my machine and did nothing on the runner.
+PyMuPDF>=1.24.0

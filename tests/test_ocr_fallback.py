@@ -29,12 +29,30 @@ def test_a_missing_engine_is_not_an_error():
     assert SE._ocr_rows(Page()) == []
 
 
-def test_the_runner_installs_it():
+def test_the_runner_installs_everything_ocr_imports():
+    """EVERY import inside _ocr_rows, not just the one I remembered.
+
+    This asserted only that rapidocr was declared. PyMuPDF was not, so on the 31 Aug run
+    `import fitz` raised inside the lazy import, _ocr_rows returned no rows, and
+    "Koops Price.pdf -> 0 listing(s)" came back exactly as before — OCR working on my
+    machine and doing nothing in production. Deriving the list from the function source is
+    what stops the next dependency being forgotten the same way.
+    """
+    import re
     from pathlib import Path
 
-    req = Path(SE.__file__).resolve().parents[1].joinpath(
-        "requirements.txt").read_text(encoding="utf-8")
-    assert "rapidocr" in req, "the harvest runs on a fresh runner; it must be installed"
+    root = Path(SE.__file__).resolve().parents[1]
+    req = root.joinpath("requirements.txt").read_text(encoding="utf-8").lower()
+    src = Path(SE.__file__).read_text(encoding="utf-8")
+    block = src[src.index("def _ocr_rows"):src.index("def _pdf_rows_from_lines")]
+    modules = set(re.findall(r"^\s*(?:import|from)\s+([A-Za-z_][A-Za-z0-9_]*)", block, re.M))
+    # The distribution name differs from the import name for these.
+    package_for = {"fitz": "pymupdf", "rapidocr_onnxruntime": "rapidocr"}
+    for mod in modules:
+        name = package_for.get(mod, mod)
+        assert name in req, (
+            "_ocr_rows imports %r but %r is not in requirements.txt — it will work here "
+            "and do nothing on the runner" % (mod, name))
 
 
 def test_rows_are_grouped_into_bands_not_detection_order():
