@@ -403,6 +403,77 @@ def find_spec_fragments(rows):
     return out
 
 
+# Sources that RE-LIST everything they hold on every run. For these, a listing dropping
+# off the list is the source telling us it is gone. An inbox is not one of them: a builder
+# emails a price list when they have one, so silence there means nothing at all.
+RELISTING_CHANNELS = frozenset({
+    "E-Agent", "Proxima", "Direct Builder Portal (live)",
+})
+# How long a listing must be absent from its OWN list before we take the hint.
+WITHDRAWN_AFTER_DAYS = 14
+# ...and how recently that list must have been read for its silence to mean anything.
+SOURCE_READ_WITHIN_DAYS = 3
+
+
+def _as_date(value):
+    try:
+        d, m, y = str(value or "").split("/")
+        return datetime(int(y), int(m), int(d))
+    except Exception:                                      # noqa: BLE001
+        return None
+
+
+def find_withdrawn_from_source(rows, today=None):
+    """Listings whose own source has gone on re-listing everything except them.
+
+    THE APP WAS SHOWING PROPERTIES THAT HAD SOLD. Colin, 7 Sep: he searched Geelong at
+    $650-750k, the app offered a DBN Homes lot at $668,000, and the builder's live list
+    had a different property on that row at $722,000 marked sold. The $668,000 one was not
+    on the list at all. It had gone, and we were still advertising it.
+
+    These portals re-list their whole stock every run, so a listing DISAPPEARING is the
+    only "sold" signal they ever send. Nothing here acted on it, so a sold lot stayed live
+    forever: 1,418 listings across 49 builders, 60 of them DBN Homes.
+
+    THE GATE IS THE ROW'S OWN LIST, not its channel. A channel is far too broad -- E-Agent
+    covers a hundred documents, and one of them going quiet says nothing about the rest.
+    So rows are grouped by the document they came from, and a row is only withdrawn when
+    THAT document has been read within SOURCE_READ_WITHIN_DAYS and has gone
+    WITHDRAWN_AFTER_DAYS without including this row. On the DBN list that is exactly the
+    shape: 287 of its rows were re-listed four days ago and 61 were not.
+
+    Reversible on purpose. The row is superseded, never deleted, so a listing withdrawn in
+    error comes straight back the next time its source lists it again.
+    """
+    today = today or datetime.now()
+    live = [r for r in rows if not r["superseded_by"]
+            and str(r["source_channel"] or "") in RELISTING_CHANNELS]
+    groups = collections.defaultdict(list)
+    for r in live:
+        # The row's own document. source_doc is a BUILD-time field (build_web hashes the
+        # url into the snapshot); in the database the document is source_url, with the
+        # stocklist file behind it, and a channel+builder pair as the last resort for a
+        # portal that has no per-document URL at all.
+        key = (str(r["source_url"] or "").strip()
+               or str(r["stocklist_file"] or "").strip()
+               or "%s|%s" % (r["source_channel"] or "", r["builder_name"] or ""))
+        groups[key].append(r)
+
+    out = []
+    for members in groups.values():
+        dates = [d for d in (_as_date(r["date_checked"]) for r in members) if d]
+        if not dates:
+            continue
+        newest = max(dates)
+        if (today - newest).days > SOURCE_READ_WITHIN_DAYS:
+            continue                       # the list itself is stale; its silence proves nothing
+        for r in members:
+            seen = _as_date(r["date_checked"])
+            if seen and (newest - seen).days >= WITHDRAWN_AFTER_DAYS:
+                out.append((r, (newest - seen).days))
+    return out
+
+
 def find_duplicate_groups(rows):
     """Groups of live rows sharing a source_text, reduced to strictly redundant copies."""
     by = collections.defaultdict(list)
@@ -702,7 +773,12 @@ def main(apply_changes):
               f"state={r['state']!r} -> state cleared")
 
     controls = find_control_rows(live)
+    withdrawn = find_withdrawn_from_source(rows)
     print(f"\n8. spreadsheet filter rows stored as listings: {len(controls)}")
+    print(f"\n9. listings their own source has stopped re-listing: {len(withdrawn)}")
+    for r, silent in sorted(withdrawn, key=lambda x: -x[1])[:6]:
+        print(f"     {str(r['builder_name'] or '?')[:24]:<26} "
+              f"silent {silent} day(s)   {str(r['lot_address'] or '')[:48]}")
     for r in controls[:3]:
         print(f"     {str(r['builder_name'] or '?')[:24]:<26} {str(r['source_text'])[:58]!r}")
     fragments = find_spec_fragments(live)
@@ -775,6 +851,9 @@ def main(apply_changes):
     for r in controls:
         cur.execute("UPDATE buildings SET superseded_by=?, superseded_at=? WHERE id=?",
                     ("spreadsheet filter row, not a listing", now, r["id"]))
+    for r, _silent in withdrawn:
+        cur.execute("UPDATE buildings SET superseded_by=?, superseded_at=? WHERE id=?",
+                    ("withdrawn: the source stopped listing it", now, r["id"]))
     for r, suburb in reread:
         # The stored content_hash goes stale here, exactly as it does for every other
         # correction above. That is the documented trade: the identity is recomputed at
@@ -793,6 +872,7 @@ def main(apply_changes):
           f"{len(twin_losers)} suburb-less twin(s) superseded, "
           f"{len(fragments)} spec fragment(s) withdrawn, "
           f"{len(controls)} filter row(s) withdrawn, "
+          f"{len(withdrawn)} sold/withdrawn listing(s) retired, "
           f"{len(refuted)} refuted state(s) cleared, "
           f"{len(reread)} suburb(s) re-read from the row's own document")
     after = len([r for r in _rows(conn) if not r["superseded_by"]])
