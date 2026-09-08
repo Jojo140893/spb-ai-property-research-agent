@@ -480,6 +480,22 @@ def _strip_validity(text: str) -> str:
     return out if len(out) >= 4 else str(text or "")
 
 
+# "12 SOLD", "3 REMAINING", "24 Available" -- a running count printed between the
+# stages of a price list. See the guard in _is_group_header.
+_A_TALLY = re.compile(
+    # The number is not always a plain count. Apartment lists tally by UNIT — "4.01
+    # RESERVED", "2.03 SOLD" — where 4.01 is level four, unit one, so the digits carry a
+    # dot and the first pattern missed thirteen rows that still showed RESERVED and SOLD
+    # in the estate column of available stock.
+    r"[\d][\d.\-/ ]*\s*(sold|available|remaining|left|under\s*offer|on\s*hold|reserved)"
+    r"\b.{0,12}",
+    re.I)
+
+
+_A_STATUS_WORD = re.compile(
+    r"\b(sold|available|reserved|under\s*offer|on\s*hold|withdrawn|settled)\b", re.I)
+
+
 def _is_group_header(text: str, fields: Dict[str, Any]) -> bool:
     """Estate/builder/region banner rather than a lot row."""
     if fields.get("advertised_package_price"):
@@ -509,6 +525,20 @@ def _is_group_header(text: str, fields: Dict[str, Any]) -> bool:
     # own, four characters of pure digits, which slipped under the ceiling below and took
     # the estate of 9 rows on the FRD Homes stocklist.
     if re.fullmatch(r"[\d\s.,/-]+(?:\s+[A-Z]{1,3})?", stripped):
+        return False
+    # A TALLY IS NOT A SECTION. Eastbury's price list prints "12 SOLD" and "24 SOLD"
+    # between its stages -- a count of what has gone, not the name of anything -- and the
+    # digit rule above lets it through because SOLD is four letters and the exemption
+    # there allows only a short state code. 93 available listings were published with an
+    # estate reading "12 SOLD", so the word SOLD sat in the estate column of stock that is
+    # very much for sale, which is exactly what a person scanning the table reacts to.
+    if _A_TALLY.fullmatch(stripped):
+        return False
+    # NOR IS A STATUS COLUMN. "Sale Status SOLD AVAILABLE SOLD AVAILABLE SOLD" is a whole
+    # column flattened onto one line, and it became the estate of three available lots.
+    # A place is named once; a name that says SOLD or AVAILABLE twice over is the column,
+    # not the estate.
+    if len(_A_STATUS_WORD.findall(stripped)) >= 2:
         return False
     # A LINE THAT BEGINS MID-SENTENCE IS A CONTINUATION, NOT A SECTION.
     #

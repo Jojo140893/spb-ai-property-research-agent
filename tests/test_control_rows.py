@@ -143,3 +143,29 @@ def test_a_real_listing_that_merely_quotes_a_price_label_survives():
         "4 Bed 2 Bath Total Price $780,000 Disclaimer applies", {"bedrooms": 4})
     for text in REAL_LISTINGS:
         assert not _is_a_price_range_sentence(text, {}), text
+
+
+# --------------------------------------------------- a tally is not a section name
+
+def test_a_sold_tally_is_not_an_estate():
+    """Eastbury's price list prints "12 SOLD" and "24 SOLD" between its stages. The
+    section test read them as estate names, so 94 AVAILABLE listings at $1,299,000 and up
+    were published with an estate of "12 SOLD" — the word SOLD in the estate column of
+    stock that is very much for sale, on a page whose availability filter was working
+    perfectly."""
+    from sources.spreadsheet_extract import _is_group_header
+
+    for tally in ("12 SOLD", "24 SOLD", "1 SOLD", "29 SOLD", "27 RESERVED",
+                  "3 Available", "12 remaining"):
+        assert not _is_group_header(tally, {}), tally
+
+
+def test_a_real_section_name_still_is_one():
+    """The guard must not eat a section that merely starts with a number — these lists
+    are full of "152-156 Bancroft Terrace - Stage 1, Deception Bay"."""
+    from sources.spreadsheet_extract import _is_group_header
+
+    for real in ("Aire Estate", "Currumbin Waters",
+                 "House and Land Packages, Adelaide",
+                 "152-156 Bancroft Terrace - Stage 1, Deception Bay"):
+        assert _is_group_header(real, {}), real

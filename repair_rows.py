@@ -474,6 +474,36 @@ def find_withdrawn_from_source(rows, today=None):
     return out
 
 
+def find_tally_estates(rows):
+    """Rows whose estate name is a running count, not a place.
+
+    Eastbury's price list prints "12 SOLD" and "24 SOLD" between its stages, and the
+    section test read them as estate names. 93 live listings were published with an estate
+    of "12 SOLD" — every one of them AVAILABLE, at $1,299,000 and up — so the word SOLD sat
+    in the estate column of stock that is very much for sale.
+
+    That is what a person scanning the table reacts to, and it is why the app looked like
+    it was offering sold property while the availability filter was working perfectly:
+    nothing marked unavailable was ever shown, but the word was on screen anyway.
+
+    Cleared rather than corrected. The tally says nothing about which estate the lot is in,
+    and a blank estate is honest where an invented one is not.
+    """
+    from sources.spreadsheet_extract import _A_STATUS_WORD, _A_TALLY
+
+    def _is_a_tally(name):
+        # Either shape: a count ("12 SOLD", "4.01 RESERVED"), or a whole status COLUMN
+        # flattened onto one line ("Sale Status SOLD AVAILABLE SOLD AVAILABLE SOLD"),
+        # which named the estate of three available lots. A place is named once.
+        return (bool(_A_TALLY.fullmatch(name))
+                or len(_A_STATUS_WORD.findall(name)) >= 2)
+
+    return [r for r in rows
+            if not r["superseded_by"]
+            and str(r["estate_name"] or "").strip()
+            and _is_a_tally(str(r["estate_name"]).strip())]
+
+
 def find_duplicate_groups(rows):
     """Groups of live rows sharing a source_text, reduced to strictly redundant copies."""
     by = collections.defaultdict(list)
@@ -774,7 +804,9 @@ def main(apply_changes):
 
     controls = find_control_rows(live)
     withdrawn = find_withdrawn_from_source(rows)
+    tallies = find_tally_estates(rows)
     print(f"\n8. spreadsheet filter rows stored as listings: {len(controls)}")
+    print(f"\n10. estate names that are a sold tally, not a place: {len(tallies)}")
     print(f"\n9. listings their own source has stopped re-listing: {len(withdrawn)}")
     for r, silent in sorted(withdrawn, key=lambda x: -x[1])[:6]:
         print(f"     {str(r['builder_name'] or '?')[:24]:<26} "
@@ -851,6 +883,8 @@ def main(apply_changes):
     for r in controls:
         cur.execute("UPDATE buildings SET superseded_by=?, superseded_at=? WHERE id=?",
                     ("spreadsheet filter row, not a listing", now, r["id"]))
+    for r in tallies:
+        cur.execute("UPDATE buildings SET estate_name=NULL WHERE id=?", (r["id"],))
     for r, _silent in withdrawn:
         cur.execute("UPDATE buildings SET superseded_by=?, superseded_at=? WHERE id=?",
                     ("withdrawn: the source stopped listing it", now, r["id"]))
@@ -873,6 +907,7 @@ def main(apply_changes):
           f"{len(fragments)} spec fragment(s) withdrawn, "
           f"{len(controls)} filter row(s) withdrawn, "
           f"{len(withdrawn)} sold/withdrawn listing(s) retired, "
+          f"{len(tallies)} tally estate name(s) cleared, "
           f"{len(refuted)} refuted state(s) cleared, "
           f"{len(reread)} suburb(s) re-read from the row's own document")
     after = len([r for r in _rows(conn) if not r["superseded_by"]])
