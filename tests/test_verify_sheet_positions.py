@@ -727,3 +727,44 @@ def test_applying_a_report_skips_rows_that_are_no_longer_live():
     src = inspect.getsource(V._apply_report)
     assert 'v["id"] in by_id' in src, "the apply no longer guards against a stale id"
     assert "no longer live and were skipped" in src, "a skipped row is not reported"
+
+
+def test_the_hashes_survive_a_fresh_runner():
+    """The nightly runs on a fresh GitHub runner: data/sheet_check.json is written at step
+    4/7 and thrown away with the workspace, so a report-to-report comparison would never
+    once fire in production. The database is the one thing that survives the night,
+    because state_sync carries it to the bucket and back.
+    """
+    import sqlite3 as _sq
+    import tempfile
+    from pathlib import Path
+
+    from database import ResearchDatabase
+
+    tmp = Path(tempfile.mkdtemp()) / "hashes.db"
+    ResearchDatabase(db_path=tmp)                      # creates document_reads
+    con = _sq.connect(str(tmp))
+    assert V._previous_digests(con) == {}, "a first run has nothing to compare against"
+
+    per_doc = {"https://a/x.xlsx": {"sha256": "abc123", "fresh": 40},
+               "https://b/y.xlsx": {"sha256": "def456", "fresh": 7},
+               "https://c/z.xlsx": {"fresh": 0}}       # unreadable, nothing to remember
+    assert V._remember_digests(con, per_doc) == 2
+    assert V._previous_digests(con) == {"https://a/x.xlsx": "abc123",
+                                        "https://b/y.xlsx": "def456"}
+
+    # tomorrow the same document comes back different
+    V._remember_digests(con, {"https://a/x.xlsx": {"sha256": "CHANGED", "fresh": 38}})
+    assert V._previous_digests(con)["https://a/x.xlsx"] == "CHANGED"
+    con.close()
+
+
+def test_a_database_without_the_table_is_not_an_error():
+    """repair_rows and this script open the database with sqlite3 directly, so the table
+    exists only once a ResearchDatabase has been constructed against that file. A run
+    before then must degrade to "no comparison", never crash."""
+    import sqlite3 as _sq
+    con = _sq.connect(":memory:")
+    assert V._previous_digests(con) == {}
+    assert V._remember_digests(con, {"https://a": {"sha256": "x", "fresh": 1}}) == 0
+    con.close()

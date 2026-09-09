@@ -541,6 +541,42 @@ def _rows(conn):
     return conn.execute("SELECT * FROM buildings").fetchall()
 
 
+def _previous_digests(conn) -> dict:
+    """What each document looked like the last time this ran, url -> sha256.
+
+    FROM THE DATABASE, NOT FROM THE REPORT FILE. The nightly runs on a fresh GitHub
+    runner: data/sheet_check.json is written at step 4/7 and thrown away with the
+    workspace at the end of the job, so a report-to-report comparison would never once
+    fire in production. The database is the one thing that survives the night, because
+    state_sync carries it to the bucket and back.
+    """
+    try:
+        return {r[0]: r[1] for r in
+                conn.execute("SELECT url, sha256 FROM document_reads WHERE sha256 <> ''")}
+    except sqlite3.Error:
+        return {}                          # table not created yet; nothing to compare
+
+
+def _remember_digests(conn, per_doc) -> int:
+    """Record what each document looked like today, for tomorrow to compare against."""
+    stamp = datetime.now().isoformat(timespec="seconds")
+    rows = [(url, d.get("sha256") or "", int(d.get("fresh") or 0), stamp)
+            for url, d in per_doc.items() if d.get("sha256")]
+    if not rows:
+        return 0
+    try:
+        conn.executemany(
+            "INSERT INTO document_reads (url, sha256, rows_read, seen_at) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(url) DO UPDATE SET "
+            "sha256=excluded.sha256, rows_read=excluded.rows_read, seen_at=excluded.seen_at",
+            rows)
+        conn.commit()
+    except sqlite3.Error as exc:           # a database written before the table existed
+        logger.info("could not record document hashes (%s)", exc)
+        return 0
+    return len(rows)
+
+
 def _apply_report(conn, rows, path):
     """Write the corrections a saved report describes, changing nothing else."""
     import json
@@ -599,16 +635,7 @@ def main(args):
     # LAST NIGHT'S HASHES, so a file nobody edited cannot be read as a file that lost
     # lots. run_daily.py passes --save data/sheet_check.json every night, and the run
     # reads back what the previous one wrote before overwriting it.
-    previous = {}
-    if args.save:
-        try:
-            import json
-            with open(args.save, encoding="utf-8") as fh:
-                previous = {d["url"]: d.get("sha256")
-                            for d in json.load(fh).get("documents", [])
-                            if d.get("sha256")}
-        except (OSError, ValueError, KeyError, TypeError):
-            previous = {}                  # no previous run, or one written before hashes
+    previous = _previous_digests(conn)
     if previous:
         print(f"comparing against {len(previous)} document(s) hashed on the last run")
 
@@ -677,6 +704,8 @@ def main(args):
         print(f"     {str(r['builder_name'] or '?')[:20]:22} "
               f"{str(r['availability_status'] or '(none)')[:14]:16} "
               f"{str(r['lot_address'] or '')[:40]}")
+
+    _remember_digests(conn, per_doc)
 
     if args.save:
         # THE EVIDENCE, KEPT. 666 listings came back absent on the first full pass, and
