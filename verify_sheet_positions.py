@@ -105,6 +105,11 @@ ABSENT_STATUS = "Not Available"
 # make a claim about. A sentinel rather than a flag so it cannot be mistaken for data.
 _A_PAGE_NOT_A_FILE = ("__a_page_not_a_file__",)
 
+# Returned by fetch when SOME of what is behind the link came back and some did not. The
+# document cannot be compared against what we store from it, because we cannot tell a lot
+# that was removed from a lot that is in the file we failed to download. No claim is made.
+_A_PIECE_IS_MISSING = ("__a_piece_is_missing__",)
+
 
 def _row_key(text) -> str:
     """A stable key for one source row, tolerant of the noise a PDF reader leaves.
@@ -361,6 +366,25 @@ def _fetchers():
         """
         got = fetch_stocklist(url, label=url)
         pieces = [(f.label or f.url or url, f.data) for f in got if f.data]
+        # A PIECE THAT DID NOT ARRIVE IS NOT A PIECE THAT IS NOT THERE.
+        #
+        # remote_stocklist reports a failed piece by setting `problem` and returning
+        # normally -- a per-file GET that 404s, a subfolder it cannot list, or one of the
+        # hard caps _DBX_MAX_FILES=12 / _DBX_MAX_FOLDERS=20 quietly truncating a large
+        # folder. Keeping only the pieces with bytes threw that signal away, and the
+        # result is the worst shape this script can be handed: a folder that returned 8
+        # of its 12 files looks exactly like a complete list that has shrunk. Its missing
+        # listings then supply the absences AND the shrinkage together, so
+        # `unexplained = len(absent) - shrank` cancels to zero and every absence is
+        # believed. Neither of the other guards sees it -- the 60% partial-read floor is
+        # a share of ROWS (last night's report has a list at 42 of 70, one row above the
+        # cliff), and a folder short one file hashes differently, so the sha256 guard
+        # reads it as an edited price list.
+        if any(f.problem for f in got):
+            logger.info("%s: %d piece(s) did not arrive (%s) - making no claim",
+                        url[:60], sum(1 for f in got if f.problem),
+                        next(f.problem for f in got if f.problem)[:70])
+            return _A_PIECE_IS_MISSING
         if pieces:
             return pieces
         # A PAGE, NOT A FILE. remote_stocklist answers KIND_HTML with NO bytes on purpose:
@@ -417,7 +441,14 @@ def _digest(pieces) -> str:
     return h.hexdigest()
 
 
-def verify(rows, fetch=None, extract=None, limit=0, on_document=None, previous=None):
+# A document that yields this share or less of what it yielded last time has been
+# truncated, not emptied by sales. Deliberately generous -- a list really can lose half
+# its stock in a fortnight -- because this is the last guard, not the first.
+TRUNCATED_AGAINST_LAST_RUN = 50
+
+
+def verify(rows, fetch=None, extract=None, limit=0, on_document=None, previous=None,
+           previous_rows=None):
     """Open every document behind these rows and check what we say about each listing.
 
     Returns (results, per_document) where results is [(row, verdict, new_row)] and
@@ -427,6 +458,7 @@ def verify(rows, fetch=None, extract=None, limit=0, on_document=None, previous=N
     unchanged since then cannot have lost a lot, so none of its absences are believed.
     """
     previous = previous or {}
+    previous_rows = previous_rows or {}
     if fetch is None or extract is None:
         _f, _e = _fetchers()
         fetch, extract = fetch or _f, extract or _e
@@ -460,6 +492,11 @@ def verify(rows, fetch=None, extract=None, limit=0, on_document=None, previous=N
             except Exception as exc:                   # a document today's code cannot read
                 logger.info("cannot parse %s (%s)", url[:70], type(exc).__name__)
                 fresh = []
+        if data is _A_PIECE_IS_MISSING:
+            per_doc[url] = {"stored": len(group), "fresh": 0, "incomplete_fetch": True,
+                            "verdicts": collections.Counter({UNREADABLE: len(group)})}
+            results.extend((r, UNREADABLE, None) for r in group)
+            continue
         if data is _A_PAGE_NOT_A_FILE:
             per_doc[url] = {"stored": len(group), "fresh": 0, "a_page_not_a_file": True,
                             "verdicts": collections.Counter({UNREADABLE: len(group)})}
@@ -467,6 +504,17 @@ def verify(rows, fetch=None, extract=None, limit=0, on_document=None, previous=N
             continue
         if not fresh:
             per_doc[url] = {"stored": len(group), "fresh": 0,
+                            "verdicts": collections.Counter({UNREADABLE: len(group)})}
+            results.extend((r, UNREADABLE, None) for r in group)
+            continue
+        # AGAINST LAST NIGHT'S OWN READ, not only against what we store. A folder that
+        # gave up 40 rows last night and 12 tonight has been truncated, whatever its hash
+        # says -- and the hash cannot see it, because a folder short one file hashes
+        # differently and so reads as an edited price list.
+        was = previous_rows.get(url) or 0
+        if was and len(fresh) * 100 // was <= TRUNCATED_AGAINST_LAST_RUN:
+            per_doc[url] = {"stored": len(group), "fresh": len(fresh), "partial": True,
+                            "read_last_run": was,
                             "verdicts": collections.Counter({UNREADABLE: len(group)})}
             results.extend((r, UNREADABLE, None) for r in group)
             continue
@@ -557,6 +605,22 @@ def _previous_digests(conn) -> dict:
         return {}                          # table not created yet; nothing to compare
 
 
+def _previous_row_counts(conn) -> dict:
+    """How many rows each document yielded last time, url -> count.
+
+    _remember_digests has been writing this every night and nothing read it. It is the
+    cheapest possible check on a truncated fetch: a folder that gave up 40 rows last night
+    and 12 tonight has not been read, whatever its hash says -- a folder short one file
+    hashes differently, so the sha256 guard reads that as an edited price list.
+    """
+    try:
+        return {r[0]: int(r[1] or 0) for r in
+                conn.execute("SELECT url, rows_read FROM document_reads "
+                             "WHERE COALESCE(rows_read,0) > 0")}
+    except sqlite3.Error:
+        return {}                          # table not created yet; nothing to compare
+
+
 def _remember_digests(conn, per_doc) -> int:
     """Record what each document looked like today, for tomorrow to compare against."""
     stamp = datetime.now().isoformat(timespec="seconds")
@@ -640,7 +704,8 @@ def main(args):
         print(f"comparing against {len(previous)} document(s) hashed on the last run")
 
     results, per_doc = verify(rows, limit=args.limit, on_document=progress,
-                              previous=previous)
+                              previous=previous,
+                              previous_rows=_previous_row_counts(conn))
     tally = collections.Counter(v for _r, v, _n in results)
     print()
     # WHAT WAS NOT CHECKED, STATED FIRST. "Confirm all the listings are present" is only

@@ -78,3 +78,41 @@ def test_the_export_carries_it(monkeypatch, tmp_path):
     import inspect
     assert '"sheet_check": _sheet_check()' in inspect.getsource(
         build_web._export_channel_health)
+
+
+def test_the_nightly_step_is_report_only_and_bounded():
+    """Two restraints the pre-merge review required, pinned so neither is lost.
+
+    NO --apply: this script's docstring justifies acting on a single sighting because
+    "the next harvest that finds the lot writes its availability back" -- but
+    record_building writes availability only when the fresh read SUPPLIED one, and 1,951
+    of the 6,730 rows in scope come from sources that never state it. On the last real run
+    94 rows were marked Not Available and 21 had no previous status to restore.
+
+    --limit: unbounded, the step opens 491 documents serially, about an hour on top of a
+    harvest that took 65, 65, 66 and 69 minutes on the last four successful runs -- past
+    the job's cap, which cancels the run and discards the night's harvest with it.
+    """
+    import re
+    src = (APP / "run_daily.py").read_text(encoding="utf-8", errors="replace")
+    step = re.search(r'"verify_sheet_positions\.py"[^)]*', src)
+    assert step, "the sheet-check step has been removed from the nightly"
+    args = step.group(0)
+    assert '"--apply"' not in args, \
+        "the nightly applies sheet-check writes again; they are not reversible for " \
+        "sources that never state availability"
+    assert '"--limit"' in args, "the sheet-check step is unbounded again"
+
+
+def test_the_job_cap_leaves_room_for_the_harvest_and_the_check():
+    """The harvest alone has taken 65-69 minutes on every recent run. A cancellation skips
+    "Publish to Vercel" (if: success()) and kills the 8/8 state_sync push inside a
+    finally, so the whole night is discarded -- an expense out of all proportion to the
+    step that causes it."""
+    import re
+    yml = (APP / ".github" / "workflows" / "daily-harvest.yml").read_text(
+        encoding="utf-8", errors="replace")
+    caps = [int(m) for m in re.findall(r"^\s*timeout-minutes:\s*(\d+)", yml, re.M)]
+    assert caps, "no job timeout found"
+    assert max(caps) >= 150, f"the harvest job cap is {max(caps)}m; 65-69m of harvest " \
+                             f"plus the sheet check does not fit"

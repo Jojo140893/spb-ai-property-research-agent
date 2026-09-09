@@ -768,3 +768,65 @@ def test_a_database_without_the_table_is_not_an_error():
     assert V._previous_digests(con) == {}
     assert V._remember_digests(con, {"https://a": {"sha256": "x", "fresh": 1}}) == 0
     con.close()
+
+
+# ------------------- a piece that did not arrive is not a piece that is not there
+
+def test_a_folder_missing_some_of_its_files_makes_no_claim():
+    """The worst shape this script can be handed, found in pre-merge review.
+
+    remote_stocklist reports a failed piece by setting `problem` and returning normally --
+    a per-file GET that 404s, a subfolder it cannot list, or the hard caps
+    _DBX_MAX_FILES=12 / _DBX_MAX_FOLDERS=20 quietly truncating a large folder. Keeping
+    only the pieces WITH bytes threw that away, so a folder that returned 8 of its 12
+    files looked exactly like a complete list that had shrunk -- and its missing listings
+    then supplied the absences AND the shrinkage together, so
+    `unexplained = len(absent) - shrank` cancelled to zero and every absence was believed.
+    """
+    stored = [_stored(n, id=n, lot=str(n), street=f"{n} Some Rd") for n in range(1, 21)]
+    fresh = [_fresh(n, lot=str(n), street=f"{n} Some Rd") for n in range(1, 14)]
+    results, per_doc = V.verify(stored, fetch=lambda u: V._A_PIECE_IS_MISSING,
+                                extract=lambda p, **k: fresh)
+    assert {v for _r, v, _n in results} == {V.UNREADABLE}
+    assert per_doc["https://x/y.xlsx"]["incomplete_fetch"] is True
+
+
+def test_the_fetcher_reports_a_problem_piece_rather_than_dropping_it():
+    """Pinned at the source, because the discard was a single `if f.data`."""
+    import inspect
+    src = inspect.getsource(V._fetchers)
+    assert "f.problem" in src, "a failed piece is being silently discarded again"
+    assert "_A_PIECE_IS_MISSING" in src
+
+
+def test_a_document_that_shrank_against_last_night_makes_no_claim():
+    """A folder that gave up 40 rows last night and 12 tonight has been truncated,
+    whatever its hash says -- and the hash cannot see it, because a folder short one file
+    hashes differently and so reads as an edited price list.
+    """
+    stored = [_stored(n, id=n, lot=str(n), street=f"{n} Some Rd") for n in range(1, 41)]
+    fresh = [_fresh(n, lot=str(n), street=f"{n} Some Rd") for n in range(1, 13)]
+    results, per_doc = V.verify(stored, fetch=lambda u: [("a", b"x")],
+                                extract=lambda p, **k: fresh,
+                                previous_rows={"https://x/y.xlsx": 40})
+    assert {v for _r, v, _n in results} == {V.UNREADABLE}
+    assert per_doc["https://x/y.xlsx"]["read_last_run"] == 40
+
+
+def test_an_ordinary_night_of_sales_is_not_read_as_truncation():
+    """The guard is deliberately generous: a list really can lose stock. 30 of 40 back
+    after 40 last night is a normal fortnight, not a broken fetch."""
+    stored = [_stored(n, id=n, lot=str(n), street=f"{n} Some Rd") for n in range(1, 41)]
+    fresh = [_fresh(n, lot=str(n), street=f"{n} Some Rd") for n in range(1, 31)]
+    results, _ = V.verify(stored, fetch=lambda u: [("a", b"x")],
+                          extract=lambda p, **k: fresh,
+                          previous_rows={"https://x/y.xlsx": 40})
+    assert collections.Counter(v for _r, v, _n in results)[V.ABSENT] == 10
+
+
+def test_a_first_run_has_no_row_count_to_compare_against():
+    stored = [_stored(n, id=n, lot=str(n), street=f"{n} Some Rd") for n in range(1, 41)]
+    fresh = [_fresh(n, lot=str(n), street=f"{n} Some Rd") for n in range(1, 31)]
+    results, _ = V.verify(stored, fetch=lambda u: [("a", b"x")],
+                          extract=lambda p, **k: fresh, previous_rows={})
+    assert collections.Counter(v for _r, v, _n in results)[V.ABSENT] == 10
