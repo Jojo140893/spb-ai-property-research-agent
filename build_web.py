@@ -250,6 +250,67 @@ def _FOLDER_CAPABILITY(url: str) -> bool:
     return any(m in url for m in ("dropbox.com/scl/fo/", "/:f:/", "sharepoint.com/:f:"))
 
 
+# A row the filter shows may not display a word that says it cannot be bought. Whole
+# words only -- "The Reserve" is an estate and "Settlers Run" is a street.
+_SOLD_WORD_ON_SHOW = re.compile(
+    r"\b(sold|on\s*hold|under\s*offer|reserved|withdrawn|deposit\s*taken|settled)\b",
+    re.I)
+# The columns index.html renders as text in the stock table. A sold word anywhere in
+# these is a sold word the client can see.
+_VISIBLE_TEXT_COLUMNS = ("estate_name", "lot_address", "title_status", "incentive_text")
+# Above this the build stops. Below it, the build says so and carries on: one OCR-garbled
+# line should not cost Coleen a whole day of fresh data, but a systemic break should.
+_SOLD_ON_SHOW_LIMIT = 20
+
+
+def _assert_no_sold_stock_on_show(path: Path) -> int:
+    """Rows the filter SHOWS that nonetheless read as sold, on screen, to a person.
+
+    Ahsan, 7 Sep: "I want you to see that there are not any buildings that sold or not
+    available. Show up in the the filter because I see". Twice I answered by measuring
+    availability_status, found it clean, and told him it was fine. He was looking at the
+    word SOLD in the ADDRESS column, which no status check would ever have found.
+
+    So this checks what he checks: the text the table actually renders. Every other guard
+    in this file asks whether the DATA is right; this one asks what the screen says.
+
+    NOT A HARD ZERO. repair_rows.find_sold_word_without_status runs earlier in the same
+    nightly and turns these into a real status, so the expected count here is nought. One
+    survivor is an OCR garble and is not worth withholding a day of fresh stock over; a
+    couple of dozen means that repair stopped running, which is worth stopping for.
+    """
+    with path.open(encoding="utf-8") as fh:
+        snap = json.load(fh)
+    keys, rows = snap.get("keys") or [], snap.get("rows") or []
+    at = {k: i for i, k in enumerate(keys)}
+    if "availability_status" not in at:
+        return 0
+    try:
+        from api._candidates import NOT_AVAILABLE
+    except ImportError:                                # pragma: no cover - api not on path
+        return 0
+    columns = [at[c] for c in _VISIBLE_TEXT_COLUMNS if c in at]
+    sup = at.get("superseded_by")
+    offenders = []
+    for row in rows:
+        if sup is not None and row[sup]:
+            continue                                   # hidden from the table already
+        if str(row[at["availability_status"]] or "").strip().lower() in NOT_AVAILABLE:
+            continue                                   # correctly filtered out
+        for i in columns:
+            if _SOLD_WORD_ON_SHOW.search(str(row[i] or "")):
+                offenders.append(row)
+                break
+    if len(offenders) > _SOLD_ON_SHOW_LIMIT:
+        raise SystemExit(
+            "[abort] %d listing(s) the filter SHOWS display a sold/on-hold word where a "
+            "person reads. The limit is %d. repair_rows.find_sold_word_without_status "
+            "turns these into a real status and runs earlier in run_daily.py -- check "
+            "whether that step failed tonight."
+            % (len(offenders), _SOLD_ON_SHOW_LIMIT))
+    return len(offenders)
+
+
 def _assert_no_folder_capability_urls(path: Path) -> None:
     """No FOLDER share link may reach the public snapshot.
 
@@ -1148,8 +1209,20 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
             # readable by anyone the proxy serves and outlive the login entirely.
             # `no-cache` still allows the browser's own copy with an ETag revalidation, so
             # a repeat visit is a 304 rather than 7 MB again.
-            {"source": "/stock.json", "headers": [
-                {"key": "Cache-Control", "value": "private, no-cache"}]},
+            # EVERY DATA FILE, not just stock.json.
+            #
+            # The Settings tab fetches channels.json with cache:'no-store', which bypasses
+            # the BROWSER and not Vercel's edge. With no Cache-Control on that path the CDN
+            # kept serving an older copy: on 3 Sep the page showed "Checked 12:04" and a
+            # Hermitage figure from before the harvest, hours after a snapshot generated at
+            # 12:53 had been deployed. It reads exactly like a fix that did not work.
+            #
+            # stock.json was given this header and its siblings were forgotten, so each new
+            # published file has quietly inherited the wrong default.
+            *[{"source": "/%s" % name,
+               "headers": [{"key": "Cache-Control", "value": "private, no-cache"}]}
+              for name in ("stock.json", "channels.json", "builders.json",
+                           "benchmarks.json", "vendor-assets.json", "suburbs.json")],
         ],
     }
     if fn:
@@ -1566,6 +1639,23 @@ def _trimmed_url(value, limit=120):
     return re.sub(r"%[0-9A-Fa-f]?$", "", text)
 
 
+def _readable_name(url) -> str:
+    """"Atlas Price New.pdf (dropbox.com)" -- enough to identify the file, no capability.
+
+    Never the query string: on Dropbox and SharePoint the secret IS the path and the
+    token, so the whole URL is the credential. Percent-escapes are decoded for reading
+    and any half-written one is dropped rather than published broken.
+    """
+    from urllib.parse import unquote, urlparse
+    parsed = urlparse(str(url or ""))
+    tail = unquote((parsed.path or "").rstrip("/").rsplit("/", 1)[-1])
+    tail = re.sub(r"%[0-9A-Fa-f]?$", "", tail).strip()
+    host = (parsed.netloc or "").replace("www.", "")
+    if not tail or len(tail) < 4 or "." not in tail:
+        return host or "(a file with no name in its link)"
+    return f"{tail[:80]} ({host})" if host else tail[:80]
+
+
 def _unreadable_stocklists():
     """What the last harvest fetched and could read nothing out of."""
     path = Path(__file__).resolve().parent / "data" / "unreadable_stocklists.json"
@@ -1575,10 +1665,51 @@ def _unreadable_stocklists():
         return {"generated": "", "count": 0, "files": []}
     files = payload.get("files") or []
     return {"generated": payload.get("generated", ""), "count": len(files),
-            # Truncating a URL can cut a percent-escape in half ("%20" -> "%2"), which
-            # is not merely ugly: decodeURIComponent throws on it in the browser. Trim any
-            # dangling escape off the end so the published name is always decodable.
-            "files": [_trimmed_url(f.get("file")) for f in files][:80]}
+            # THE NAME, NOT THE LINK. 56 of these 57 are Dropbox "/scl/fo/" folder
+            # shares -- capability URLs that hand over a whole shared folder to anyone
+            # holding the string, with no sign-in. build_web has a whole assertion
+            # devoted to keeping those out of stock.json, and channels.json was quietly
+            # publishing them anyway, because the guard only ever read one file.
+            #
+            # The panel exists so somebody can go and ask that builder for a readable
+            # price list. A file name does that; the capability URL only adds risk.
+            "files": [_readable_name(f.get("file")) for f in files][:80]}
+
+
+def _sheet_check():
+    """Last night's line-by-line check of every listing against its own price list.
+
+    Ahsan, 9 Sep 2026: "i want you to confirm all the listings are present and when i open
+    the sheet they are at exact number that is written". The check runs nightly
+    (run_daily.py step 4/7, verify_sheet_positions.py) and writes its report here. This
+    puts the ANSWER on the Settings tab, because a confirmation nobody can see is not a
+    confirmation -- it is a log line in a file on a runner that is deleted every morning.
+
+    The counts are stated as the check states them, including what it refused to judge.
+    "Could not open the file" and "opened it and could not recognise the row" are
+    different admissions and a single 'unverified' number would hide both.
+    """
+    path = Path(__file__).resolve().parent / "data" / "sheet_check.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:                                  # pragma: no cover - absent is fine
+        return {}
+    tally = collections.Counter(r.get("verdict") for r in payload.get("rows") or [])
+    docs = payload.get("documents") or []
+    return {
+        "generated": str(payload.get("generated", ""))[:16].replace("T", " "),
+        "checked": int(payload.get("checked") or 0),
+        "live": int(payload.get("live") or 0),
+        "documents": len(docs),
+        "at_stated_row": tally.get("at_stated_row", 0),
+        "present": tally.get("present_no_line", 0),
+        "moved": tally.get("moved", 0),
+        "absent": tally.get("absent", 0),
+        "unmatched": tally.get("unmatched", 0),
+        "unreadable": tally.get("unreadable", 0),
+        "pages_not_files": sum(d.get("stored", 0) for d in docs
+                               if d.get("a_page_not_a_file")),
+    }
 
 
 def _export_channel_health(out_dir: Path, conn) -> dict:
@@ -1727,6 +1858,7 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
         # has to be named rather than logged. 57 of 143 on 27 Aug -- whole projects
         # missing, and Coleen found one of them by hand before anything said so.
         "unreadable_stocklists": _unreadable_stocklists(),
+        "sheet_check": _sheet_check(),
         "push_sources": sorted(CHANNEL_PUSH_SOURCES),
         "channels": channels,
         "portals": portals,
@@ -1945,7 +2077,17 @@ if __name__ == "__main__":
               "(%(pct).2f%%) · %(located)s located, the rest inferred and badged"
               % {"findable": f"{_cov['findable']:,}", "australian": f"{_cov['australian']:,}",
                  "pct": _cov["share"] * 100, "located": f"{_cov['located']:,}"})
-    _assert_no_folder_capability_urls(where / "stock.json")
+    _showing_sold = _assert_no_sold_stock_on_show(where / "stock.json")
+    print("    Sold stock on show: %d listing(s) the filter shows read as sold to a "
+          "person%s" % (_showing_sold, "" if _showing_sold else " — none"))
+    # EVERY PUBLISHED FILE, not just the big one. This guard was written for stock.json
+    # and only ever read stock.json, so channels.json went on publishing 56 Dropbox
+    # folder capability URLs -- the exact thing it exists to stop -- for as long as the
+    # unreadable-stocklists panel had existed. A guard that checks one of five files
+    # reads, from its passing, as though it checked all five.
+    for _published in ("stock.json", "channels.json", "builders.json",
+                       "vendor-assets.json", "benchmarks.json"):
+        _assert_no_folder_capability_urls(where / _published)
     _assert_a_benchmark_names_its_place(where / "stock.json")
     _assert_every_benchmark_listing_opens_somewhere(where / "benchmarks.json")
     # benchmarks.json is in this list for the same reason `notes` was the leak that

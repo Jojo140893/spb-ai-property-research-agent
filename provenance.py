@@ -80,6 +80,56 @@ def _clean_ref(value: Any) -> str:
     return v
 
 
+# Street words, used to recognise a real street segment inside a jammed-together
+# lot_address. Deliberately a plain list rather than an address parser: the only question
+# asked is "does this look like a street line", and a wrong yes costs a search term, not
+# a listing.
+_STREET_WORD = re.compile(
+    r"\b(rd|road|st|street|ave|avenue|dr|drive|cres|crescent|ct|court|pde|parade|way|"
+    r"lane|ln|blvd|boulevard|cct|circuit|gr|grove|pl|place|tce|terrace|rise|walk|close|"
+    r"cl|esp|esplanade|hwy|highway|mews|loop|link|view|ridge|green|square|sq)\b", re.I)
+
+# Words that belong to a spreadsheet's COLUMN HEADINGS, not to a place. An estate name
+# made of these is a header row that the extractor flattened into the estate column:
+# "WEST Internal colour selection", "Lot Collection Level Bed Bath Car Store Int Ext
+# Total Price". 301 live rows carry one, and every one of them turned the search hint
+# into a string that matches nothing in the file it points at.
+_COLUMN_WORD = re.compile(
+    r"\b(colour|color|selection|internal|external|facade|elevation|inclusion|upgrade|"
+    r"option|variation|deposit|balance|gst|total|subtotal|note|notes|disclaimer|price|"
+    r"pricelist|package|status|remaining|available|sold|level|aspect|extras|configuration|"
+    r"bed|bath|car|store|frontage|rego|slab|yield|rent|smsf|sign|off|details|area|"
+    r"mezzanine|balcony|courtyard|list|type|design|beds|land|stock)\b", re.I)
+
+
+def _looks_like_a_place(value: str) -> bool:
+    """False when a stored estate name is really a run of column headings.
+
+    Two such words is the line. One is ordinary — "Client Based Package, Adelaide" and
+    "Somerfield Land" are genuine names that happen to contain one — and a name is not
+    thrown away on a single coincidence. Nothing is repaired here; this only decides
+    whether the value is fit to paste into a search box.
+    """
+    return len(_COLUMN_WORD.findall(value or "")) < 2
+
+
+def _street_segment(row: Dict[str, Any]) -> str:
+    """'2102 Racecourse Rd' — the part of the address a spreadsheet cell actually holds.
+
+    A price list is searched cell by cell, so the term has to be something that sits in
+    ONE cell. lot_address is often the whole flattened row on E-Agent, and its suburb
+    lives in a different column, so the first comma segment is taken and only kept when
+    it reads like a street line: short, few words, no money in it.
+
+    This is the term that survives the builder re-sorting the file, which is the whole
+    point — see the note on _sheet_position.
+    """
+    seg = str(row.get("street_address") or "").strip() or         str(row.get("lot_address") or "").split(",")[0].strip()
+    if not seg or len(seg) > 42 or len(seg.split()) > 6 or "$" in seg:
+        return ""
+    return seg if _STREET_WORD.search(seg) else ""
+
+
 def _find_term(row: Dict[str, Any], opens: str) -> str:
     """The best identifier this row has for THAT kind of destination, or "".
 
@@ -101,13 +151,25 @@ def _find_term(row: Dict[str, Any], opens: str) -> str:
         # Developments are indexed by name. Fall back to the street, never to a lot.
         return estate or street or addr
     if opens == "price list":
+        # THE STREET FIRST, because it is the one identifier that survives the file
+        # being re-sorted, and it is what the sheet's own Address column holds.
+        # Coleen, 9 Sep: she followed "Price list - row 24" and a different property
+        # opened, because Tomorrow Homes had re-sorted the workbook since the read.
+        # The row number is now re-read nightly and dropped when unconfirmed
+        # (database.py, repair_rows.find_stale_source_position), so this term is what
+        # she is left holding, and it has to be findable.
+        lot_street = _street_segment(row)
+        if lot_street:
+            return lot_street
         # A sheet's own Lot column is the one column that identifies a row. Qualify it
-        # with the estate where we have one, because "121" alone matches everywhere.
-        if lot_no and estate:
+        # with the estate where we have one, because "121" alone matches everywhere --
+        # but only when the estate is a place. On 301 live rows it is a flattened run of
+        # column headings, and "2102 WEST Internal colour selection" matches nothing.
+        if lot_no and estate and _looks_like_a_place(estate):
             return f"{lot_no} {estate}"
         if lot_no and suburb:
             return f"{lot_no} {suburb}"
-        return street or addr or estate
+        return street or addr or (estate if _looks_like_a_place(estate) else "")
     # A per-lot document or page: the address is the name.
     return street or addr or (f"{lot_no} {estate}".strip() if lot_no or estate else "")
 
@@ -125,6 +187,32 @@ def _kind(label: str, url: str, opens: str, search: str = "") -> Dict[str, str]:
     # match on, which is not always the address we show on the card. It is copied
     # verbatim from a value the row already holds; nothing here is constructed.
     return {"label": label, "url": url, "opens": opens, "search": search}
+
+
+def _as_at(row: Dict[str, Any]) -> str:
+    """' as at 8 Sep' — the day the row was actually on that line, or ''.
+
+    A position is a claim about a file the builder rewrites. Coleen followed
+    "Price list - row 24" on 9 Sep and a different property opened; the number had been
+    right when it was read on the 2nd, and nothing on screen said which day it described.
+    The number is now re-read nightly and dropped when a read stops confirming it
+    (database.py; repair_rows.find_stale_source_position), so it is never more than one
+    harvest old -- but a builder can re-sort at nine in the morning, and a dated claim
+    invites a second look where a bare one does not.
+
+    Stated only where the date is actually stored. Day and month only: the year is noise
+    on a pointer that is at most a day old, and the reader is checking "is this today".
+    """
+    raw = str(row.get("date_checked") or "").strip()
+    match = re.match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$", raw)
+    if not match:
+        return ""
+    day, month, _year = (int(g) for g in match.groups())
+    if not (1 <= day <= 31 and 1 <= month <= 12):
+        return ""
+    names = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+             "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    return f" as at {day} {names[month - 1]}"
 
 
 def _sheet_position(row: Dict[str, Any]) -> str:
@@ -146,11 +234,11 @@ def _sheet_position(row: Dict[str, Any]) -> str:
     # A PDF page comes first when both somehow exist: the reader opens on a page, and
     # "row 12" inside a PDF means nothing to the person holding it.
     if page:
-        return f"page {page}"
+        return f"page {page}{_as_at(row)}"
     if sheet and line:
-        return f'sheet "{sheet}", row {line}'
+        return f'sheet "{sheet}", row {line}{_as_at(row)}'
     if line:
-        return f"row {line}"
+        return f"row {line}{_as_at(row)}"
     if sheet:
         return f'sheet "{sheet}"'
     return ""

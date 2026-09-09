@@ -1366,6 +1366,44 @@
             a low &ldquo;Refreshed&rdquo; on the email channel is how it always looks
             &mdash; it is judged on whether anything arrived, like every source is.
           </p>
+          ${(CHANNELS.sheet_check && CHANNELS.sheet_check.checked) ? `
+          <div style="margin-top:1rem; padding:0.9rem 1.1rem; border:1px solid var(--border-light);
+                      border-radius:8px; background:var(--bg-page);">
+            <strong style="color:var(--text-heading);">Checked against the builders&rsquo;
+              own price lists${CHANNELS.sheet_check.generated
+                ? ` &mdash; ${esc(CHANNELS.sheet_check.generated)}` : ''}</strong>
+            <p style="margin:0.5rem 0 0.6rem; font-size:0.85rem; color:var(--text-body);">
+              Every night we open each builder&rsquo;s price list and look for the
+              properties we advertise from it, line by line.
+              <strong>${CHANNELS.sheet_check.checked.toLocaleString()}</strong> of
+              ${CHANNELS.sheet_check.live.toLocaleString()} listings were checked against
+              ${CHANNELS.sheet_check.documents.toLocaleString()} documents.
+            </p>
+            <div style="font-size:0.82rem; color:var(--text-body); line-height:1.75;">
+              <div>&#10003; ${CHANNELS.sheet_check.at_stated_row.toLocaleString()} found on
+                the exact line we name</div>
+              <div>&#10003; ${CHANNELS.sheet_check.present.toLocaleString()} found in the
+                document (no line numbers in it to check)</div>
+              <div>&#8635; ${CHANNELS.sheet_check.moved.toLocaleString()} had moved to a
+                different line &mdash; the link was corrected</div>
+              <div>&#10007; ${CHANNELS.sheet_check.absent.toLocaleString()} were no longer
+                on the list &mdash; hidden from the filter</div>
+              <div style="color:var(--text-muted);">?
+                ${(CHANNELS.sheet_check.unmatched + CHANNELS.sheet_check.unreadable).toLocaleString()}
+                could not be judged, so nothing was changed about them&nbsp;&mdash;
+                ${CHANNELS.sheet_check.unmatched.toLocaleString()} we could not recognise
+                on a page that had not changed,
+                ${CHANNELS.sheet_check.unreadable.toLocaleString()} in files that would not
+                open${CHANNELS.sheet_check.pages_not_files
+                  ? ` (${CHANNELS.sheet_check.pages_not_files.toLocaleString()} of those are
+                     portal pages, checked by the nightly harvest instead)` : ''}</div>
+            </div>
+            <p style="margin:0.6rem 0 0; font-size:0.78rem; color:var(--text-muted);">
+              A property is only hidden when its price list actually got shorter by about
+              that many rows. If a file comes back unchanged or unreadable we change
+              nothing, because not recognising a property is not the same as it being sold.
+            </p>
+          </div>` : ''}
           ${(CHANNELS.unreadable_stocklists && CHANNELS.unreadable_stocklists.count) ? `
           <div style="margin-top:1rem; padding:0.9rem 1.1rem; border:1px solid var(--border-light);
                       border-radius:8px; background:var(--bg-page);">
