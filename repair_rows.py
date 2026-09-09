@@ -60,6 +60,9 @@ import sys
 from datetime import datetime
 
 import config
+# The marker this repair writes and record_building recognises. Imported rather than
+# retyped: two spellings of it would silently stop a re-listed lot coming back.
+from database import WITHDRAWN_FROM_SOURCE
 from sources.feature_extract import parse_postcode
 from sources.scraper_base import MIN_PLAUSIBLE_PRICE, normalise_money_spacing
 
@@ -423,6 +426,84 @@ def _as_date(value):
         return None
 
 
+def _col(row, name):
+    """row[name], or None when the row simply has no such column.
+
+    Rows arrive here as sqlite3.Row in production and as plain dicts from the tests, and
+    the two raise different exceptions for a missing column. A repair that reasons about
+    an OPTIONAL field should not care which.
+    """
+    try:
+        return row[name]
+    except (KeyError, IndexError):
+        return None
+
+
+def _by_document(rows):
+    """Live re-listing rows grouped by the document they were read out of.
+
+    The row's own document. source_doc is a BUILD-time field (build_web hashes the url
+    into the snapshot); in the database the document is source_url, with the stocklist
+    file behind it, and a channel+builder pair as the last resort for a portal that has
+    no per-document URL at all.
+
+    A PORTAL PROJECT IS ITS OWN LIST. Every Proxima row stores the same source_url --
+    the projects index -- so without source_project_id in the key all 3,928 of them are
+    treated as ONE list, and one project going quiet is read as evidence about the other
+    thirty-nine. That is exactly the "a channel is far too broad" error the retirement
+    repair says it avoids, and it had already retired 151 Proxima listings on it. The id
+    is stored on every one of those rows; it was simply not being used.
+
+    Shared by the two repairs that reason about a source going quiet about one row, so
+    they can never disagree about which rows share a list.
+    """
+    groups = collections.defaultdict(list)
+    for r in rows:
+        if r["superseded_by"] or str(r["source_channel"] or "") not in RELISTING_CHANNELS:
+            continue
+        key = (str(r["source_url"] or "").strip()
+               or str(r["stocklist_file"] or "").strip()
+               or "%s|%s" % (r["source_channel"] or "", r["builder_name"] or ""))
+        project = str(_col(r, "source_project_id") or "").strip()
+        groups[(key, project) if project else (key, "")].append(r)
+    return groups
+
+
+# A list that comes back missing this much of itself has not been read, whatever it
+# returned. Fitted to the shape of the real data on 9 Sep 2026, where the honest lists sat
+# at 2-27% missing and the broken ones at 42-96% -- there is a wide gap between them, so
+# the exact figure inside it is not load-bearing.
+PARTIAL_READ_SHARE = 40
+# Below this a percentage says nothing: a 3-row list losing one lot is 33% "missing" and
+# is simply a lot that sold.
+PARTIAL_READ_MIN_ROWS = 10
+
+
+def partial_reads(rows, today=None):
+    """Lists whose latest read came back missing so much of themselves it cannot be real.
+
+    Returns (key, missing, total) per list. Reported rather than silently skipped: a
+    source that has quietly stopped returning its stock is a thing to go and fix, and the
+    nightly log is where it gets noticed.
+    """
+    today = today or datetime.now()
+    out = []
+    for key, members in _by_document(rows).items():
+        if len(members) < PARTIAL_READ_MIN_ROWS:
+            continue
+        dates = [d for d in (_as_date(r["date_checked"]) for r in members) if d]
+        if not dates:
+            continue
+        newest = max(dates)
+        if (today - newest).days > SOURCE_READ_WITHIN_DAYS:
+            continue
+        missing = sum(1 for r in members
+                      if (_as_date(r["date_checked"]) or newest) < newest)
+        if missing * 100 // len(members) >= PARTIAL_READ_SHARE:
+            out.append((key, missing, len(members)))
+    return out
+
+
 def find_withdrawn_from_source(rows, today=None):
     """Listings whose own source has gone on re-listing everything except them.
 
@@ -442,25 +523,25 @@ def find_withdrawn_from_source(rows, today=None):
     WITHDRAWN_AFTER_DAYS without including this row. On the DBN list that is exactly the
     shape: 287 of its rows were re-listed four days ago and 61 were not.
 
-    Reversible on purpose. The row is superseded, never deleted, so a listing withdrawn in
-    error comes straight back the next time its source lists it again.
+    A HALF-READ LIST IS NOT A SALE. The evidence is "the source published its stock and
+    left this one out", which only holds if the source really did publish its stock. One
+    Proxima project came back with 3 of its 85 lots on 9 Sep -- the accordion's 80-lot
+    render cap, or a dropped session -- and the fortnight rule would have quietly retired
+    the other 82 as sold. So a list that comes back missing PARTIAL_READ_SHARE of itself
+    is treated as a failed read and retires nothing, and says so out loud rather than
+    passing in silence: see partial_reads().
+
+    Reversible on purpose, and reversible in fact since 9 Sep. The row is superseded,
+    never deleted, and record_building clears the marker the next time the source lists
+    the lot again (database.WITHDRAWN_FROM_SOURCE). Before that it was one-way -- the
+    docstring claimed a recovery that no code performed.
     """
     today = today or datetime.now()
-    live = [r for r in rows if not r["superseded_by"]
-            and str(r["source_channel"] or "") in RELISTING_CHANNELS]
-    groups = collections.defaultdict(list)
-    for r in live:
-        # The row's own document. source_doc is a BUILD-time field (build_web hashes the
-        # url into the snapshot); in the database the document is source_url, with the
-        # stocklist file behind it, and a channel+builder pair as the last resort for a
-        # portal that has no per-document URL at all.
-        key = (str(r["source_url"] or "").strip()
-               or str(r["stocklist_file"] or "").strip()
-               or "%s|%s" % (r["source_channel"] or "", r["builder_name"] or ""))
-        groups[key].append(r)
-
     out = []
-    for members in groups.values():
+    partial = {k for k, _n, _t in partial_reads(rows, today)}
+    for key, members in _by_document(rows).items():
+        if key in partial:
+            continue                       # a failed read, not a list of what sold
         dates = [d for d in (_as_date(r["date_checked"]) for r in members) if d]
         if not dates:
             continue
@@ -471,6 +552,247 @@ def find_withdrawn_from_source(rows, today=None):
             seen = _as_date(r["date_checked"])
             if seen and (newest - seen).days >= WITHDRAWN_AFTER_DAYS:
                 out.append((r, (newest - seen).days))
+    return out
+
+
+def _has_position(row) -> bool:
+    """True when the row names a line or page inside its document."""
+    for c in ("source_row", "source_page"):
+        try:
+            if int(row[c] or 0) > 0:
+                return True
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+    return False
+
+
+def find_stale_source_position(rows, today=None):
+    """Rows carrying a row number their own document no longer confirms.
+
+    Coleen, 9 Sep: she clicked "Price list — row 24" and a DIFFERENT property opened.
+    Third report of the same thing. The listing was real and the pointer had been right
+    when it was written on 2 Sep; Tomorrow Homes re-sorts that workbook as stock sells, so
+    by the 9th row 24 held a Woodlea lot at Aintree instead.
+
+    A row number is a POSITION, and a position is only true for the read that produced it.
+    database.py now overwrites it on every read, so a row the harvest keeps finding stays
+    correct by itself. This is the other half: a row the harvest STOPPED finding. Its
+    document was re-read and it was not in it, so the stored number describes a line that
+    now belongs to someone else, and it will keep describing one for the fourteen days
+    find_withdrawn_from_source waits before retiring the listing.
+
+    Ahsan, 9 Sep: "you should verify the row every day and if it is removed from that row
+    it means it is sold or removed." Removal is acted on in two steps, because the two
+    claims do not carry the same risk. Saying "this lot is gone" on one missed read would
+    delete live stock over a single partial parse, so retirement still waits. Saying
+    "row 24" when today's read of that file did not put it there is simply false now, and
+    costs nothing to stop saying -- provenance falls back to the plain "Price list" label
+    and the lot number to search for.
+
+    Cleared, never guessed at. We do not know which line the lot moved to; we know we can
+    no longer name one. The next read that finds the row writes the position back.
+    """
+    today = today or datetime.now()
+    out = []
+    for key, members in _by_document(rows).items():
+        dates = [d for d in (_as_date(r["date_checked"]) for r in members) if d]
+        if not dates:
+            continue
+        newest = max(dates)
+        if (today - newest).days > SOURCE_READ_WITHIN_DAYS:
+            continue                    # nothing re-read this file lately; it proves nothing
+        for r in members:
+            if not _has_position(r):
+                continue                # no pointer to be wrong about
+            seen = _as_date(r["date_checked"])
+            if seen and seen < newest:
+                out.append(r)
+    return out
+
+
+# The words a price list uses to say a lot cannot be bought, matched only as whole words
+# so "The Reserve" is not "Reserved" and "Settlers Run" is not "settled".
+_SOLD_WORD = re.compile(
+    r"\b(sold|on\s*hold|under\s*offer|reserved|withdrawn|deposit\s*taken|settled)\b",
+    re.I)
+# A negation in front of it turns the sentence inside out. One Hattan Homes row stores an
+# email sentence as its address -- "it is not on hold exclusively or at this stage sold" --
+# and reading the words alone marks a lot On Hold that the builder is saying is NOT.
+_NEGATED = re.compile(
+    r"\b(not|isn'?t|nor|never|no\s+longer\s+than)\s+(?:\w+\s+){0,2}?"
+    r"(sold|on\s*hold|under\s*offer|reserved|withdrawn)\b", re.I)
+
+# How the word found is spelled back into availability_status. The published filter
+# lowercases before testing, so only the value matters, not its case -- but a consultant
+# reads this column, so it is written the way the rest of the column is written.
+_STATUS_FOR = {"sold": "Sold", "on hold": "On Hold", "onhold": "On Hold",
+               "under offer": "Under Offer", "underoffer": "Under Offer",
+               "reserved": "Reserved", "withdrawn": "Withdrawn",
+               "deposit taken": "Deposit Taken", "deposittaken": "Deposit Taken",
+               "settled": "Settled"}
+
+
+# The function words English sentences string together and a table row never does. A
+# price list line is "West 9 Darling Darley Sold Barcelona 23 Elevate $365,500" -- nouns,
+# numbers and money, with almost none of these in it.
+_FUNCTION_WORD = re.compile(
+    r"\b(we|our|you|your|they|have|has|is|are|was|were|but|and|or|this|that|these|"
+    r"those|please|let|know|would|will|can|could|the|of|to|for|with|at|from|about)\b",
+    re.I)
+_PROSE_MIN_WORDS = 10
+_PROSE_MIN_FUNCTION_WORDS = 6
+
+
+def find_project_oversupply(rows, today=None):
+    """Portal lots we show as available that the project itself says are not.
+
+    THE PORTAL COUNTS ITS OWN STOCK. Every Proxima project title carries a live counter --
+    "275 Twelfth Ave Austral (6/6)" -- and sources/proxima.py stores the pair as
+    project_available / project_total. 49 of the 123 projects with live stock state it.
+    Nothing has ever read it back.
+
+    Damac Properties, project 587: 231 lots on the board, all shown as available. The
+    project's own header says 129 are. A hundred and two properties were being offered to
+    clients that the portal itself says are gone.
+
+    TWO INDEPENDENT SIGNALS, AND THEY AGREE. The header gives a NUMBER. The harvest gives
+    IDENTITIES: rows the project has gone on re-listing without. Across the seven projects
+    showing more than they state, the excess is 130 rows and 128 of them are also rows the
+    latest read did not carry -- and on five of the seven the two counts match exactly.
+    A count from the portal's own header and a set of rows from a different mechanism
+    landing on the same lots is about as close to proof as this data offers.
+
+    So a lot is marked only when BOTH say so: its project states a shortfall, AND that lot
+    is one the project stopped re-listing. Neither alone is enough -- the header could be
+    stale, and a single missed read is not a sale.
+
+    CAPPED AT THE STATED SHORTFALL, oldest sighting first. Project 587 has 135 rows the
+    latest read missed but states only 102 too many; marking all 135 would hide 33 lots
+    that are for sale. The portal's own number is the ceiling, never the floor.
+    """
+    today = today or datetime.now()
+    out = []
+    projects = collections.defaultdict(list)
+    for r in rows:
+        if r["superseded_by"] or str(r["source_channel"] or "") != "Proxima":
+            continue
+        pid = str(_col(r, "source_project_id") or "").strip()
+        if pid:
+            projects[pid].append(r)
+
+    for members in projects.values():
+        stated = _col(members[0], "project_available")
+        if stated is None:
+            continue                       # the project never said; infer nothing
+        try:
+            stated = int(stated)
+        except (TypeError, ValueError):
+            continue
+        shown = [r for r in members if _is_shown(r)]
+        excess = len(shown) - stated
+        if excess <= 0:
+            continue                       # we show no more than the portal offers
+        dates = [d for d in (_as_date(r["date_checked"]) for r in members) if d]
+        if not dates:
+            continue
+        newest = max(dates)
+        if (today - newest).days > SOURCE_READ_WITHIN_DAYS:
+            continue                       # nobody has read this project lately
+        missed = [(d, r) for r in shown
+                  for d in [_as_date(r["date_checked"])] if d and d < newest]
+        missed.sort(key=lambda pair: pair[0])          # least recently seen first
+        out.extend(r for _d, r in missed[:excess])
+    return out
+
+
+def _is_shown(row) -> bool:
+    """Whether this row currently reaches the client-facing filter.
+
+    Asks api/_candidates.py, the set the published app actually filters on, rather than
+    keeping a fourth copy of it here. Copies of this list have drifted before: "not
+    available" was missing from one of them while it was the literal value on 581 rows,
+    and a sold Rouse Hill lot was recommended to Colin on 5 Aug. api/ is not on the path
+    when this module runs as a script from the app directory, so it is added here.
+    """
+    global _NOT_AVAILABLE
+    if _NOT_AVAILABLE is None:
+        api = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api")
+        if api not in sys.path:
+            sys.path.insert(0, api)
+        from _candidates import NOT_AVAILABLE
+        _NOT_AVAILABLE = NOT_AVAILABLE
+    return str(row["availability_status"] or "").strip().lower() not in _NOT_AVAILABLE
+
+
+_NOT_AVAILABLE = None
+
+
+def find_prose_rows(rows):
+    """Rows whose address is a SENTENCE somebody wrote, not a property.
+
+    Four live rows are email bodies that the digital-email reader stored as listings, and
+    three of them carry a price -- $553,284, $713,118, $600,000 -- so they were being
+    offered to clients as stock:
+
+        "We have a couple of partners presenting this lot but it is not on hold..."
+        "Hi Cheryl, We are interested in the property at Lot 1052, Westwood Walk..."
+        "Stage 4 and lot 7- what is the full Turnkey package..."
+        "OUR PROMISE At Strike Developments, we are dedicated to delivering..."
+
+    The first of those is also why find_sold_word_without_status has a negation guard: it
+    contains the words "on hold" and "sold" inside a sentence that says the lot is neither.
+    Reading it as a status was the wrong fix for it. It is not a listing at all.
+
+    THE TEST IS SHAPE, NOT SUBJECT. Ten or more words of which six or more are English
+    function words. A price-list line is nouns, numbers and money and scores nearly zero,
+    so this catches exactly those four rows and nothing else across 10,876 live listings.
+    """
+    out = []
+    for r in rows:
+        if r["superseded_by"]:
+            continue
+        text = str(r["lot_address"] or "")
+        if len(text.split()) < _PROSE_MIN_WORDS:
+            continue
+        if len(_FUNCTION_WORD.findall(text)) >= _PROSE_MIN_FUNCTION_WORDS:
+            out.append(r)
+    return out
+
+
+def find_sold_word_without_status(rows):
+    """Rows that SAY sold where a person reads, while the status column says nothing.
+
+    Ahsan, 7 Sep: "I want you to see that there are not any buildings that sold or not
+    available. Show up in the the filter because I see". He was right and I twice measured
+    the wrong column: availability_status was clean, and the word SOLD was sitting in the
+    address, which is what he could see on screen.
+
+    THE EVIDENCE THAT THIS IS SAFE. 132 live rows carry one of these words in the text a
+    person reads. 129 of them ALREADY hold the matching availability_status -- Sold, On
+    Hold, Under Offer, Reserved -- so on 98% of the rows where it can be checked, the word
+    in the line and the status column agree. The remaining 3 are rows where the status
+    extraction missed and the word is the only statement we have.
+
+    So the word is taken as the statement, and written into the column that hides the lot.
+    Not "Not Available": the specific word, because a consultant reads this column and
+    "Sold" and "On Hold" are different things to tell a client.
+    """
+    out = []
+    for r in rows:
+        if r["superseded_by"]:
+            continue
+        if str(r["availability_status"] or "").strip():
+            continue                      # the row already states one; never overwrite it
+        for col in ("lot_address", "estate_name"):
+            text = str(r[col] or "")
+            match = _SOLD_WORD.search(text)
+            if not match or _NEGATED.search(text):
+                continue
+            word = re.sub(r"\s+", " ", match.group(1)).strip().lower()
+            status = _STATUS_FOR.get(word) or _STATUS_FOR.get(word.replace(" ", ""))
+            if status:
+                out.append((r, status))
+            break
     return out
 
 
@@ -805,6 +1127,32 @@ def main(apply_changes):
     controls = find_control_rows(live)
     withdrawn = find_withdrawn_from_source(rows)
     tallies = find_tally_estates(rows)
+    stale_pos = find_stale_source_position(rows)
+    half_read = partial_reads(rows)
+    oversupply = find_project_oversupply(rows)
+    print(f"\n15. portal lots we show that the project says are gone: {len(oversupply)}")
+    for r in oversupply[:4]:
+        print(f"     {str(r['builder_name'] or '?')[:24]:26} last seen {r['date_checked']}"
+              f"   {str(r['lot_address'] or '')[:38]}")
+    prose = find_prose_rows(rows)
+    print(f"\n14. email sentences stored as listings: {len(prose)}")
+    for r in prose[:4]:
+        print(f"     ${float(r['price'] or 0):>9,.0f}  {str(r['lot_address'])[:58]!r}")
+    sold_words = find_sold_word_without_status(rows)
+    print(f"\n13. rows that SAY sold where a person reads, with no status set: "
+          f"{len(sold_words)}")
+    for r, status in sold_words[:5]:
+        print(f"     -> {status:14} {str(r['builder_name'] or '?')[:18]:20} "
+              f"{str(r['lot_address'] or r['estate_name'] or '')[:44]}")
+    print(f"\n12. lists that came back missing most of themselves "
+          f"(retiring nothing from these): {len(half_read)}")
+    for key, missing, total in sorted(half_read, key=lambda x: -x[1])[:6]:
+        print(f"     {missing:4}/{total:<4} ({missing*100//total:>2}% missing)  "
+              f"{str(key[0])[:56]}")
+    print(f"\n11. row numbers their own document no longer confirms: {len(stale_pos)}")
+    for r in stale_pos[:4]:
+        print(f"     {str(r['builder_name'] or '?')[:22]:<24} row {r['source_row']} "
+              f"read {r['date_checked']}   {str(r['lot_address'] or '')[:44]}")
     print(f"\n8. spreadsheet filter rows stored as listings: {len(controls)}")
     print(f"\n10. estate names that are a sold tally, not a place: {len(tallies)}")
     print(f"\n9. listings their own source has stopped re-listing: {len(withdrawn)}")
@@ -885,9 +1233,39 @@ def main(apply_changes):
                     ("spreadsheet filter row, not a listing", now, r["id"]))
     for r in tallies:
         cur.execute("UPDATE buildings SET estate_name=NULL WHERE id=?", (r["id"],))
-    for r, _silent in withdrawn:
+    for r in oversupply:
+        # The portal's own count says this lot is gone and the project stopped listing it.
+        # Not superseded: the row is real and may come back, and availability is the
+        # reversible statement -- the next read that carries the lot writes it back.
+        cur.execute("UPDATE buildings SET availability_status=?, status_previous=? "
+                    "WHERE id=?", ("Sold", r["availability_status"], r["id"]))
+    for r in prose:
         cur.execute("UPDATE buildings SET superseded_by=?, superseded_at=? WHERE id=?",
-                    ("withdrawn: the source stopped listing it", now, r["id"]))
+                    ("an email sentence, not a listing", now, r["id"]))
+    for r, status in sold_words:
+        # The word the row itself carries, not a blanket "Not Available": a consultant
+        # reads this column and "Sold" and "On Hold" are different things to tell a client.
+        cur.execute("UPDATE buildings SET availability_status=? WHERE id=?",
+                    (status, r["id"]))
+    for r in stale_pos:
+        # The position only. The listing itself is untouched -- it may well still be for
+        # sale, just no longer on the line we wrote down.
+        cur.execute("UPDATE buildings SET source_row=NULL, source_page=NULL, "
+                    "source_sheet=NULL WHERE id=?", (r["id"],))
+    for r, _silent in withdrawn:
+        # SAY IT IN THE COLUMN A PERSON READS, not only in superseded_by.
+        #
+        # Ahsan, 9 Sep: "the buildings that are no longer in the sheets are marked sold".
+        # Superseding already hides the row from the filter, which is most of what he
+        # asked for -- but anyone who ticks "show superseded", opens the export, or reads
+        # the row through the API still saw it carrying "Available", which is the one
+        # thing it is not. The previous value is kept in status_previous, as it is for
+        # every other status change, so an incorrect retirement is legible afterwards and
+        # not just reversible.
+        cur.execute("UPDATE buildings SET superseded_by=?, superseded_at=?, "
+                    "availability_status=?, status_previous=? WHERE id=?",
+                    (WITHDRAWN_FROM_SOURCE, now, "Sold", r["availability_status"],
+                     r["id"]))
     for r, suburb in reread:
         # The stored content_hash goes stale here, exactly as it does for every other
         # correction above. That is the documented trade: the identity is recomputed at
@@ -908,6 +1286,10 @@ def main(apply_changes):
           f"{len(controls)} filter row(s) withdrawn, "
           f"{len(withdrawn)} sold/withdrawn listing(s) retired, "
           f"{len(tallies)} tally estate name(s) cleared, "
+          f"{len(stale_pos)} unconfirmed row number(s) cleared, "
+          f"{len(sold_words)} unstated sold/hold status(es) read off the row, "
+          f"{len(prose)} email sentence(s) withdrawn, "
+          f"{len(oversupply)} portal lot(s) the project says are gone marked Sold, "
           f"{len(refuted)} refuted state(s) cleared, "
           f"{len(reread)} suburb(s) re-read from the row's own document")
     after = len([r for r in _rows(conn) if not r["superseded_by"]])

@@ -291,6 +291,47 @@ def _chain(args) -> int:
         # and the affected listings simply keep the suburb they already had.
         ("4/7  Read the suburb off orphan source documents",
          ["document_suburb.py"], True),
+        # OPEN THE SHEETS AND CHECK WHAT WE SAY ABOUT THEM IS TRUE.
+        #
+        # Ahsan, 9 Sep: "i want you to confirm all the listings are present and when i
+        # open the sheet they are at exact number that is written and if they are not
+        # then mark them not available automatically". Every other step here reasons
+        # about the database; this one downloads each price list and compares.
+        #
+        # AFTER superseding and the repairs, so it only opens documents that still have
+        # live rows to check, and BEFORE the snapshot, so today's answers are in what
+        # Coleen sees. Optional for the same reason document_suburb.py is: it depends on
+        # third-party file hosts, and a rotated Dropbox link must not take the run down --
+        # it makes no claim about a document it could not read, so a failed fetch costs
+        # today's check and nothing else.
+        # --save every night, not only when someone remembers to ask. The first full pass
+        # returned 666 listings absent from their own sheet, and "should 628 properties be
+        # hidden" is not a question anyone can answer from a summary line the next morning.
+        # The report says which document each verdict came from, so last night's run can
+        # be compared with tonight's -- the only way to tell a builder selling stock from
+        # our reading of one file quietly getting worse.
+        # REPORT-ONLY FOR NOW, and bounded. Two deliberate restraints:
+        #
+        # NO --apply. The writes are not as reversible as this script's own docstring
+        # claims. It justifies acting on a single sighting because "the next harvest that
+        # finds the lot writes its availability back" -- but database.record_building
+        # writes availability only when the fresh read SUPPLIED one, and 1,951 of the
+        # 6,730 rows in scope come from sources that never state it. On the last real run
+        # 94 rows were marked Not Available and 21 of them had no previous status to
+        # restore, so nothing would ever put those back. Read data/sheet_check.json, then
+        # apply what it says with:
+        #     python verify_sheet_positions.py --apply --from-report data/sheet_check.json
+        #
+        # --limit BOUNDS THE COST. Unbounded, the step opens all 491 documents serially
+        # with no wall-clock budget -- about an hour on top of a harvest that has taken
+        # 65-69 minutes on every recent run. Known limitation, stated rather than hidden:
+        # --limit takes the N LARGEST documents each night, so the same 120 are checked
+        # every time and the rest never are. A wall-clock budget that rotates is the
+        # follow-up; main() already reports a "not reached in this run" bucket for it.
+        ("4/7  Check each listing against its own sheet",
+         ["verify_sheet_positions.py", "--limit", "120",
+          "--save", "data/sheet_check.json"],
+         True),
         ("5/7  Benchmark against comparable stock", ["benchmark_buildings.py"], True),
         ("6/7  Export CSV + Excel", ["export_csv.py"], False),
         ("6/7  Export Excel workbook", ["export_excel.py"], False),

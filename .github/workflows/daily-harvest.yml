@@ -88,7 +88,16 @@ jobs:
     if: needs.gate.outputs.go == 'true'
     runs-on: ubuntu-latest
     # A full run is ~30 minutes; three times that is a hang, not a slow day.
-    timeout-minutes: 90
+    # 90 was set when a full run was ~30 minutes. It has not been that for a long time:
+    # the last four successful runs took 65, 65, 66 and 69 minutes, so the cap was already
+    # within 20 minutes of biting before anything was added to the chain. Step 4/7 now also
+    # opens the builders' price lists to check each listing against them, and that is
+    # bounded but not free. A cancellation here is expensive out of all proportion to the
+    # step that causes it: "Publish to Vercel" is gated `if: success()` so it is skipped,
+    # and the 8/8 state_sync push sits in a `finally` that a kill does not run -- so the
+    # night's harvest, its repairs and its document hashes are all discarded with the
+    # workspace, and Coleen opens the dashboard to yesterday's stock.
+    timeout-minutes: 150
 
     env:
       # THE RUNNER IS UTC, AND EVERY DATE THIS HARVEST WRITES IS A LOCAL ONE.

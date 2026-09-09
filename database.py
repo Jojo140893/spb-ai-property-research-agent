@@ -191,6 +191,13 @@ IDENTITY_TEXT_CHARS = 100
 # title_status and date_checked — those are the values that should update in place
 # rather than create a second row. Also excludes state/builder_matched, which the
 # enrichment pass writes: hashing them would make enrichment duplicate the table.
+# The one supersession that a fresh sighting undoes. repair_rows.py writes it when a
+# listing's own price list has gone on re-listing everything except it; seeing the lot on
+# that list again is the source saying it is for sale after all. Defined here rather than
+# there because record_building is what has to recognise it, and a marker the two spell
+# differently would silently stop un-retiring anything.
+WITHDRAWN_FROM_SOURCE = "withdrawn: the source stopped listing it"
+
 _HASH_FIELDS = ("source_channel", "attribution_scope", "builder_key", "suburb_norm",
                 "lot_number", "house_design", "land_sqm", "variant_key")
 
@@ -423,6 +430,24 @@ class ResearchDatabase:
                 )
             """)
 
+            # WHAT EACH PRICE LIST LOOKED LIKE LAST TIME WE OPENED IT.
+            #
+            # verify_sheet_positions asks, of every listing, "is it still on the builder's
+            # list". Its strongest guard is that a file which has not CHANGED cannot have
+            # lost a lot -- but that needs the previous read's fingerprint, and the nightly
+            # runs on a fresh GitHub runner that keeps nothing: data/sheet_check.json is
+            # written and thrown away with the workspace. The database is the one thing
+            # that survives the night, because state_sync carries it, so the hashes live
+            # here rather than in a file nobody keeps.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS document_reads (
+                    url TEXT PRIMARY KEY,
+                    sha256 TEXT,
+                    rows_read INTEGER,
+                    seen_at TEXT
+                )
+            """)
+
             conn.commit()
 
     # ---------- identity ----------
@@ -549,7 +574,8 @@ class ResearchDatabase:
 
         with self._get_connection() as conn:
             existing = conn.execute(
-                "SELECT id, price, availability_status FROM buildings WHERE content_hash=?", (h,)
+                "SELECT id, price, availability_status, superseded_by "
+                "FROM buildings WHERE content_hash=?", (h,)
             ).fetchone()
 
             if existing is None:
@@ -568,7 +594,7 @@ class ResearchDatabase:
                                    "listing NOT stored.", b.get("lot_address"), e)
                     return "unchanged"
 
-            rid, old_price, old_status = existing
+            rid, old_price, old_status, was_superseded = existing
             # Only a value this run actually read counts as a change — an absent field
             # is "not observed", not "moved to blank".
             changed = bool(price and (old_price or 0) != price) or \
@@ -578,6 +604,23 @@ class ResearchDatabase:
             # (state, builder_matched, benchmark_*) alone unless this run supplied one.
             upd = {"date_checked": now_date, "last_seen": now_date,
                    "checked_at": now_ts}
+            # A LOT THE SOURCE IS LISTING AGAIN IS FOR SALE AGAIN. repair_rows retires a
+            # listing its own price list stopped carrying, and calls that reversible --
+            # "a listing withdrawn in error comes straight back the next time its source
+            # lists it again". It did not: nothing here ever cleared the marker, so the
+            # retirement was one-way and a re-released lot would have stayed invisible
+            # for good. No row is in that state today (checked: 0 of the 838 retired have
+            # been re-read), which is exactly why it was worth fixing before one is.
+            #
+            # ONLY this marker. The other supersessions -- duplicate, spec fragment,
+            # filter row -- are judgements about the row itself, not about whether the
+            # builder is still selling it, and reviving a duplicate would double-count
+            # stock. Those stay permanent.
+            if str(was_superseded or "") == WITHDRAWN_FROM_SOURCE:
+                upd["superseded_by"] = None
+                upd["superseded_at"] = None
+                logger.info("buildings: %r is back on its source's list — un-retired",
+                            b.get("lot_address"))
             # A run that could not read a field must not erase what is stored. Writing
             # these unconditionally meant one unparsed row blanked the availability and
             # title Coleen asked for, and zeroed its price.
@@ -600,18 +643,37 @@ class ResearchDatabase:
             # run's version is authoritative — and without them a re-harvest would
             # leave the old jammed-together address and an empty source_text on the
             # rows Coleen is reading.
+            #
+            # source_sheet / source_row / source_page ride here too, and MUST NOT go in
+            # the fill-if-empty list below. A row number is a POSITION in a file the
+            # builder re-sorts as stock sells — Tomorrow Homes rewrites its sheet daily —
+            # so "row 24" is only true for the read that produced it. Frozen on first
+            # write, it silently rots: Coleen clicked "Price list — row 24" on 9 Sep for a
+            # lot read on 2 Sep and landed on a different property. Third report of the
+            # same thing. Ahsan, 9 Sep: "you should verify the row every day and if it is
+            # removed from that row it means it is sold or removed." So the freshest read
+            # wins, always, and a lot the source stopped listing is retired by
+            # repair_rows.find_withdrawn_from_source rather than left pointing at
+            # whatever moved into its old slot.
             for c in ("lot_address", "source_text"):
                 if cols.get(c) not in (None, ""):
                     upd[c] = cols[c]
+            # A position belongs to the document it was read in, so it is written as a
+            # SET, not a merge: when this run read the row out of a document, whatever
+            # that read saw is what gets stored — including nothing. Merging instead
+            # would let a lot that moved from a price list to a portal keep the old
+            # workbook's row number and point Colin at a stranger's lot.
+            if cols.get("source_url"):
+                for c in ("source_sheet", "source_row", "source_page"):
+                    upd[c] = cols.get(c) or None
             # fill any detail field that is currently empty
             for c in ("builder_name", "suburb", "storey", "estate_name", "lot_number",
                       "postcode", "frontage_m", "listing_url", "floorplan_url",
                       "brochure_url", "incentive_text", "incentive_amount", "bedrooms",
                       "bathrooms", "car_spaces", "land_sqm", "house_sqm", "state",
-                      # Position in the source file and the portal project. Filled when
-                      # empty like everything else here, so the 11,257 rows already
-                      # stored gain them on the next harvest without a migration.
-                      "source_sheet", "source_row", "source_page",
+                      # source_project_id is a portal handle, stable for the life of the
+                      # project, so filling it once is right. Position in a FILE is not —
+                      # see the block above.
                       "source_project_id"):
                 if cols.get(c) not in (None, ""):
                     upd[c] = f"COALESCE(NULLIF(buildings.{c},''), ?)"

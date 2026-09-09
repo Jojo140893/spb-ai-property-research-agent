@@ -77,3 +77,77 @@ def test_the_thresholds_are_where_the_docstring_says():
     assert RR.WITHDRAWN_AFTER_DAYS == 14
     assert RR.SOURCE_READ_WITHIN_DAYS == 3
     assert "digital email" not in RR.RELISTING_CHANNELS
+
+
+def test_one_portal_project_says_nothing_about_another():
+    """Every Proxima row stores the same source_url -- the projects index -- so without
+    the project id in the key all 3,928 of them were treated as ONE list, and one project
+    going quiet was read as evidence about the other thirty-nine. That is the "a channel
+    is far too broad" error this repair says it avoids, and it had already retired 151
+    Proxima listings on it.
+    """
+    rows = [_row(0, id=1, channel="Proxima", doc="index", source_project_id="776"),
+            _row(0, id=2, channel="Proxima", doc="index", source_project_id="776"),
+            _row(20, id=3, channel="Proxima", doc="index", source_project_id="901")]
+    assert _found(rows) == set(), "a busy project retired a quiet project's stock"
+
+
+def test_a_quiet_lot_inside_a_busy_project_is_still_retired():
+    """The fix narrows the evidence; it does not switch retirement off."""
+    rows = [_row(0, id=1, channel="Proxima", doc="index", source_project_id="776"),
+            _row(0, id=2, channel="Proxima", doc="index", source_project_id="776"),
+            _row(20, id=3, channel="Proxima", doc="index", source_project_id="776")]
+    assert _found(rows) == {3}
+
+
+def test_a_row_with_no_project_id_still_groups_by_its_document():
+    rows = [_row(0, id=1), _row(0, id=2), _row(20, id=3)]
+    assert _found(rows) == {3}
+
+
+def test_a_list_that_came_back_missing_most_of_itself_retires_nothing():
+    """One Proxima project returned 3 of its 85 lots on 9 Sep -- the accordion's 80-lot
+    render cap, or a dropped session. The fortnight rule would have retired the other 82
+    as sold. A half-read list is not a sale."""
+    rows = [_row(0, id=0)] + [_row(20, id=n) for n in range(1, 30)]
+    assert _found(rows) == set()
+
+
+def test_a_list_that_came_back_whole_still_retires_what_it_dropped():
+    """The guard must not switch retirement off: a list that returned nearly all of
+    itself and left one lot out is exactly the evidence this repair exists for."""
+    rows = [_row(0, id=n) for n in range(1, 30)] + [_row(20, id=99)]
+    assert _found(rows) == {99}
+
+
+def test_a_short_list_is_not_judged_by_a_percentage():
+    """A 3-row list losing one lot is 33% "missing" and is simply a lot that sold."""
+    rows = [_row(0, id=1), _row(0, id=2), _row(20, id=3)]
+    assert _found(rows) == {3}
+
+
+def test_the_half_read_lists_are_reported_not_just_skipped():
+    """A source that has quietly stopped returning its stock is a thing to go and fix."""
+    rows = [_row(0, id=0)] + [_row(20, id=n) for n in range(1, 30)]
+    found = RR.partial_reads(rows, today=TODAY)
+    assert len(found) == 1
+    _key, missing, total = found[0]
+    assert (missing, total) == (29, 30)
+
+
+def test_a_retired_lot_says_sold_in_the_column_a_person_reads():
+    """Ahsan, 9 Sep: "the buildings that are no longer in the sheets are marked sold".
+
+    Superseding already hides the row from the filter, which is most of what he asked for.
+    But anyone who ticks "show superseded", opens the export, or reads the row through the
+    API still saw it carrying "Available" -- the one thing it is not. Pinned here because
+    the write lives in main() and is easy to lose in a refactor.
+    """
+    import inspect
+    import repair_rows
+    body = inspect.getsource(repair_rows.main)
+    retire = body[body.index("for r, _silent in withdrawn:"):]
+    retire = retire[:retire.index("for r, suburb in reread:")]
+    assert "availability_status=?" in retire, "retirement no longer states a status"
+    assert '"Sold"' in retire, "retirement no longer says Sold"
+    assert "status_previous=?" in retire, "the previous status is no longer kept"

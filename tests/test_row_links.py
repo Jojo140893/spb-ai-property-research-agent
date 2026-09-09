@@ -440,3 +440,93 @@ def run_all():
 if __name__ == "__main__":
     import sys
     sys.exit(1 if run_all() else 0)
+
+
+def test_a_row_number_says_which_day_it_was_true():
+    """Coleen followed "Price list - row 24" on 9 Sep and a different property opened.
+
+    The number had been right when it was read on the 2nd. Nothing on screen said which
+    day it described, so there was no way to tell a live pointer from a stale one.
+    """
+    import provenance
+    assert provenance._sheet_position(
+        {"source_row": 24, "date_checked": "02/09/2026"}) == "row 24 as at 2 Sep"
+    assert provenance._sheet_position(
+        {"source_page": 7, "date_checked": "31/12/2026"}) == "page 7 as at 31 Dec"
+    assert provenance._sheet_position(
+        {"source_sheet": "Stock", "source_row": 3, "date_checked": "01/01/2026"}) == \
+        'sheet "Stock", row 3 as at 1 Jan'
+
+
+def test_an_undated_position_makes_no_claim_about_when():
+    """Stated only where the date is stored -- never guessed at, like everything else here."""
+    import provenance
+    assert provenance._sheet_position({"source_row": 24}) == "row 24"
+    assert provenance._sheet_position(
+        {"source_row": 24, "date_checked": "not a date"}) == "row 24"
+    assert provenance._sheet_position(
+        {"source_row": 24, "date_checked": "45/09/2026"}) == "row 24"
+
+
+def test_the_table_cell_still_reads_the_position_out_of_the_label():
+    """index.html pulls the position back out of the label with its own regex, so the
+    table stays terse while the card and tooltip carry the date. If the two ever
+    disagree about where a lot sits, that is this pairing breaking."""
+    import provenance
+    import re as _re
+    label = "Price list \u2014 " + provenance._sheet_position(
+        {"source_row": 24, "date_checked": "02/09/2026"})
+    found = _re.search(r'(?:sheet "[^"]+", )?(?:row|page) \d+', label, _re.I)
+    assert found and found.group(0) == "row 24"
+
+
+def test_a_flattened_column_heading_is_never_offered_as_a_search_term():
+    """"2102 WEST Internal colour selection" matches nothing in the file it points at.
+
+    301 live rows carried an estate name that was really a run of column headings.
+    """
+    import provenance
+    row = {"source_channel": "E-Agent", "lot_number": "2102",
+           "lot_address": "2102 Racecourse Rd, Fraser Rise", "suburb": "Fraser Rise",
+           "estate_name": "WEST Internal colour selection",
+           "stocklist_file": "https://e-agent.com.au/x.xlsx"}
+    term = next(e["search"] for e in provenance.source_links(row)
+                if e["opens"] == "price list")
+    assert term == "2102 Racecourse Rd"
+
+
+def test_the_street_is_preferred_because_it_survives_a_re_sort():
+    """A lot number plus a real estate name is fine, but the street is what the sheet's
+    own Address column holds and it does not move when the file is re-sorted."""
+    import provenance
+    row = {"source_channel": "E-Agent", "lot_number": "2102",
+           "lot_address": "2102 Racecourse Rd, Fraser Rise", "suburb": "Fraser Rise",
+           "estate_name": "Westwood Walk",
+           "stocklist_file": "https://e-agent.com.au/x.xlsx"}
+    term = next(e["search"] for e in provenance.source_links(row)
+                if e["opens"] == "price list")
+    assert term == "2102 Racecourse Rd"
+
+
+def test_a_genuine_name_holding_one_column_word_is_kept():
+    """"Client Based Package, Adelaide" and "Somerfield Land" are real names. One
+    coincidence is not evidence; two is."""
+    import provenance
+    row = {"source_channel": "E-Agent", "lot_number": "14",
+           "lot_address": "Lot 14", "suburb": "Clyde North",
+           "estate_name": "Somerfield Land",
+           "stocklist_file": "https://e-agent.com.au/x.xlsx"}
+    term = next(e["search"] for e in provenance.source_links(row)
+                if e["opens"] == "price list")
+    assert term == "14 Somerfield Land"
+
+
+def test_with_no_street_and_a_junk_estate_the_suburb_carries_the_lot():
+    import provenance
+    row = {"source_channel": "E-Agent", "lot_number": "2102",
+           "lot_address": "Lot 2102", "suburb": "Fraser Rise",
+           "estate_name": "Lot Collection Level Bed Bath Car Store Int Ext Total Price",
+           "stocklist_file": "https://e-agent.com.au/x.xlsx"}
+    term = next(e["search"] for e in provenance.source_links(row)
+                if e["opens"] == "price list")
+    assert term == "2102 Fraser Rise"
