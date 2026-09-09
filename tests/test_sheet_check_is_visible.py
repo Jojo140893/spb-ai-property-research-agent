@@ -116,3 +116,37 @@ def test_the_job_cap_leaves_room_for_the_harvest_and_the_check():
     assert caps, "no job timeout found"
     assert max(caps) >= 150, f"the harvest job cap is {max(caps)}m; 65-69m of harvest " \
                              f"plus the sheet check does not fit"
+
+
+def test_the_unreadable_panel_says_how_old_it_is(monkeypatch, tmp_path):
+    """It presented a fortnight-old list undated, and the app contradicted it beside:
+    Koops Price.pdf was named unreadable while Koop listings were live from that file.
+
+    The harvest rewrites the file on the runner and the runner is thrown away, so a
+    deploy from a laptop republishes whatever copy that laptop held. A panel Coleen acts
+    on -- by chasing a builder for a readable price list -- has to say when it was true.
+    """
+    import json
+    data = tmp_path / "data"
+    data.mkdir(exist_ok=True)
+    (data / "unreadable_stocklists.json").write_text(json.dumps(
+        {"generated": "27/08/2026 14:20 (from the harvest log)",
+         "files": [{"file": "https://x.com/a/Koops%20Price.pdf"}]}), encoding="utf-8")
+    monkeypatch.setattr(build_web, "__file__", str(tmp_path / "build_web.py"))
+    got = build_web._unreadable_stocklists()
+    assert got["days_old"] > 0, "the panel still cannot say how old it is"
+    assert got["count"] == 1
+    assert got["files"] == ["Koops Price.pdf (x.com)"]
+
+
+def test_an_unreadable_date_is_not_reported_as_fresh():
+    """-1, not 0: "rebuilt today" is the one thing an unparseable stamp must not claim."""
+    assert build_web._days_since("not a date") == -1
+    assert build_web._days_since("") == -1
+    assert build_web._days_since(None) == -1
+
+
+def test_the_page_shows_the_age_when_it_is_stale():
+    page = (APP / "index.html").read_text(encoding="utf-8", errors="replace")
+    assert "unreadable_stocklists.days_old" in page, "the age never reaches the page"
+    assert "may since have become readable" in page

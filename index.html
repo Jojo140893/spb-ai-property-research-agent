@@ -1409,6 +1409,14 @@
                       border-radius:8px; background:var(--bg-page);">
             <strong style="color:var(--text-heading);">Price lists we could not read
               (${CHANNELS.unreadable_stocklists.count})</strong>
+            ${CHANNELS.unreadable_stocklists.days_old > 2 ? `
+            <div style="margin-top:0.4rem; font-size:0.8rem; color:var(--accent-amber,#b45309);">
+              This list was last rebuilt ${CHANNELS.unreadable_stocklists.days_old} days ago
+              (${esc(String(CHANNELS.unreadable_stocklists.generated || '').split(' (')[0])}),
+              so a file named here may since have become readable. It is rewritten by the
+              nightly harvest; a dashboard published from a laptop carries whatever copy
+              that laptop held.
+            </div>` : ''}
             <p style="margin:0.5rem 0 0.6rem; font-size:0.85rem; color:var(--text-body);">
               These were downloaded successfully and produced no listings, so their
               projects are missing from the catalogue. Nearly all are price lists saved as

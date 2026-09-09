@@ -151,3 +151,54 @@ def test_a_retired_lot_says_sold_in_the_column_a_person_reads():
     assert "availability_status=?" in retire, "retirement no longer states a status"
     assert '"Sold"' in retire, "retirement no longer says Sold"
     assert "status_previous=?" in retire, "the previous status is no longer kept"
+
+
+def test_a_portal_that_pages_every_listing_separately_is_still_one_list():
+    """280 live listings the retirement mechanism could never reach.
+
+    Hermitage and Torsion give every listing its own page, so each formed a group of ONE
+    -- and a group of one can never be behind its own newest read. Retirement could
+    therefore never fire for them however long the portal ignored them, which is why
+    Torsion lots unseen for 21 days were still on show while the Settings tab said
+    "ONLY PART OF ITS STOCK".
+
+    The re-listing unit for those is the PORTAL, which publishes its whole stock each run.
+    """
+    rows = [_row(0, id=1, channel="Direct Builder Portal (live)",
+                 builder_name="Hermitage Homes", doc="https://portal/lot/1"),
+            _row(0, id=2, channel="Direct Builder Portal (live)",
+                 builder_name="Hermitage Homes", doc="https://portal/lot/2"),
+            _row(20, id=3, channel="Direct Builder Portal (live)",
+                 builder_name="Hermitage Homes", doc="https://portal/lot/3")]
+    assert _found(rows) == {3}, "a per-listing portal page is still unreachable"
+
+
+def test_a_real_multi_row_document_is_not_regrouped():
+    """Only a url backing ONE row is treated as a portal page. A price list with rows in
+    it keeps its own identity, so one builder's two sheets never pool their evidence."""
+    rows = ([_row(0, id=n, doc="sheet-a") for n in (1, 2, 3)]
+            + [_row(20, id=4, doc="sheet-b"), _row(0, id=5, doc="sheet-b")])
+    # sheet-b legitimately retires its own quiet row; what must NOT happen is sheet-a's
+    # activity being read as evidence about sheet-b, or the reverse.
+    assert _found(rows) == {4}, "the two sheets were pooled, or one lost its own evidence"
+
+
+def test_two_builders_on_one_portal_do_not_pool():
+    rows = [_row(0, id=1, channel="Direct Builder Portal (live)",
+                 builder_name="Hermitage Homes", doc="https://portal/lot/1"),
+            _row(20, id=2, channel="Direct Builder Portal (live)",
+                 builder_name="Torsion Homes", doc="https://portal/lot/2")]
+    assert _found(rows) == set(), "one builder's silence retired another's stock"
+
+
+def test_a_portal_returning_a_fraction_still_retires_nothing():
+    """Reachable is not the same as acted on. Hermitage came back 130 of 230 short on
+    10 Sep; the partial-read guard is what should hold it, and now it can see it."""
+    rows = ([_row(0, id=1, channel="Direct Builder Portal (live)",
+                  builder_name="Hermitage Homes", doc=f"https://portal/lot/1")]
+            + [_row(20, id=n, channel="Direct Builder Portal (live)",
+                    builder_name="Hermitage Homes", doc=f"https://portal/lot/{n}")
+               for n in range(2, 30)])
+    assert _found(rows) == set()
+    seen = RR.partial_reads(rows, today=TODAY)
+    assert seen, "the portal is not even visible to the partial-read guard"

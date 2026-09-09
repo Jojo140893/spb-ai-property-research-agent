@@ -409,6 +409,12 @@ def find_spec_fragments(rows):
 # Sources that RE-LIST everything they hold on every run. For these, a listing dropping
 # off the list is the source telling us it is gone. An inbox is not one of them: a builder
 # emails a price list when they have one, so silence there means nothing at all.
+# Channels that publish a PAGE per lot rather than a document listing many. Their
+# re-listing unit is the portal, not the url: Hermitage and Torsion give every listing its
+# own page, so grouping by url made 280 live listings into groups of one -- and a group of
+# one can never be behind its own newest read, so retirement could never fire for them.
+_PAGE_PER_LOT = frozenset({"Direct Builder Portal (live)"})
+
 RELISTING_CHANNELS = frozenset({
     "E-Agent", "Proxima", "Direct Builder Portal (live)",
 })
@@ -466,7 +472,31 @@ def _by_document(rows):
                or "%s|%s" % (r["source_channel"] or "", r["builder_name"] or ""))
         project = str(_col(r, "source_project_id") or "").strip()
         groups[(key, project) if project else (key, "")].append(r)
-    return groups
+
+    # A URL BEHIND A SINGLE LISTING IS NOT A LIST.
+    #
+    # Hermitage and Torsion give every listing its own page, so each one formed a group of
+    # ONE -- and a group of one can never be behind its own newest read. Retirement could
+    # therefore never fire for 280 live listings however long the portal ignored them,
+    # which is why Torsion lots unseen for 21 days were still being shown while the
+    # Settings tab said "ONLY PART OF ITS STOCK".
+    #
+    # The re-listing unit for those is the PORTAL: it publishes its whole stock each run,
+    # so the channel-and-builder key the fallback above already uses for a row with no url
+    # is the right one for a url that backs only one row. Regrouping rather than widening
+    # the key wholesale, so a real multi-row document is untouched.
+    regrouped = collections.defaultdict(list)
+    for key, members in groups.items():
+        if len(members) == 1 and str(members[0]["source_channel"] or "") in _PAGE_PER_LOT:
+            # ONLY where the channel is a portal that pages every lot separately. A
+            # SPREADSHEET that happens to hold one row is still its own document, and
+            # pooling two of those from one builder is the "a channel is far too broad"
+            # error this module exists to avoid -- one sheet going quiet would retire the
+            # other's stock.
+            r = members[0]
+            key = ("%s|%s" % (r["source_channel"] or "", r["builder_name"] or ""), "")
+        regrouped[key].extend(members)
+    return regrouped
 
 
 # A list that comes back missing this much of itself has not been read, whatever it

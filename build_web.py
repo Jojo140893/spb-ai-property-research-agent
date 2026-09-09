@@ -1639,6 +1639,18 @@ def _trimmed_url(value, limit=120):
     return re.sub(r"%[0-9A-Fa-f]?$", "", text)
 
 
+def _days_since(stamp) -> int:
+    """Whole days between a "dd/mm/YYYY HH:MM" stamp and now, or -1 if it cannot be read."""
+    match = re.match(r"\s*(\d{1,2})/(\d{1,2})/(\d{4})", str(stamp or ""))
+    if not match:
+        return -1
+    try:
+        day, month, year = (int(g) for g in match.groups())
+        return max(0, (datetime.now() - datetime(year, month, day)).days)
+    except ValueError:
+        return -1
+
+
 def _readable_name(url) -> str:
     """"Atlas Price New.pdf (dropbox.com)" -- enough to identify the file, no capability.
 
@@ -1664,7 +1676,15 @@ def _unreadable_stocklists():
     except Exception:                                  # pragma: no cover - absent is fine
         return {"generated": "", "count": 0, "files": []}
     files = payload.get("files") or []
-    return {"generated": payload.get("generated", ""), "count": len(files),
+    # HOW OLD IT IS, ALONGSIDE WHAT IT SAYS. The harvest rewrites this file on the runner
+    # and the runner is thrown away, so a deploy from a laptop republishes whatever copy
+    # that laptop happens to hold. On 10 Sep the published panel was showing a list
+    # generated on 27 August -- a fortnight stale, undated on the page, and contradicted
+    # by the app beside it: it named Koops Price.pdf as unreadable while Koop listings
+    # were live from that very file. A panel Coleen acts on has to say when it was true.
+    return {"generated": payload.get("generated", ""),
+            "days_old": _days_since(payload.get("generated", "")),
+            "count": len(files),
             # THE NAME, NOT THE LINK. 56 of these 57 are Dropbox "/scl/fo/" folder
             # shares -- capability URLs that hand over a whole shared folder to anyone
             # holding the string, with no sign-in. build_web has a whole assertion
