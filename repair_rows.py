@@ -889,6 +889,47 @@ def _identity_without_suburb(r):
     )
 
 
+def _suburb_evidence(row) -> int:
+    """How strong the evidence behind this row's suburb is. Higher wins.
+
+    The order is suburb_quality's own, not a new opinion:
+      3  the source STATED it (or a single-character typo of it was corrected)
+      2  it was READ -- off the row's address, its postcode, its document's front page
+      1  it was INFERRED from the row's other text, or could not be checked for want of
+         a state
+      0  the app shows nothing at all
+
+    find_suburbs_in_own_document already turns on exactly this distinction -- "A DOCUMENT
+    THAT NAMES THE SUBURB BEATS A GUESS AT IT ... Re-reading it replaces a reading with a
+    statement". Two captures of one lot disagreeing is not a coin toss when one of them is
+    the source's own word and the other is our reading of a road name.
+    """
+    try:
+        import suburb_quality as SQ
+    except ImportError:                                # pragma: no cover
+        return 1 if str(row["suburb"] or "").strip() else 0
+    shown, why = SQ.resolve(dict(row, suburb_source=""))
+    if not str(shown or "").strip():
+        return 0
+    if why in (SQ.STATED, SQ.FROM_TYPO):
+        return 3
+    return 2 if SQ.is_located(why) else 1
+
+
+def _shows_a_suburb(row) -> bool:
+    """Whether the app displays a suburb for this row at all.
+
+    Not `row["suburb"]` -- build_web publishes suburb_quality.resolve()'s answer, which
+    refuses a value that is not a locality. A row storing "Truganina Montare Road,
+    Truganina VIC" shows the client nothing, and is a blank row wearing a full column.
+    """
+    # ALWAYS ASK resolve, even for an empty column. Returning False early on a blank
+    # disagreed with _suburb_evidence, which asks resolve and can be handed a suburb
+    # rescued from the row's own address -- so one helper called a row blank while the
+    # other scored it as located, and the pair of them decided who to supersede.
+    return _suburb_evidence(row) > 0
+
+
 def find_suburb_twins(rows):
     """One package stored twice because it only recently started stating its suburb.
 
@@ -910,6 +951,15 @@ def find_suburb_twins(rows):
     Only a BLANK-suburb row is ever the loser. Two rows that each name a suburb, and name
     different ones, are left alone: that is a disagreement about where a property is, and
     guessing which is right is exactly the kind of call this project refuses to make.
+
+    BLANK MEANS BLANK ON SCREEN, NOT EMPTY IN THE COLUMN. The older copy usually does hold
+    something -- it is what the extractor of the day made of the line. Lot CC-0116 stores
+    "Truganina Montare Road, Truganina VIC" against the newer copy's "Manor Lakes":
+    suburb_quality refuses the first outright, so the client is shown one lot twice, once
+    with a suburb and once with nothing. Requiring the column to be literally empty missed
+    every one of those -- 31 groups, 62 rows, on 10 Sep 2026. The test is what the app
+    SHOWS, which is the same test the published snapshot applies, and it is the same
+    widening find_suburbs_in_own_document already makes for the same reason.
     """
     by = collections.defaultdict(list)
     for r in rows:
@@ -921,14 +971,33 @@ def find_suburb_twins(rows):
     for _, g in by.items():
         if len(g) < 2:
             continue
-        named = [r for r in g if (r["suburb"] or "").strip()]
-        blank = [r for r in g if not (r["suburb"] or "").strip()]
-        if not named or not blank:
+        named = [r for r in g if _shows_a_suburb(r)]
+        blank = [r for r in g if not _shows_a_suburb(r)]
+        if not named:
             continue
         # Where the named copies disagree about the suburb there is no single keeper to
-        # point the blank ones at, so nothing is collapsed.
+        # point the blank ones at -- UNLESS one of them is the source's own word and the
+        # rest are our reading of it.
+        #
+        # Lot CC-0116 is two live rows at one price: a 6 Aug capture showing "Truganina",
+        # read off the road name in its own address, and a 3 Sep capture showing "Manor
+        # Lakes", stated by the source. Both are "located", so both counted as named and
+        # the pair was left alone -- and Coleen is shown one property twice. 31 groups on
+        # 10 Sep 2026.
+        #
+        # Deferring to the statement is not picking a winner between two opinions; it is
+        # the rule find_suburbs_in_own_document already applies. Where the strongest
+        # evidence is not unique, or the strongest rows still disagree, nothing is
+        # collapsed and the disagreement stands.
         if len({_norm(r["suburb"]) for r in named}) > 1:
-            continue
+            best = max(_suburb_evidence(r) for r in named)
+            strongest = [r for r in named if _suburb_evidence(r) == best]
+            weaker = [r for r in named if _suburb_evidence(r) < best]
+            if not weaker or len({_norm(r["suburb"]) for r in strongest}) > 1:
+                continue
+            named, blank = strongest, blank + weaker
+        if not blank:
+            continue                       # one capture only, or all equally well evidenced
         # THE KEEPER IS THE ROW THE HARVEST STILL SEES, not the fullest one.
         #
         # Ranking on completeness alone chose the stale copy 
