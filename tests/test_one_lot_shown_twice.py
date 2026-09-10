@@ -61,16 +61,41 @@ def test_a_junk_suburb_is_as_blank_as_an_empty_one():
     assert _collapsed(rows) == {2} and _kept(rows) == {1}
 
 
-def test_the_source_s_own_word_beats_our_reading_of_a_road_name():
-    """Both are "located", so both used to count as named and the pair was left alone --
-    and Coleen was shown one property twice."""
-    # the stored value verbatim from lot CC-0116: the whole address jammed into the
-    # suburb column, which suburb_quality reads a locality OUT of rather than accepting
-    rows = [_row(1, "Manor Lakes", "03/09/2026"),
-            _row(2, "Truganina Montare Road, Truganina VIC", "06/08/2026",
+def test_the_row_s_own_address_outranks_a_column_value_that_contradicts_it():
+    """The rule as first written kept the WRONG row, and review caught it before deploy.
+
+    resolve() returns STATED for any value in the suburb column that happens to be a
+    locality in that state -- it says nothing about where the value came from. So a
+    section header carried onto the wrong block of rows scored 3 and beat a genuine
+    address read at 2.
+
+    It did: one E-Agent PDF put "Manor Lakes" on three lots whose own addresses read
+    Bairnsdale, Truganina and Donnybrook, up to 280 km apart. At most one can be right.
+    The first version of this rule superseded all three address-evidenced copies; 24 of
+    60 supersessions had that shape and were rolled back.
+
+    A suburb the row's own address repeats has two fields agreeing. A column value its
+    address contradicts has one.
+    """
+    import repair_rows as RR
+    corroborated = _row(1, "Truganina", "06/08/2026",
+                        lot_address="CC-0116, Truganina Montare Road, Truganina VIC")
+    column_only = _row(2, "Manor Lakes", "03/09/2026",
+                       lot_address="CC-0116, Truganina Montare Road, Truganina VIC")
+    assert RR._suburb_evidence(corroborated) > RR._suburb_evidence(column_only), (
+        "a column value contradicted by the row's own address still outranks it")
+
+
+def test_a_contradicted_column_value_never_supersedes_the_address_evidenced_row():
+    """The consequence that matters: lot CC-0116 must not end up findable only under a
+    suburb 40 km from the street its own address names."""
+    import repair_rows as RR
+    rows = [_row(1, "Truganina", "06/08/2026",
+                 lot_address="CC-0116, Truganina Montare Road, Truganina VIC"),
+            _row(2, "Manor Lakes", "03/09/2026",
                  lot_address="CC-0116, Truganina Montare Road, Truganina VIC")]
-    assert _collapsed(rows) == {2}, "the weaker-evidence copy was not collapsed"
-    assert _kept(rows) == {1}
+    dropped = _collapsed(rows)
+    assert 1 not in dropped, "the address-evidenced copy was superseded"
 
 
 def test_two_rows_the_source_itself_names_differently_are_left_alone():

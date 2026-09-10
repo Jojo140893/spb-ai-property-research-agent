@@ -923,7 +923,8 @@ def _suburb_evidence(row) -> int:
     """How strong the evidence behind this row's suburb is. Higher wins.
 
     The order is suburb_quality's own, not a new opinion:
-      3  the source STATED it (or a single-character typo of it was corrected)
+      4  the row's own lot_address repeats it -- two fields agreeing
+      3  resolve() calls it STATED, which means only that the column held a locality
       2  it was READ -- off the row's address, its postcode, its document's front page
       1  it was INFERRED from the row's other text, or could not be checked for want of
          a state
@@ -939,8 +940,27 @@ def _suburb_evidence(row) -> int:
     except ImportError:                                # pragma: no cover
         return 1 if str(row["suburb"] or "").strip() else 0
     shown, why = SQ.resolve(dict(row, suburb_source=""))
-    if not str(shown or "").strip():
+    shown = str(shown or "").strip()
+    if not shown:
         return 0
+    # THE ROW'S OWN ADDRESS IS THE STRONGEST THING IT HAS, and it outranks the column.
+    #
+    # resolve() returns STATED for ANY value in the suburb column that happens to be a
+    # locality in that state -- it makes no claim about where the value came from, and
+    # the docstring at the top of suburb_quality says what that column actually holds:
+    # OCR debris, section headers, "Price", "City", "Haven". So a section header carried
+    # onto the wrong block of rows scored 3 and beat an address read at 2.
+    #
+    # It did: one E-Agent PDF put "Manor Lakes" on three lots whose own addresses read
+    # Bairnsdale, Truganina and Donnybrook -- up to 280 km apart, so at most one can be
+    # right. This rule kept all three and superseded the address-evidenced copies. 24 of
+    # 60 supersessions on 10 Sep 2026 had that shape, caught in review before deploy.
+    #
+    # A suburb the row's OWN address repeats is corroborated by a second field; a column
+    # value contradicted by that address is not. That is the same reasoning suburb_quality
+    # applies in FROM_ADDRESS, applied one level up.
+    if shown.lower() in str(_col(row, "lot_address") or "").lower():
+        return 4
     if why in (SQ.STATED, SQ.FROM_TYPO):
         return 3
     return 2 if SQ.is_located(why) else 1

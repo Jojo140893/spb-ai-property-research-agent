@@ -170,3 +170,23 @@ def test_the_guard_reads_every_published_file():
     for name in ("stock.json", "channels.json", "builders.json", "vendor-assets.json",
                  "benchmarks.json"):
         assert name in call, f"{name} is published but not checked for capability URLs"
+
+
+def test_no_module_in_the_request_path_carries_a_mangled_escape():
+    """A literal 0x08 compiles fine and matches nothing, so the guard it lives in goes
+    quietly dead. api/_candidates.py carried THIRTEEN of them on main: _HOUSE_WORDS
+    matched neither "Detached" nor "Duplex" nor "House & Land", so 1,269 house-and-land
+    lots were served as apartments and a client filtering House & Land could reach 4,735
+    listings instead of 6,034.
+
+    Checked across every module the deployed function imports, not just this one.
+    """
+    from pathlib import Path
+    root = Path(build_web.__file__).resolve().parent
+    checked = 0
+    for path in list((root / "api").glob("*.py")) + list(root.glob("*.py")):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        checked += 1
+        assert chr(8) not in text, f"{path.name} contains a literal backspace (a mangled escape)"
+        assert chr(1) not in text, f"{path.name} contains a literal SOH (a mangled backreference)"
+    assert checked > 20, f"only scanned {checked} modules; the glob is not finding them"

@@ -62,8 +62,8 @@ def _rows(builders):
 # bundle. Standing rule 4 is about the details, not the column they sit in.
 _CONTACT_IN_PROSE = re.compile(
     r"[\w.+-]+@[\w-]+\.[\w.]{2,}"                       # an email anywhere
-    r"|0[2-478](?:[ \-]?\d){8}"                       # AU landline / mobile
-    r"|(?:\+?61[ \-]?)[2-478](?:[ \-]?\d){8}", re.I)
+    r"|\b0[2-478](?:[ \-]?\d){8}\b"                       # AU landline / mobile
+    r"|\b(?:\+?61[ \-]?)[2-478](?:[ \-]?\d){8}\b", re.I)
 
 
 def _scrub(text):

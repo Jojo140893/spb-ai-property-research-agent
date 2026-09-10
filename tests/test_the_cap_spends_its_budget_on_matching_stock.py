@@ -99,3 +99,40 @@ def test_a_row_missing_the_fact_is_not_counted_as_meeting_it():
     assert C._meets_binding({"bedrooms": None}, {"bedrooms_min": 4}, {"bedrooms"}) == 0
     assert C._meets_binding({"bedrooms": 3}, {"bedrooms_min": 4}, {"bedrooms"}) == 0
     assert C._meets_binding({"bedrooms": 4}, {"bedrooms_min": 4}, {"bedrooms"}) == 1
+
+
+def test_a_house_size_minimum_is_actually_read_off_the_package():
+    """The bug every other fixture in this file was blind to.
+
+    REQUIRED_FACTS calls the fact "house_sqm"; a built package stores the figure as
+    "house_size_sqm". _meets_binding read the fact name straight off the package, found
+    nothing, and scored every row 0 -- so a row meeting the client's minimum sorted
+    identically to one failing it, and the cap collapsed back to the 600 cheapest. It
+    failed silently, and the other six tests here all set ONLY bedrooms_min, so every one
+    of them passed with the bug present.
+    """
+    big = _rows(200, beds=4, first=800000, tag="big")
+    for r in big:
+        r["house_sqm"] = 200                       # the column the snapshot carries
+    small = _rows(C.MAX_CANDIDATES, beds=4, first=300000, tag="small")
+    for r in small:
+        r["house_sqm"] = 90
+    picks, _ = _scored({"state": "VIC", "budget_max": 1500000, "bedrooms_min": 4,
+                        "house_size_min_sqm": 150, "search_radius_km": 0}, big + small)
+    kept = sum(1 for p in picks if (p.get("house_size_sqm") or 0) >= 150)
+    assert kept == 200, (
+        f"only {kept} of the 200 homes meeting the house-size minimum survived the cap; "
+        f"the minimum is not being read off the package")
+
+
+def test_every_required_fact_can_be_found_on_a_package():
+    """The general form of it: a fact with no key on the package scores every row 0 and
+    silently disables that half of the ordering."""
+    rows = _rows(20, beds=4, first=500000)
+    for r in rows:
+        r.update(house_sqm=200, bathrooms=2, car_spaces=2)
+    picks, _ = _scored({"state": "VIC", "budget_max": 1000000, "search_radius_km": 0}, rows)
+    assert picks
+    for fact, _label in C.REQUIRED_FACTS:
+        key = C.PACKAGE_KEY_FOR[fact]
+        assert key in picks[0], f"{fact!r} maps to {key!r}, which no package carries"
