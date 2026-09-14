@@ -186,8 +186,8 @@ _UNIT_WORDS = re.compile(r"\bunit\b|\bapt\b|\bapartment\b|\blevel\s*\d|\blvl\s*\
 # type-unknown rows in a scored pool were describing themselves and being ignored:
 #   "1054 Available Detached Wildflower Circuit Regent 4-2-1"
 #   "836 Available Medium Density Rotunno Drive Poinciana"
-_HOUSE_WORDS = re.compile(r"detached|medium\s*density|duplex|"
-                          r"dual\s*occ(upancy)?|house\s*&?\s*land", re.I)
+_HOUSE_WORDS = re.compile(r"\bdetached\b|\bmedium\s*density\b|\bduplex\b|"
+                          r"\bdual\s*occ(upancy)?\b|\bhouse\s*&?\s*land\b", re.I)
 _TOWNHOUSE_WORDS = re.compile(r"\btown\s*house(s)?\b|\bth\b", re.I)
 _VILLA_WORDS = re.compile(r"\bvilla(s)?\b", re.I)
 
@@ -199,7 +199,7 @@ _VILLA_WORDS = re.compile(r"\bvilla(s)?\b", re.I)
 # as apartments — so a search for Apartment returned 8 greenfield packages and 0 real
 # apartments, while House & Land silently LOST those same 8. Found by the 17 Aug filter
 # audit, which is exactly the failure the earlier fix was meant to end.
-_LOT_UNIT_REPEAT = re.compile(r"lot\s+(\S+).{0,40}?unit\s+", re.I)
+_LOT_UNIT_REPEAT = re.compile(r"\blot\s+(\S+).{0,40}?\bunit\s+\1\b", re.I)
 
 # A dwelling with real land is not an apartment, whatever the text says. Real apartments in
 # this catalogue carry NO land figure at all; the artefact rows carry 260-720 m2. Set above
@@ -294,6 +294,20 @@ BRIEF_MINIMUM_FOR = {
     "bathrooms": "bathrooms_min",
     "car_spaces": "car_spaces_min",
     "house_sqm": "house_size_min_sqm",
+}
+
+# And what each fact is CALLED on a built package, which is not always what the fact is
+# called. REQUIRED_FACTS says "house_sqm"; a package stores the figure as
+# "house_size_sqm". _meets_binding read the fact name straight off the package, found
+# nothing, and scored every row 0 on house size -- so a row meeting the client's minimum
+# sorted identically to one failing it and the cap collapsed back to the 600 cheapest,
+# which is the exact defect that ordering exists to prevent. It failed silently: no
+# exception, no counter, and every test fixture set only bedrooms_min, so all six passed.
+PACKAGE_KEY_FOR = {
+    "bedrooms": "bedrooms",
+    "bathrooms": "bathrooms",
+    "car_spaces": "car_spaces",
+    "house_sqm": "house_size_sqm",
 }
 
 
@@ -1387,6 +1401,25 @@ def build_packages(brief_dict, rows, today=None):
             asked = [p for p in packages if str(p.get("suburb") or "").strip().lower() in wanted]
             rest = [p for p in packages if str(p.get("suburb") or "").strip().lower() not in wanted]
             packages = asked + rest
+        elif binding_facts:
+            # AND WHEN NO SUBURB WAS NAMED, THE SAME IDEA APPLIED TO THE REST OF THE BRIEF.
+            #
+            # The block above rescued a search that names its suburbs. A state-wide search
+            # -- "anything in VIC under $900,000 with four bedrooms" -- has no suburbs, so
+            # `wanted` is empty, nothing is reordered, and the 600 CHEAPEST win again.
+            #
+            # Measured on the live snapshot: that brief has 1,336 candidates, 784 of which
+            # genuinely have four bedrooms. The cheapest 600 contain just 271 of them, so
+            # 511 matching homes cannot be returned by any search and the scorer never
+            # sees a four-bedroom home above $714,190. The client said they would pay
+            # $900,000.
+            #
+            # A row that already fails a minimum the consultant typed is the cheapest
+            # thing to give up: scoring_engine will hard-reject it on arrival. So the
+            # budget is spent on rows that satisfy the stated minimums first. The sort is
+            # STABLE, so price-ascending order survives inside each group.
+            packages.sort(key=lambda p: -_meets_binding(p, brief_dict, binding_facts))
+            packages = _spread_across_the_budget(packages, brief_dict, binding_facts)
         counts["truncated"] = len(packages) - MAX_CANDIDATES
         packages = packages[:MAX_CANDIDATES]
         packages.sort(key=lambda p: p["advertised_package_price"])
@@ -1394,6 +1427,57 @@ def build_packages(brief_dict, rows, today=None):
     counts["missing_fields"] = missing_field_counts
     counts["unstated_but_scored"] = unstated_but_scored
     return packages, counts
+
+
+def _spread_across_the_budget(packages, brief_dict, binding_facts):
+    """Reorder so the kept slots cover the whole price range, not just its cheap end.
+
+    Sorting matching stock to the front fixes WHICH rows are given up, but not WHERE. VIC
+    has 784 four-bedroom homes under $900,000 and 600 slots, so cheapest-first still ends
+    at $798,225 -- and a client who said they would pay $900,000 is shown nothing in the
+    top hundred thousand of their own budget.
+
+    A consultant is choosing between options, so the useful 600 are spread over the range
+    rather than crowded at the bottom of it. Every price band keeps representation, and
+    the scorer still ranks on suitability afterwards -- this only decides what it gets to
+    look at.
+
+    Untouched when the matching stock already fits: no reordering, no behaviour change.
+    """
+    matching = [p for p in packages if _meets_binding(p, brief_dict, binding_facts)
+                == len(binding_facts)]
+    if len(matching) <= MAX_CANDIDATES:
+        return packages
+    # An even stride through the price-ascending matching stock, then everything else
+    # behind it so the cap falls where it should.
+    step = len(matching) / float(MAX_CANDIDATES)
+    kept, taken = [], set()
+    for n in range(MAX_CANDIDATES):
+        idx = int(n * step)
+        if idx not in taken:
+            taken.add(idx)
+            kept.append(matching[idx])
+    others = [p for n, p in enumerate(matching) if n not in taken]
+    tail = [p for p in packages if _meets_binding(p, brief_dict, binding_facts)
+            != len(binding_facts)]
+    return kept + others + tail
+
+
+def _meets_binding(package, brief_dict, binding_facts) -> int:
+    """How many of the minimums the consultant actually typed this row satisfies.
+
+    Only the fields the brief set a minimum for -- an unstated minimum is not a
+    requirement, and a row is never penalised for a question nobody asked. A row whose
+    value is unknown counts as not meeting it, which is the same judgement the pipeline
+    already makes by requiring those fields to be stated at all (see binding_facts).
+    """
+    met = 0
+    for field in binding_facts:
+        floor = _num(brief_dict.get(BRIEF_MINIMUM_FOR[field])) or 0
+        value = _num(package.get(PACKAGE_KEY_FOR[field], package.get(field)))
+        if value is not None and value >= floor:
+            met += 1
+    return met
 
 
 def coverage_sentence(counts, source_path, state):

@@ -12,8 +12,8 @@ function check(name, cond, detail) {
   else { fail++; console.log("  FAIL  " + name + (detail ? "  -> " + detail : "")); }
 }
 
-function req(path, { method = "GET", cookie = "", accept = "*/*", body = null } = {}) {
-  const headers = { accept };
+function req(path, { method = "GET", cookie = "", accept = "*/*", body = null, extra = {} } = {}) {
+  const headers = { accept, ...extra };
   if (cookie) headers.cookie = cookie;
   if (body !== null) headers["content-type"] = "application/x-www-form-urlencoded";
   return new Request("https://app.smartpropertybuying.com.au" + path, { method, headers, body });
@@ -120,6 +120,134 @@ console.log("\n--- signed in ---");
   const res = await call(req("/login", { cookie, accept: "text/html" }));
   check("/login bounces to the app when already signed in",
         res && res.status === 302 && res.headers.get("location") === "/");
+}
+
+console.log("\n--- Agent 1's service key: POST /api/research, and nothing else ---");
+{
+  // Agent 1's webhook runs a research on a hot lead from a server, with no browser and so
+  // no session cookie. With the key it may do exactly that one thing. Every check after
+  // the first is a way the hole could be wider than that, and each one is a line a
+  // careless refactor would change.
+  const KEY = "svc-key-for-tests-not-the-real-one";
+  const keyed = (path, method, key) =>
+    req(path, { method, extra: key === undefined ? {} : { "x-spb-service-key": key } });
+
+  // Anything the middleware logs while a key is in play is captured, so a stray
+  // console.log(request.headers) fails here rather than printing a secret into Vercel's logs.
+  const logged = [];
+  const quiet = async (r) => {
+    const saved = {};
+    for (const m of ["log", "info", "warn", "error", "debug"]) {
+      saved[m] = console[m];
+      console[m] = (...a) => logged.push(a.map(String).join(" "));
+    }
+    try { return await call(r); } finally { Object.assign(console, saved); }
+  };
+  const served = (res) => res === undefined;
+  const refused = (res) => res && res.status === 401;
+
+  delete process.env.SPB_SERVICE_KEY;
+  {
+    const res = await quiet(keyed("/api/research", "POST", ""));
+    check("env unset + empty header -> not bypassed", refused(res),
+          res ? "status " + res.status : "SERVED: an empty key matched an empty header");
+    const res2 = await quiet(keyed("/api/research", "POST", KEY));
+    check("env unset + any header -> not bypassed", refused(res2),
+          res2 ? "status " + res2.status : "SERVED WITH NO KEY CONFIGURED");
+  }
+
+  process.env.SPB_SERVICE_KEY = "   ";
+  {
+    const res = await quiet(keyed("/api/research", "POST", "   "));
+    check("env whitespace + header whitespace -> not bypassed", refused(res),
+          res ? "status " + res.status : "SERVED: a blank key was trusted");
+    const res2 = await quiet(keyed("/api/research", "POST", ""));
+    check("env whitespace + empty header -> not bypassed", refused(res2),
+          res2 ? "status " + res2.status : "SERVED: a blank key was trusted");
+  }
+
+  process.env.SPB_SERVICE_KEY = KEY;
+  {
+    const res = await quiet(keyed("/api/research", "POST", KEY));
+    check("correct key + POST /api/research -> passes through", served(res),
+          res && "status " + res.status);
+  }
+  {
+    process.env.SPB_SERVICE_KEY = "  " + KEY + "\n";
+    const res = await quiet(keyed("/api/research", "POST", KEY));
+    check("  ...the configured key is trimmed, as SITE_PASSWORD is", served(res),
+          res && "status " + res.status);
+    process.env.SPB_SERVICE_KEY = KEY;
+  }
+  {
+    const res = await quiet(keyed("/api/research", "POST", "wrong-key"));
+    check("wrong key -> 401, not served", refused(res),
+          res ? "status " + res.status : "SERVED WITH A WRONG KEY");
+    const body = res ? await res.text() : "";
+    let parsed = {};
+    try { parsed = JSON.parse(body); } catch (e) { /* checked below */ }
+    check("  ...as the JSON 401 a fetch can detect", parsed.error === "auth_required", body);
+    check("  ...and the 401 echoes neither key", !body.includes(KEY) && !body.includes("wrong-key"));
+  }
+  {
+    // Same length as the real key, one character different: catches a length-only compare.
+    const near = KEY.slice(0, -1) + (KEY.endsWith("e") ? "f" : "e");
+    const res = await quiet(keyed("/api/research", "POST", near));
+    check("same-length wrong key -> not bypassed", refused(res),
+          res ? "status " + res.status : "SERVED: the key is compared by length only");
+  }
+  for (const k of [KEY + "x", "x" + KEY, KEY.slice(0, -1), undefined]) {
+    const res = await quiet(keyed("/api/research", "POST", k));
+    check(`key ${k === undefined ? "header missing" : "of length " + k.length} -> not bypassed`,
+          refused(res), res ? "status " + res.status : "SERVED WITHOUT THE EXACT KEY");
+  }
+  for (const m of ["GET", "HEAD", "PUT", "PATCH", "DELETE", "OPTIONS"]) {
+    const res = await quiet(keyed("/api/research", m, KEY));
+    check(`correct key + ${m} /api/research -> not bypassed`, refused(res),
+          res ? "status " + res.status : m + " SERVED ON THE SERVICE KEY");
+  }
+  // A prefix or loose match would have opened all of these.
+  for (const p of ["/api/research/extra", "/api/researchX", "/api/research/",
+                   "/api/research.py", "/API/research", "/api/Research", "/api//research",
+                   "/stock.json", "/", "/api/hot_leads", "/api/refresh", "/api/narrative",
+                   "/reports/client-report.pdf"]) {
+    const res = await quiet(keyed(p, "POST", KEY));
+    check(`correct key + POST ${p} -> not bypassed`, refused(res),
+          res ? "status " + res.status : "SERVED ON THE SERVICE KEY");
+  }
+  {
+    const res = await quiet(keyed("/stock.json", "GET", KEY));
+    check("correct key on GET /stock.json -> not bypassed", refused(res),
+          res ? "status " + res.status : "CATALOGUE SERVED ON THE SERVICE KEY");
+  }
+  {
+    // The key is a way past the session check, never past the fail-closed one.
+    delete process.env.SITE_PASSWORD;
+    const res = await quiet(keyed("/api/research", "POST", KEY));
+    check("correct key with SITE_PASSWORD unset -> still 503", res && res.status === 503,
+          res ? "status " + res.status : "SERVED ON AN UNCONFIGURED SITE");
+    process.env.SITE_PASSWORD = PASS;
+  }
+  // A person's session is untouched by the key being configured.
+  {
+    const res = await quiet(req("/stock.json", { cookie }));
+    check("with the key configured, a cookie session still serves stock.json", served(res),
+          res && "status " + res.status);
+    const res2 = await quiet(req("/api/research", { method: "POST", cookie }));
+    check("  ...and POST /api/research from the browser, with no key", served(res2),
+          res2 && "status " + res2.status);
+    const res3 = await quiet(req("/api/research", { method: "POST", cookie,
+                                                    extra: { "x-spb-service-key": "wrong" } }));
+    check("  ...and a stray wrong key does not lock a signed-in person out", served(res3),
+          res3 && "status " + res3.status);
+    const res4 = await quiet(req("/api/research", { method: "POST" }));
+    check("  ...while no cookie and no key is still 401", refused(res4),
+          res4 ? "status " + res4.status : "SERVED WITHOUT KEY OR COOKIE");
+  }
+  check("nothing logged while a key was in play carries it",
+        !logged.some((line) => line.includes(KEY)), logged.join(" | "));
+
+  delete process.env.SPB_SERVICE_KEY;
 }
 
 console.log("\n--- forging the cookie ---");

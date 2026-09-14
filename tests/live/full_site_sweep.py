@@ -34,9 +34,9 @@ with sync_playwright() as pw:
     except Exception: pass
     p.wait_for_timeout(22000)
     ck("load", "page title correct", "Smart Property Buying" in p.title(), p.title())
-    ck("load", "5 tabs present", len(p.evaluate(
+    ck("load", "7 tabs present", len(p.evaluate(
         "()=>[...document.querySelectorAll('.tab-btn')].length")) if False else
-        p.evaluate("()=>[...document.querySelectorAll('.tab-btn')].length") == 5)
+        p.evaluate("()=>[...document.querySelectorAll('.tab-btn')].length") == 7)
     ck("load", "auto-run produced a shortlist", "Rank #1" in p.inner_text("#resultsContent"))
 
     # ============================================== 2. research, three briefs

@@ -585,6 +585,63 @@
             margin-bottom: 0.9rem;
         }
 
+        /* Hot Leads (Agent 1). A consultant opens this with the phone already in their
+           hand, so contact details sit at the top of each card and every row wraps rather
+           than scrolls: an email address from a caller can be any length, and at 375px a
+           row that refuses to wrap pushes the Call link off the screen. */
+        .hl-notice {
+            background: var(--blue-light);
+            border: 1px solid rgba(30, 64, 175, 0.18);
+            color: var(--text-body);
+            border-radius: 8px;
+            padding: 0.8rem 1rem;
+            font-size: 0.85rem;
+            line-height: 1.5;
+        }
+        .hl-list { display: flex; flex-direction: column; gap: 1.1rem; }
+        .hl-card { padding: 1.25rem; }
+        .hl-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.35rem 0.75rem; }
+        .hl-name { font-size: 1.12rem; font-weight: 700; color: var(--text-heading);
+                   overflow-wrap: anywhere; }
+        .pill-hot { background: var(--rose-bg); color: var(--rose-red); border: 1px solid rgba(185, 28, 28, 0.2); }
+        .hl-when { font-size: 0.8rem; color: var(--text-muted); }
+        .hl-contact { display: flex; flex-wrap: wrap; gap: 0.35rem 1.25rem; margin: 0.6rem 0 0.2rem;
+                      font-size: 0.9rem; }
+        .hl-contact a, .hl-contact span { overflow-wrap: anywhere; }
+        .hl-contact a, .hl-links a, .hl-rec a { color: var(--accent-blue); font-weight: 600; }
+        .hl-reason { font-size: 0.85rem; color: var(--text-body); margin: 0.5rem 0; }
+        .hl-appt { font-size: 0.86rem; border-radius: 6px; padding: 0.55rem 0.75rem; margin: 0.6rem 0;
+                   background: var(--emerald-bg); border: 1px solid rgba(4, 120, 87, 0.2);
+                   color: var(--text-heading); }
+        .hl-appt-none { background: var(--amber-bg); border-color: rgba(180, 83, 9, 0.25);
+                        color: var(--amber-yellow); font-weight: 600; }
+        .hl-appt-note { display: block; font-size: 0.78rem; color: var(--amber-yellow); margin-top: 0.2rem; }
+        .hl-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.5rem 0; }
+        .hl-chip { font-size: 0.76rem; background: #f1f5f9; border: 1px solid var(--border-light);
+                   border-radius: 999px; padding: 0.18rem 0.6rem; color: var(--text-body);
+                   overflow-wrap: anywhere; }
+        .hl-links { display: flex; flex-wrap: wrap; gap: 0.35rem 1.1rem; font-size: 0.84rem; margin: 0.4rem 0 0.2rem; }
+        .hl-summary { font-size: 0.84rem; margin: 0.35rem 0; }
+        .hl-summary summary { cursor: pointer; color: var(--text-muted); }
+        .hl-summary p { margin-top: 0.35rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+        .hl-recs-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+                        gap: 0.5rem; margin: 0.9rem 0 0.5rem; padding-top: 0.8rem;
+                        border-top: 1px solid var(--border-light); }
+        .hl-recs-title { font-size: 0.78rem; font-weight: 700; text-transform: uppercase;
+                         color: var(--text-heading); }
+        .hl-recs { display: grid; gap: 0.65rem;
+                   grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr)); }
+        .hl-rec { border: 1px solid var(--border-light); border-radius: 8px; padding: 0.7rem 0.8rem;
+                  background: var(--bg-page); font-size: 0.82rem; min-width: 0; }
+        .hl-rec-title { font-weight: 700; color: var(--text-heading); overflow-wrap: anywhere; }
+        .hl-rec-sub { color: var(--text-muted); margin: 0.15rem 0 0.35rem; overflow-wrap: anywhere; }
+        .hl-rec-price { font-weight: 700; color: var(--accent-blue); font-size: 0.95rem; }
+        .hl-rec-facts { display: flex; flex-wrap: wrap; gap: 0.15rem 0.8rem; margin: 0.25rem 0; }
+        .hl-rec-why { color: var(--text-body); margin: 0.3rem 0; overflow-wrap: anywhere; }
+        .hl-recs-note { font-size: 0.82rem; color: var(--text-muted); margin: 0.2rem 0 0.5rem; }
+        .hl-msg { font-size: 0.8rem; margin-top: 0.4rem; }
+        .hl-msg-err { color: var(--rose-red); }
+
         .json-code {
             font-family: 'JetBrains Mono', monospace;
             font-size: 0.8rem;
@@ -684,6 +741,10 @@
 
     <nav class="nav-tabs">
         <button class="tab-btn active" onclick="showTab('researchTab', this)">Research & Scoring</button>
+        <!-- Beside Research & Scoring because it is the same work arriving by phone: Clare
+             qualifies the caller, the webhook runs the research, and this is where the
+             result lands. The qualifier drops below 768px like Benchmarks'. -->
+        <button class="tab-btn" onclick="showTab('hotLeadsTab', this); loadHotLeads();">Hot Leads<span class="nav-tab-label-full"> (Agent 1)</span></button>
         <button class="tab-btn" onclick="showTab('buildersTab', this)">Approved Builder Directory</button>
         <button class="tab-btn" onclick="showTab('buildingsTab', this); loadBuildings();">Building Stock</button>
         <!-- Directly after Building Stock so the comparison sits beside the thing being
@@ -914,6 +975,29 @@
                 </div>
             </div>
         </div>
+    </div>
+</div>
+
+<!-- TAB: HOT LEADS (Agent 1). Callers Clare graded hot, one card each, newest first. The
+     webhook has already booked the discovery call and run the research by the time a
+     lead lands here, so this is the "act on it now" list: who, how to reach them, when
+     the call is, and the three buildings to open the conversation with. -->
+<div id="hotLeadsTab" class="view-pane">
+    <div class="panel-card">
+        <div class="panel-header" style="flex-wrap:wrap; gap:0.5rem;">
+            <span>Hot leads from Clare's calls</span>
+            <span style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+                <span id="hotLeadsBadge" class="pill pill-hot">not loaded</span>
+                <button id="hotLeadsRefresh" type="button" class="btn-ghost"
+                        onclick="loadHotLeads(true)">Refresh</button>
+            </span>
+        </div>
+        <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">
+            Callers Clare graded <strong>hot</strong>, newest first &mdash; each with their
+            contact details, the discovery call if one was booked, and the three buildings the
+            research picked for them.
+        </p>
+        <div id="hotLeadsContent" style="font-size:0.9rem;">Loading hot leads…</div>
     </div>
 </div>
 
@@ -1409,6 +1493,14 @@
                       border-radius:8px; background:var(--bg-page);">
             <strong style="color:var(--text-heading);">Price lists we could not read
               (${CHANNELS.unreadable_stocklists.count})</strong>
+            ${CHANNELS.unreadable_stocklists.days_old > 2 ? `
+            <div style="margin-top:0.4rem; font-size:0.8rem; color:var(--accent-amber,#b45309);">
+              This list was last rebuilt ${CHANNELS.unreadable_stocklists.days_old} days ago
+              (${esc(String(CHANNELS.unreadable_stocklists.generated || '').split(' (')[0])}),
+              so a file named here may since have become readable. It is rewritten by the
+              nightly harvest; a dashboard published from a laptop carries whatever copy
+              that laptop held.
+            </div>` : ''}
             <p style="margin:0.5rem 0 0.6rem; font-size:0.85rem; color:var(--text-body);">
               These were downloaded successfully and produced no listings, so their
               projects are missing from the catalogue. Nearly all are price lists saved as
@@ -2503,6 +2595,373 @@ python state_sync.py push</pre>
                      ${esc(data.attribution || '')}</p>`
                 : `<p style="color:var(--text-muted);">No individual listings stored yet.</p>`);
     }
+
+    /* ------------------------------------------------------------ hot leads (Agent 1)
+     *
+     * When Clare (Agent 1) finishes a call and grades the caller HOT, the webhook books a
+     * discovery call, runs the research (Agent 2) and saves one record per call. This tab
+     * reads those back through /api/hot_leads, which proxies the webhook's store with the
+     * service key server-side, so the key never reaches the browser.
+     *
+     * EVERY STRING HERE CAME FROM SOMEONE ELSE. The name, the reason and the brief are a
+     * phone caller's speech as transcribed; the buildings are scraped listings. So nothing
+     * goes into HTML without esc(), and nothing becomes a link unless it is plainly
+     * http(s): a caller who gives their name as a script tag, or a listing whose source is
+     * a javascript: URL, shows up as the text it is. tel: is rebuilt from digits, and
+     * mailto: is only offered for something shaped like an address.
+     *
+     * Everything between HOT-LEADS-BEGIN and HOT-LEADS-END is sliced out and run under Node
+     * by tests/hot_leads_tab_checks.mjs, so keep what it needs inside the markers.
+     */
+    // HOT-LEADS-BEGIN
+    let HOT_LEADS = [];
+    let HOT_LEADS_STATE = 'idle';        // 'idle' | 'loading' | 'loaded'
+
+    // Only http: and https: may become an href. Anything else (javascript:, data:, a
+    // relative path) returns '' and the caller prints text instead. The PARSED href is
+    // returned rather than the input, so a stray quote arrives percent-encoded.
+    function hlSafeUrl(u) {
+        if (typeof u !== 'string' || !u.trim()) return '';
+        let parsed;
+        try { parsed = new URL(u.trim()); } catch (e) { return ''; }
+        return (parsed.protocol === 'http:' || parsed.protocol === 'https:') ? parsed.href : '';
+    }
+
+    // tel: from digits and a leading + only. Fewer than six digits is not a number anyone
+    // can ring, so it stays text.
+    function hlTelHref(phone) {
+        const raw = String(phone ?? '').trim();
+        const digits = raw.replace(/\D/g, '');
+        if (digits.length < 6) return '';
+        return 'tel:' + (raw.startsWith('+') ? '+' : '') + digits;
+    }
+
+    // mailto: only for something shaped like an address. Deliberately narrow: no ?, &, :,
+    // double quotes or spaces, so a transcribed "email" can neither add headers to the
+    // message nor leave the attribute.
+    function hlMailHref(email) {
+        const e = String(email ?? '').trim();
+        return /^[A-Za-z0-9._+'-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/.test(e)
+            ? 'mailto:' + e : '';
+    }
+
+    function hlMoney(v) {
+        if (v === null || v === undefined || v === '') return '';
+        const n = Number(v);
+        return (Number.isFinite(n) && n > 0) ? '$' + Math.round(n).toLocaleString('en-AU') : '';
+    }
+
+    // "Wed 16 Sep, 2:30 pm", in Melbourne whatever timezone the laptop is set to: the
+    // consultant and the customer are both there, and a machine on UTC must not move the
+    // call. '' for anything that is not a real date, so nothing invents a time.
+    function hlWhen(iso) {
+        if (!iso) return '';
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return '';
+        const p = {};
+        new Intl.DateTimeFormat('en-AU', {
+            timeZone: 'Australia/Melbourne', weekday: 'short', day: 'numeric', month: 'short',
+            hour: 'numeric', minute: '2-digit', hour12: true
+        }).formatToParts(d).forEach(part => { p[part.type] = part.value; });
+        return `${p.weekday} ${p.day} ${p.month}, ${p.hour}:${p.minute} `
+             + String(p.dayPeriod || '').toLowerCase();
+    }
+
+    // A missing count is '-', never a guess. 0 is a real answer (no car space) and shows.
+    const hlNum = v => (v === null || v === undefined || v === '') ? '-' : esc(v);
+
+    // An external link when the URL is http(s). A URL that is present but unusable prints
+    // its label as plain text, so "there was a link" stays visible without being clickable.
+    function hlExtLink(url, label, title) {
+        const safe = hlSafeUrl(url);
+        if (safe) {
+            return `<a href="${esc(safe)}" target="_blank" rel="noopener noreferrer"`
+                 + (title ? ` title="${esc(title)}"` : '') + `>${esc(label)}</a>`;
+        }
+        return (typeof url === 'string' && url.trim())
+            ? `<span class="hl-nolink">${esc(label)} (link unavailable)</span>` : '';
+    }
+
+    function hlBriefChips(brief) {
+        const b = (brief && typeof brief === 'object') ? brief : {};
+        const list = v => (Array.isArray(v) ? v : (v ? [v] : []))
+            .map(x => String(x ?? '').trim()).filter(Boolean).join(', ');
+        const chips = [];
+        if (hlMoney(b.budget_max)) chips.push('Budget up to ' + hlMoney(b.budget_max));
+        if (hlMoney(b.deposit_amount)) chips.push('Deposit ' + hlMoney(b.deposit_amount));
+        else if (b.deposit_amount === 0) chips.push('Deposit $0');   // stated, not unknown
+        if (String(b.state ?? '').trim()) chips.push('State: ' + String(b.state).trim());
+        if (list(b.primary_suburbs)) chips.push('Suburbs: ' + list(b.primary_suburbs));
+        if (Number(b.bedrooms_min) > 0) chips.push(`${Math.round(Number(b.bedrooms_min))}+ bed`);
+        if (list(b.product_type)) chips.push('Type: ' + list(b.product_type));
+        if (String(b.timeframe ?? '').trim()) chips.push('Timeframe: ' + String(b.timeframe).trim());
+        if (String(b.finance_status ?? '').trim()) chips.push('Finance: ' + String(b.finance_status).trim());
+        if (!chips.length) return '';
+        return `<div class="hl-chips">${chips.map(c => `<span class="hl-chip">${esc(c)}</span>`).join('')}</div>`;
+    }
+
+    // One building, compact. The same fields a shortlist card carries, minus the scoring
+    // matrix: this is a list to open a phone call with, not the research itself.
+    function hlRecCard(rec) {
+        const r = (rec && typeof rec === 'object') ? rec : {};
+        const txt = v => String(v ?? '').trim();
+        const title = [txt(r.builder_name), txt(r.house_design)].filter(Boolean).join(' – ')
+            || 'Builder not stated';
+        const place = [txt(r.suburb), txt(r.state)].filter(Boolean).join(' ');
+        // The realistic total where the research worked one out, otherwise the builder's
+        // advertised figure, and the card says which, so nobody quotes an estimate as a price.
+        const realistic = hlMoney(r.realistic_total_price);
+        const price = realistic || hlMoney(r.advertised_package_price);
+        const basis = realistic ? 'estimated total' : 'advertised';
+        const sizes = [];
+        if (Number(r.land_size_sqm) > 0) sizes.push(`Land ${esc(Math.round(Number(r.land_size_sqm)))} m&sup2;`);
+        if (Number(r.house_size_sqm) > 0) sizes.push(`House ${esc(Math.round(Number(r.house_size_sqm)))} m&sup2;`);
+        const scoreN = (r.score === null || r.score === undefined || r.score === '') ? NaN : Number(r.score);
+        const score = Number.isFinite(scoreN) ? esc(Math.round(scoreN * 10) / 10) : '-';
+        let why = txt(r.recommendation_reason);
+        if (why.length > 220) why = why.slice(0, 217).trimEnd() + '…';
+        const verdict = txt(r.recommendation);
+        const pill = /condition/i.test(verdict) ? 'pill-conditions' : 'pill-recommend';
+        const link = (r.source_link && typeof r.source_link === 'object') ? r.source_link : null;
+        return `<div class="hl-rec">
+            <div class="hl-rec-title">${esc(title)}</div>
+            <div class="hl-rec-sub">${esc(txt(r.lot_address) || 'Address not stated')}${place ? ' &middot; ' + esc(place) : ''}</div>
+            <div>${price
+                ? `<span class="hl-rec-price">${esc(price)}</span> <span style="color:var(--text-muted);">${basis}</span>`
+                : '<span style="color:var(--text-muted);">Price not stated</span>'}</div>
+            <div class="hl-rec-facts">
+                <span>Bed / Bath / Car <strong>${hlNum(r.bedrooms)} / ${hlNum(r.bathrooms)} / ${hlNum(r.car_spaces)}</strong></span>
+                ${sizes.map(s => `<span>${s}</span>`).join('')}
+            </div>
+            <div class="hl-rec-facts">
+                <span><strong>Score ${score} / 100</strong></span>
+                ${verdict ? `<span class="pill ${pill}">${esc(verdict)}</span>` : ''}
+            </div>
+            ${why ? `<div class="hl-rec-why">${esc(why)}</div>` : ''}
+            ${link ? hlExtLink(link.url, 'View source', link.label) : ''}
+        </div>`;
+    }
+
+    function hlRecsBlock(recs, research) {
+        const list = (Array.isArray(recs) ? recs : []).slice(0, 3);
+        const rs = (research && typeof research === 'object') ? research : {};
+        const widened = String(rs.widened ?? '').trim();
+        const message = String(rs.message ?? '').trim();
+        if (!list.length) {
+            return `<div class="hl-recs-note">${esc(message || 'No buildings were recommended for this brief.')}`
+                 + (widened ? `<br>The search was widened: ${esc(widened)}` : '') + '</div>';
+        }
+        return (widened ? `<div class="hl-recs-note">To find these the search was widened: ${esc(widened)}</div>` : '')
+             + `<div class="hl-recs">${list.map(r => hlRecCard(r)).join('')}</div>`;
+    }
+
+    // Today's shortlist for the same brief. Labelled as not saved because it is not: the
+    // record still holds what was recommended at the time of the call.
+    function hlLiveBlock(data) {
+        const d = (data && typeof data === 'object') ? data : {};
+        const shortlist = Array.isArray(d.shortlist) ? d.shortlist : [];
+        const found = (d.shortlist_count !== null && Number.isFinite(Number(d.shortlist_count)))
+            ? Number(d.shortlist_count) : shortlist.length;
+        const top = Math.min(3, shortlist.length);
+        return `<div class="hl-recs-note"><span class="pill pill-conditions">Live results &mdash; not saved</span>
+                ${top ? `Top ${top} of ${esc(found)} from today's stock.` : ''}
+                Press Refresh above to go back to the saved recommendations.</div>`
+             + hlRecsBlock(shortlist, {
+                   message: String(d.message ?? '').trim() || "Nothing in today's stock matches this brief."
+               });
+    }
+
+    function hlAppointment(appt) {
+        if (!appt || typeof appt !== 'object') {
+            return '<div class="hl-appt hl-appt-none">No discovery call booked &mdash; follow up</div>';
+        }
+        const when = hlWhen(appt.start);
+        const meet = hlSafeUrl(appt.meetingUrl);
+        const meetUnusable = !meet && typeof appt.meetingUrl === 'string' && appt.meetingUrl.trim();
+        return `<div class="hl-appt"><strong>Discovery call booked:</strong> `
+             + (when ? `${esc(when)} Melbourne time` : 'time not recorded')
+             + (meet ? ` &middot; <a href="${esc(meet)}" target="_blank" rel="noopener noreferrer">Google Meet link</a>` : '')
+             + (meetUnusable ? ' &middot; meeting link unavailable, check the booking' : '')
+             + (appt.source === 'auto'
+                 ? '<span class="hl-appt-note">Booked automatically after the call &mdash; confirm with the customer.</span>'
+                 : '')
+             + '</div>';
+    }
+
+    function hlLeadCard(lead, i) {
+        const n = (Number.isInteger(i) && i >= 0) ? i : 0;
+        const L = (lead && typeof lead === 'object') ? lead : {};
+        const c = (L.customer && typeof L.customer === 'object') ? L.customer : {};
+        const k = (L.kommo && typeof L.kommo === 'object') ? L.kommo : {};
+        const name = String(c.name ?? '').trim() || 'Name not captured';
+        const email = String(c.email ?? '').trim();
+        const phone = String(c.phone ?? '').trim();
+        const mail = hlMailHref(email), tel = hlTelHref(phone);
+        const when = hlWhen(L.createdAt);
+        const muted = t => `<span style="color:var(--text-muted);">${t}</span>`;
+        const contact =
+            (email ? (mail ? `<a href="${esc(mail)}">${esc(email)}</a>` : `<span>${esc(email)}</span>`)
+                   : muted('No email captured'))
+          + (phone ? (tel ? `<a href="${esc(tel)}">${esc(phone)}</a>` : `<span>${esc(phone)}</span>`)
+                   : muted('No phone captured'));
+        const links = [hlExtLink(k.leadUrl, 'Open in Kommo'), hlExtLink(L.recordingUrl, 'Call recording')]
+            .filter(Boolean).join('');
+        const reason = String(L.gradeReason ?? '').trim();
+        const summary = String(L.summary ?? '').trim();
+        const hasBrief = !!L.brief && typeof L.brief === 'object' && !Array.isArray(L.brief);
+        return `<div class="prop-card hl-card" id="hlCard-${n}">
+            <div class="hl-head">
+                <span class="hl-name">${esc(name)}</span>
+                <span class="pill pill-hot">Hot</span>
+                ${when ? `<span class="hl-when">Called ${esc(when)}</span>` : ''}
+            </div>
+            <div class="hl-contact">${contact}</div>
+            ${reason ? `<div class="hl-reason"><strong>Why hot:</strong> ${esc(reason)}</div>` : ''}
+            ${hlAppointment(L.appointment)}
+            ${hlBriefChips(L.brief)}
+            ${links ? `<div class="hl-links">${links}</div>` : ''}
+            ${summary ? `<details class="hl-summary"><summary>Call summary</summary><p>${esc(summary)}</p></details>` : ''}
+            <div class="hl-recs-head">
+                <span class="hl-recs-title">Recommended buildings</span>
+                <button type="button" class="btn-ghost" id="hlRerun-${n}" onclick="rerunHotLead(${n})"
+                    ${hasBrief ? '' : 'disabled title="No brief was captured on this call"'}>Re-run with today's stock</button>
+            </div>
+            <div class="hl-msg" id="hlMsg-${n}"></div>
+            <div id="hlRecs-${n}">${hlRecsBlock(L.recommendations, L.research)}</div>
+        </div>`;
+    }
+
+    function hlRenderLeads(leads) {
+        const list = Array.isArray(leads) ? leads : [];
+        if (!list.length) {
+            return `<div class="hl-notice"><strong>No hot leads yet.</strong> A lead appears here
+                when Clare finishes a call where the caller qualifies as hot, with their contact
+                details, the discovery call if one was booked, and the buildings the research
+                picked for them.</div>`;
+        }
+        return `<div class="hl-list">${list.map((l, i) => hlLeadCard(l, i)).join('')}</div>`;
+    }
+
+    // Newest first. The endpoint already sorts, but the order a consultant works down
+    // should not depend on that. Only hot records belong on this tab.
+    function hlSortNewest(leads) {
+        if (!Array.isArray(leads)) return [];
+        const at = l => { const t = Date.parse(l.createdAt); return Number.isFinite(t) ? t : -Infinity; };
+        return leads
+            .filter(l => l && typeof l === 'object' && (l.grade === undefined || l.grade === 'hot'))
+            .sort((a, b) => (at(b) - at(a)) || 0);
+    }
+
+    function hlUnavailable(status, message) {
+        const next = status === 503
+            ? 'This needs a setting on the dashboard or the call system (vapi-kommo-hook). Send this message to whoever looks after them.'
+            : status === 502
+                ? 'The call system did not answer just now. Press Refresh in a minute; if it keeps happening, send this message on.'
+                : 'Press Refresh to try again.';
+        return `<div class="hl-notice"><strong>Hot leads can't be shown right now.</strong> ${esc(message)}
+                <div style="color:var(--text-muted); margin-top:0.35rem;">${next}</div></div>`;
+    }
+
+    // Once per page view; Refresh passes force. A failure to REACH the server is not
+    // remembered, so opening the tab again retries; an answer from it (even "not
+    // configured") is, because asking again will not change it.
+    async function loadHotLeads(force) {
+        if (HOT_LEADS_STATE === 'loading') return;
+        if (HOT_LEADS_STATE === 'loaded' && !force) return;
+        const el = document.getElementById('hotLeadsContent');
+        const badge = document.getElementById('hotLeadsBadge');
+        const btn = document.getElementById('hotLeadsRefresh');
+        if (!el) return;
+        HOT_LEADS_STATE = 'loading';
+        if (btn) btn.disabled = true;
+        el.innerHTML = '<p style="color:var(--text-muted);">Loading hot leads…</p>';
+        try {
+            let res;
+            try {
+                res = await fetch('/api/hot_leads', { cache: 'no-store' });
+            } catch (e) {
+                HOT_LEADS_STATE = 'idle';
+                if (badge) badge.textContent = 'unavailable';
+                el.innerHTML = `<div class="hl-notice"><strong>Could not reach the dashboard.</strong>
+                    Check the connection, then press Refresh.</div>`;
+                return;
+            }
+            if (res.status === 401) {
+                HOT_LEADS_STATE = 'idle';
+                el.innerHTML = '<p style="color:var(--text-muted);">Your sign-in has expired &mdash; opening the sign-in page…</p>';
+                sessionExpired();
+                return;
+            }
+            let data = null;
+            try { data = await res.json(); } catch (e) { data = null; }
+            if (!res.ok || !data || data.status !== 'success') {
+                HOT_LEADS_STATE = 'loaded';
+                if (badge) badge.textContent = 'unavailable';
+                el.innerHTML = hlUnavailable(res.status,
+                    (data && data.message) ? String(data.message) : `The server answered ${res.status}.`);
+                return;
+            }
+            HOT_LEADS = hlSortNewest(data.leads);
+            HOT_LEADS_STATE = 'loaded';
+            if (badge) badge.textContent = `${HOT_LEADS.length} hot lead${HOT_LEADS.length === 1 ? '' : 's'}`;
+            el.innerHTML = hlRenderLeads(HOT_LEADS);
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    }
+
+    // The saved buildings were chosen from the stock on the day of the call. This asks the
+    // same question of today's stock and shows the answer in their place, without saving
+    // it. Same endpoint and body the Research & Scoring tab and the webhook use.
+    async function rerunHotLead(i) {
+        const lead = HOT_LEADS[i];
+        const btn = document.getElementById('hlRerun-' + i);
+        const msg = document.getElementById('hlMsg-' + i);
+        const box = document.getElementById('hlRecs-' + i);
+        if (!lead || !btn || !box || btn.disabled) return;
+        if (!lead.brief || typeof lead.brief !== 'object' || Array.isArray(lead.brief)) return;
+        const say = (text, isError) => {
+            if (!msg) return;
+            msg.className = 'hl-msg' + (isError ? ' hl-msg-err' : '');
+            msg.textContent = text;           // text, never markup: it can carry a server message
+        };
+        const label = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = "Searching today's stock…";
+        say("Running the research against today's stock. This can take up to a minute.", false);
+        let failure = '';
+        try {
+            const res = await fetch('/api/research', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ client_brief: lead.brief })
+            });
+            if (res.status === 401) {
+                say('Your sign-in has expired. Opening the sign-in page…', false);
+                sessionExpired();
+                return;
+            }
+            let data = null;
+            try { data = await res.json(); } catch (e) { data = null; }
+            // Refreshed while this ran: these elements belong to a list that is gone.
+            if (HOT_LEADS[i] !== lead) return;
+            if (!res.ok || !data || data.status !== 'success') {
+                failure = (data && data.message) ? String(data.message) : `the server answered ${res.status}`;
+            } else {
+                box.innerHTML = hlLiveBlock(data);
+                say('', false);
+            }
+        } catch (e) {
+            failure = (e && e.message) || 'the connection dropped';
+        } finally {
+            btn.disabled = false;
+            btn.textContent = label;
+        }
+        if (failure) {
+            say(`The re-run did not complete: ${failure}. The saved recommendations below are unchanged.`, true);
+        }
+    }
+    // HOT-LEADS-END
 
     async function loadVendorAssets() {
         const el = document.getElementById('vendorAssetsContent');

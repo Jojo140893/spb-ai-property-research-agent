@@ -1243,6 +1243,8 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
             # One Groq call per selected option, up to eight, serially. 25s each at the
             # far end would blow a 30s ceiling, so this one gets longer.
             "api/narrative.py": {"memory": 256, "maxDuration": 60},
+            # Hot Leads tab: a stdlib proxy to Agent 1's hook (20s upstream timeout, so 30).
+            "api/hot_leads.py": {"memory": 256, "maxDuration": 30},
         }
     (out_dir / "vercel.json").write_text(json.dumps(vercel, indent=2), encoding="utf-8")
     _write_auth_middleware(out_dir)
@@ -1295,10 +1297,12 @@ _FUNCTION_SOURCES = (
     "remote_stocklist.py", "scraper_base.py", "spreadsheet_extract.py",
     "realestate.py",
 )
-# refresh.py and narrative.py are stdlib-only and import nothing from the pipeline, so
-# they carry no includeFiles and cannot drag the harvest's modules into another bundle.
+# refresh.py, narrative.py and hot_leads.py are stdlib-only and import nothing from the
+# pipeline, so they carry no includeFiles and cannot drag the harvest's modules into another
+# bundle. A public api/*.py missing from here is never copied, and its route 404s on a site
+# that otherwise looks healthy -- tests/test_hot_leads_proxy.py asserts every one is listed.
 _FUNCTION_ENTRY = ("research.py", "_bootstrap.py", "_candidates.py", "_export_builders.py",
-                   "refresh.py", "narrative.py",
+                   "refresh.py", "narrative.py", "hot_leads.py",
                    # research.py imports this inside a try/except, so leaving it out does
                    # not break the build or the endpoint -- it just quietly stops every
                    # region search widening, exactly as document_suburb.py did for the
@@ -1364,6 +1368,26 @@ export default async function middleware(request) {
   // Exact matches only. A prefix test (startsWith("/r")) would have opened /research,
   // /reports and anything else beginning with those characters.
   if (path === "/r" || path === "/r.html") return;
+
+  // ONE MACHINE CALLER: AGENT 1 STARTING A RESEARCH ON A HOT LEAD.
+  //
+  // When Agent 1's voice call grades a lead hot, its webhook (vapi-kommo-hook) asks this
+  // dashboard for a shortlist straight away, so the lead reaches Coleen with options already
+  // found. That webhook is a server. It has no browser, so it can never hold the session
+  // cookie below: it proves itself with a shared secret instead, SPB_SERVICE_KEY, sent as
+  // the x-spb-service-key header and compared in constant time just as the password is.
+  //
+  // EXACTLY POST /api/research, and nothing wider. Running a search is the whole of what the
+  // webhook needs. A key that also opened GET, /stock.json or a prefix match would turn one
+  // leaked webhook secret into the whole catalogue, which is the exposure this gate exists
+  // to stop. And with the variable unset or blank there is no bypass at all: an empty key
+  // must never match an empty header. The header is never logged or echoed.
+  if (request.method === "POST" && path === "/api/research") {
+    const serviceKey = (process.env.SPB_SERVICE_KEY || "").trim();
+    if (serviceKey && timingSafeEqual(request.headers.get("x-spb-service-key") || "", serviceKey)) {
+      return;                                  // Agent 1's webhook, not a person: serve it
+    }
+  }
 
   if (path === "/logout") {
     return new Response(null, { status: 303, headers: {
@@ -1639,6 +1663,18 @@ def _trimmed_url(value, limit=120):
     return re.sub(r"%[0-9A-Fa-f]?$", "", text)
 
 
+def _days_since(stamp) -> int:
+    """Whole days between a "dd/mm/YYYY HH:MM" stamp and now, or -1 if it cannot be read."""
+    match = re.match(r"\s*(\d{1,2})/(\d{1,2})/(\d{4})", str(stamp or ""))
+    if not match:
+        return -1
+    try:
+        day, month, year = (int(g) for g in match.groups())
+        return max(0, (datetime.now() - datetime(year, month, day)).days)
+    except ValueError:
+        return -1
+
+
 def _readable_name(url) -> str:
     """"Atlas Price New.pdf (dropbox.com)" -- enough to identify the file, no capability.
 
@@ -1664,7 +1700,15 @@ def _unreadable_stocklists():
     except Exception:                                  # pragma: no cover - absent is fine
         return {"generated": "", "count": 0, "files": []}
     files = payload.get("files") or []
-    return {"generated": payload.get("generated", ""), "count": len(files),
+    # HOW OLD IT IS, ALONGSIDE WHAT IT SAYS. The harvest rewrites this file on the runner
+    # and the runner is thrown away, so a deploy from a laptop republishes whatever copy
+    # that laptop happens to hold. On 10 Sep the published panel was showing a list
+    # generated on 27 August -- a fortnight stale, undated on the page, and contradicted
+    # by the app beside it: it named Koops Price.pdf as unreadable while Koop listings
+    # were live from that very file. A panel Coleen acts on has to say when it was true.
+    return {"generated": payload.get("generated", ""),
+            "days_old": _days_since(payload.get("generated", "")),
+            "count": len(files),
             # THE NAME, NOT THE LINK. 56 of these 57 are Dropbox "/scl/fo/" folder
             # shares -- capability URLs that hand over a whole shared folder to anyone
             # holding the string, with no sign-in. build_web has a whole assertion
@@ -1920,14 +1964,24 @@ def _bundle_research_function(app: Path, out_dir: Path) -> int:
     if not (src_api / "research.py").is_file():
         print("[i] api/research.py absent — deploying without the research endpoint")
         return 0
+    # Every entry file, or no bundle. This loop used to skip a missing one quietly, so an
+    # api/*.py left out of a commit (`git commit -am` does not pick up a new file) surfaced
+    # only as the import probe's "cannot import itself", which points at
+    # _FUNCTION_ROOT_MODULES, the wrong list, and fails the whole nightly publish. Refuse
+    # here instead, before anything is copied, and name the file.
+    missing = [name for name in _FUNCTION_ENTRY if not (src_api / name).is_file()]
+    if missing:
+        raise RuntimeError(
+            ", ".join(f"api/{name}" for name in missing)
+            + f" is listed in _FUNCTION_ENTRY but missing from {src_api}. Was it left out "
+            "of the commit? Nothing was deployed.")
     dest_api = out_dir / "api"
     lib = dest_api / "_lib"
     lib.mkdir(parents=True, exist_ok=True)
     n = 0
     for name in _FUNCTION_ENTRY:
-        if (src_api / name).is_file():
-            shutil.copyfile(src_api / name, dest_api / name)
-            n += 1
+        shutil.copyfile(src_api / name, dest_api / name)
+        n += 1
     for name in _FUNCTION_ROOT_MODULES:
         if (app / name).is_file():
             shutil.copyfile(app / name, lib / name)
@@ -2002,6 +2056,9 @@ try:
     import client_report
 finally:
     pathlib.Path.mkdir = _real_mkdir
+# The stdlib-only routes. They import nothing from the pipeline, so this proves only that
+# each was copied into the bundle at all -- and a missing one is a 404 on a green deploy.
+import refresh, narrative, hot_leads
 assert (not %r) or client_report._logo_html(), 'logo missing from bundle'
 # THE MAP, NOT JUST THE MODULE. suburb_quality imports document_suburb inside a
 # try/except, so neither a missing module nor a missing data file is an error -- both

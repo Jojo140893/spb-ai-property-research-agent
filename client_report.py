@@ -8,6 +8,7 @@ Output: a single self-contained, print-ready HTML file (no external assets).
 """
 
 import html
+import re
 from datetime import datetime
 from typing import List
 from schema import ClientBrief, CandidateProperty
@@ -75,6 +76,52 @@ def _esc(v) -> str:
     if v is None:
         return ""
     return html.escape(str(v), quote=True)
+
+
+# The internal framings ScoringEngine.assign_recommendation puts in front of the reason.
+# "Strong match (92.5/100)." is a number for a consultant deciding what to put forward,
+# not for the buyer reading the result of that decision.
+_INTERNAL_LEAD = re.compile(
+    r"^\s*(?:strong match|satisfactory match|good match|low suitability score|"
+    r"weak match)\s*\([0-9.]+\s*/\s*100\)\s*\.?\s*", re.I)
+# Whole sentences that address the consultant rather than the client.
+_INTERNAL_SENTENCE = re.compile(
+    r"(?:requires? consultant [^.]*\.?|see risk register|"
+    r"\d+\s+open risk item\(s\)[^.;]*|awaiting scoring evaluation\.?|"
+    r"verification status:[^.]*\.?)", re.I)
+
+
+def _client_reason(p) -> str:
+    """Why this property is being put forward, in words written for the buyer.
+
+    Coleen, 19 Aug: prefilling this box "put the internal score and the invented
+    allowance straight into a document a buyer reads" -- she saw it live. The invented
+    $15,000 was taken out of turnkey_calculator at the time and the web editor stopped
+    prefilling the box, but THIS renderer was never changed: every client report generated
+    since, including the two dated 21 Aug, opens "Why we recommend it" with
+    "Strong match (92.5/100)."
+
+    A score out of 100 is how the tool ranked the stock. The buyer is reading the answer,
+    not the working, and a number they cannot check invites the one question the document
+    exists to avoid. What survives is the part that is about the PROPERTY -- "Fully
+    satisfies budget, location, and structural requirements", or a real caveat such as
+    "inclusions are not stated by the source, confirm with the builder".
+
+    Returns "" when nothing client-facing is left, and the caller drops the heading with
+    it: a section reading "Why we recommend it: (nothing)" is worse than no section.
+    """
+    text = str(getattr(p, "recommendation_reason", "") or "")
+    text = _INTERNAL_LEAD.sub("", text)
+    text = _INTERNAL_SENTENCE.sub("", text)
+    # "Note: ; ." and similar wreckage left where a caveat was removed
+    text = re.sub(r"\bNote:\s*(?=[;.]|$)", "", text)
+    text = re.sub(r"\s*;\s*(?=[.;]|$)", "", text)
+    text = re.sub(r"\s{2,}", " ", text).strip(" ;-")
+    # WHAT IS LEFT MUST BE A SENTENCE, not the punctuation of one. Stripping an entirely
+    # internal reason used to leave a bare "." sitting under the heading.
+    if not re.search(r"[A-Za-z0-9]", text):
+        return ""
+    return text.strip()
 
 
 def _market_section(p) -> str:
@@ -269,6 +316,10 @@ class ClientReportGenerator:
                 _esc(p.builder_name),
             ) if bit)
 
+            # THE BUYER'S VERSION, never the scorer's. See _client_reason.
+            _why = _client_reason(p)
+            why_block = (("<h3>Why we recommend it</h3>\n      "
+                          f"<p>{_esc(_why)}</p>") if _why else "")
             cards.append(f"""
     <div class="card">
       <div class="rank">Option {rank}</div>
@@ -280,8 +331,7 @@ class ClientReportGenerator:
       <div class="row"><span class="label">Turnkey status</span><span>{_esc(pb.turnkey_status.value)}{' &mdash; allow ' + _money(pb.estimated_additional_costs) + ' additional costs' if pb.estimated_additional_costs else ''}</span></div>
       <div class="row"><span class="label">Title</span><span>{title_text}</span></div>
       {turnkey_block}
-      <h3>Why we recommend it</h3>
-      <p>{_esc(p.recommendation_reason)}</p>
+      {why_block}
       {amenity_line}
       {_market_section(p)}
       <h3>{'Price comparison' if internal else 'Market comparison'}</h3>

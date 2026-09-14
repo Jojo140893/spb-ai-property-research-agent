@@ -409,6 +409,12 @@ def find_spec_fragments(rows):
 # Sources that RE-LIST everything they hold on every run. For these, a listing dropping
 # off the list is the source telling us it is gone. An inbox is not one of them: a builder
 # emails a price list when they have one, so silence there means nothing at all.
+# Channels that publish a PAGE per lot rather than a document listing many. Their
+# re-listing unit is the portal, not the url: Hermitage and Torsion give every listing its
+# own page, so grouping by url made 280 live listings into groups of one -- and a group of
+# one can never be behind its own newest read, so retirement could never fire for them.
+_PAGE_PER_LOT = frozenset({"Direct Builder Portal (live)"})
+
 RELISTING_CHANNELS = frozenset({
     "E-Agent", "Proxima", "Direct Builder Portal (live)",
 })
@@ -466,7 +472,31 @@ def _by_document(rows):
                or "%s|%s" % (r["source_channel"] or "", r["builder_name"] or ""))
         project = str(_col(r, "source_project_id") or "").strip()
         groups[(key, project) if project else (key, "")].append(r)
-    return groups
+
+    # A URL BEHIND A SINGLE LISTING IS NOT A LIST.
+    #
+    # Hermitage and Torsion give every listing its own page, so each one formed a group of
+    # ONE -- and a group of one can never be behind its own newest read. Retirement could
+    # therefore never fire for 280 live listings however long the portal ignored them,
+    # which is why Torsion lots unseen for 21 days were still being shown while the
+    # Settings tab said "ONLY PART OF ITS STOCK".
+    #
+    # The re-listing unit for those is the PORTAL: it publishes its whole stock each run,
+    # so the channel-and-builder key the fallback above already uses for a row with no url
+    # is the right one for a url that backs only one row. Regrouping rather than widening
+    # the key wholesale, so a real multi-row document is untouched.
+    regrouped = collections.defaultdict(list)
+    for key, members in groups.items():
+        if len(members) == 1 and str(members[0]["source_channel"] or "") in _PAGE_PER_LOT:
+            # ONLY where the channel is a portal that pages every lot separately. A
+            # SPREADSHEET that happens to hold one row is still its own document, and
+            # pooling two of those from one builder is the "a channel is far too broad"
+            # error this module exists to avoid -- one sheet going quiet would retire the
+            # other's stock.
+            r = members[0]
+            key = ("%s|%s" % (r["source_channel"] or "", r["builder_name"] or ""), "")
+        regrouped[key].extend(members)
+    return regrouped
 
 
 # A list that comes back missing this much of itself has not been read, whatever it
@@ -889,6 +919,67 @@ def _identity_without_suburb(r):
     )
 
 
+def _suburb_evidence(row) -> int:
+    """How strong the evidence behind this row's suburb is. Higher wins.
+
+    The order is suburb_quality's own, not a new opinion:
+      4  the row's own lot_address repeats it -- two fields agreeing
+      3  resolve() calls it STATED, which means only that the column held a locality
+      2  it was READ -- off the row's address, its postcode, its document's front page
+      1  it was INFERRED from the row's other text, or could not be checked for want of
+         a state
+      0  the app shows nothing at all
+
+    find_suburbs_in_own_document already turns on exactly this distinction -- "A DOCUMENT
+    THAT NAMES THE SUBURB BEATS A GUESS AT IT ... Re-reading it replaces a reading with a
+    statement". Two captures of one lot disagreeing is not a coin toss when one of them is
+    the source's own word and the other is our reading of a road name.
+    """
+    try:
+        import suburb_quality as SQ
+    except ImportError:                                # pragma: no cover
+        return 1 if str(row["suburb"] or "").strip() else 0
+    shown, why = SQ.resolve(dict(row, suburb_source=""))
+    shown = str(shown or "").strip()
+    if not shown:
+        return 0
+    # THE ROW'S OWN ADDRESS IS THE STRONGEST THING IT HAS, and it outranks the column.
+    #
+    # resolve() returns STATED for ANY value in the suburb column that happens to be a
+    # locality in that state -- it makes no claim about where the value came from, and
+    # the docstring at the top of suburb_quality says what that column actually holds:
+    # OCR debris, section headers, "Price", "City", "Haven". So a section header carried
+    # onto the wrong block of rows scored 3 and beat an address read at 2.
+    #
+    # It did: one E-Agent PDF put "Manor Lakes" on three lots whose own addresses read
+    # Bairnsdale, Truganina and Donnybrook -- up to 280 km apart, so at most one can be
+    # right. This rule kept all three and superseded the address-evidenced copies. 24 of
+    # 60 supersessions on 10 Sep 2026 had that shape, caught in review before deploy.
+    #
+    # A suburb the row's OWN address repeats is corroborated by a second field; a column
+    # value contradicted by that address is not. That is the same reasoning suburb_quality
+    # applies in FROM_ADDRESS, applied one level up.
+    if shown.lower() in str(_col(row, "lot_address") or "").lower():
+        return 4
+    if why in (SQ.STATED, SQ.FROM_TYPO):
+        return 3
+    return 2 if SQ.is_located(why) else 1
+
+
+def _shows_a_suburb(row) -> bool:
+    """Whether the app displays a suburb for this row at all.
+
+    Not `row["suburb"]` -- build_web publishes suburb_quality.resolve()'s answer, which
+    refuses a value that is not a locality. A row storing "Truganina Montare Road,
+    Truganina VIC" shows the client nothing, and is a blank row wearing a full column.
+    """
+    # ALWAYS ASK resolve, even for an empty column. Returning False early on a blank
+    # disagreed with _suburb_evidence, which asks resolve and can be handed a suburb
+    # rescued from the row's own address -- so one helper called a row blank while the
+    # other scored it as located, and the pair of them decided who to supersede.
+    return _suburb_evidence(row) > 0
+
+
 def find_suburb_twins(rows):
     """One package stored twice because it only recently started stating its suburb.
 
@@ -910,6 +1001,15 @@ def find_suburb_twins(rows):
     Only a BLANK-suburb row is ever the loser. Two rows that each name a suburb, and name
     different ones, are left alone: that is a disagreement about where a property is, and
     guessing which is right is exactly the kind of call this project refuses to make.
+
+    BLANK MEANS BLANK ON SCREEN, NOT EMPTY IN THE COLUMN. The older copy usually does hold
+    something -- it is what the extractor of the day made of the line. Lot CC-0116 stores
+    "Truganina Montare Road, Truganina VIC" against the newer copy's "Manor Lakes":
+    suburb_quality refuses the first outright, so the client is shown one lot twice, once
+    with a suburb and once with nothing. Requiring the column to be literally empty missed
+    every one of those -- 31 groups, 62 rows, on 10 Sep 2026. The test is what the app
+    SHOWS, which is the same test the published snapshot applies, and it is the same
+    widening find_suburbs_in_own_document already makes for the same reason.
     """
     by = collections.defaultdict(list)
     for r in rows:
@@ -921,14 +1021,33 @@ def find_suburb_twins(rows):
     for _, g in by.items():
         if len(g) < 2:
             continue
-        named = [r for r in g if (r["suburb"] or "").strip()]
-        blank = [r for r in g if not (r["suburb"] or "").strip()]
-        if not named or not blank:
+        named = [r for r in g if _shows_a_suburb(r)]
+        blank = [r for r in g if not _shows_a_suburb(r)]
+        if not named:
             continue
         # Where the named copies disagree about the suburb there is no single keeper to
-        # point the blank ones at, so nothing is collapsed.
+        # point the blank ones at -- UNLESS one of them is the source's own word and the
+        # rest are our reading of it.
+        #
+        # Lot CC-0116 is two live rows at one price: a 6 Aug capture showing "Truganina",
+        # read off the road name in its own address, and a 3 Sep capture showing "Manor
+        # Lakes", stated by the source. Both are "located", so both counted as named and
+        # the pair was left alone -- and Coleen is shown one property twice. 31 groups on
+        # 10 Sep 2026.
+        #
+        # Deferring to the statement is not picking a winner between two opinions; it is
+        # the rule find_suburbs_in_own_document already applies. Where the strongest
+        # evidence is not unique, or the strongest rows still disagree, nothing is
+        # collapsed and the disagreement stands.
         if len({_norm(r["suburb"]) for r in named}) > 1:
-            continue
+            best = max(_suburb_evidence(r) for r in named)
+            strongest = [r for r in named if _suburb_evidence(r) == best]
+            weaker = [r for r in named if _suburb_evidence(r) < best]
+            if not weaker or len({_norm(r["suburb"]) for r in strongest}) > 1:
+                continue
+            named, blank = strongest, blank + weaker
+        if not blank:
+            continue                       # one capture only, or all equally well evidenced
         # THE KEEPER IS THE ROW THE HARVEST STILL SEES, not the fullest one.
         #
         # Ranking on completeness alone chose the stale copy 

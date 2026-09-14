@@ -1,0 +1,234 @@
+"""The Hot Leads tab's feed: every lead Agent 1 graded hot on a call.
+
+Agent 1 is the voice agent. When a call ends, its webhook (vapi-kommo-hook) grades the
+lead, and a hot one is written to that project's private Blob store together with the
+brief, the booked appointment, the Kommo lead and the shortlist this dashboard ran for it.
+The Hot Leads tab reads them back through here.
+
+    browser -> GET /api/hot_leads                      (this file, behind the site login)
+            -> GET vapi-kommo-hook/api/hot-leads       (x-spb-service-key: SPB_SERVICE_KEY)
+
+WHY A PROXY AND NOT A FETCH FROM THE PAGE. The hook answers only a caller holding
+SPB_SERVICE_KEY. Anything index.html holds, every viewer can read -- so a key placed in the
+page would be published, and with it every hot lead's name, phone number and email. This
+endpoint holds the key in the Vercel project environment, is reachable only through the
+site login, and sends it on one server-to-server request. The key is never returned, never
+logged, and never reaches the page.
+
+WHAT COMES BACK. On success, the hook's JSON byte for byte: the tab and the hook share one
+record format, and a second copy of that shape here would be a second thing to keep in
+step. On a failure, a message that says what went wrong, under one of two statuses:
+  503  a setting is missing, and refreshing will not fix it: no SPB_SERVICE_KEY here, or
+       the hook answered that it lacks one of its own settings or that the keys disagree.
+       The message names the project to fix.
+  502  the hook could not be reached, timed out, or failed some other way that may pass.
+"No hot leads" and "could not ask" must never look the same on the tab: an empty list is
+a fact about the leads, and a failed read is not.
+"""
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from http.server import BaseHTTPRequestHandler
+
+DEFAULT_URL = "https://vapi-kommo-hook.vercel.app/api/hot-leads"
+TIMEOUT = 20
+HEADER = "x-spb-service-key"
+
+# ?limit= is forwarded only as a plain whole number. Anything else -- "abc", "5.5", "-1",
+# a second parameter smuggled inside it -- is dropped, and the hook applies its own default
+# (50, at most 200). The value is rebuilt from its digits rather than copied, so nothing the
+# browser sends is spliced into the upstream URL. ASCII digits only: \d would also accept
+# Arabic-Indic and other Unicode digits.
+_LIMIT = re.compile(r"[0-9]{1,6}")
+
+
+def _key():
+    return (os.environ.get("SPB_SERVICE_KEY") or "").strip()
+
+
+def _upstream():
+    return (os.environ.get("SPB_HOT_LEADS_URL") or "").strip() or DEFAULT_URL
+
+
+def _error(message):
+    """The body of every failure. Scrubbed of the key last, whatever built the message."""
+    key = _key()
+    text = str(message)
+    if key and key in text:                                           # never, but cheap
+        text = text.replace(key, "[redacted]")
+    return json.dumps({"status": "error", "message": text}).encode("utf-8")
+
+
+def limit_from(path):
+    """The ?limit= to forward, as a canonical integer string, or None."""
+    query = urllib.parse.urlsplit(path or "").query
+    values = urllib.parse.parse_qs(query).get("limit") or []
+    if values and _LIMIT.fullmatch(values[0]):
+        return str(int(values[0]))
+    return None
+
+
+def _upstream_message(raw):
+    """The hook's own `message` field, which names the failure ("bad key", "hot-lead store
+    not configured"). Only that field: the rest of an error body is not ours to repeat."""
+    try:
+        body = json.loads((raw or b"").decode("utf-8", "replace"))
+    except ValueError:
+        return ""
+    msg = body.get("message") if isinstance(body, dict) else ""
+    if not isinstance(msg, str):
+        return ""
+    key = _key()
+    if key and key in msg:
+        return ""
+    return " ".join(msg.split())[:160]
+
+
+HOOK_PROJECT = "vapi-kommo-hook"
+
+
+def _failure(code, detail):
+    """(dashboard status, message) for a hook answer outside 2xx.
+
+    TWO KINDS OF FAILURE, AND THE TAB MUST TELL THEM APART. A hook that is down or slow
+    comes right on its own, so it is a 502 and the tab says "press Refresh in a minute". A
+    hook that is MISSING A SETTING never comes right on its own: this is the state straight
+    after a deploy that set SPB_SERVICE_KEY on the dashboard and not yet on the hook. As a
+    502 it read as "try again", someone kept refreshing, and whoever looked checked the
+    dashboard project, which already had the key. So a settings failure is a 503, the
+    status the tab already reads as "needs a setting", and the message names the project
+    the setting is missing FROM.
+
+    Never 401: the tab reads a 401 from this endpoint as "your sign-in expired".
+    """
+    said = f"hot-lead store answered HTTP {code}" + (f": {detail}" if detail else "")
+    low = (detail or "").lower()
+    if code == 401:
+        # Two projects, one secret. The hook says "bad key" when the two disagree; a 401
+        # with no JSON reason is most likely Vercel deployment protection in front of it.
+        if "key" in low:
+            return 503, (f"the dashboard's SPB_SERVICE_KEY does not match the one on the "
+                         f"{HOOK_PROJECT} project ({said})")
+        return 503, (f"the {HOOK_PROJECT} project refused the dashboard ({said}); check that "
+                     f"its Vercel deployment protection is off and SPB_SERVICE_KEY is the "
+                     f"same on both projects")
+    if code in (500, 503) and "not configured" in low:
+        if "spb_service_key" in low:
+            what = "SPB_SERVICE_KEY is not configured"
+        elif "store" in low:
+            what = "the hot-lead store is not configured (BLOB_READ_WRITE_TOKEN)"
+        else:
+            what = "a setting is not configured"
+        return 503, f"{what} on the {HOOK_PROJECT} project ({said})"
+    return 502, said
+
+
+def _why(reason):
+    """A network failure, described without echoing anything it might carry."""
+    if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
+        return f"timed out after {TIMEOUT}s"
+    if isinstance(reason, BaseException):
+        return type(reason).__name__
+    return " ".join(str(reason).split())[:80]
+
+
+def fetch(limit=None):
+    """(http_status, body_bytes) for the tab. Never raises, and never puts the key in a body."""
+    key = _key()
+    if not key:
+        # Says which knob is missing, without hinting at its value.
+        return 503, _error("SPB_SERVICE_KEY is not set on the dashboard project")
+
+    parts = urllib.parse.urlsplit(_upstream())
+    if parts.scheme != "https" or not parts.hostname:
+        # Refused BEFORE the key is attached. A plain-http override would send the secret
+        # in the clear, and urllib would happily read a file:// one off the function's disk.
+        return 503, _error("SPB_HOT_LEADS_URL must be an https:// URL")
+    query = parts.query
+    if limit is not None:
+        query = (query + "&" if query else "") + urllib.parse.urlencode({"limit": limit})
+    url = urllib.parse.urlunsplit(parts._replace(query=query, fragment=""))
+    # hostname, not netloc: netloc would carry any user:password@ written into the URL.
+    host = parts.hostname
+
+    req = urllib.request.Request(url, method="GET", headers={
+        "Accept": "application/json", "User-Agent": "spb-dashboard"})
+    # UNREDIRECTED, deliberately. urllib copies ordinary headers onto a redirect, to
+    # whichever host the redirect names -- so a hook that ever answered 30x (a Vercel
+    # protection page, a moved domain) would have the key handed on by the default opener.
+    # An unredirected header goes to this URL and nowhere else; a redirect arrives without
+    # it and fails like any other bad answer.
+    req.add_unredirected_header(HEADER, key)
+
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            status = getattr(r, "status", None) or r.getcode()
+            raw = r.read()
+    except urllib.error.HTTPError as e:
+        try:
+            detail = _upstream_message(e.read())
+        except Exception:                                              # noqa: BLE001
+            detail = ""
+        code, msg = _failure(e.code, detail)
+        return code, _error(msg)
+    except urllib.error.URLError as e:
+        return 502, _error(f"could not reach the hot-lead store at {host} ({_why(e.reason)})")
+    except OSError as e:
+        # A read that stalls past TIMEOUT raises TimeoutError here rather than URLError.
+        return 502, _error(f"could not reach the hot-lead store at {host} ({_why(e)})")
+    except Exception as e:                                             # noqa: BLE001
+        return 502, _error(f"reading the hot-lead store failed ({type(e).__name__})")
+
+    if not 200 <= int(status or 0) < 300:
+        code, msg = _failure(int(status or 0), _upstream_message(raw))
+        return code, _error(msg)
+    try:
+        json.loads(raw.decode("utf-8"))
+    except ValueError:
+        # A 200 that is not JSON is a login or error page served in the hook's place, and
+        # passing it on would hand the tab HTML where it expected leads.
+        return 502, _error(f"hot-lead store answered HTTP {status} with a body that is not JSON")
+    return 200, raw
+
+
+class handler(BaseHTTPRequestHandler):
+    """Vercel Python runtime entrypoint (a BaseHTTPRequestHandler named `handler`).
+
+    Reachable only through the site login. middleware.js serves exactly two things without
+    a session -- /r, the client share page, and POST /api/research carrying the service
+    key -- and this is neither.
+    """
+
+    def _reply(self, code, body, extra=()):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        # Hot leads are names, phone numbers and appointments: never a CDN or browser copy.
+        self.send_header("Cache-Control", "no-store")
+        for name, value in extra:
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        try:
+            code, body = fetch(limit_from(self.path))
+        except Exception as e:                                         # noqa: BLE001
+            code, body = 500, _error(f"api/hot_leads failed ({type(e).__name__})")
+        self._reply(code, body)
+
+    def _not_allowed(self):
+        # Read-only by design. The hook is the only writer of a hot-lead record.
+        self._reply(405, _error("Method not allowed. Use GET /api/hot_leads."),
+                    (("Allow", "GET"),))
+
+    do_POST = do_PUT = do_DELETE = do_PATCH = _not_allowed
+
+    def log_message(self, fmt, *args):       # keep the function log readable
+        # The request line and status only. The key rides on the upstream request, which
+        # is never logged.
+        sys.stderr.write("[api/hot_leads] " + (fmt % args) + "\n")

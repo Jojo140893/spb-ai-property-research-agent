@@ -72,6 +72,8 @@ SHARED = [
     "withTimeout",
     "shareBar",
     "buildShareLink",
+    "loadHotLeads",           # inline onclick on the nav button and Refresh: globals only
+    "rerunHotLead",           # inline onclick on every hot-lead card
 ]
 
 
