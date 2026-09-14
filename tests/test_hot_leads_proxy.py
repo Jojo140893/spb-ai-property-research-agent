@@ -245,6 +245,61 @@ def test_a_limit_joins_a_query_the_override_already_has(monkeypatch):
     assert up.calls[0][0].full_url == "https://hook.example/api/hot-leads?region=vic&limit=3"
 
 
+# ------------------------------------------------------------------ ?include_test=
+# The hook leaves test records out unless it is sent include_test=1, so a test call never
+# sits on Coleen's tab as a buyer to ring. The switch is passed on only as exactly "1".
+
+def test_include_test_1_is_forwarded(monkeypatch):
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    up, _ = _ok(monkeypatch)
+    assert _call("GET", "/api/hot_leads?include_test=1")[0] == 200
+    url = up.calls[0][0].full_url
+    assert url == H.DEFAULT_URL + "?include_test=1", url
+
+
+def test_include_test_travels_with_a_limit(monkeypatch):
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    up, _ = _ok(monkeypatch)
+    _call("GET", "/api/hot_leads?include_test=1&limit=5")
+    url = up.calls[0][0].full_url
+    assert urllib.parse.parse_qs(urllib.parse.urlsplit(url).query) == {
+        "limit": ["5"], "include_test": ["1"]}, url
+    assert url.startswith(H.DEFAULT_URL + "?")
+
+
+def test_include_test_joins_a_query_the_override_already_has(monkeypatch):
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    monkeypatch.setenv("SPB_HOT_LEADS_URL", "https://hook.example/api/hot-leads?region=vic")
+    up, _ = _ok(monkeypatch)
+    _call("GET", "/api/hot_leads?include_test=1")
+    assert up.calls[0][0].full_url == \
+        "https://hook.example/api/hot-leads?region=vic&include_test=1"
+
+
+@pytest.mark.parametrize("path", [
+    "/api/hot_leads",
+    "/api/hot_leads?include_test=",
+    "/api/hot_leads?include_test=0",
+    "/api/hot_leads?include_test=true",
+    "/api/hot_leads?include_test=yes",
+    "/api/hot_leads?include_test=01",
+    "/api/hot_leads?include_test=1.0",
+    "/api/hot_leads?include_test=%201",            # " 1"
+    "/api/hot_leads?include_test=1%26limit%3D999",  # "1&limit=999", smuggling a parameter
+    "/api/hot_leads?include_test=1&include_test=0",  # two answers is not a yes
+    "/api/hot_leads?include_test=0&include_test=1",
+    "/api/hot_leads?INCLUDE_TEST=1",
+    "/api/hot_leads?hl_test=1",                     # the PAGE's switch is not the hook's
+])
+def test_anything_but_exactly_include_test_1_is_not_forwarded(monkeypatch, path):
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    up, _ = _ok(monkeypatch)
+    assert _call("GET", path)[0] == 200
+    url = up.calls[0][0].full_url
+    assert url == H.DEFAULT_URL, url
+    assert "include_test" not in url
+
+
 # ------------------------------------------------------------------ upstream failures
 
 def _http_error(code, body):

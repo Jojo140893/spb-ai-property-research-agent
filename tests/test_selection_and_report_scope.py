@@ -55,7 +55,7 @@ def test_both_serialisations_expose_the_same_new_keys():
     """
     research_src = (APP / "api" / "research.py").read_text(encoding="utf-8")
     server_src = (APP / "server.py").read_text(encoding="utf-8")
-    for key in ("'content_hash'", "'incentive_amount'", "'incentive_text'"):
+    for key in ("'content_hash'", "'incentive_amount'", "'incentive_text'", "'lot_number'"):
         assert key in research_src, f"api/research.py stopped emitting {key}"
         assert key in server_src, f"server.py stopped emitting {key} — local/deployed drift"
 

@@ -8,8 +8,9 @@ WHY THE KEY IS HERE AND NOT IN THE PAGE. The report is assembled in the browser,
 the deployed site is a static snapshot and a selection spans several searches. Anything
 index.html needs, every viewer can read — so a Groq key placed there would be published,
 gated or not, and billable to whoever found it. This endpoint holds the key in the Vercel
-project environment, is reachable only through the site login (middleware.js exempts one
-path, /r, and this is not it), and returns prose. The key is never echoed, never logged
+project environment, is reachable only through the site login (middleware.js serves only
+two things without a session: the exact path /r, and a POST to exactly /api/research
+carrying the service key -- and this is neither), and returns prose. The key is never echoed, never logged
 and never reaches the page.
 
 FIGURES ONLY, AND ENFORCED RATHER THAN REQUESTED.
@@ -307,8 +308,10 @@ def drafts_for(options):
 class handler(BaseHTTPRequestHandler):
     """Vercel Python runtime entrypoint (a BaseHTTPRequestHandler named `handler`).
 
-    Reachable only through the site login: middleware.js matches "/(.*)" and exempts one
-    exact path (/r, the client share page). This is not it.
+    Reachable only through the site login: middleware.js matches "/(.*)" and serves exactly
+    two things without a session -- the exact path /r (the client share page), and a POST to
+    exactly /api/research carrying an x-spb-service-key header equal to SPB_SERVICE_KEY
+    (Agent 1's webhook starting a research on a hot lead). This is neither.
     """
 
     def _reply(self, code, payload):

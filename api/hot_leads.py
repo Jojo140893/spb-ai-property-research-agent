@@ -5,7 +5,7 @@ lead, and a hot one is written to that project's private Blob store together wit
 brief, the booked appointment, the Kommo lead and the shortlist this dashboard ran for it.
 The Hot Leads tab reads them back through here.
 
-    browser -> GET /api/hot_leads                      (this file, behind the site login)
+    browser -> GET /api/hot_leads[?limit=N][&include_test=1]   (this file, behind the login)
             -> GET vapi-kommo-hook/api/hot-leads       (x-spb-service-key: SPB_SERVICE_KEY)
 
 WHY A PROXY AND NOT A FETCH FROM THE PAGE. The hook answers only a caller holding
@@ -72,6 +72,19 @@ def limit_from(path):
     return None
 
 
+def include_test_from(path):
+    """True only for exactly one ?include_test= whose value is exactly "1".
+
+    The hook keeps the records it marks as tests off the list unless include_test=1 is
+    sent, so a test call never sits on Coleen's tab looking like a buyer to ring. Turning them back on is a deliberate act from a page opened with
+    ?hl_test=1, so nothing looser counts: not "true", "01" or "1.0", and not a repeated
+    parameter whose values disagree. Like limit, it is forwarded as a literal written
+    here, never as the browser's text.
+    """
+    query = urllib.parse.urlsplit(path or "").query
+    return urllib.parse.parse_qs(query).get("include_test") == ["1"]
+
+
 def _upstream_message(raw):
     """The hook's own `message` field, which names the failure ("bad key", "hot-lead store
     not configured"). Only that field: the rest of an error body is not ours to repeat."""
@@ -136,7 +149,7 @@ def _why(reason):
     return " ".join(str(reason).split())[:80]
 
 
-def fetch(limit=None):
+def fetch(limit=None, include_test=False):
     """(http_status, body_bytes) for the tab. Never raises, and never puts the key in a body."""
     key = _key()
     if not key:
@@ -149,8 +162,13 @@ def fetch(limit=None):
         # in the clear, and urllib would happily read a file:// one off the function's disk.
         return 503, _error("SPB_HOT_LEADS_URL must be an https:// URL")
     query = parts.query
+    extra = []
     if limit is not None:
-        query = (query + "&" if query else "") + urllib.parse.urlencode({"limit": limit})
+        extra.append(("limit", limit))
+    if include_test:
+        extra.append(("include_test", "1"))
+    if extra:
+        query = (query + "&" if query else "") + urllib.parse.urlencode(extra)
     url = urllib.parse.urlunsplit(parts._replace(query=query, fragment=""))
     # hostname, not netloc: netloc would carry any user:password@ written into the URL.
     host = parts.hostname
@@ -216,7 +234,7 @@ class handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
-            code, body = fetch(limit_from(self.path))
+            code, body = fetch(limit_from(self.path), include_test_from(self.path))
         except Exception as e:                                         # noqa: BLE001
             code, body = 500, _error(f"api/hot_leads failed ({type(e).__name__})")
         self._reply(code, body)

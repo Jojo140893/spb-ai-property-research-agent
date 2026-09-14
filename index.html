@@ -2708,11 +2708,15 @@ python state_sync.py push</pre>
         const title = [txt(r.builder_name), txt(r.house_design)].filter(Boolean).join(' – ')
             || 'Builder not stated';
         const place = [txt(r.suburb), txt(r.state)].filter(Boolean).join(' ');
-        // The realistic total where the research worked one out, otherwise the builder's
-        // advertised figure, and the card says which, so nobody quotes an estimate as a price.
-        const realistic = hlMoney(r.realistic_total_price);
-        const price = realistic || hlMoney(r.advertised_package_price);
-        const basis = realistic ? 'estimated total' : 'advertised';
+        // ADVERTISED PRICE IS THE PRICE, the same rule as the Research & Scoring cards (9 Aug):
+        // the figure the builder advertises is the one a client will see, so it is the one a
+        // consultant quotes. This card first led with the realistic total (advertised plus our
+        // allowance for unclear inclusions), so the same building showed one price on this tab
+        // and another on Research & Scoring. The realistic total appears only when there is
+        // no advertised figure at all, and says it is an estimate, so nobody quotes it as a price.
+        const advertised = hlMoney(r.advertised_package_price);
+        const price = advertised || hlMoney(r.realistic_total_price);
+        const basis = advertised ? 'advertised' : 'estimated total (no advertised price)';
         const sizes = [];
         if (Number(r.land_size_sqm) > 0) sizes.push(`Land ${esc(Math.round(Number(r.land_size_sqm)))} m&sup2;`);
         if (Number(r.house_size_sqm) > 0) sizes.push(`House ${esc(Math.round(Number(r.house_size_sqm)))} m&sup2;`);
@@ -2862,6 +2866,18 @@ python state_sync.py push</pre>
                 <div style="color:var(--text-muted); margin-top:0.35rem;">${next}</div></div>`;
     }
 
+    // The hook leaves out the records it marks as tests unless it is sent include_test=1, so
+    // Coleen's tab never lists a test call as a buyer to ring. Whoever is checking Agent 1
+    // opens the dashboard with ?hl_test=1 to see them. Exactly one hl_test, exactly "1":
+    // a stray or doubled parameter must not quietly mix test calls in with real leads. The
+    // proxy applies the same rule again to what reaches it.
+    function hlLeadsUrl() {
+        let search = '';
+        try { search = String(location.search || ''); } catch (e) { search = ''; }
+        const v = new URLSearchParams(search).getAll('hl_test');
+        return (v.length === 1 && v[0] === '1') ? '/api/hot_leads?include_test=1' : '/api/hot_leads';
+    }
+
     // Once per page view; Refresh passes force. A failure to REACH the server is not
     // remembered, so opening the tab again retries; an answer from it (even "not
     // configured") is, because asking again will not change it.
@@ -2878,7 +2894,7 @@ python state_sync.py push</pre>
         try {
             let res;
             try {
-                res = await fetch('/api/hot_leads', { cache: 'no-store' });
+                res = await fetch(hlLeadsUrl(), { cache: 'no-store' });
             } catch (e) {
                 HOT_LEADS_STATE = 'idle';
                 if (badge) badge.textContent = 'unavailable';

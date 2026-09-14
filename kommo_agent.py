@@ -261,6 +261,9 @@ class KommoPropertyResearchAgent:
                 incentive_amount=coerce_number(raw_pkg.get('incentive_amount'), 0.0) or 0.0,
                 incentive_text=str(raw_pkg.get('incentive_text') or ''),
                 estate_context=str(raw_pkg.get('estate_context') or ''),
+                # The stated lot, blank when the source gave none; see
+                # CandidateProperty.lot_number for why it cannot ride inside lot_address.
+                lot_number=str(raw_pkg.get('lot_number') or '').strip(),
                 amenities_summary=raw_pkg.get('amenities_summary', 'Close to schools, train station & town centre.'),
                 builder_confidence_rating=b_rating,
                 source_channel=raw_pkg.get('source_channel', 'E-Agent / Builder Portal'),

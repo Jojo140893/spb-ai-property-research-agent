@@ -65,6 +65,11 @@ def _shortlist_entry(p):
         'land_price': p.price_breakdown.land_price,
         'build_price': p.price_breakdown.build_price,
         'lot_address': p.lot_address,
+        # The lot as the source stated it, '' when it did not. lot_address above is often
+        # only a street address, and Clare's availability check (vapi-kommo-hook) reads
+        # this shortlist: it can match a caller's "lot 5532" only against a lot it is given.
+        # See CandidateProperty.lot_number.
+        'lot_number': getattr(p, 'lot_number', '') or '',
         'suburb': p.suburb,
         'state': p.state,
         'builder_name': p.builder_name,
