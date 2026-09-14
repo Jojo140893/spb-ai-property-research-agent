@@ -57,6 +57,14 @@ MUTANTS = {
         'target="_blank" rel="noopener noreferrer"', 'target="_blank"', "rel=noopener"),
     "mailto is built from anything": (
         "? 'mailto:' + e : ''", "? 'mailto:' + e : 'mailto:' + e", "mailto:"),
+    # The tab once led with the realistic total while Research & Scoring showed the
+    # advertised price (the 9 Aug rule), so one building had two prices depending on the tab.
+    "the realistic total is shown ahead of the advertised price": (
+        "const price = advertised || hlMoney(r.realistic_total_price);",
+        "const price = hlMoney(r.realistic_total_price) || advertised;",
+        "advertised price is the price"),
+    "test records are asked for without ?hl_test=1": (
+        "(v.length === 1 && v[0] === '1')", "(true)", "include_test not sent"),
 }
 
 

@@ -47,14 +47,17 @@ const EXPORTS = ["hlSafeUrl", "hlTelHref", "hlMailHref", "hlMoney", "hlWhen", "h
   "hlRecCard", "hlRecsBlock", "hlLiveBlock", "hlAppointment", "hlLeadCard", "hlRenderLeads",
   "hlSortNewest", "hlUnavailable", "loadHotLeads", "rerunHotLead"];
 
-const ALLOWED_FETCH = new Set(["/api/hot_leads", "/api/research"]);
+const ALLOWED_FETCH = new Set(["/api/hot_leads", "/api/hot_leads?include_test=1", "/api/research"]);
 
-function sandbox() {
+// search: the page's own ?query, as location.search. Left undefined, the sandbox has no
+// location at all, which the loader must survive.
+function sandbox(search) {
   const els = new Map();
   const calls = { fetch: [], expired: 0 };
   let responder = async () => { throw new Error("no fetch responder set"); };
   const ctx = vm.createContext({
-    URL, console,
+    URL, URLSearchParams, console,
+    ...(search === undefined ? {} : { location: { search } }),
     document: { getElementById: id => els.get(id) || null },
     sessionExpired: () => { calls.expired++; },
     fetch: async (url, opts) => {
@@ -257,7 +260,8 @@ check("unsafe recording link is not a link", !/>Call recording<\/a>/.test(out));
 check("unsafe Meet link is not a link", !/>Google Meet link<\/a>/.test(out));
 check("the booking still shows, in Melbourne time", /Discovery call booked:<\/strong> Fri 18 Sept?, 10:00 am Melbourne time/.test(out));
 check("an automatic booking says to confirm it", out.includes("confirm with the customer"));
-check("realistic total price preferred", out.includes("$650,200") && !out.includes("$600,000"));
+check("advertised price is the price, even beside a realistic total",
+  out.includes("$600,000") && !out.includes("$650,200") && /\$600,000<\/span> <span[^>]*>advertised</.test(out));
 check("bed/bath/car nulls are '-', never invented", out.includes("4 / - / -"));
 check("land m2 shown when present", /Land 350 m&sup2;/.test(out));
 check("house m2 absent when null", !/House [\d-]+ m&sup2;/.test(out));
@@ -278,7 +282,8 @@ check("a booking from the call has no 'confirm' note", !out.includes("confirm wi
 check("booking in AEDT", /Tue 1 Dec, 11:00 am Melbourne time/.test(out));
 check("HOT pill", /class="pill pill-hot">Hot</.test(out));
 check("call time shown", /Called Tue 15 Sept?, 10:10 am/.test(out), (out.match(/Called[^<]*/) || [""])[0]);
-check("advertised price used when no realistic total", out.includes("$540,000"));
+check("advertised price used when no realistic total, labelled advertised",
+  /\$540,000<\/span> <span[^>]*>advertised</.test(out) && !out.includes("estimated total"));
 check("car spaces 0 is shown as 0, not '-'", out.includes("4 / 2 / 0"));
 check("brief chips: budget", out.includes("Budget up to $700,000"));
 check("brief chips: deposit of 0 is stated, not dropped", out.includes("Deposit $0"));
@@ -309,6 +314,18 @@ check("all-null rec: price not stated", out.includes("Price not stated"));
 check("all-null rec: - / - / -", out.includes("- / - / -"));
 check("all-null rec: score -", out.includes("- / 100"));
 check("all-null rec: no m2, no source link", !out.includes("m&sup2;") && !out.includes("View source"));
+
+// The realistic total is only a fallback, and says it is an estimate.
+out = api.hlRecCard(rec({ advertised_package_price: null, realistic_total_price: 712000 }));
+auditMarkup("estimate-only recommendation markup", out);
+check("no advertised price -> realistic total shown, labelled an estimate",
+  /\$712,000<\/span> <span[^>]*>estimated total \(no advertised price\)</.test(out));
+check("an estimate is never labelled advertised", !/>advertised</.test(out));
+out = api.hlRecCard(rec({ advertised_package_price: 0, realistic_total_price: 712000 }));
+check("an advertised price of 0 is no price -> estimate", out.includes("$712,000") && out.includes("estimated total"));
+out = api.hlRecCard(rec({ advertised_package_price: 540000, realistic_total_price: 555000 }));
+check("one price per card: advertised shown, realistic total not beside it",
+  out.includes("$540,000") && !out.includes("$555,000") && (out.match(/\$\d/g) || []).length === 1);
 
 out = api.hlRecsBlock([], { status: "empty", message: "Nothing under $500,000 in Tarneit", widened: "radius 10 km to 25 km" });
 check("empty recs show research.message", out.includes("Nothing under $500,000 in Tarneit"));
@@ -397,6 +414,33 @@ console.log("\n--- loadHotLeads ---");
   check("200 with no leads -> empty state", content.innerHTML.includes("No hot leads yet"));
   check("badge 0 hot leads", badge.textContent === "0 hot leads", badge.textContent);
   check("every fetch went to a dashboard endpoint", s.calls.fetch.every(c => ALLOWED_FETCH.has(c.url)));
+}
+
+// ------------------------------------------------------------------ test records
+// The hook leaves test records out unless asked with include_test=1. Only a page opened with
+// exactly one ?hl_test=1 asks; anything else must get the ordinary list.
+console.log("\n--- test records only with ?hl_test=1 ---");
+{
+  const firstUrl = async search => {
+    const s = sandbox(search);
+    s.el("hotLeadsContent"); s.el("hotLeadsBadge"); s.el("hotLeadsRefresh");
+    s.respond(async () => reply(200, { status: "success", count: 0, leads: [] }));
+    await s.api.loadHotLeads();
+    return s.calls.fetch[0];
+  };
+  for (const search of ["?hl_test=1", "?tab=hot&hl_test=1", "?hl_test=%31"]) {
+    const c = await firstUrl(search);
+    check(search + " -> include_test=1 sent, still no-store",
+      c && c.url === "/api/hot_leads?include_test=1" && c.opts && c.opts.cache === "no-store",
+      c && c.url);
+  }
+  for (const search of [undefined, "", "?", "?hl_test=0", "?hl_test=true", "?hl_test=", "?hl_test=01",
+                        "?hl_test=1&hl_test=0", "?hl_test=0&hl_test=1", "?HL_TEST=1",
+                        "?include_test=1", "?hl_test= 1"]) {
+    const c = await firstUrl(search);
+    check(JSON.stringify(search ?? "no location") + " -> include_test not sent",
+      c && c.url === "/api/hot_leads", c && c.url);
+  }
 }
 
 // ------------------------------------------------------------------ re-run

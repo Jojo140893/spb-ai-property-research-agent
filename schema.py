@@ -223,3 +223,10 @@ class CandidateProperty:
     # builder-scope rows holds a BUILDER, and no client document may name one (Colin,
     # 17 Aug).
     estate_context: str = ""
+
+    # The lot number exactly as the source stated it ("413", or a stock code such as
+    # "CC-0122"), "" when it stated none. Separate from lot_address because on thousands of
+    # rows the address a client reads is only a street address, and Clare's availability
+    # check can confirm a caller's lot only against a lot it is given. Never derived from
+    # the address: "12 Hollins Street" is not lot 12.
+    lot_number: str = ""

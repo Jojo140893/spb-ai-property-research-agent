@@ -173,6 +173,9 @@ class PropertyAgentRequestHandler(http.server.SimpleHTTPRequestHandler):
                             'land_price': p.price_breakdown.land_price,
                             'build_price': p.price_breakdown.build_price,
                             'lot_address': p.lot_address,
+                            # The stated lot, '' when none. Kept in step with
+                            # api/research.py's _shortlist_entry, which says why.
+                            'lot_number': getattr(p, 'lot_number', '') or '',
                             'suburb': p.suburb,
                             'state': p.state,
                             'builder_name': p.builder_name,

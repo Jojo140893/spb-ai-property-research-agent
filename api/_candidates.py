@@ -1307,6 +1307,14 @@ def build_packages(brief_dict, rows, today=None):
             # still leaves a jumble. Falls back to the cleaned lot_address where no
             # street was stated. Never invents and never empties.
             "lot_address": (_display_address(row) or "(no address in source row)"),
+            # THE LOT AS THE SOURCE STATED IT, beside the address rather than inside it. On
+            # thousands of rows the address a client reads is only a street address -
+            # "5532 Verday Blvd, Jubilee" - and Clare's availability check
+            # (vapi-kommo-hook, lib/tools/stock-match.js) may only confirm a lot it can see,
+            # so without this a caller asking about lot 5532 could never be matched. The raw
+            # value, stripped: a stock code stays a stock code, a blank stays blank, and it
+            # is never read out of the address, because a street number is not a lot.
+            "lot_number": str(row.get("lot_number") or "").strip(),
             "suburb": suburb,
             # HOW WE KNOW IT. Carried so the grade cannot die at this boundary: without
             # it api/research.py rebuilds a bare {suburb, state, ...} dict for the
