@@ -242,6 +242,25 @@ check("an offset timestamp stays put", /^Fri 18 Sept?, 10:00 am$/.test(OFFS), OF
 check("unparseable time -> blank, not a guess", api.hlWhen("next tuesday") === "");
 check("null time -> blank", api.hlWhen(null) === "");
 
+// ------------------------------------------------------------------ the address line
+// Seen live on 14 Sep: "Lot 413, Mambourin Green, Wyndham Vale VIC · Wyndham Vale VIC".
+console.log("\n--- the address line names the suburb once ---");
+const subLine = rec => {
+  const m = api.hlRecCard(rec).match(/<div class="hl-rec-sub">([\s\S]*?)<\/div>/);
+  return m ? m[1] : "";
+};
+const REPEAT = subLine({ lot_address: "Lot 413, Mambourin Green, Wyndham Vale VIC", suburb: "Wyndham Vale", state: "VIC" });
+check("suburb + state already in the address are not repeated",
+  REPEAT === "Lot 413, Mambourin Green, Wyndham Vale VIC", REPEAT);
+const ESTATE = subLine({ lot_address: "Lot 406, Mambourin Green", suburb: "Mambourin", state: "VIC" });
+check("a suburb word inside an estate name still gets the suburb",
+  ESTATE === "Lot 406, Mambourin Green &middot; Mambourin VIC", ESTATE);
+const STREET = subLine({ lot_address: "1815 Torenia Dr, Verdant Hill", suburb: "Tarneit", state: "VIC" });
+check("a street address gets its suburb and state",
+  STREET === "1815 Torenia Dr, Verdant Hill &middot; Tarneit VIC", STREET);
+const BARE = subLine({ lot_address: "Lot 5, Lara", suburb: "Lara", state: "VIC" });
+check("suburb alone in the address is enough", BARE === "Lot 5, Lara", BARE);
+
 // ------------------------------------------------------------------ the hostile record
 console.log("\n--- a hostile record renders as text ---");
 let out = "";
