@@ -2707,7 +2707,17 @@ python state_sync.py push</pre>
         const txt = v => String(v ?? '').trim();
         const title = [txt(r.builder_name), txt(r.house_design)].filter(Boolean).join(' – ')
             || 'Builder not stated';
-        const place = [txt(r.suburb), txt(r.state)].filter(Boolean).join(' ');
+        // Listing addresses often already end in their suburb and state ("Lot 413, Mambourin
+        // Green, Wyndham Vale VIC"), and appending both again read "Wyndham Vale VIC · Wyndham
+        // Vale VIC" on every card (seen live, 14 Sep). The call webhook's formatAddress uses the
+        // same rule: add the place only when no comma-separated part of the address already is
+        // that suburb, alone or with its state. A suburb word inside an estate name ("Mambourin
+        // Green") is not the suburb, so it still gets added.
+        const addrParts = txt(r.lot_address).toLowerCase().split(',').map(s => s.trim());
+        const subLc = txt(r.suburb).toLowerCase();
+        const stateLc = txt(r.state).toLowerCase();
+        const placeInAddress = !!subLc && addrParts.some(s => s === subLc || (stateLc && s === subLc + ' ' + stateLc));
+        const place = placeInAddress ? '' : [txt(r.suburb), txt(r.state)].filter(Boolean).join(' ');
         // ADVERTISED PRICE IS THE PRICE, the same rule as the Research & Scoring cards (9 Aug):
         // the figure the builder advertises is the one a client will see, so it is the one a
         // consultant quotes. This card first led with the realistic total (advertised plus our
