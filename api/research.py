@@ -5,7 +5,8 @@ Same request and same response as server.py's do_POST, so index.html needs no ch
 it posts {"client_brief": {...}} and reads status / research_record_id /
 shortlist_count / rejected_count / rejected_log / shortlist[] / reports /
 search_area / builder_coverage / client_report_html / qa_passed / qa_failures /
-kommo_payload.
+kommo_payload. It also returns location_resolution (see _location_resolver), which
+server.py does not.
 
 The one difference is where the candidates come from. Locally, run_property_research
 is called with candidate_packages=None and crawls E-Agent and the builder portals.
@@ -258,6 +259,8 @@ def run_research(payload):
     # What it covered is reported back in `region_expansion`, because answering a wider
     # question than the one typed must be visible rather than silent.
     _expanded = {}
+    # What was done to every primary suburb the brief named -- see _location_resolver.
+    _location = []
     try:
         import _regions
         from geo import SuburbGeoIndex
@@ -278,10 +281,32 @@ def run_research(payload):
         # verbatim, and offline against the snapshot 4 Redbank Plains lots were refused
         # as "not one of the requested suburbs (Red Bank Plains)". A name that is already
         # a locality in the brief's state is left exactly as typed.
+        #
+        # AND WHAT THE CALLER MEANT, WHEN NO SPELLING OF IT IS A PLACE. Ahsan, 15 Sep 2026:
+        # "use the Groq API key to eliminate any address issue you might face in the
+        # future". A fold cannot hear "Tarn eat" as Tarneit, or "western suburbs of
+        # Melbourne" as the suburbs there. _location_resolver asks Groq once for every
+        # phrase still unresolved, keeps only names the suburb index confirms in the brief's
+        # state, and says what it did in `location_resolution`. With no key, or when Groq
+        # fails, the brief comes out exactly as the fold alone left it.
         _state = str(brief_dict.get("state") or "").strip().upper()
         _asked = brief_dict.get("primary_suburbs") or []
-        _spelt = [s if _index.locate(s, _state)
-                  else (_index.canonical_suburb(s, _state, spoken=True) or s) for s in _asked]
+        try:
+            import _location_resolver
+            _resolved = _location_resolver.resolve(_asked, _state, _index)
+            _spelt = _resolved["suburbs"]
+            _location = _resolved["location_resolution"]
+            if _resolved["state"] and not _state:
+                # Only from a locality that exists in one state alone -- and the note on
+                # that phrase says so.
+                brief_dict = dict(brief_dict, state=_resolved["state"])
+        except Exception as exc:                                      # noqa: BLE001
+            # Never fatal, and never different from the research before it existed.
+            print("location resolver unavailable: %s" % type(exc).__name__, file=sys.stderr)
+            _location = []
+            _spelt = [s if _index.locate(s, _state)
+                      else (_index.canonical_suburb(s, _state, spoken=True) or s)
+                      for s in _asked]
         if _spelt != _asked:
             brief_dict = dict(brief_dict, primary_suburbs=_spelt)
         _known = {str(r.get("suburb") or "").strip().lower() for r in rows
@@ -362,6 +387,9 @@ def run_research(payload):
                 [s for s in suburbs if s], str(brief_dict.get('state') or '').upper(),
                 coerce_number(brief_dict.get('search_radius_km'), 0) or 0),
             'region_expansion': _expanded,
+            # Visible on the path a caller hits when the search found nothing, which is
+            # exactly when "we searched Tarneit for 'Tarn eat'" matters most.
+            'location_resolution': _location,
             'builder_coverage': {},
             'client_report_html': '',
             'client_report_path': '',
@@ -457,6 +485,9 @@ def run_research(payload):
         'reports': result['reports'],
         'search_area': result.get('search_area', []),
         'region_expansion': result.get('region_expansion') or _expanded,
+        # Every primary suburb as said, what was searched for it, and how that was decided
+        # (exact / spoken / groq / unresolved). See _location_resolver.
+        'location_resolution': _location,
         'builder_coverage': result.get('builder_coverage', {}),
         'client_report_html': result.get('client_report_html', ''),
         # Every pairing of the shortlist, pre-rendered. Colin's own workflow is "two

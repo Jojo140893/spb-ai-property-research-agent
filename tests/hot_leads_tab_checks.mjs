@@ -47,7 +47,7 @@ if (!escMatch) {
 const EXPORTS = ["hlSafeUrl", "hlTelHref", "hlMailHref", "hlMoney", "hlWhen", "hlBriefChips",
   "hlRecCard", "hlRecsBlock", "hlLiveBlock", "hlAppointment", "hlLeadCard", "hlRenderLeads",
   "hlSortNewest", "hlUnavailable", "loadHotLeads", "rerunHotLead", "hlGrade", "hlSetFilter",
-  "hlMergeLeads", "hlCoverNote"];
+  "hlMergeLeads", "hlCoverNote", "hlLocationNote"];
 
 // The tab's two reads -- every grade, and hot callers on their own -- each with and without
 // include_test=1, and the research. The bare "/api/hot_leads" the hot-only tab used is NOT
@@ -177,7 +177,8 @@ const hostile = () => ({
     score: 87.84, recommendation: "Recommend", recommendation_reason: EVIL, content_hash: "h1",
     date_checked: "16/09/2026", source_link: { url: "java\tscript:alert(6)", label: EVIL },
   }],
-  research: { status: "ok", message: EVIL, record_id: "r1", shortlist_count: 1, widened: EVIL },
+  research: { status: "ok", message: EVIL, record_id: "r1", shortlist_count: 1, widened: EVIL,
+              location: [{ said: EVIL, used: ["Tarneit", EVIL], method: "groq" }] },
 });
 
 const rec = (over = {}) => ({
@@ -299,6 +300,46 @@ check("land m2 shown when present", /Land 350 m&sup2;/.test(out));
 check("house m2 absent when null", !/House [\d-]+ m&sup2;/.test(out));
 check("score /100", out.includes("87.8 / 100"));
 check("widened note shown when there are results", /widened/i.test(out) && out.includes(EVIL_TEXT));
+check("a hostile location reading is shown as text",
+  out.includes(`<div class="hl-loc">Location read as: ${EVIL_TEXT} -&gt; Tarneit, ${EVIL_TEXT}</div>`));
+
+// ------------------------------------------------------------------ where the search looked
+// 15 Sep: the research reads a location Vapi mistranscribed ("Tarn eat") or an area ("western
+// suburbs of Melbourne") through Groq, keeps only names the suburb index confirms, and the hook
+// copies those phrases into research.location. The card says which suburbs were searched.
+console.log("\n--- Location read as ---");
+const loc = (...entries) => ({ status: "ok", location: entries });
+out = api.hlLocationNote(loc({ said: "Tarn eat", used: ["Tarneit"], method: "groq" }));
+check("one groq phrase -> one muted line", out === '<div class="hl-loc">Location read as: Tarn eat -&gt; Tarneit</div>', out);
+out = api.hlLocationNote(loc(
+  { said: "western suburbs of Melbourne", used: ["Tarneit", " Truganina ", "", 7, null, "Werribee"], method: "groq" },
+  { said: "Tarneit", used: ["Tarneit"], method: "exact" },
+  { said: "Red Bank Plains", used: ["Redbank Plains"], method: "spoken" },
+  { said: "Newpark", used: ["Newpark"], method: "unresolved" },
+  { said: "Wyndum Vale", used: ["Wyndham Vale"], method: "groq" }));
+check("several groq phrases share the one line; exact, spoken and unresolved are left out",
+  out === '<div class="hl-loc">Location read as: western suburbs of Melbourne -&gt; Tarneit, Truganina, Werribee; Wyndum Vale -&gt; Wyndham Vale</div>', out);
+auditMarkup("location line markup", out);
+for (const [label, research] of [
+  ["no research", undefined], ["null research", null], ["research a string", "x"],
+  ["no location", { status: "ok" }], ["location empty", loc()], ["location not an array", { location: { said: "a", used: ["b"], method: "groq" } }],
+  ["only unresolved", loc({ said: "Tarn eat", used: ["Tarn eat"], method: "unresolved" })],
+  ["method in capitals", loc({ said: "Tarn eat", used: ["Tarneit"], method: "GROQ" })],
+  ["junk entries", loc(null, "groq", 5, [], { method: "groq" }, { said: "x", method: "groq" },
+                       { said: "x", used: "Tarneit", method: "groq" }, { said: "  ", used: ["Tarneit"], method: "groq" },
+                       { said: "x", used: ["", null, 3], method: "groq" })],
+]) {
+  let got = null;
+  throwsNot(label + " renders", () => { got = api.hlLocationNote(research); });
+  check(label + " -> no line", got === "", JSON.stringify(got));
+}
+out = api.hlLeadCard(clean(), 0);
+check("a card with no location reading has no line", !out.includes("Location read as") && !out.includes("hl-loc"));
+out = api.hlLeadCard(clean({ research: { ...clean().research, location: [{ said: "Tarn eat", used: ["Tarneit"], method: "groq" }] } }), 4);
+auditMarkup("card with a location line: markup", out);
+check("the card shows the line once", (out.match(/Location read as:/g) || []).length === 1 && out.includes("Tarn eat -&gt; Tarneit"));
+check("the line sits with the brief, outside the box a Re-run replaces",
+  out.indexOf("Location read as") > out.indexOf('class="hl-chips"') && out.indexOf("Location read as") < out.indexOf('id="hlRecs-4"'));
 
 // ------------------------------------------------------------------ a clean record
 console.log("\n--- a clean record links what it should ---");

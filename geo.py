@@ -159,6 +159,21 @@ class SuburbGeoIndex:
         filed = self._estates.get((spoken_key(name), state))
         return filed is not None and not (set(found) & filed)
 
+    def estate_suburbs(self, name: str, state: str) -> Optional[List[str]]:
+        """The localities the stock files the estate called `name` under in `state`, in the
+        dataset's spelling -- or None when the stock knows no estate by that name there.
+
+        Public for api/_location_resolver.py, which checks a language model's reading of a
+        phrase against it. Review, 15 Sep 2026: "Newpark estate" answered "New Park" passed
+        locate(), which matches an exact spelling before it ever asks about estates, and
+        the search went 604 km from Melonba again. An empty list is an estate whose
+        listings carry no suburb: known, and filed nowhere a name could match.
+        """
+        filed = self._estates.get((spoken_key(name), str(state or "").strip().upper()))
+        if filed is None:
+            return None
+        return sorted(self._canonical.get(s, s.title()) for s in filed)
+
     def _spoken_hits(self, suburb: str) -> Dict[str, set]:
         """{state: {suburb_lower}} sharing this name's spoken key. {} if it has none.
 
