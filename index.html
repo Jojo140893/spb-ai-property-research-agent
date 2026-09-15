@@ -633,6 +633,7 @@
                         color: var(--amber-yellow); font-weight: 600; }
         .hl-appt-info { background: #f1f5f9; border-color: var(--border-light); color: var(--text-muted); }
         .hl-appt-note { display: block; font-size: 0.78rem; color: var(--amber-yellow); margin-top: 0.2rem; }
+        .hl-loc { font-size: 0.8rem; color: var(--text-muted); margin: 0.1rem 0 0.4rem; overflow-wrap: anywhere; }
         .hl-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.5rem 0; }
         .hl-chip { font-size: 0.76rem; background: #f1f5f9; border: 1px solid var(--border-light);
                    border-radius: 999px; padding: 0.18rem 0.6rem; color: var(--text-body);
@@ -2865,6 +2866,29 @@ python state_sync.py push</pre>
              + '</div>';
     }
 
+    // WHERE THE SEARCH LOOKED, when it is not what the caller said. 15 Sep 2026: callers speak
+    // a location and Vapi transcribes it, so "Tarn eat" or "western suburbs of Melbourne"
+    // reaches Agent 2. The research reads those through Groq and keeps only names the suburb
+    // index confirms (api/_location_resolver.py), and the hook copies each such phrase into
+    // research.location. A consultant ringing the caller has to be able to see that the
+    // buildings below are for "Tarneit", not for what the transcript says. Only phrases Groq
+    // resolved are shown: an exact or respelt name needs no explaining, and an unresolved one
+    // was searched as said. One line, text only -- every part of it came from a transcript.
+    function hlLocationNote(research) {
+        const rs = (research && typeof research === 'object') ? research : {};
+        const parts = (Array.isArray(rs.location) ? rs.location : [])
+            .filter(x => x && typeof x === 'object' && x.method === 'groq')
+            .map(x => {
+                const said = String(x.said ?? '').trim();
+                const used = (Array.isArray(x.used) ? x.used : [])
+                    .filter(u => typeof u === 'string' && u.trim()).map(u => u.trim()).join(', ');
+                return (said && used) ? `${said} -> ${used}` : '';
+            })
+            .filter(Boolean);
+        return parts.length
+            ? `<div class="hl-loc">${esc('Location read as: ' + parts.join('; '))}</div>` : '';
+    }
+
     // hidden: the card is rendered but out of the current filter (see hlSetFilter).
     function hlLeadCard(lead, i, hidden) {
         const n = (Number.isInteger(i) && i >= 0) ? i : 0;
@@ -2898,6 +2922,7 @@ python state_sync.py push</pre>
             ${reason ? `<div class="hl-reason"><strong>${g ? 'Why ' + g : 'Grade reason'}:</strong> ${esc(reason)}</div>` : ''}
             ${hlAppointment(L.appointment, g)}
             ${hlBriefChips(L.brief)}
+            ${hlLocationNote(L.research)}
             ${links ? `<div class="hl-links">${links}</div>` : ''}
             ${summary ? `<details class="hl-summary"><summary>Call summary</summary><p>${esc(summary)}</p></details>` : ''}
             <div class="hl-recs-head">
