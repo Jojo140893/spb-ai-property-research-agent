@@ -316,15 +316,28 @@ out = api.hlLocationNote(loc(
   { said: "Tarneit", used: ["Tarneit"], method: "exact" },
   { said: "Red Bank Plains", used: ["Redbank Plains"], method: "spoken" },
   { said: "Newpark", used: ["Newpark"], method: "unresolved" },
-  { said: "Wyndum Vale", used: ["Wyndham Vale"], method: "groq" }));
-check("several groq phrases share the one line; exact, spoken and unresolved are left out",
-  out === '<div class="hl-loc">Location read as: western suburbs of Melbourne -&gt; Tarneit, Truganina, Werribee; Wyndum Vale -&gt; Wyndham Vale</div>', out);
+  { said: "Wyndum Vale", used: ["Wyndham Vale"], method: "groq" },
+  { said: "Cragieburn", used: ["Craigieburn"], method: "fuzzy" }));
+check("groq and fuzzy phrases share the one line; exact, spoken and unresolved are left out",
+  out === '<div class="hl-loc">Location read as: western suburbs of Melbourne -&gt; Tarneit, Truganina, Werribee; Wyndum Vale -&gt; Wyndham Vale; Cragieburn -&gt; Craigieburn (matched by spelling)</div>', out);
 auditMarkup("location line markup", out);
+// Live, 15 Sep 2026: Groq answered "Wyndum Vale" unknown, and the resolver now reads such a
+// phrase as the one locality spelt that closely (method "fuzzy"). That is a reading too.
+// Review, 15 Sep 2026: it looked exactly like a Groq reading here while the Kommo note marks
+// it "(matched by spelling)" -- the card now says so as well, and a Groq reading does not.
+out = api.hlLocationNote(loc({ said: "Wyndum Vale", used: ["Wyndham Vale"], method: "fuzzy" }));
+check("a fuzzy phrase alone -> the line, marked as a spelling match", out === '<div class="hl-loc">Location read as: Wyndum Vale -&gt; Wyndham Vale (matched by spelling)</div>', out);
+out = api.hlLocationNote(loc({ said: "Wyndum Vale", used: ["Wyndham Vale"], method: "groq" }));
+check("a groq reading carries no spelling mark", !out.includes("matched by spelling") && out.includes("Wyndum Vale -&gt; Wyndham Vale</div>"), out);
+out = api.hlLocationNote(loc({ said: "<script>alert(1)</script>", used: ["<script>alert(1)</script>"], method: "fuzzy" }));
+check("a hostile fuzzy reading is shown as text", out === `<div class="hl-loc">Location read as: ${EVIL_TEXT} -&gt; ${EVIL_TEXT} (matched by spelling)</div>`, out);
 for (const [label, research] of [
   ["no research", undefined], ["null research", null], ["research a string", "x"],
   ["no location", { status: "ok" }], ["location empty", loc()], ["location not an array", { location: { said: "a", used: ["b"], method: "groq" } }],
   ["only unresolved", loc({ said: "Tarn eat", used: ["Tarn eat"], method: "unresolved" })],
   ["method in capitals", loc({ said: "Tarn eat", used: ["Tarneit"], method: "GROQ" })],
+  ["fuzzy in capitals", loc({ said: "Wyndum Vale", used: ["Wyndham Vale"], method: "FUZZY" })],
+  ["a method that only contains fuzzy", loc({ said: "Wyndum Vale", used: ["Wyndham Vale"], method: "fuzzy,groq" })],
   ["junk entries", loc(null, "groq", 5, [], { method: "groq" }, { said: "x", method: "groq" },
                        { said: "x", used: "Tarneit", method: "groq" }, { said: "  ", used: ["Tarneit"], method: "groq" },
                        { said: "x", used: ["", null, 3], method: "groq" })],

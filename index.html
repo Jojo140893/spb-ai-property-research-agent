@@ -2871,18 +2871,25 @@ python state_sync.py push</pre>
     // reaches Agent 2. The research reads those through Groq and keeps only names the suburb
     // index confirms (api/_location_resolver.py), and the hook copies each such phrase into
     // research.location. A consultant ringing the caller has to be able to see that the
-    // buildings below are for "Tarneit", not for what the transcript says. Only phrases Groq
-    // resolved are shown: an exact or respelt name needs no explaining, and an unresolved one
-    // was searched as said. One line, text only -- every part of it came from a transcript.
+    // buildings below are for "Tarneit", not for what the transcript says. Only phrases read
+    // as something else are shown -- by Groq ("groq") or, when Groq did not settle it, as the
+    // one locality spelt that closely ("fuzzy": live, 15 Sep 2026, Groq answered "Wyndum Vale"
+    // unknown). An exact or respelt name needs no explaining, and an unresolved one was
+    // searched as said. One line, text only -- every part of it came from a transcript.
+    const HL_LOCATION_READ = ['groq', 'fuzzy'];
     function hlLocationNote(research) {
         const rs = (research && typeof research === 'object') ? research : {};
         const parts = (Array.isArray(rs.location) ? rs.location : [])
-            .filter(x => x && typeof x === 'object' && x.method === 'groq')
+            .filter(x => x && typeof x === 'object' && HL_LOCATION_READ.includes(x.method))
             .map(x => {
                 const said = String(x.said ?? '').trim();
                 const used = (Array.isArray(x.used) ? x.used : [])
                     .filter(u => typeof u === 'string' && u.trim()).map(u => u.trim()).join(', ');
-                return (said && used) ? `${said} -> ${used}` : '';
+                // Review, 15 Sep 2026: a fuzzy reading looked exactly like a Groq one here,
+                // while the Kommo note (vapi-kommo-hook lib/kommo-lead.js locationLines)
+                // marks it. A spelling match is the one a consultant most needs to check.
+                const how = x.method === 'fuzzy' ? ' (matched by spelling)' : '';
+                return (said && used) ? `${said} -> ${used}${how}` : '';
             })
             .filter(Boolean);
         return parts.length

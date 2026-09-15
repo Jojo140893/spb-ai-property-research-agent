@@ -485,6 +485,422 @@ def test_a_real_locality_of_another_state_is_not_sent_to_groq(groq, phrase, stat
     assert "a locality of %s, not %s; the state may be wrong" % (home, state) in entry["note"]
 
 
+# ------------------------------------------------------------------ the index helps, and stands in
+# Live, 15 Sep 2026, real Groq (gpt-oss-20b, reasoning_effort low) through POST /api/research:
+# "Wyndum Vale" came back unknown, "Cragieburn" was left out of the answer, and "western
+# suburbs of Melbourne" included Essendon, Coburg and Brunswick. The small model at low effort
+# is weak at correcting a spelling on its own, so the index now offers it the closest
+# spellings, stands in when it still does not say, and checks which way an area lies.
+
+def _phrases_sent(body):
+    return json.loads(body["messages"][1]["content"].split("Phrases:\n", 1)[1])["phrases"]
+
+
+def _picks_the_first_candidate(body):
+    return answer([{"id": p["id"], "localities": p["candidates"][:1], "confidence": "high"}
+                   for p in _phrases_sent(body) if p.get("candidates")])
+
+
+UNKNOWN = answer([{"id": 1, "localities": [], "confidence": "unknown"}])
+
+
+def test_a_misspelt_suburb_is_sent_with_its_closest_spellings_and_groq_can_choose_one(groq):
+    groq.respond = _picks_the_first_candidate
+    out = LR.resolve(["Wyndum Vale", "Cragieburn", "western suburbs of Melbourne"], "VIC", _GEO)
+    sent = {p["said"]: p for p in groq.calls[0]["phrases"]}
+    assert sent["Wyndum Vale"]["candidates"][0] == "Wyndham Vale"
+    assert sent["Cragieburn"]["candidates"][0] == "Craigieburn"
+    for p in sent.values():
+        assert len(p.get("candidates", [])) <= LR.CANDIDATE_COUNT
+        assert all(_GEO.locate(n, "VIC") for n in p.get("candidates", [])), \
+            "only real localities of the brief's state are offered"
+    assert "candidates" not in sent["western suburbs of Melbourne"], "an area is not a spelling"
+    system = groq.calls[0]["body"]["messages"][0]["content"]
+    assert "candidates" in system and "misspelt" in system and "'unknown'" in system
+
+    by = said(out)
+    assert by["Wyndum Vale"]["method"] == "groq" and by["Wyndum Vale"]["used"] == ["Wyndham Vale"]
+    assert by["Cragieburn"]["method"] == "groq" and by["Cragieburn"]["used"] == ["Craigieburn"]
+    assert by["western suburbs of Melbourne"]["method"] == "unresolved"
+    assert len(groq.calls) == 1, "still one call for every phrase"
+
+
+def test_a_candidate_is_never_a_name_the_answer_could_not_keep(groq, monkeypatch):
+    """The phrase's own spoken key was refused by the fold on purpose, and an estate's name
+    filed elsewhere is not that place: offering either would only invite a dropped answer."""
+    groq.respond = UNKNOWN
+    index = _newpark()
+    LR.resolve(["Newpark Estate"], "NSW", index)
+    assert "New Park" not in groq.calls[0]["phrases"][0].get("candidates", [])
+
+    # The list itself, with the one-clear-spelling rule out of the way -- otherwise nothing
+    # is offered for this phrase at all and the line above proves nothing.
+    ranked = LR._ranked(index, LR._phrase_key("Newpark Estate"), "NSW")
+    assert ranked[0][1] == "New Park", "premise: the refused name is the closest spelling"
+    monkeypatch.setattr(LR, "FUZZY_MARGIN", 0.0)
+    monkeypatch.setattr(LR, "_closest_other", lambda *_a: 0.0)
+    offered = LR._candidates(index, "Newpark Estate", "NSW", ranked)
+    assert offered and "New Park" not in offered
+
+
+def test_when_groq_does_not_settle_a_misspelling_its_one_close_locality_is_searched(groq):
+    # Groq says unknown for the first and leaves the second out altogether -- both live.
+    groq.respond = UNKNOWN
+    out = LR.resolve(["Wyndum Vale", "Cragieburn"], "VIC", _GEO)
+    assert out["suburbs"] == ["Wyndham Vale", "Craigieburn"]
+    by = said(out)
+    assert by["Wyndum Vale"]["method"] == "fuzzy" and by["Wyndum Vale"]["used"] == ["Wyndham Vale"]
+    assert "similarity 0.86; the next closest, Wando Vale, 0.74" in by["Wyndum Vale"]["note"]
+    assert "Groq did not settle it (Groq's reading was unknown)" in by["Wyndum Vale"]["note"]
+    assert by["Cragieburn"]["method"] == "fuzzy" and by["Cragieburn"]["used"] == ["Craigieburn"]
+    assert "similarity 0.95" in by["Cragieburn"]["note"]
+    assert "Groq's answer did not include it" in by["Cragieburn"]["note"]
+    assert "searched as said" not in by["Cragieburn"]["note"]
+
+
+@pytest.mark.parametrize("failure", [
+    urllib.error.HTTPError(LR.GROQ_URL, 500, "Internal Server Error", {}, None),
+    TimeoutError("timed out"),
+    answer(content="Sure! That is Craigieburn."),
+    "no key",
+], ids=["http-500", "timeout", "prose", "no-key"])
+def test_the_backstop_does_not_need_groq(groq, monkeypatch, failure):
+    if failure == "no key":
+        monkeypatch.delenv("GROQ_API_KEY")
+    else:
+        groq.respond = failure
+    out = LR.resolve(["Cragieburn", "Packing ham"], "VIC", _GEO)
+    by = said(out)
+    assert by["Cragieburn"]["method"] == "fuzzy" and out["suburbs"][0] == "Craigieburn"
+    # A WEAK CANDIDATE IS NOT A READING. Pakenham is the closest VIC spelling of "Packing
+    # ham", and at 0.78 it is a guess -- searched as said, exactly as before.
+    ranked = LR._ranked(_GEO, LR._phrase_key("Packing ham"), "VIC")
+    assert ranked and ranked[0][1] == "Pakenham" and ranked[0][0] < LR.FUZZY_RATIO, "premise"
+    assert by["Packing ham"]["method"] == "unresolved"
+    assert by["Packing ham"]["used"] == ["Packing ham"]
+    assert by["Packing ham"]["note"].startswith("not a locality in VIC; searched as said (")
+    assert len(groq.calls) == (0 if failure == "no key" else 1)
+
+
+def test_a_real_locality_of_the_state_never_reaches_the_backstop(groq):
+    groq.respond = UNKNOWN
+    # Each is one letter from another VIC locality, and each is spelt as itself.
+    names = [locality(n, "VIC") for n in ("Aberfeldie", "Aberfeldy", "Addington", "Eddington",
+                                          "Armadale", "Taradale", "Ascot Vale", "Pascoe Vale")]
+    out = LR.resolve(names, "VIC", _GEO)
+    assert [e["method"] for e in out["location_resolution"]] == ["exact"] * len(names)
+    assert out["suburbs"] == names and groq.calls == []
+
+
+def test_the_backstop_thresholds_are_the_measured_ones():
+    """Measured 15 Sep 2026 over every locality in data/au_suburbs.csv, with the production
+    _ranked and _fuzzy (a replica of the decision swept the grid; the production function
+    then agreed with it on every one of the 87,546 cases). Re-measured after review with the
+    production functions, postal names (_POSTAL) out of the ranking and "the"/"of" refused:
+
+        17,296 localities, each said as itself and left out of the ranking:
+            0 read as a different locality (773 at 0.86 / 0.06 without the crowd rule)
+        69,026 misspellings reaching the backstop (drop, double, swap, vowel):
+            50,881 recovered (73.7%), 7 read as another locality (0.01%)
+            (51,182 and 7 without the "the"/"of" rule)
+        140,296 lookups of every real name in every state through resolve():
+            0 reached the backstop (first measurement)
+
+    Change a value here and those numbers no longer describe the code: measure again.
+    """
+    assert (LR.FUZZY_RATIO, LR.FUZZY_MARGIN, LR.FUZZY_MIN_KEY, LR.FUZZY_CROWD_SLACK) == \
+        (0.85, 0.08, 6, 0.0)
+    # The ceiling on the ratio: live, "Wyndum Vale" is this far from Wyndham Vale.
+    best = LR._ranked(_GEO, LR._phrase_key("Wyndum Vale"), "VIC")[0]
+    assert best[1] == "Wyndham Vale" and LR.FUZZY_RATIO <= best[0] < 0.86
+
+
+# Real localities one letter from another of their state. Measured 15 Sep 2026: with ratio
+# and margin alone, each of these -- said as itself, and left out of the ranking as if the
+# index did not know it -- was read as its twin. Nothing tells a misspelling of one from the
+# other, so a locality with a twin that close is never the backstop's pick (FUZZY_CROWD_SLACK).
+REAL_TWINS = [("VIC", "Bradford", "Broadford"), ("VIC", "Bolinda", "Olinda"),
+              ("QLD", "Alexandra", "Alexandria"), ("NSW", "Black Creek", "Back Creek"),
+              ("NSW", "Barellan", "Narellan"), ("NSW", "Allambie", "Yallambie"),
+              ("NSW", "Boggabri", "Noggabri"), ("NSW", "Bradfield", "Braefield"),
+              ("NSW", "Bedgerabong", "Bedgerebong"), ("NSW", "Arncliffe", "Warnecliffe")]
+
+
+@pytest.mark.parametrize("state,name,twin", REAL_TWINS)
+def test_a_real_locality_missing_from_the_ranking_is_never_read_as_its_twin(state, name, twin):
+    locality(name, state), locality(twin, state)
+    ranked = [r for r in LR._ranked(_GEO, LR._phrase_key(name), state) if r[1] != name]
+    assert ranked[0][1] == twin, "premise: the twin is the closest spelling left"
+    second = ranked[1][0] if len(ranked) > 1 else 0.0
+    assert ranked[0][0] >= LR.FUZZY_RATIO and ranked[0][0] - second >= LR.FUZZY_MARGIN, \
+        "premise: ratio and margin alone would take the twin"
+    got, why = LR._fuzzy(_GEO, name, state, ranked)
+    assert got == ""
+    assert f"its closest spelling in {state}, {twin} (" in why
+    assert "is itself spelt almost like another locality there" in why
+
+
+@pytest.mark.parametrize("phrase,first,second", [
+    ("Aradale", "Armadale", "Taradale"),          # 0.93 and 0.93
+    ("Asco Vale", "Ascot Vale", "Pascoe Vale"),   # 0.94 and 0.89
+])
+def test_two_localities_spelt_almost_as_closely_are_not_chosen_between(groq, phrase, first,
+                                                                       second):
+    groq.respond = UNKNOWN
+    out = LR.resolve([phrase], "VIC", _GEO)
+    entry = said(out)[phrase]
+    assert entry["method"] == "unresolved" and out["suburbs"] == [phrase]
+    assert f"its closest spellings in VIC, {first} (" in entry["note"]
+    assert f"and {second} (" in entry["note"] and "too alike to choose between" in entry["note"]
+
+
+@pytest.mark.parametrize("phrase", [
+    "Cragieburn 3064",          # a digit: a postcode or a lot, not a spelling
+    "Cragieburn estate",        # an estate is in a locality, it is not a spelling of one
+    "near Cragieburn",          # an area
+    "Cragieburn B",             # a one-letter word is a fragment
+])
+def test_only_a_phrase_spelt_like_one_name_is_read_by_the_backstop(groq, phrase):
+    groq.respond = UNKNOWN
+    out = LR.resolve([phrase], "VIC", _GEO)
+    assert said(out)[phrase]["method"] == "unresolved", phrase
+
+
+def test_a_region_said_with_the_is_not_read_as_the_locality_one_letter_away(groq, monkeypatch):
+    """Review, 15 Sep 2026: "The Hills" -- Sydney's Hills District -- was read by spelling as
+    The Hill, NSW, in Newcastle 117 km from Sydney, and the search went there."""
+    locality("The Hill", "NSW")
+    ranked = LR._ranked(_GEO, LR._phrase_key("The Hills"), "NSW")
+    assert ranked[0][1] == "The Hill" and ranked[0][0] >= LR.FUZZY_RATIO and \
+        ranked[0][0] - ranked[1][0] >= LR.FUZZY_MARGIN, "premise: spelling alone would take it"
+    assert not LR._spelt_like_one_name("The Hills")
+
+    groq.respond = _picks_the_first_candidate
+    out = LR.resolve(["The Hills"], "NSW", _GEO)
+    assert "candidates" not in groq.calls[0]["phrases"][0], "a region is not a spelling"
+    entry = said(out)["The Hills"]
+    assert entry["method"] == "unresolved" and out["suburbs"] == ["The Hills"]
+
+    monkeypatch.delenv("GROQ_API_KEY")
+    out = LR.resolve(["The Hills"], "NSW", _GEO)
+    assert said(out)["The Hills"]["method"] == "unresolved" and out["suburbs"] == ["The Hills"]
+
+
+@pytest.mark.parametrize("phrase,state,postal", [
+    ("Gold Coast", "QLD", "Gold Coast Mc"),
+    ("Sunshine Coast", "QLD", "Sunshine Coast Mc"),
+    ("Central Coast", "NSW", "Central Coast Mc"),
+    ("Gippsland", "VIC", "Gippsland Mc"),       # one postal point, 221 km from Melbourne
+])
+def test_a_mail_centre_is_never_the_reading_of_a_region(groq, phrase, state, postal):
+    """Review, 15 Sep 2026: each region was read as its mail centre, a name no stock row
+    carries, and the same mail centre led the candidates sent to Groq."""
+    locality(postal, state)
+    groq.respond = _picks_the_first_candidate
+    out = LR.resolve([phrase], state, _GEO)
+    offered = groq.calls[0]["phrases"][0].get("candidates", [])
+    assert not any(LR._POSTAL.search(n) for n in offered), offered
+    entry = said(out)[phrase]
+    assert postal not in entry["used"] and entry["method"] != "fuzzy"
+    ranked = LR._ranked(_GEO, LR._phrase_key(phrase), state)
+    assert not any(LR._POSTAL.search(name) for _s, name, _k in ranked)
+    # Said exactly, it is still what it is.
+    assert said(LR.resolve([postal], state, _GEO))[postal]["method"] == "exact"
+
+
+@pytest.mark.parametrize("phrase,meant", [("Ballart", "Ballarat"), ("Bendgo", "Bendigo")])
+def test_a_mail_centre_no_longer_hides_its_towns_misspellings_from_the_backstop(groq, phrase,
+                                                                              meant):
+    """The builder's open issue, 15 Sep 2026: Ballarat Mc and Bendigo Dc were twins of their
+    towns under the crowd rule, so no misspelling of either was ever read."""
+    assert any(LR._POSTAL.search(n) and n.startswith(meant + " ")
+               for n in _GEO.localities("VIC")), "premise: the town has a postal twin"
+    groq.respond = UNKNOWN
+    out = LR.resolve([phrase], "VIC", _GEO)
+    entry = said(out)[phrase]
+    assert entry["method"] == "fuzzy" and entry["used"] == [meant]
+
+
+# Review, 15 Sep 2026, with a model that answers with the first candidate: each of these was
+# kept as method "groq" although the backstop refuses it -- a near tie (Aradale: Armadale and
+# Taradale, 0.93 each), a twin (Narellan and Barellan), or a region or estate whose closest
+# spelling is somewhere else (Yarra Valley as Tarra Valley in Gippsland, Cloverton as Laverton,
+# Everleigh as Riverleigh). "Tarn eat" is here too: Tarneit is only 0.04 clear of Tarwin East,
+# and live, without candidates, Groq read it right.
+@pytest.mark.parametrize("phrase,state", [
+    ("Aradale", "VIC"), ("Asco Vale", "VIC"), ("Bradfor", "VIC"), ("Olindah", "VIC"),
+    ("Narelan", "NSW"), ("Yarra Valley", "VIC"), ("Cloverton", "VIC"), ("Everleigh", "QLD"),
+    ("Tarn eat", "VIC"),
+])
+def test_no_candidates_when_the_closest_spelling_is_not_one_clear_name(groq, phrase, state):
+    assert LR._ranked(_GEO, LR._phrase_key(phrase), state), "premise: there were spellings"
+    groq.respond = _picks_the_first_candidate
+    out = LR.resolve([phrase], state, _GEO)
+    assert "candidates" not in groq.calls[0]["phrases"][0], phrase
+    entry = said(out)[phrase]
+    assert entry["method"] == "unresolved" and out["suburbs"] == [phrase]
+
+
+def test_no_state_means_no_candidates_and_no_backstop(groq):
+    groq.respond = UNKNOWN
+    out = LR.resolve(["Cragieburn"], "", _GEO)
+    assert "candidates" not in groq.calls[0]["phrases"][0]
+    assert said(out)["Cragieburn"]["method"] == "unresolved"
+    assert out["suburbs"] == ["Cragieburn"] and out["state"] == ""
+
+
+def test_the_backstop_is_held_to_the_search_cap(groq):
+    full = [locality(n, "VIC") for n in ("Tarneit", "Werribee", "Point Cook", "Melton",
+                                         "Sunbury", "Truganina", "Hoppers Crossing",
+                                         "Manor Lakes", "Williams Landing", "Laverton",
+                                         "Altona Meadows", "Sunshine")]
+    out = LR.resolve(full + ["Cragieburn", "Wyndum Vale"], "VIC", _GEO)
+    assert groq.calls == [], "the brief already names 12 suburbs"
+    assert out["suburbs"] == full + ["Cragieburn", "Wyndum Vale"]
+    assert [e["method"] for e in out["location_resolution"][-2:]] == ["unresolved"] * 2
+
+    out = LR.resolve(full + ["Tarnet"], "VIC", _GEO)
+    ranked = LR._ranked(_GEO, "tarnet", "VIC")
+    assert ranked[0][1] == "Tarneit", "premise"
+    if LR._fuzzy(_GEO, "Tarnet", "VIC", ranked)[0]:
+        entry = said(out)["Tarnet"]
+        assert entry["method"] == "fuzzy" and entry["used"] == ["Tarneit"]
+        assert "already in the search" in entry["note"], "named, not added"
+        assert out["suburbs"] == full
+
+
+def test_a_failure_while_ranking_spellings_costs_nothing_else(groq, monkeypatch):
+    def boom(*_a, **_k):
+        raise RuntimeError("index exploded")
+
+    monkeypatch.setattr(LR, "_ranked", boom)
+    groq.respond = answer([{"id": 1, "localities": ["Craigieburn"], "confidence": "high"}])
+    out = LR.resolve(["Cragieburn"], "VIC", _GEO)
+    assert len(groq.calls) == 1 and "candidates" not in groq.calls[0]["phrases"][0]
+    assert out["suburbs"] == ["Craigieburn"] and said(out)["Cragieburn"]["method"] == "groq"
+
+    monkeypatch.undo()
+    monkeypatch.setenv("GROQ_API_KEY", KEY)
+    monkeypatch.setattr(LR, "_fuzzy", boom)
+    LR._CACHE.clear()
+    groq.respond = UNKNOWN
+    out = LR.resolve(["Cragieburn"], "VIC", _GEO)
+    assert said(out)["Cragieburn"]["method"] == "unresolved"
+    assert out["suburbs"] == ["Cragieburn"]
+
+
+# What Groq returned live for "western suburbs of Melbourne", in its order.
+LIVE_WEST = ["Footscray", "Sunshine", "Williamstown", "Altona", "Maribyrnong", "Essendon",
+             "Coburg", "Brunswick"]
+
+
+def test_western_suburbs_of_melbourne_keeps_only_the_names_that_lie_west(groq):
+    for n in LIVE_WEST:
+        locality(n, "VIC")
+    groq.respond = answer([{"id": 1, "localities": LIVE_WEST, "confidence": "medium"}])
+    out = LR.resolve(["western suburbs of Melbourne"], "VIC", _GEO)
+    # Coburg lies at 2 degrees from the Melbourne locality and Brunswick at 355: due north.
+    # Essendon, at 329, is 59 degrees off due west -- north-west, and inside the 67.5.
+    assert out["suburbs"] == [n for n in LIVE_WEST if n not in ("Coburg", "Brunswick")]
+    entry = said(out)["western suburbs of Melbourne"]
+    assert entry["method"] == "groq"
+    assert ("2 dropped as not west of Melbourne (Coburg, Brunswick: more than 67.5 degrees "
+            "off due west)") in entry["note"]
+
+
+def test_a_compound_direction_is_a_sector_too(groq):
+    names = [locality(n, "VIC") for n in ("Dandenong", "Berwick", "Frankston", "Werribee",
+                                          "Craigieburn")]
+    groq.respond = answer([{"id": 1, "localities": names, "confidence": "medium"}])
+    out = LR.resolve(["south-eastern suburbs of Melbourne"], "VIC", _GEO)
+    assert out["suburbs"] == ["Dandenong", "Berwick", "Frankston"]
+    assert "2 dropped as not south-east of Melbourne (Werribee, Craigieburn" in \
+        said(out)["south-eastern suburbs of Melbourne"]["note"]
+
+
+@pytest.mark.parametrize("phrase", [
+    "western suburbs",                    # a direction with no place named: no centre to judge from
+    "suburbs near North Melbourne",       # "North" is part of a name, not a direction
+    "north and south of Melbourne",       # two that cancel
+    "inner suburbs of Melbourne",         # how far, not which way
+])
+def test_no_direction_gate_without_a_direction_from_a_named_place(groq, phrase):
+    groq.respond = answer([{"id": 1, "localities": LIVE_WEST, "confidence": "medium"}])
+    out = LR.resolve([phrase], "VIC", _GEO)
+    assert out["suburbs"] == LIVE_WEST, phrase
+    assert "dropped as not" not in said(out)[phrase]["note"]
+
+
+# Review, 15 Sep 2026: the gate measured from any place the phrase named, so a suburb given as
+# an example inside the area became its centre, and the area's other suburbs were dropped.
+@pytest.mark.parametrize("phrase,names", [
+    ("western suburbs around Werribee", ["Werribee", "Tarneit", "Hoppers Crossing", "Point Cook",
+                                         "Wyndham Vale", "Truganina"]),
+    ("northern suburbs like Craigieburn", ["Craigieburn", "Mickleham", "Kalkallo",
+                                           "Roxburgh Park", "Greenvale", "Epping"]),
+    ("western suburbs near Sunshine", ["Sunshine", "Footscray", "Braybrook", "St Albans",
+                                       "Deer Park", "Albion", "Ardeer"]),
+])
+def test_a_suburb_given_as_an_example_is_not_where_a_direction_is_measured_from(groq, phrase,
+                                                                              names):
+    for n in names:
+        locality(n, "VIC")
+    groq.respond = answer([{"id": 1, "localities": names, "confidence": "medium"}])
+    out = LR.resolve([phrase], "VIC", _GEO)
+    assert out["suburbs"] == names, phrase
+    assert "dropped as not" not in said(out)[phrase]["note"]
+    assert LR._direction_origin(_GEO, phrase, "VIC") == ""
+
+
+def test_a_suburb_with_a_compass_word_in_its_name_is_the_place_named(groq):
+    """Review, 15 Sep 2026: "Clyde North" was skipped for holding "North", Clyde became the
+    place named, and the caller's own suburb was dropped as not south-east of Clyde."""
+    names = [locality(n, "VIC") for n in ("Clyde North", "Clyde", "Cranbourne East", "Berwick",
+                                          "Officer")]
+    phrase = "south east, Clyde North area"
+    assert LR._named_in_phrase(_GEO, phrase, "VIC") == "Clyde North"
+    groq.respond = answer([{"id": 1, "localities": names, "confidence": "medium"}])
+    out = LR.resolve([phrase], "VIC", _GEO)
+    assert out["suburbs"] == names
+    assert "dropped as not" not in said(out)[phrase]["note"]
+
+    LR._CACHE.clear()
+    phrase = "suburbs south-east of Clyde North"
+    assert LR._direction_origin(_GEO, phrase, "VIC") == "Clyde North"
+    out = LR.resolve([phrase], "VIC", _GEO)
+    assert "Clyde North" in said(out)[phrase]["used"], "measured from Clyde North, it stays"
+
+
+@pytest.mark.parametrize("phrase,state,expected", [
+    ("western suburbs of Melbourne", "VIC", "Melbourne"),
+    ("north of Brisbane", "QLD", "Brisbane"),
+    ("North West of Sydney", "NSW", "Sydney"),
+    ("south-eastern suburbs of Melbourne", "VIC", "Melbourne"),
+    ("west of North Melbourne", "VIC", "North Melbourne"),
+    ("western Sydney", "NSW", ""),                  # no "of": the anchor still applies
+    ("western suburbs around Werribee", "VIC", ""),
+    ("near West Footscray", "VIC", ""),
+])
+def test_where_a_direction_is_measured_from(phrase, state, expected):
+    assert LR._direction_origin(_GEO, phrase, state) == expected
+
+
+@pytest.mark.parametrize("phrase,state,expected", [
+    ("western suburbs of Melbourne", "VIC", (270, "west")),
+    ("north of Brisbane", "QLD", (0, "north")),
+    ("south-east of Melbourne", "VIC", (135, "south-east")),
+    ("southeastern suburbs", "VIC", (135, "south-east")),
+    ("North West of Sydney", "NSW", (315, "north-west")),
+    ("near West Footscray", "VIC", None),
+    ("near Eastern Heights", "QLD", None),
+    ("near Ipswich", "QLD", None),
+    ("Wyndum Vale", "VIC", None),
+])
+def test_the_direction_a_phrase_says(phrase, state, expected):
+    got = LR._heading(_GEO, phrase, state)
+    assert (None if got is None else (round(got[0]) % 360, got[1])) == expected
+
+
 # ------------------------------------------------------------------ no state in the brief
 
 def test_no_state_is_taken_only_from_a_locality_of_one_state(groq):
@@ -569,6 +985,20 @@ def test_research_survives_a_groq_failure_exactly_as_before(groq, monkeypatch):
         "an area of one labelled as said: visibly a place we could not find"
     assert failed["location_resolution"][0]["method"] == "unresolved"
     assert "Groq returned 500" in failed["location_resolution"][0]["note"]
+
+
+def test_research_searches_wyndham_vale_for_wyndum_vale_when_groq_does_not_know(groq,
+                                                                              monkeypatch):
+    """Live, 15 Sep 2026: Groq answered "Wyndum Vale" unknown and the search ran as said."""
+    groq.respond = answer([{"id": 1, "localities": [], "confidence": "unknown"}])
+    misspelt = _research(monkeypatch, "Wyndum Vale")
+    monkeypatch.delenv("GROQ_API_KEY")
+    spelt = _research(monkeypatch, "Wyndham Vale")
+    assert len(spelt["search_area"]) > 1, "premise: 10 km around Wyndham Vale is an area"
+    assert misspelt["search_area"] == spelt["search_area"]
+    assert misspelt["shortlist_count"] == spelt["shortlist_count"]
+    entry = misspelt["location_resolution"][0]
+    assert entry["method"] == "fuzzy" and entry["used"] == ["Wyndham Vale"]
 
 
 def test_research_reports_a_deeply_nested_answer_instead_of_losing_the_record(groq,
