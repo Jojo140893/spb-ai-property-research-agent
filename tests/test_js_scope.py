@@ -73,7 +73,8 @@ SHARED = [
     "shareBar",
     "buildShareLink",
     "loadHotLeads",           # inline onclick on the nav button and Refresh: globals only
-    "rerunHotLead",           # inline onclick on every hot-lead card
+    "rerunHotLead",           # inline onclick on every lead card
+    "hlSetFilter",            # inline onclick on the All / Hot / Warm / Nurture buttons
 ]
 
 

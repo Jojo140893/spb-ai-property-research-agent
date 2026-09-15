@@ -585,7 +585,7 @@
             margin-bottom: 0.9rem;
         }
 
-        /* Hot Leads (Agent 1). A consultant opens this with the phone already in their
+        /* Clare's Leads (Agent 1). A consultant opens this with the phone already in their
            hand, so contact details sit at the top of each card and every row wraps rather
            than scrolls: an email address from a caller can be any length, and at 375px a
            row that refuses to wrap pushes the Call link off the screen. */
@@ -604,6 +604,22 @@
         .hl-name { font-size: 1.12rem; font-weight: 700; color: var(--text-heading);
                    overflow-wrap: anywhere; }
         .pill-hot { background: var(--rose-bg); color: var(--rose-red); border: 1px solid rgba(185, 28, 28, 0.2); }
+        /* Warm and nurture callers share the tab since 15 Sep (Ahsan: Agent 2 runs for every
+           caller who gives a state). Hot stays the only red, so the calls to make today
+           still stand out in a mixed list. */
+        .pill-warm { background: var(--amber-bg); color: var(--amber-yellow); border: 1px solid rgba(180, 83, 9, 0.2); }
+        .pill-nurture { background: var(--blue-light); color: var(--accent-blue); border: 1px solid rgba(30, 64, 175, 0.18); }
+        .hl-filters { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0 0 0.9rem; }
+        .hl-filter.is-active { border-color: var(--accent-blue); background: var(--blue-light);
+                               color: var(--accent-blue); font-weight: 600; }
+        /* The filter hides cards rather than re-rendering them, so a Re-run in progress or
+           its live results survive a change of filter. Said explicitly so a later display
+           rule on .prop-card cannot quietly un-hide them. */
+        .hl-card[hidden], .hl-notice[hidden] { display: none; }
+        /* Said when the hook's answer was cut off at HL_LIMIT (see loadHotLeads). Amber only
+           when the separate hot lookup failed, because then a hot caller may be missing. */
+        .hl-cover { margin: 0 0 0.9rem; }
+        .hl-cover-warn { background: var(--amber-bg); border-color: rgba(180, 83, 9, 0.25); }
         .hl-when { font-size: 0.8rem; color: var(--text-muted); }
         .hl-contact { display: flex; flex-wrap: wrap; gap: 0.35rem 1.25rem; margin: 0.6rem 0 0.2rem;
                       font-size: 0.9rem; }
@@ -615,6 +631,7 @@
                    color: var(--text-heading); }
         .hl-appt-none { background: var(--amber-bg); border-color: rgba(180, 83, 9, 0.25);
                         color: var(--amber-yellow); font-weight: 600; }
+        .hl-appt-info { background: #f1f5f9; border-color: var(--border-light); color: var(--text-muted); }
         .hl-appt-note { display: block; font-size: 0.78rem; color: var(--amber-yellow); margin-top: 0.2rem; }
         .hl-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.5rem 0; }
         .hl-chip { font-size: 0.76rem; background: #f1f5f9; border: 1px solid var(--border-light);
@@ -744,7 +761,7 @@
         <!-- Beside Research & Scoring because it is the same work arriving by phone: Clare
              qualifies the caller, the webhook runs the research, and this is where the
              result lands. The qualifier drops below 768px like Benchmarks'. -->
-        <button class="tab-btn" onclick="showTab('hotLeadsTab', this); loadHotLeads();">Hot Leads<span class="nav-tab-label-full"> (Agent 1)</span></button>
+        <button class="tab-btn" onclick="showTab('hotLeadsTab', this); loadHotLeads();">Clare's Leads<span class="nav-tab-label-full"> (Agent 1)</span></button>
         <button class="tab-btn" onclick="showTab('buildersTab', this)">Approved Builder Directory</button>
         <button class="tab-btn" onclick="showTab('buildingsTab', this); loadBuildings();">Building Stock</button>
         <!-- Directly after Building Stock so the comparison sits beside the thing being
@@ -978,14 +995,18 @@
     </div>
 </div>
 
-<!-- TAB: HOT LEADS (Agent 1). Callers Clare graded hot, one card each, newest first. The
-     webhook has already booked the discovery call and run the research by the time a
-     lead lands here, so this is the "act on it now" list: who, how to reach them, when
-     the call is, and the three buildings to open the conversation with. -->
+<!-- TAB: CLARE'S LEADS (Agent 1). Every hot caller, and every warm or nurture caller who gave
+     a state, one card each, newest first. A hot caller is stored with or without a state
+     (the record carries the booking); without one, the research did not run and the card
+     says so. Hot-only until 15 Sep, when Ahsan widened Agent 2 to every caller with a state
+     (a nurture caller on the live test got no buildings). The ids keep their hotLeads names
+     so the endpoint, the tests and old links stay put. By the time a lead lands here the
+     webhook has run the research, and for a hot caller booked the discovery call: who, how
+     to reach them, and the three buildings to open with. -->
 <div id="hotLeadsTab" class="view-pane">
     <div class="panel-card">
         <div class="panel-header" style="flex-wrap:wrap; gap:0.5rem;">
-            <span>Hot leads from Clare's calls</span>
+            <span>Leads from Clare's calls</span>
             <span style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
                 <span id="hotLeadsBadge" class="pill pill-hot">not loaded</span>
                 <button id="hotLeadsRefresh" type="button" class="btn-ghost"
@@ -993,11 +1014,12 @@
             </span>
         </div>
         <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">
-            Callers Clare graded <strong>hot</strong>, newest first &mdash; each with their
-            contact details, the discovery call if one was booked, and the three buildings the
-            research picked for them.
+            Every hot caller from Clare's calls, and every warm or nurture caller who gave a
+            state, newest first &mdash; each with their grade, contact details and the three
+            buildings the research picked for them (the research needs a state).
+            <strong>Hot</strong> callers also get a discovery call booked.
         </p>
-        <div id="hotLeadsContent" style="font-size:0.9rem;">Loading hot leads…</div>
+        <div id="hotLeadsContent" style="font-size:0.9rem;">Loading leads…</div>
     </div>
 </div>
 
@@ -2596,12 +2618,20 @@ python state_sync.py push</pre>
                 : `<p style="color:var(--text-muted);">No individual listings stored yet.</p>`);
     }
 
-    /* ------------------------------------------------------------ hot leads (Agent 1)
+    /* ------------------------------------------------------------ Clare's leads (Agent 1)
      *
-     * When Clare (Agent 1) finishes a call and grades the caller HOT, the webhook books a
-     * discovery call, runs the research (Agent 2) and saves one record per call. This tab
-     * reads those back through /api/hot_leads, which proxies the webhook's store with the
-     * service key server-side, so the key never reaches the browser.
+     * When Clare (Agent 1) finishes a call, the webhook grades the caller, runs the research
+     * (Agent 2) for a hot, warm or nurture caller who gave a state, and saves one record per
+     * call for every hot caller and every warm or nurture caller who gave a state. A hot
+     * caller with no state is still saved, for the booking, with the research's "no state"
+     * reason where the buildings would be. Only a HOT caller gets a discovery call booked. This was
+     * hot-only until 15 Sep, when Ahsan widened it: Colin expected every request to reach
+     * Agent 2 whether or not the caller was hot, and a nurture caller on the live test that
+     * day got no buildings. The hotLeads / hl names stay, like the endpoint and the hook's
+     * hot-leads/<callId>.json records, so nothing already stored or linked moves.
+     *
+     * This tab reads the records back through /api/hot_leads, which proxies the webhook's
+     * store with the service key server-side, so the key never reaches the browser.
      *
      * EVERY STRING HERE CAME FROM SOMEONE ELSE. The name, the reason and the brief are a
      * phone caller's speech as transcribed; the buildings are scraped listings. So nothing
@@ -2616,6 +2646,32 @@ python state_sync.py push</pre>
     // HOT-LEADS-BEGIN
     let HOT_LEADS = [];
     let HOT_LEADS_STATE = 'idle';        // 'idle' | 'loading' | 'loaded'
+    // Which grades the list shows. Applied to the list already loaded, so switching it asks
+    // the server nothing, and it survives a Refresh.
+    let HOT_LEADS_FILTER = 'all';        // 'all' | 'hot' | 'warm' | 'nurture'
+
+    // The grades a record is stored for (15 Sep). A closed caller is not researched, so a
+    // closed record, or a grade nobody wrote, has no place on this tab.
+    const HL_GRADES = ['hot', 'warm', 'nurture'];
+    const HL_GRADE_LABEL = { hot: 'Hot', warm: 'Warm', nurture: 'Nurture' };
+    const HL_FILTERS = ['all', 'hot', 'warm', 'nurture'];
+
+    // How many records the tab asks the hook for in one answer: the most it gives
+    // (MAX_LIMIT in vapi-kommo-hook/lib/hot-leads.js). With no limit it gave the newest 50,
+    // which was every hot lead while only hot callers were stored. Since 15 Sep warm and
+    // nurture callers share those places, so the tab asks for more and, when even that is
+    // cut off, asks for the hot callers on their own (see loadHotLeads).
+    const HL_LIMIT = 200;
+
+    // 'hot' | 'warm' | 'nurture', or '' for anything else. A record with no grade at all is
+    // hot: before 15 Sep only hot callers were stored, and those records stay on the tab.
+    // The value returned is one of HL_GRADES, so a class name built from it can never carry
+    // the record's own text into an attribute.
+    function hlGrade(lead) {
+        if (!lead || typeof lead !== 'object') return '';
+        if (lead.grade === undefined) return 'hot';
+        return HL_GRADES.includes(lead.grade) ? lead.grade : '';
+    }
 
     // Only http: and https: may become an href. Anything else (javascript:, data:, a
     // relative path) returns '' and the caller prints text instead. The PARSED href is
@@ -2785,8 +2841,15 @@ python state_sync.py push</pre>
                });
     }
 
-    function hlAppointment(appt) {
+    // Booking stayed HOT ONLY when research widened to every grade (15 Sep). So a warm or
+    // nurture card with no call is how it is meant to be, not a booking that failed: it
+    // says so in grey rather than shouting "follow up" in amber on most of the list. A hot
+    // card with no call still does, and a warm caller who did book shows the booking.
+    function hlAppointment(appt, grade) {
         if (!appt || typeof appt !== 'object') {
+            if (grade === 'warm' || grade === 'nurture') {
+                return '<div class="hl-appt hl-appt-info">No discovery call (only hot callers are booked automatically)</div>';
+            }
             return '<div class="hl-appt hl-appt-none">No discovery call booked &mdash; follow up</div>';
         }
         const when = hlWhen(appt.start);
@@ -2802,9 +2865,11 @@ python state_sync.py push</pre>
              + '</div>';
     }
 
-    function hlLeadCard(lead, i) {
+    // hidden: the card is rendered but out of the current filter (see hlSetFilter).
+    function hlLeadCard(lead, i, hidden) {
         const n = (Number.isInteger(i) && i >= 0) ? i : 0;
         const L = (lead && typeof lead === 'object') ? lead : {};
+        const g = hlGrade(L);
         const c = (L.customer && typeof L.customer === 'object') ? L.customer : {};
         const k = (L.kommo && typeof L.kommo === 'object') ? L.kommo : {};
         const name = String(c.name ?? '').trim() || 'Name not captured';
@@ -2823,15 +2888,15 @@ python state_sync.py push</pre>
         const reason = String(L.gradeReason ?? '').trim();
         const summary = String(L.summary ?? '').trim();
         const hasBrief = !!L.brief && typeof L.brief === 'object' && !Array.isArray(L.brief);
-        return `<div class="prop-card hl-card" id="hlCard-${n}">
+        return `<div class="prop-card hl-card" id="hlCard-${n}"${hidden ? ' hidden' : ''}>
             <div class="hl-head">
                 <span class="hl-name">${esc(name)}</span>
-                <span class="pill pill-hot">Hot</span>
+                ${g ? `<span class="pill pill-${g}">${HL_GRADE_LABEL[g]}</span>` : ''}
                 ${when ? `<span class="hl-when">Called ${esc(when)}</span>` : ''}
             </div>
             <div class="hl-contact">${contact}</div>
-            ${reason ? `<div class="hl-reason"><strong>Why hot:</strong> ${esc(reason)}</div>` : ''}
-            ${hlAppointment(L.appointment)}
+            ${reason ? `<div class="hl-reason"><strong>${g ? 'Why ' + g : 'Grade reason'}:</strong> ${esc(reason)}</div>` : ''}
+            ${hlAppointment(L.appointment, g)}
             ${hlBriefChips(L.brief)}
             ${links ? `<div class="hl-links">${links}</div>` : ''}
             ${summary ? `<details class="hl-summary"><summary>Call summary</summary><p>${esc(summary)}</p></details>` : ''}
@@ -2845,24 +2910,95 @@ python state_sync.py push</pre>
         </div>`;
     }
 
-    function hlRenderLeads(leads) {
-        const list = Array.isArray(leads) ? leads : [];
-        if (!list.length) {
-            return `<div class="hl-notice"><strong>No hot leads yet.</strong> A lead appears here
-                when Clare finishes a call where the caller qualifies as hot, with their contact
-                details, the discovery call if one was booked, and the buildings the research
-                picked for them.</div>`;
+    const hlFilterKey = f => HL_FILTERS.includes(f) ? f : 'all';
+    const hlShows = (lead, f) => f === 'all' || hlGrade(lead) === f;
+    const hlFilterEmptyText = f => `No ${f} leads in this list.`;
+
+    // All / Hot / Warm / Nurture, each with its count. Keys and labels come from HL_FILTERS,
+    // never from a record, so the onclick can only ever name one of the four.
+    function hlFilterBar(list, f) {
+        const count = key => key === 'all' ? list.length : list.filter(l => hlGrade(l) === key).length;
+        return '<div class="hl-filters">' + HL_FILTERS.map(key => {
+            const on = key === f;
+            return `<button type="button" class="btn-ghost hl-filter${on ? ' is-active' : ''}" id="hlFilter-${key}"`
+                 + ` aria-pressed="${on}" onclick="hlSetFilter('${key}')">`
+                 + `${key === 'all' ? 'All' : HL_GRADE_LABEL[key]} (${count(key)})</button>`;
+        }).join('') + '</div>';
+    }
+
+    // Said above the list when the hook's answer was cut off at HL_LIMIT, so a list that is
+    // not everything never looks like everything. Fixed text and numbers only, apart from a
+    // failed lookup's message, which is escaped.
+    function hlCoverNote(cover) {
+        const c = (cover && typeof cover === 'object') ? cover : {};
+        if (!c.cut) return '';
+        const older = `Only the newest ${HL_LIMIT} callers are listed, so older warm and nurture callers are not shown here.`;
+        if (c.hotFailed) {
+            return `<div class="hl-notice hl-cover hl-cover-warn" id="hlCover"><strong>A hot caller may be missing from this list.</strong> `
+                 + `${older} Older hot callers are looked up on their own, and that lookup failed (${esc(c.hotFailed)}). `
+                 + 'Press Refresh to try again.</div>';
         }
-        return `<div class="hl-list">${list.map((l, i) => hlLeadCard(l, i)).join('')}</div>`;
+        return `<div class="hl-notice hl-cover" id="hlCover">${older} Hot callers were looked up on their own, so `
+             + (c.hotCut ? `the newest ${HL_LIMIT} of them are listed.` : 'an older hot caller is still listed.')
+             + '</div>';
+    }
+
+    // cover: what loadHotLeads learned about whether the answer was cut off (hlCoverNote).
+    function hlRenderLeads(leads, filter, cover) {
+        const list = Array.isArray(leads) ? leads : [];
+        const note = hlCoverNote(cover);
+        if (!list.length) {
+            // A hot caller is stored with or without a state (for the booking); warm and
+            // nurture only with one. So "everyone here gave a state" would be wrong.
+            return note + `<div class="hl-notice"><strong>No leads yet.</strong> A hot caller appears
+                here after Clare finishes their call, and so does a warm or nurture caller who gave
+                a state, with their grade, contact details and the buildings the research picked
+                for them. Hot callers also get a discovery call booked.</div>`;
+        }
+        const f = hlFilterKey(filter);
+        const shown = list.filter(l => hlShows(l, f)).length;
+        // EVERY card is rendered, the ones outside the filter hidden, and each keeps its
+        // index in the full list: rerunHotLead(i) reads HOT_LEADS[i], so numbering the
+        // filtered list instead would re-run the wrong caller's brief.
+        return note + hlFilterBar(list, f)
+             + `<div class="hl-notice" id="hlFilterEmpty"${shown ? ' hidden' : ''}>${hlFilterEmptyText(f)}</div>`
+             + `<div class="hl-list">${list.map((l, i) => hlLeadCard(l, i, !hlShows(l, f))).join('')}</div>`;
+    }
+
+    // The filter buttons. Hides and shows the cards already on the page instead of
+    // rendering them again, so a Re-run still searching, or the live results it put on a
+    // card, are still there when that card comes back into view. No request is made.
+    function hlSetFilter(filter) {
+        const f = hlFilterKey(filter);
+        HOT_LEADS_FILTER = f;
+        HL_FILTERS.forEach(key => {
+            const b = document.getElementById('hlFilter-' + key);
+            if (!b) return;
+            b.className = 'btn-ghost hl-filter' + (key === f ? ' is-active' : '');
+            b.setAttribute('aria-pressed', String(key === f));
+        });
+        let shown = 0;
+        HOT_LEADS.forEach((lead, i) => {
+            const on = hlShows(lead, f);
+            if (on) shown++;
+            const card = document.getElementById('hlCard-' + i);
+            if (card) card.hidden = !on;
+        });
+        const empty = document.getElementById('hlFilterEmpty');
+        if (empty) {
+            empty.textContent = hlFilterEmptyText(f);
+            empty.hidden = shown > 0;
+        }
     }
 
     // Newest first. The endpoint already sorts, but the order a consultant works down
-    // should not depend on that. Only hot records belong on this tab.
+    // should not depend on that. Hot, warm and nurture records belong on this tab; a closed
+    // one, or a grade that is none of those, does not.
     function hlSortNewest(leads) {
         if (!Array.isArray(leads)) return [];
         const at = l => { const t = Date.parse(l.createdAt); return Number.isFinite(t) ? t : -Infinity; };
         return leads
-            .filter(l => l && typeof l === 'object' && (l.grade === undefined || l.grade === 'hot'))
+            .filter(l => l && typeof l === 'object' && hlGrade(l) !== '')
             .sort((a, b) => (at(b) - at(a)) || 0);
     }
 
@@ -2872,7 +3008,7 @@ python state_sync.py push</pre>
             : status === 502
                 ? 'The call system did not answer just now. Press Refresh in a minute; if it keeps happening, send this message on.'
                 : 'Press Refresh to try again.';
-        return `<div class="hl-notice"><strong>Hot leads can't be shown right now.</strong> ${esc(message)}
+        return `<div class="hl-notice"><strong>Leads can't be shown right now.</strong> ${esc(message)}
                 <div style="color:var(--text-muted); margin-top:0.35rem;">${next}</div></div>`;
     }
 
@@ -2881,16 +3017,69 @@ python state_sync.py push</pre>
     // opens the dashboard with ?hl_test=1 to see them. Exactly one hl_test, exactly "1":
     // a stray or doubled parameter must not quietly mix test calls in with real leads. The
     // proxy applies the same rule again to what reaches it.
-    function hlLeadsUrl() {
+    //
+    // grade 'hot' asks for hot callers only. The hook applies that filter BEFORE its limit, so
+    // it is the newest HL_LIMIT hot callers however many warm or nurture callers came after
+    // them. Every part of the URL is a literal written here.
+    function hlLeadsUrl(grade) {
         let search = '';
         try { search = String(location.search || ''); } catch (e) { search = ''; }
         const v = new URLSearchParams(search).getAll('hl_test');
-        return (v.length === 1 && v[0] === '1') ? '/api/hot_leads?include_test=1' : '/api/hot_leads';
+        return '/api/hot_leads?limit=' + HL_LIMIT
+             + (grade === 'hot' ? '&grade=hot' : '')
+             + ((v.length === 1 && v[0] === '1') ? '&include_test=1' : '');
+    }
+
+    // One read of /api/hot_leads, described rather than thrown:
+    //   { kind: 'unreachable' } | { kind: 'expired' }
+    //   { kind: 'failed', status, message }   message is '' when the server gave none
+    //   { kind: 'ok', leads, cut }            cut: the answer is as long as HL_LIMIT, so
+    //                                         there may be more the hook did not send
+    async function hlAsk(url) {
+        let res;
+        try {
+            res = await fetch(url, { cache: 'no-store' });
+        } catch (e) {
+            return { kind: 'unreachable' };
+        }
+        if (res.status === 401) {
+            return { kind: 'expired' };
+        }
+        let data = null;
+        try { data = await res.json(); } catch (e) { data = null; }
+        if (!res.ok || !data || data.status !== 'success') {
+            return { kind: 'failed', status: res.status,
+                     message: (data && data.message) ? String(data.message) : '' };
+        }
+        const leads = Array.isArray(data.leads) ? data.leads : [];
+        return { kind: 'ok', leads, cut: leads.length >= HL_LIMIT };
+    }
+
+    // The two answers as one list. A caller in both is listed once: callId names the record
+    // in the store (hot-leads/<callId>.json), so one callId is one record.
+    function hlMergeLeads(first, second) {
+        const seen = new Set();
+        const out = [];
+        [first, second].forEach(list => (Array.isArray(list) ? list : []).forEach(l => {
+            const id = (l && typeof l === 'object' && typeof l.callId === 'string') ? l.callId : '';
+            if (id) {
+                if (seen.has(id)) return;
+                seen.add(id);
+            }
+            out.push(l);
+        }));
+        return out;
     }
 
     // Once per page view; Refresh passes force. A failure to REACH the server is not
     // remembered, so opening the tab again retries; an answer from it (even "not
     // configured") is, because asking again will not change it.
+    //
+    // TWO READS WHEN ONE IS NOT ENOUGH (15 Sep). The hook sends at most HL_LIMIT records of
+    // every grade, newest first. While only hot callers were stored that was every recent
+    // hot lead; now a run of warm and nurture callers can fill the answer and leave an older
+    // hot caller, not yet rung, off the tab with nothing to say so. So when the first answer
+    // is cut off the tab asks again for hot callers only, and the list says what it holds.
     async function loadHotLeads(force) {
         if (HOT_LEADS_STATE === 'loading') return;
         if (HOT_LEADS_STATE === 'loaded' && !force) return;
@@ -2900,37 +3089,54 @@ python state_sync.py push</pre>
         if (!el) return;
         HOT_LEADS_STATE = 'loading';
         if (btn) btn.disabled = true;
-        el.innerHTML = '<p style="color:var(--text-muted);">Loading hot leads…</p>';
+        el.innerHTML = '<p style="color:var(--text-muted);">Loading leads…</p>';
+        const expired = () => {
+            HOT_LEADS_STATE = 'idle';
+            el.innerHTML = '<p style="color:var(--text-muted);">Your sign-in has expired &mdash; opening the sign-in page…</p>';
+            sessionExpired();
+        };
         try {
-            let res;
-            try {
-                res = await fetch(hlLeadsUrl(), { cache: 'no-store' });
-            } catch (e) {
+            const all = await hlAsk(hlLeadsUrl());
+            if (all.kind === 'unreachable') {
                 HOT_LEADS_STATE = 'idle';
                 if (badge) badge.textContent = 'unavailable';
                 el.innerHTML = `<div class="hl-notice"><strong>Could not reach the dashboard.</strong>
                     Check the connection, then press Refresh.</div>`;
                 return;
             }
-            if (res.status === 401) {
-                HOT_LEADS_STATE = 'idle';
-                el.innerHTML = '<p style="color:var(--text-muted);">Your sign-in has expired &mdash; opening the sign-in page…</p>';
-                sessionExpired();
-                return;
-            }
-            let data = null;
-            try { data = await res.json(); } catch (e) { data = null; }
-            if (!res.ok || !data || data.status !== 'success') {
+            if (all.kind === 'expired') { expired(); return; }
+            if (all.kind === 'failed') {
                 HOT_LEADS_STATE = 'loaded';
                 if (badge) badge.textContent = 'unavailable';
-                el.innerHTML = hlUnavailable(res.status,
-                    (data && data.message) ? String(data.message) : `The server answered ${res.status}.`);
+                el.innerHTML = hlUnavailable(all.status, all.message || `The server answered ${all.status}.`);
                 return;
             }
-            HOT_LEADS = hlSortNewest(data.leads);
+            let hotLeads = [];
+            const cover = { cut: all.cut, hotCut: false, hotFailed: '' };
+            if (all.cut) {
+                const hot = await hlAsk(hlLeadsUrl('hot'));
+                if (hot.kind === 'expired') { expired(); return; }
+                if (hot.kind === 'ok') {
+                    hotLeads = hot.leads;
+                    cover.hotCut = hot.cut;
+                } else {
+                    // The first answer is still worth showing, but not as if it were whole.
+                    cover.hotFailed = hot.kind === 'unreachable'
+                        ? 'the dashboard could not be reached'
+                        : (hot.message || `the server answered ${hot.status}`);
+                }
+            }
+            HOT_LEADS = hlSortNewest(hlMergeLeads(all.leads, hotLeads));
             HOT_LEADS_STATE = 'loaded';
-            if (badge) badge.textContent = `${HOT_LEADS.length} hot lead${HOT_LEADS.length === 1 ? '' : 's'}`;
-            el.innerHTML = hlRenderLeads(HOT_LEADS);
+            // "5 leads · 2 hot": the whole list, and how many of it are the calls to make today.
+            // A "+" on either count when there may be more than the tab was sent.
+            const hot = HOT_LEADS.filter(l => hlGrade(l) === 'hot').length;
+            const more = cover.cut ? '+' : '';
+            const hotMore = (cover.hotCut || cover.hotFailed) ? '+' : '';
+            if (badge) badge.textContent = HOT_LEADS.length
+                ? `${HOT_LEADS.length}${more} lead${HOT_LEADS.length === 1 && !more ? '' : 's'} · ${hot}${hotMore} hot`
+                : '0 leads';
+            el.innerHTML = hlRenderLeads(HOT_LEADS, HOT_LEADS_FILTER, cover);
         } finally {
             if (btn) btn.disabled = false;
         }

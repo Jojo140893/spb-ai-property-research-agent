@@ -1243,7 +1243,7 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
             # One Groq call per selected option, up to eight, serially. 25s each at the
             # far end would blow a 30s ceiling, so this one gets longer.
             "api/narrative.py": {"memory": 256, "maxDuration": 60},
-            # Hot Leads tab: a stdlib proxy to Agent 1's hook (20s upstream timeout, so 30).
+            # Clare's Leads tab: a stdlib proxy to Agent 1's hook (20s upstream timeout, so 30).
             "api/hot_leads.py": {"memory": 256, "maxDuration": 30},
         }
     (out_dir / "vercel.json").write_text(json.dumps(vercel, indent=2), encoding="utf-8")
@@ -1369,11 +1369,15 @@ export default async function middleware(request) {
   // /reports and anything else beginning with those characters.
   if (path === "/r" || path === "/r.html") return;
 
-  // ONE MACHINE CALLER: AGENT 1 STARTING A RESEARCH ON A HOT LEAD.
+  // ONE MACHINE CALLER: AGENT 1 STARTING A RESEARCH ON A CALLER IT GRADED.
   //
-  // When Agent 1's voice call grades a lead hot, its webhook (vapi-kommo-hook) asks this
-  // dashboard for a shortlist straight away, so the lead reaches Coleen with options already
-  // found. That webhook is a server. It has no browser, so it can never hold the session
+  // When Agent 1's voice call grades a caller hot, warm or nurture and they gave a state,
+  // its webhook (vapi-kommo-hook) asks this dashboard for a shortlist straight away, so the
+  // lead reaches Coleen with options already found. Hot-only until 15 Sep 2026, when Ahsan
+  // widened Agent 2 to every caller with a state: so this route now carries most calls, not
+  // only the hot ones.
+  //
+  // That webhook is a server. It has no browser, so it can never hold the session
   // cookie below: it proves itself with a shared secret instead, SPB_SERVICE_KEY, sent as
   // the x-spb-service-key header and compared in constant time just as the password is.
   //

@@ -124,7 +124,7 @@ console.log("\n--- signed in ---");
 
 console.log("\n--- Agent 1's service key: POST /api/research, and nothing else ---");
 {
-  // Agent 1's webhook runs a research on a hot lead from a server, with no browser and so
+  // Agent 1's webhook runs a research on a graded caller from a server, with no browser and so
   // no session cookie. With the key it may do exactly that one thing. Every check after
   // the first is a way the hole could be wider than that, and each one is a line a
   // careless refactor would change.

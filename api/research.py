@@ -262,6 +262,28 @@ def run_research(payload):
         import _regions
         from geo import SuburbGeoIndex
         _index = SuburbGeoIndex()
+        # AN ESTATE NAME IS NOT A SPELLING OF A SUBURB. Research tab, 15 Sep 2026:
+        # "Newpark", the estate at Melonba (NSW), folded to New Park NSW, 604 km away,
+        # and the search ran around it. Both indexes learn the snapshot's estates before
+        # anything folds a name: this one respells the brief below, agent.geo draws the
+        # search area and measures every lot (kommo_agent). See know_estates in geo.py.
+        _estates = [(r.get("estate_name"), r.get("suburb"), r.get("state")) for r in rows
+                    if r.get("estate_name") and not r.get("superseded_by")]
+        _index.know_estates(_estates)
+        agent.geo.know_estates(_estates)
+        # THE DATASET'S SPELLING OF A SUBURB THAT WAS SAID DIFFERENTLY, before anything
+        # matches on it. Clare, 15 Sep 2026: "Red Bank Plains" for Redbank Plains. geo
+        # resolves the spoken form for a radius search, but at radius 0 -- the Research
+        # tab's default -- scoring_engine and the candidate cap compare these names
+        # verbatim, and offline against the snapshot 4 Redbank Plains lots were refused
+        # as "not one of the requested suburbs (Red Bank Plains)". A name that is already
+        # a locality in the brief's state is left exactly as typed.
+        _state = str(brief_dict.get("state") or "").strip().upper()
+        _asked = brief_dict.get("primary_suburbs") or []
+        _spelt = [s if _index.locate(s, _state)
+                  else (_index.canonical_suburb(s, _state, spoken=True) or s) for s in _asked]
+        if _spelt != _asked:
+            brief_dict = dict(brief_dict, primary_suburbs=_spelt)
         _known = {str(r.get("suburb") or "").strip().lower() for r in rows
                   if not r.get("superseded_by")}
         _wider, _expanded = _regions.expand(

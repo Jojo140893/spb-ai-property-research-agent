@@ -1,11 +1,16 @@
-"""The Hot Leads tab's feed: every lead Agent 1 graded hot on a call.
+"""The Clare's Leads tab's feed: every caller Agent 1 graded on a call and stored.
 
 Agent 1 is the voice agent. When a call ends, its webhook (vapi-kommo-hook) grades the
-lead, and a hot one is written to that project's private Blob store together with the
-brief, the booked appointment, the Kommo lead and the shortlist this dashboard ran for it.
-The Hot Leads tab reads them back through here.
+caller and writes every hot caller, and every warm or nurture caller who gave a state, to
+that project's private Blob store together with the brief, the Kommo lead, the shortlist
+this dashboard ran for them and, for a hot caller only, the booked appointment. A hot
+caller with no state is still stored, for the booking, but has no shortlist: the research
+needs a state. Until 15 Sep only hot callers were stored (Ahsan widened it so Agent 2 runs
+for every caller with a state). This endpoint and the hook's hot-leads/ records keep their
+old names so nothing stored moves. The tab reads them back through here.
 
-    browser -> GET /api/hot_leads[?limit=N][&include_test=1]   (this file, behind the login)
+    browser -> GET /api/hot_leads[?limit=N][&include_test=1][&grade=hot|warm|nurture]
+                                                            (this file, behind the login)
             -> GET vapi-kommo-hook/api/hot-leads       (x-spb-service-key: SPB_SERVICE_KEY)
 
 WHY A PROXY AND NOT A FETCH FROM THE PAGE. The hook answers only a caller holding
@@ -22,7 +27,7 @@ step. On a failure, a message that says what went wrong, under one of two status
        the hook answered that it lacks one of its own settings or that the keys disagree.
        The message names the project to fix.
   502  the hook could not be reached, timed out, or failed some other way that may pass.
-"No hot leads" and "could not ask" must never look the same on the tab: an empty list is
+"No leads" and "could not ask" must never look the same on the tab: an empty list is
 a fact about the leads, and a failed read is not.
 """
 import json
@@ -83,6 +88,28 @@ def include_test_from(path):
     """
     query = urllib.parse.urlsplit(path or "").query
     return urllib.parse.parse_qs(query).get("include_test") == ["1"]
+
+
+# The grades the hook stores a record for since 15 Sep (Agent 2 runs for every caller who
+# gives a state, not only hot ones). A closed caller is not researched or stored, so there
+# is no "closed" to ask for.
+GRADES = ("hot", "warm", "nurture")
+
+
+def grade_from(path):
+    """The ?grade= to forward -- "hot", "warm" or "nurture" -- or None.
+
+    The tab filters the list it already holds and sends no grade; this is for a reader that
+    wants one grade from the hook. Like include_test, only an exact answer counts: one grade
+    parameter whose value is exactly one of the three, in lower case. "HOT", "closed",
+    "hot,warm", " hot" or a repeated parameter forward nothing, and the hook answers with
+    every grade. What is forwarded is the literal from GRADES, never the browser's text.
+    """
+    query = urllib.parse.urlsplit(path or "").query
+    values = urllib.parse.parse_qs(query).get("grade") or []
+    if len(values) == 1 and values[0] in GRADES:
+        return GRADES[GRADES.index(values[0])]
+    return None
 
 
 def _upstream_message(raw):
@@ -149,7 +176,7 @@ def _why(reason):
     return " ".join(str(reason).split())[:80]
 
 
-def fetch(limit=None, include_test=False):
+def fetch(limit=None, include_test=False, grade=None):
     """(http_status, body_bytes) for the tab. Never raises, and never puts the key in a body."""
     key = _key()
     if not key:
@@ -167,6 +194,10 @@ def fetch(limit=None, include_test=False):
         extra.append(("limit", limit))
     if include_test:
         extra.append(("include_test", "1"))
+    # Checked again here, not only in grade_from: whatever calls fetch, only one of the
+    # three literals can reach the upstream URL.
+    if grade in GRADES:
+        extra.append(("grade", grade))
     if extra:
         query = (query + "&" if query else "") + urllib.parse.urlencode(extra)
     url = urllib.parse.urlunsplit(parts._replace(query=query, fragment=""))
@@ -225,7 +256,7 @@ class handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
-        # Hot leads are names, phone numbers and appointments: never a CDN or browser copy.
+        # Leads are names, phone numbers and appointments: never a CDN or browser copy.
         self.send_header("Cache-Control", "no-store")
         for name, value in extra:
             self.send_header(name, value)
@@ -234,7 +265,8 @@ class handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
-            code, body = fetch(limit_from(self.path), include_test_from(self.path))
+            code, body = fetch(limit_from(self.path), include_test_from(self.path),
+                               grade_from(self.path))
         except Exception as e:                                         # noqa: BLE001
             code, body = 500, _error(f"api/hot_leads failed ({type(e).__name__})")
         self._reply(code, body)

@@ -25,6 +25,50 @@ _STREET_TYPE = re.compile(
     r"esp|esplanade|hwy|highway|mews|walk|loop|link|vista|gdns|gardens)",
     re.IGNORECASE)
 
+# HOW A PERSON SAYS A LOCALITY, as opposed to how the gazetteer spells it.
+#
+# Clare, live call 15 Sep 2026: the caller said "Red Bank Plains". The QLD locality is
+# "Redbank Plains", the index was keyed on the exact lower-case name, so locate() said
+# None and api/research.py got a search area of ONE suburb instead of the 154 that
+# "Redbank Plains" reaches at 20 km. Every nearby listing was then refused with "Location
+# could not be verified ... so the 20 km radius from Red Bank Plains cannot be confirmed"
+# -- the caller's own suburb, full of stock, reported as a place we could not find.
+# Speech arrives through a transcriber, so spacing, hyphens, apostrophes and Mt/Mount,
+# St/Saint are the normal case, not the odd one: "Mt Cotton", "Saint Albans",
+# "Pointcook", "Wyndham-Vale". The Research tab form takes typed names the same way.
+#
+# The key folds exactly those differences and nothing else: 'mount' -> 'mt' and
+# 'saint' -> 'st' as whole words, then every non-letter goes. It is a FALLBACK, asked
+# only when the exact name misses, and it answers only when it names exactly ONE
+# locality in the state. 37 keys collide inside a state in data/au_suburbs.csv -- Red
+# Head / Redhead (NSW, 100 km apart), Willow Vale / Willowvale (QLD), Crystal Brook /
+# Crystalbrook (QLD) and a run of apostrophe and mojibake duplicates -- and every one of
+# them stays unmatched rather than guessed.
+#
+# OPT-IN (spoken=True), and only where the name came from a PERSON: a search origin
+# (expand_search_suburbs, suburbs_within_radius), distance_between, and the brief that
+# api/research.py respells before scoring. Every other caller hands these methods
+# fragments of free text -- n-grams of a stocklist row, a banner, an estate name -- and
+# folding there invents places. Measured over vercel_site/stock.json with the fallback on
+# for every lookup: 13 rows from one price list whose builder is "Lakeview" became Lake
+# View, South Australia, and 415 text n-grams resolved that never had, among them
+# "Springridge" x84, "Whiterock" x74 and "Lakeview" x60 -- single-state answers that
+# state_resolver would have taken as proof of a row's state. With the default off, every
+# answer over stored stock is exactly what it was.
+_MOUNT = re.compile(r"\bmount\b")
+_SAINT = re.compile(r"\bsaint\b")
+_NOT_A_LETTER = re.compile(r"[^a-z]")
+_DIGIT = re.compile(r"\d")
+# Word breaks for the lone-letter rule in _spoken_hits: anything but a letter or an
+# apostrophe (straight or curly), so "Lot-A" is two words and "O'Connor" is one.
+_WORD_BREAK = re.compile(r"[^a-z'‘’]+")
+
+
+def spoken_key(name: str) -> str:
+    """'Red Bank Plains', 'Redbank-Plains' -> 'redbankplains'; 'Mount Cotton' -> 'mtcotton'."""
+    folded = _SAINT.sub("st", _MOUNT.sub("mt", str(name or "").strip().lower()))
+    return _NOT_A_LETTER.sub("", folded)
+
 
 def haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     R = 6371.0
@@ -50,6 +94,13 @@ class SuburbGeoIndex:
         # Taken from the locality dataset rather than .title(), which mangles the real
         # names: McKinnon, O'Connor, Kurri Kurri.
         self._canonical: Dict[str, str] = {}
+        # {(spoken_key, state): {suburb_lower}} — the fallback described at spoken_key.
+        # A SET, not a name, so a key two localities share is visible as ambiguous and
+        # refused, instead of quietly answering with whichever row loaded last.
+        self._spoken: Dict[Tuple[str, str], set] = {}
+        # {(spoken_key, state): {suburb_lower}} for names the STOCK knows as estates, and
+        # the suburbs that estate's listings are filed under. Empty until know_estates().
+        self._estates: Dict[Tuple[str, str], set] = {}
         self._load()
 
     def _load(self):
@@ -64,27 +115,159 @@ class SuburbGeoIndex:
                 self._by_state.setdefault(state, []).append((suburb, lat, lng))
                 self._states_by_suburb.setdefault(suburb.lower(), set()).add(state)
                 self._canonical.setdefault(suburb.lower(), suburb)
+                self._spoken.setdefault((spoken_key(suburb), state), set()).add(suburb.lower())
 
     @property
     def loaded(self) -> bool:
         return bool(self._index)
 
-    def canonical_suburb(self, suburb: str, state: str = "") -> str:
-        """The locality dataset's own spelling of this name, or '' if unknown."""
-        return self._canonical.get(str(suburb or "").strip().lower(), "")
+    def know_estates(self, estates) -> None:
+        """Tell the spoken fallback which names are ESTATES, and where each one's stock is.
 
-    def states_for_suburb(self, suburb: str) -> List[str]:
+        `estates` is (estate_name, suburb, state) for every live listing. Research tab,
+        15 Sep 2026: "Newpark" -- the estate at Melonba, NSW, three live listings --
+        folded to New Park, NSW, 604 km away. api/research.py respelt the brief to it,
+        searched 43 suburbs around it and measured every lot from there, where the same
+        input used to come back as an area of one labelled "Newpark": visibly a place we
+        could not find. The gazetteer cannot tell an estate from a spelling variant; the
+        stock can.
+
+        So a name whose key is an estate's key stops folding onto any locality that estate
+        is not filed under. Whiterock (QLD) still folds to White Rock, which is where its
+        listings sit; over vercel_site/stock.json those two are the only estate names that
+        fold at all. An estate spelt exactly as a locality of its own state ("Springfield",
+        filed under Springfield Lakes) is not recorded: said, that name is the locality.
+
+        REPLACES what was known. research.py calls it on every request with the same
+        snapshot, so the answer is the same each time and nothing accumulates.
+        """
+        known: Dict[Tuple[str, str], set] = {}
+        for estate, suburb, state in estates:
+            name = str(estate or "").strip().lower()
+            st = str(state or "").strip().upper()
+            key = spoken_key(name)
+            if not key or not st or (name, st) in self._index:
+                continue
+            filed = known.setdefault((key, st), set())
+            where = str(suburb or "").strip().lower()
+            if where:
+                filed.add(where)
+        self._estates = known
+
+    def _estate_elsewhere(self, name: str, state: str, found) -> bool:
+        """True when `name` is an estate in `state` whose stock is not filed under `found`."""
+        filed = self._estates.get((spoken_key(name), state))
+        return filed is not None and not (set(found) & filed)
+
+    def _spoken_hits(self, suburb: str) -> Dict[str, set]:
+        """{state: {suburb_lower}} sharing this name's spoken key. {} if it has none.
+
+        A DIGIT OR A LONE LETTER IS NEVER HOW A NAME IS SAID. Stripping non-letters would
+        otherwise turn "Tarneit 3029" or "Stage 5A" into a bare locality key — a second,
+        looser postcode rule beside the narrow one resolve_locality already owns — and
+        glue fragments into places: in stock.json text "Lot A" folds to Lota (QLD), "NE A"
+        to Nea (NSW) and "do n" to Don (TAS). The dataset's own names of that shape ("No 4
+        Branch", "O B Flat") still match exactly; they are simply never reached by folding.
+
+        A WORD ENDS AT ANY NON-LETTER BUT AN APOSTROPHE. Split on spaces alone, the same
+        fragments came straight back through punctuation: "Lot-A" reached Lota and "Ne-A"
+        Nea. The apostrophe stays inside the word so O'Connor and Tam O'Shanter still fold.
+        """
+        name = str(suburb or "").strip().lower()
+        if not name or _DIGIT.search(name):
+            return {}
+        if any(len(_NOT_A_LETTER.sub("", word)) == 1 for word in _WORD_BREAK.split(name)):
+            return {}
+        key = spoken_key(name)
+        if not key:
+            return {}
+        hits = {}
+        for st in self._by_state:
+            found = self._spoken.get((key, st))
+            if found:
+                hits[st] = found
+        return hits
+
+    def _dataset_name(self, suburb: str, state: str, spoken: bool = False) -> str:
+        """The index's lower-case name for what was said, in this state, or ''.
+
+        The exact name first, always, so nothing that matched before can match
+        differently now. The spoken key is only asked when the caller opted in and the
+        exact name missed, and it only answers when it names exactly one locality in the
+        state and the name is not an estate filed somewhere else (know_estates).
+        """
+        name = str(suburb or "").strip().lower()
+        st = str(state or "").strip().upper()
+        if not name or not st:
+            return ""
+        if (name, st) in self._index:
+            return name
+        if not spoken:
+            return ""
+        found = self._spoken_hits(name).get(st) or ()
+        if len(found) != 1 or self._estate_elsewhere(name, st, found):
+            return ""
+        return next(iter(found))
+
+    def canonical_suburb(self, suburb: str, state: str = "", spoken: bool = False) -> str:
+        """The locality dataset's own spelling of this name, or '' if unknown.
+
+        With spoken=True a variant ("Red Bank Plains") gets the dataset's spelling too.
+        With a state it resolves exactly as locate() does, and only when nothing in that
+        state answers does it fall back to the exact spelling from another state. Without
+        a state it folds only when the key names a single locality across every state.
+        """
+        name = str(suburb or "").strip().lower()
+        exact = self._canonical.get(name, "")
+        if not name or not spoken:
+            return exact
+        # THE STATE BEFORE THE SPELLING. Research tab, radius 0: "South Bank" said in VIC
+        # is Melbourne's Southbank, but it is spelt exactly as Brisbane's South Bank, and
+        # answering with that exact spelling first left api/research.py's respelt brief
+        # saying "South Bank" -- no VIC stock -- while locate() and the search area said
+        # Southbank. 93 names in data/au_suburbs.csv are spelt exactly as a locality in
+        # one state and fold to a different locality in another ("Campbell Town" NSW,
+        # "Black Rock" QLD).
+        if state:
+            found = self._dataset_name(name, state, spoken=True)
+            return self._canonical.get(found, "") if found else exact
+        if exact:
+            return exact
+        hits = self._spoken_hits(name)
+        names = set().union(*hits.values()) if hits else set()
+        if len(names) != 1 or any(len(found) != 1 or self._estate_elsewhere(name, st, found)
+                                  for st, found in hits.items()):
+            return ""
+        return self._canonical.get(next(iter(names)), "")
+
+    def states_for_suburb(self, suburb: str, spoken: bool = False) -> List[str]:
         """Every state that has a locality of this name, sorted. Empty if unknown.
 
         A single element means the suburb identifies its state on its own; several means
-        the name is shared and something else has to break the tie.
+        the name is shared and something else has to break the tie. spoken=True adds the
+        fallback described at spoken_key.
         """
         if not suburb:
             return []
-        return sorted(self._states_by_suburb.get(suburb.strip().lower(), ()))
+        exact = self._states_by_suburb.get(suburb.strip().lower())
+        if exact or not spoken:
+            return sorted(exact or ())
+        hits = self._spoken_hits(suburb)
+        # EVERY STATE MUST BE UNAMBIGUOUS, not merely some of them. Dropping only the
+        # states where the key collides would hand back a narrower answer than the truth
+        # — a key that is two localities in NSW and one in TAS would come back as TAS
+        # alone — and state_resolver takes a single-state answer as PROOF of a row's
+        # state. A key that collides anywhere, or is an estate filed elsewhere
+        # (know_estates), answers nothing.
+        if any(len(found) != 1 or self._estate_elsewhere(suburb, st, found)
+               for st, found in hits.items()):
+            return []
+        return sorted(hits)
 
-    def locate(self, suburb: str, state: str) -> Optional[Tuple[float, float]]:
-        return self._index.get((suburb.strip().lower(), state.strip().upper()))
+    def locate(self, suburb: str, state: str,
+               spoken: bool = False) -> Optional[Tuple[float, float]]:
+        name = self._dataset_name(suburb, state, spoken)
+        return self._index.get((name, str(state or "").strip().upper())) if name else None
 
     def resolve_locality(self, suburb: str, state: str = "") -> str:
         """The real locality inside a suburb value, or '' if there is not one.
@@ -187,8 +370,10 @@ class SuburbGeoIndex:
         return fallback
 
     def distance_between(self, suburb_a: str, suburb_b: str, state: str) -> Optional[float]:
-        a = self.locate(suburb_a, state)
-        b = self.locate(suburb_b, state)
+        # spoken: kommo_agent measures a lot against the brief's primary suburb here, and
+        # that is the name the caller said. See spoken_key.
+        a = self.locate(suburb_a, state, spoken=True)
+        b = self.locate(suburb_b, state, spoken=True)
         if not a or not b:
             return None
         return round(haversine_km(a[0], a[1], b[0], b[1]), 1)
@@ -198,7 +383,7 @@ class SuburbGeoIndex:
         All suburbs in `state` within radius_km of origin_suburb,
         sorted nearest-first. Origin itself is included at 0.0 km.
         """
-        origin = self.locate(origin_suburb, state)
+        origin = self.locate(origin_suburb, state, spoken=True)     # a name a person gave
         if not origin or radius_km <= 0:
             return []
         out = []
@@ -215,16 +400,25 @@ class SuburbGeoIndex:
         given, every suburb within radius_km of each primary suburb.
         Returns [{'suburb', 'state', 'distance_km', 'origin'}] nearest-first, deduped.
         """
-        seen: Dict[str, Dict] = {}
+        # THE DATASET'S SPELLING for every origin that resolves, because listings are
+        # filed under it. Labelled .title() from what was said, a spoken "Red Bank Plains"
+        # became its own 0.0 km entry beside the real "Redbank Plains" hit — a suburb no
+        # listing carries — and the origin column named a place that does not exist. An
+        # origin that does not resolve keeps its .title() label, exactly as before.
+        labels = []
         for origin in primary_suburbs:
-            seen.setdefault(origin.strip().lower(), {
-                'suburb': origin.strip().title(), 'state': state.upper(),
-                'distance_km': 0.0, 'origin': origin.strip().title()
+            found = self._dataset_name(origin, state, spoken=True)
+            labels.append((origin, self._canonical.get(found) if found else origin.strip().title()))
+        seen: Dict[str, Dict] = {}
+        for _origin, label in labels:
+            seen.setdefault(label.lower(), {
+                'suburb': label, 'state': state.upper(),
+                'distance_km': 0.0, 'origin': label
             })
         if radius_km and radius_km > 0:
-            for origin in primary_suburbs:
+            for origin, label in labels:
                 for hit in self.suburbs_within_radius(origin, state, radius_km):
                     key = hit['suburb'].lower()
                     if key not in seen or hit['distance_km'] < seen[key]['distance_km']:
-                        seen[key] = {**hit, 'origin': origin.strip().title()}
+                        seen[key] = {**hit, 'origin': label}
         return sorted(seen.values(), key=lambda x: x['distance_km'])

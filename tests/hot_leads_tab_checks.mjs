@@ -1,4 +1,5 @@
-// Exercises the Hot Leads (Agent 1) tab: the code between the HOT-LEADS-BEGIN and
+// Exercises the Clare's Leads (Agent 1) tab -- "Hot Leads" until 15 Sep, when it widened to
+// every hot caller and every warm or nurture caller who gave a state: the code between the HOT-LEADS-BEGIN and
 // HOT-LEADS-END markers in index.html, sliced out and run under Node with fetch, the DOM
 // and sessionExpired stubbed. Sliced rather than reimplemented, so it cannot drift from
 // what ships.
@@ -45,9 +46,17 @@ if (!escMatch) {
 
 const EXPORTS = ["hlSafeUrl", "hlTelHref", "hlMailHref", "hlMoney", "hlWhen", "hlBriefChips",
   "hlRecCard", "hlRecsBlock", "hlLiveBlock", "hlAppointment", "hlLeadCard", "hlRenderLeads",
-  "hlSortNewest", "hlUnavailable", "loadHotLeads", "rerunHotLead"];
+  "hlSortNewest", "hlUnavailable", "loadHotLeads", "rerunHotLead", "hlGrade", "hlSetFilter",
+  "hlMergeLeads", "hlCoverNote"];
 
-const ALLOWED_FETCH = new Set(["/api/hot_leads", "/api/hot_leads?include_test=1", "/api/research"]);
+// The tab's two reads -- every grade, and hot callers on their own -- each with and without
+// include_test=1, and the research. The bare "/api/hot_leads" the hot-only tab used is NOT
+// here: it got the hook's default 50 of every grade, which since 15 Sep can leave hot
+// callers out, so a tab that went back to it fails the run.
+const ALLOWED_FETCH = new Set([
+  "/api/hot_leads?limit=200", "/api/hot_leads?limit=200&include_test=1",
+  "/api/hot_leads?limit=200&grade=hot", "/api/hot_leads?limit=200&grade=hot&include_test=1",
+  "/api/research"]);
 
 // search: the page's own ?query, as location.search. Left undefined, the sandbox has no
 // location at all, which the loader must survive.
@@ -70,7 +79,8 @@ function sandbox(search) {
     escMatch[0] + "\n" + block + "\n;({" + EXPORTS.join(", ") +
     ", leads: () => HOT_LEADS })", ctx, { filename: "index.html#hot-leads" });
   const el = id => {
-    const o = { id, innerHTML: "", textContent: "", className: "", disabled: false };
+    const o = { id, innerHTML: "", textContent: "", className: "", disabled: false, hidden: false,
+                attrs: {}, setAttribute(k, v) { this.attrs[k] = String(v); } };
     els.set(id, o);
     return o;
   };
@@ -91,7 +101,8 @@ const reply = (status, body) => ({
 // caller's name that reaches the page unescaped shows up here as a tag that should not
 // exist; a listing's javascript: URL shows up as an href that is not http(s)/mailto/tel.
 const TAGS = new Set(["div", "span", "a", "strong", "br", "details", "summary", "p", "button", "em"]);
-const ATTRS = new Set(["class", "id", "href", "target", "rel", "title", "style", "onclick", "type", "disabled"]);
+const ATTRS = new Set(["class", "id", "href", "target", "rel", "title", "style", "onclick", "type", "disabled",
+  "hidden", "aria-pressed"]);
 const decode = s => s.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 
 function markupProblems(out) {
@@ -112,7 +123,7 @@ function markupProblems(out) {
       if (!ATTRS.has(attr)) problems.push("attribute " + attr + " on <" + name + ">");
       if (attr === "href" && !/^(https?:\/\/|mailto:[^:]+@|tel:\+?\d{6,}$)/i.test(val))
         problems.push("href " + JSON.stringify(val));
-      if (attr === "onclick" && !/^(rerunHotLead\(\d+\)|loadHotLeads\(true\))$/.test(val))
+      if (attr === "onclick" && !/^(rerunHotLead\(\d+\)|loadHotLeads\(true\)|hlSetFilter\('(all|hot|warm|nurture)'\))$/.test(val))
         problems.push("onclick " + JSON.stringify(val));
       if (attr === "style" && /url\(|expression|javascript/i.test(val))
         problems.push("style " + JSON.stringify(val));
@@ -134,6 +145,8 @@ check("auditor flags a javascript: href", markupProblems('<a href="javascript:al
 check("auditor flags an event-handler attribute", markupProblems('<span onmouseover="x">y</span>').length > 0);
 check("auditor flags an unlisted tag", markupProblems('<img src="x">').length > 0);
 check("auditor flags a blank target without rel", markupProblems('<a href="https://a.b/" target="_blank">x</a>').length > 0);
+check("auditor flags a filter onclick outside the four grades",
+  markupProblems(`<button onclick="hlSetFilter('closed')">x</button>`).length > 0);
 check("auditor passes ordinary markup",
   markupProblems('<div class="x"><a href="https://a.b/?q=1&amp;r=2" target="_blank" rel="noopener noreferrer">x</a></div>').length === 0);
 
@@ -310,6 +323,46 @@ check("brief chips: suburbs, bedrooms, type, timeframe, finance",
   ["Tarneit", "4+ bed", "House &amp; Land", "3 months", "pre-approved"].every(s => out.includes(s)));
 check("re-run button wired to this card's index", out.includes('onclick="rerunHotLead(3)"') && out.includes('id="hlRerun-3"'));
 check("three recommendation cards", (out.match(/class="hl-rec"/g) || []).length === 3);
+check("Why hot: on a hot card", out.includes("<strong>Why hot:</strong>"));
+
+// ------------------------------------------------------------------ every grade
+// 15 Sep (Ahsan): Agent 2 runs for every caller who gives a state, so warm and nurture
+// callers are stored and listed too. Booking stayed hot-only.
+console.log("\n--- warm and nurture callers have their own cards ---");
+out = api.hlLeadCard(clean({ grade: "warm", appointment: null, gradeReason: "Within 6 months, no pre-approval." }), 1);
+auditMarkup("warm card markup", out);
+check("WARM pill, and no HOT pill", /class="pill pill-warm">Warm</.test(out) && !out.includes("pill-hot"));
+check("Why warm:", out.includes("<strong>Why warm:</strong> Within 6 months") && !out.includes("Why hot"));
+check("warm with no booking: only hot callers are booked automatically",
+  out.includes("No discovery call (only hot callers are booked automatically)") && !out.includes("follow up"));
+check("warm card keeps its buildings and its Re-run",
+  (out.match(/class="hl-rec"/g) || []).length === 3 && out.includes('onclick="rerunHotLead(1)"'));
+
+out = api.hlLeadCard(clean({ grade: "nurture", appointment: null, gradeReason: "No pre-approval, investor." }), 2);
+auditMarkup("nurture card markup", out);
+check("NURTURE pill", /class="pill pill-nurture">Nurture</.test(out) && !/pill-(hot|warm)"/.test(out));
+check("Why nurture:", out.includes("<strong>Why nurture:</strong> No pre-approval"));
+check("nurture with no booking: only hot callers are booked automatically",
+  out.includes("only hot callers are booked automatically") && !out.includes("follow up"));
+
+out = api.hlLeadCard(clean({ grade: "warm" }), 0);
+check("a warm caller who did book still shows the booking",
+  /Discovery call booked:<\/strong> Tue 1 Dec/.test(out) && !out.includes("only hot callers"));
+out = api.hlLeadCard(clean({ appointment: null }), 0);
+check("hot with no booking still says follow up",
+  out.includes("No discovery call booked &mdash; follow up") && !out.includes("only hot callers"));
+out = api.hlLeadCard(clean({ grade: undefined }), 0);
+check("a record with no grade (stored while the tab was hot-only) is hot",
+  /class="pill pill-hot">Hot</.test(out) && out.includes("Why hot:"));
+
+for (const g of ["closed", "HOT", 'hot" onclick="alert(1)', EVIL, 7, null]) {
+  const label = "grade " + JSON.stringify(g);
+  throwsNot(label + " renders", () => { out = api.hlLeadCard(clean({ grade: g }), 0); });
+  auditMarkup(label + ": markup is only the renderer's own", out);
+  check(label + ": no grade pill, and the reason is not called hot",
+    !/pill-(hot|warm|nurture)/.test(out) && !out.includes("Why hot") && out.includes("<strong>Grade reason:</strong>"));
+  check(label + ": hlGrade is ''", api.hlGrade({ grade: g }) === "");
+}
 
 // ------------------------------------------------------------------ nulls and gaps
 console.log("\n--- missing fields ---");
@@ -355,18 +408,31 @@ out = api.hlRecsBlock([rec(), rec(), rec(), rec(), rec()], {});
 check("never more than 3 buildings", (out.match(/class="hl-rec"/g) || []).length === 3);
 
 out = api.hlRenderLeads([]);
-check("empty list explains when a lead appears", out.includes("No hot leads yet") && out.includes("Clare finishes a call"));
+// A hot caller is stored with or without a state (vapi-kommo-hook api/webhook.js keeps the
+// record for the booking), so the empty state must not say every listed caller gave one.
+check("empty list explains when a lead appears: every hot caller, warm or nurture with a state",
+  out.includes("No leads yet") && /A hot caller appears\s+here after Clare finishes their call/.test(out)
+  && /warm or nurture caller who gave\s+a state/.test(out)
+  && out.includes("Hot callers also get a") && !out.includes("hl-filters") && !out.includes("hlCover"));
+check("empty list does not claim every caller gave a state",
+  !/A caller appears here[\s\S]*where they gave a state/.test(out));
 out = api.hlRenderLeads(undefined);
-check("undefined list -> empty state", out.includes("No hot leads yet"));
+check("undefined list -> empty state", out.includes("No leads yet"));
 
 const sorted = api.hlSortNewest([
   { callId: "old", grade: "hot", createdAt: "2026-09-01T00:00:00Z" },
   null,
   { callId: "warm", grade: "warm", createdAt: "2026-09-20T00:00:00Z" },
+  { callId: "closed", grade: "closed", createdAt: "2026-09-21T00:00:00Z" },
+  { callId: "junk", grade: "<b>hot</b>", createdAt: "2026-09-22T00:00:00Z" },
+  { callId: "shouty", grade: "HOT", createdAt: "2026-09-23T00:00:00Z" },
+  { callId: "nurture", grade: "nurture", createdAt: "2026-09-02T00:00:00Z" },
   { callId: "nodate", grade: "hot" },
+  { callId: "legacy", createdAt: "2026-08-01T00:00:00Z" },
   { callId: "new", grade: "hot", createdAt: "2026-09-14T00:00:00Z" },
 ]).map(l => l.callId).join(",");
-check("newest first, non-hot and junk dropped, undated last", sorted === "new,old,nodate", sorted);
+check("newest first, warm and nurture kept, closed and junk dropped, undated last",
+  sorted === "warm,new,nurture,old,legacy,nodate", sorted);
 check("sort of a non-array -> []", Array.isArray(api.hlSortNewest({ leads: 1 })) && api.hlSortNewest({ leads: 1 }).length === 0);
 
 out = api.hlUnavailable(503, "SPB_SERVICE_KEY is not set on the dashboard project <b>x</b>");
@@ -383,9 +449,9 @@ console.log("\n--- loadHotLeads ---");
   await s.api.loadHotLeads();
   check("401 -> sessionExpired()", s.calls.expired === 1, "expired " + s.calls.expired);
   check("401 -> no leads rendered", !content.innerHTML.includes("hl-card"));
-  check("fetches /api/hot_leads with cache no-store",
-    s.calls.fetch[0] && s.calls.fetch[0].url === "/api/hot_leads" && s.calls.fetch[0].opts
-    && s.calls.fetch[0].opts.cache === "no-store");
+  check("fetches /api/hot_leads?limit=200 with cache no-store",
+    s.calls.fetch[0] && s.calls.fetch[0].url === "/api/hot_leads?limit=200" && s.calls.fetch[0].opts
+    && s.calls.fetch[0].opts.cache === "no-store", s.calls.fetch[0] && s.calls.fetch[0].url);
   check("refresh button re-enabled after 401", btn.disabled === false);
 
   s.respond(async () => reply(503, { status: "error", message: "SPB_SERVICE_KEY is not set on the dashboard project" }));
@@ -416,7 +482,7 @@ console.log("\n--- loadHotLeads ---");
   await s.api.loadHotLeads();
   check("after a network failure the next open tries again", s.calls.fetch.length === n + 1);
   check("refresh disabled while loading", sawDisabled === true);
-  check("200 -> badge counts leads", badge.textContent === "2 hot leads", badge.textContent);
+  check("200 -> badge counts leads, and the hot ones", badge.textContent === "2 leads · 2 hot", badge.textContent);
   check("200 -> newest first", content.innerHTML.indexOf(EVIL_TEXT) < content.innerHTML.indexOf("Older Lead")
     && content.innerHTML.indexOf(EVIL_TEXT) >= 0);
   auditMarkup("rendered list markup", content.innerHTML);
@@ -430,8 +496,8 @@ console.log("\n--- loadHotLeads ---");
 
   s.respond(async () => reply(200, { status: "success", count: 0, leads: [] }));
   await s.api.loadHotLeads(true);
-  check("200 with no leads -> empty state", content.innerHTML.includes("No hot leads yet"));
-  check("badge 0 hot leads", badge.textContent === "0 hot leads", badge.textContent);
+  check("200 with no leads -> empty state", content.innerHTML.includes("No leads yet"));
+  check("badge 0 leads", badge.textContent === "0 leads", badge.textContent);
   check("every fetch went to a dashboard endpoint", s.calls.fetch.every(c => ALLOWED_FETCH.has(c.url)));
 }
 
@@ -450,7 +516,7 @@ console.log("\n--- test records only with ?hl_test=1 ---");
   for (const search of ["?hl_test=1", "?tab=hot&hl_test=1", "?hl_test=%31"]) {
     const c = await firstUrl(search);
     check(search + " -> include_test=1 sent, still no-store",
-      c && c.url === "/api/hot_leads?include_test=1" && c.opts && c.opts.cache === "no-store",
+      c && c.url === "/api/hot_leads?limit=200&include_test=1" && c.opts && c.opts.cache === "no-store",
       c && c.url);
   }
   for (const search of [undefined, "", "?", "?hl_test=0", "?hl_test=true", "?hl_test=", "?hl_test=01",
@@ -458,8 +524,233 @@ console.log("\n--- test records only with ?hl_test=1 ---");
                         "?include_test=1", "?hl_test= 1"]) {
     const c = await firstUrl(search);
     check(JSON.stringify(search ?? "no location") + " -> include_test not sent",
-      c && c.url === "/api/hot_leads", c && c.url);
+      c && c.url === "/api/hot_leads?limit=200", c && c.url);
   }
+}
+
+// ------------------------------------------------------------------ filters
+// All / Hot / Warm / Nurture work over the list already loaded: no request, cards hidden
+// rather than re-rendered, and every card keeps its index into HOT_LEADS for Re-run.
+console.log("\n--- All / Hot / Warm / Nurture ---");
+{
+  const s = sandbox();
+  const content = s.el("hotLeadsContent"), badge = s.el("hotLeadsBadge");
+  s.el("hotLeadsRefresh");
+  const who = (name, over) => clean({ customer: { name, email: "", phone: "" }, ...over });
+  const warmBrief = { ...clean().brief, client_name: "Warm Caller", state: "QLD",
+                      primary_suburbs: ["Red Bank Plains"], budget_max: 750000 };
+  s.respond(async () => reply(200, { status: "success", count: 6, leads: [
+    who("Nurture Two", { callId: "n2", grade: "nurture", appointment: null, createdAt: "2026-09-15T01:00:00Z" }),
+    who("Hot One", { callId: "h1", grade: "hot", createdAt: "2026-09-15T05:00:00Z" }),
+    who("Closed Caller", { callId: "c1", grade: "closed", createdAt: "2026-09-15T06:00:00Z" }),
+    who("Warm Caller", { callId: "w1", grade: "warm", appointment: null, brief: warmBrief, createdAt: "2026-09-15T04:00:00Z" }),
+    who("Nurture One", { callId: "n1", grade: "nurture", appointment: null, createdAt: "2026-09-15T03:00:00Z" }),
+    who("Hot Two", { callId: "h2", grade: "hot", createdAt: "2026-09-15T02:00:00Z" }),
+  ] }));
+  await s.api.loadHotLeads();
+  const html0 = content.innerHTML;
+  // Newest first: 0 Hot One, 1 Warm Caller, 2 Nurture One, 3 Hot Two, 4 Nurture Two.
+  check("a closed caller is not on the tab", s.api.leads().length === 5 && !html0.includes("Closed Caller"));
+  check("badge: 5 leads · 2 hot", badge.textContent === "5 leads · 2 hot", badge.textContent);
+  auditMarkup("filter bar and mixed list markup", html0);
+  check("filter buttons carry their counts",
+    ["All (5)", "Hot (2)", "Warm (1)", "Nurture (2)"].every(t => html0.includes(">" + t + "</button>")));
+  check("All starts pressed",
+    /class="btn-ghost hl-filter is-active" id="hlFilter-all" aria-pressed="true"/.test(html0)
+    && (html0.match(/aria-pressed="true"/g) || []).length === 1);
+  check("under All no card is hidden, and the empty note is", !/id="hlCard-\d+" hidden/.test(html0)
+    && /id="hlFilterEmpty" hidden/.test(html0));
+  check("each card has its grade pill", (html0.match(/pill pill-hot"/g) || []).length === 2
+    && (html0.match(/pill pill-warm"/g) || []).length === 1 && (html0.match(/pill pill-nurture"/g) || []).length === 2);
+
+  const cards = [0, 1, 2, 3, 4].map(i => s.el("hlCard-" + i));
+  const fb = Object.fromEntries(["all", "hot", "warm", "nurture"].map(k => [k, s.el("hlFilter-" + k)]));
+  const note = s.el("hlFilterEmpty");
+  const visible = () => cards.map(c => (c.hidden ? "-" : "V")).join("");
+  const pressed = key => fb[key].className.includes("is-active") && fb[key].attrs["aria-pressed"] === "true"
+    && Object.keys(fb).filter(k => k !== key).every(k => !fb[k].className.includes("is-active")
+                                                        && fb[k].attrs["aria-pressed"] === "false");
+  const n = s.calls.fetch.length;
+
+  s.api.hlSetFilter("warm");
+  check("filter Warm hides every card but the warm one", visible() === "-V---", visible());
+  check("filter Warm presses Warm, and only Warm", pressed("warm"));
+  check("filter Warm: empty note stays hidden", note.hidden === true);
+  s.api.hlSetFilter("hot");
+  check("filter Hot shows the two hot cards", visible() === "V--V-", visible());
+  s.api.hlSetFilter("nurture");
+  check("filter Nurture shows the two nurture cards", visible() === "--V-V", visible());
+  s.api.hlSetFilter("all");
+  check("filter All shows them all again", visible() === "VVVVV" && pressed("all"), visible());
+  for (const bad of ["closed", "HOT", "x'); alert(1); //", undefined]) {
+    s.api.hlSetFilter("hot");
+    s.api.hlSetFilter(bad);
+    check("filter " + JSON.stringify(bad) + " -> All", visible() === "VVVVV" && pressed("all"), visible());
+  }
+  check("changing the filter asks the server nothing", s.calls.fetch.length === n);
+
+  // Refresh keeps the filter, and a card keeps its index into the full list.
+  s.api.hlSetFilter("warm");
+  await s.api.loadHotLeads(true);
+  const html1 = content.innerHTML;
+  check("the filter is kept after Refresh",
+    /id="hlFilter-warm" aria-pressed="true"/.test(html1) && /id="hlCard-0" hidden/.test(html1)
+    && /id="hlCard-1">/.test(html1) && /id="hlCard-2" hidden/.test(html1), html1.slice(0, 400));
+  auditMarkup("filtered list markup", html1);
+  const idx = (html1.match(/Warm Caller[\s\S]*?onclick="rerunHotLead\((\d+)\)"/) || [])[1];
+  s.el("hlRerun-" + idx); s.el("hlMsg-" + idx); s.el("hlRecs-" + idx);
+  let posted = null;
+  s.respond(async (url, opts) => { posted = JSON.parse(opts.body); return reply(200, { status: "success", shortlist: [] }); });
+  await s.api.rerunHotLead(Number(idx));
+  check("re-run from a filtered list sends that caller's brief",
+    posted && JSON.stringify(posted) === JSON.stringify({ client_brief: warmBrief }), JSON.stringify(posted));
+
+  // A grade with nobody in it says so.
+  s.respond(async () => reply(200, { status: "success", count: 1, leads: [who("Only Hot", { grade: "hot" })] }));
+  s.api.hlSetFilter("all");
+  await s.api.loadHotLeads(true);
+  check("badge: 1 lead · 1 hot", badge.textContent === "1 lead · 1 hot", badge.textContent);
+  const only = s.el("hlCard-0"), note2 = s.el("hlFilterEmpty");
+  s.api.hlSetFilter("nurture");
+  check("a filter with no leads shows its empty note and hides the rest",
+    note2.hidden === false && note2.textContent === "No nurture leads in this list." && only.hidden === true);
+  s.api.hlSetFilter("hot");
+  check("back to a filter with leads hides the note", note2.hidden === true && only.hidden === false);
+  const rendered = api.hlRenderLeads([clean()], "warm");
+  check("rendered straight into an empty filter, the note shows",
+    /id="hlFilterEmpty">No warm leads in this list\.<\/div>/.test(rendered) && /id="hlCard-0" hidden/.test(rendered));
+  check("every fetch went to a dashboard endpoint", s.calls.fetch.every(c => ALLOWED_FETCH.has(c.url)));
+}
+
+// ------------------------------------------------------------------ a busy store
+// 15 Sep: warm and nurture callers share the hook's answer with hot ones. The hook sends at
+// most `limit` records (50 when none is asked for, 200 at most), newest first, and applies
+// ?grade= BEFORE that limit (vapi-kommo-hook lib/hot-leads.js). The stub below answers the
+// same way, so a tab that asks with no limit, or never asks for hot callers on their own,
+// loses the older hot callers here exactly as it would live.
+console.log("\n--- a busy store: warm and nurture callers do not push hot callers off ---");
+{
+  const hookAnswer = (store, url) => {
+    const q = new URL(url, "https://dashboard.invalid").searchParams;
+    const raw = q.get("limit") || "";
+    const limit = /^\d+$/.test(raw) ? Math.min(200, Math.max(1, parseInt(raw, 10))) : 50;
+    const grade = ["hot", "warm", "nurture"].includes(q.get("grade")) ? q.get("grade") : null;
+    const rows = store.filter(l => !grade || l.grade === grade).slice(0, limit);
+    return reply(200, { status: "success", count: rows.length, leads: rows });
+  };
+  const at = i => new Date(Date.UTC(2026, 8, 15, 12, 0) - i * 60000).toISOString();
+  const person = (id, grade, i) => clean({ callId: id, grade, createdAt: at(i),
+    appointment: grade === "hot" ? clean().appointment : null,
+    customer: { name: "Caller " + id, email: "", phone: "" } });
+  // Newest first: nNurture nurture callers, then nHot hot callers older than all of them.
+  const busy = (nNurture, nHot) => [
+    ...Array.from({ length: nNurture }, (_, i) => person("n" + i, "nurture", i)),
+    ...Array.from({ length: nHot }, (_, i) => person("h" + i, "hot", nNurture + i)),
+  ];
+  const run = async (store, respond, search) => {
+    const s = sandbox(search);
+    const content = s.el("hotLeadsContent"), badge = s.el("hotLeadsBadge");
+    s.el("hotLeadsRefresh");
+    s.respond(respond || (async url => hookAnswer(store, url)));
+    await s.api.loadHotLeads();
+    return { s, content, badge, urls: s.calls.fetch.map(c => c.url), ids: s.api.leads().map(l => l.callId) };
+  };
+  const ALL = "/api/hot_leads?limit=200", HOT = "/api/hot_leads?limit=200&grade=hot";
+  const hotIds = n => Array.from({ length: n }, (_, i) => "h" + i);
+
+  // 197 nurture callers after 10 hot ones: the first answer holds 3 of the hot callers.
+  {
+    const { s, content, badge, urls, ids } = await run(busy(197, 10));
+    check("cut-off answer: the tab asks again for hot callers only",
+      JSON.stringify(urls) === JSON.stringify([ALL, HOT]), JSON.stringify(urls));
+    check("every hot caller in the store is on the tab",
+      hotIds(10).every(id => ids.includes(id)), ids.filter(id => id.startsWith("h")).join(","));
+    check("no caller listed twice (3 hot callers were in both answers)",
+      new Set(ids).size === ids.length && ids.length === 207, String(ids.length));
+    check("busy store: Hot (10)", content.innerHTML.includes(">Hot (10)</button>"));
+    check("busy store badge: 207+ leads · 10 hot", badge.textContent === "207+ leads · 10 hot", badge.textContent);
+    check("busy store: says only the newest 200 are listed, and hot callers were looked up on their own",
+      /id="hlCover">Only the newest 200 callers are listed, so older warm and nurture callers are not shown here\. Hot callers were looked up on their own, so an older hot caller is still listed\.</.test(content.innerHTML)
+      && !content.innerHTML.includes("hl-cover-warn"));
+    auditMarkup("busy store list markup", content.innerHTML);
+    const cards = ids.map((_, i) => s.el("hlCard-" + i));
+    s.api.hlSetFilter("hot");
+    const shown = cards.map((c, i) => (c.hidden ? null : ids[i])).filter(Boolean).sort();
+    check("busy store: the Hot filter shows exactly the ten hot callers",
+      JSON.stringify(shown) === JSON.stringify(hotIds(10).sort()), shown.join(","));
+  }
+
+  // Under the limit the first answer is the whole store: one request, nothing to say.
+  {
+    const { content, badge, urls, ids } = await run(busy(189, 10));
+    check("199 records: one request, no second lookup", JSON.stringify(urls) === JSON.stringify([ALL]), JSON.stringify(urls));
+    check("199 records: every hot caller listed, no cut-off note",
+      hotIds(10).every(id => ids.includes(id)) && !content.innerHTML.includes("hlCover"));
+    check("199 records badge: 199 leads · 10 hot", badge.textContent === "199 leads · 10 hot", badge.textContent);
+  }
+  {
+    const { badge, urls } = await run(busy(190, 10));
+    check("an answer of exactly 200 counts as cut off", JSON.stringify(urls) === JSON.stringify([ALL, HOT])
+      && badge.textContent === "200+ leads · 10 hot", JSON.stringify(urls) + " " + badge.textContent);
+  }
+
+  // More hot callers than even the hot lookup sends.
+  {
+    const { content, badge, ids } = await run(busy(200, 250));
+    check("hot lookup cut off too: its newest 200 are listed", ids.length === 400
+      && hotIds(200).every(id => ids.includes(id)) && !ids.includes("h200"), String(ids.length));
+    check("hot lookup cut off too: badge 400+ leads · 200+ hot", badge.textContent === "400+ leads · 200+ hot", badge.textContent);
+    check("hot lookup cut off too: the note says the newest 200 hot callers are listed",
+      content.innerHTML.includes("Hot callers were looked up on their own, so the newest 200 of them are listed."));
+  }
+
+  // The hot lookup fails: show what came back, and say a hot caller may be missing.
+  {
+    const store = busy(197, 10);
+    const { content, badge, ids } = await run(store, async url => url === HOT
+      ? reply(502, { status: "error", message: "hot-lead store answered HTTP 500 <b>x</b>" })
+      : hookAnswer(store, url));
+    check("hot lookup failed: the first answer is still listed", ids.length === 200);
+    check("hot lookup failed: says a hot caller may be missing",
+      /class="hl-notice hl-cover hl-cover-warn" id="hlCover"><strong>A hot caller may be missing from this list\.<\/strong>/.test(content.innerHTML)
+      && content.innerHTML.includes("that lookup failed (hot-lead store answered HTTP 500 &lt;b&gt;x&lt;/b&gt;). Press Refresh to try again."));
+    check("hot lookup failed: badge 200+ leads · 3+ hot", badge.textContent === "200+ leads · 3+ hot", badge.textContent);
+    auditMarkup("hot lookup failed markup", content.innerHTML);
+  }
+  {
+    const store = busy(197, 10);
+    const { content } = await run(store, async url => {
+      if (url === HOT) throw new TypeError("Failed to fetch");
+      return hookAnswer(store, url);
+    });
+    check("hot lookup unreachable: says so", content.innerHTML.includes("hl-cover-warn")
+      && content.innerHTML.includes("that lookup failed (the dashboard could not be reached)"));
+  }
+  {
+    const store = busy(197, 10);
+    const { content } = await run(store, async url => url === HOT ? reply(502, new Error("not JSON")) : hookAnswer(store, url));
+    check("hot lookup answered non-JSON: the status is stated", content.innerHTML.includes("that lookup failed (the server answered 502)"));
+  }
+  {
+    const store = busy(197, 10);
+    const { s, content } = await run(store, async url => url === HOT ? reply(401, { error: "auth_required" }) : hookAnswer(store, url));
+    check("hot lookup 401: sign-in expired, and no half list left on the page",
+      s.calls.expired === 1 && !content.innerHTML.includes("hl-card"));
+  }
+
+  // ?hl_test=1 carries through to both reads.
+  {
+    const { urls } = await run(busy(197, 10), null, "?hl_test=1");
+    check("?hl_test=1 on a cut-off answer: both reads include test records",
+      JSON.stringify(urls) === JSON.stringify([ALL + "&include_test=1", HOT + "&include_test=1"]), JSON.stringify(urls));
+  }
+
+  out = api.hlMergeLeads([{ callId: "a" }, { callId: "b" }, {}], [{ callId: "b", later: 1 }, { callId: "c" }, {}]);
+  check("merge: by callId, first answer's copy kept, records with no callId kept",
+    JSON.stringify(out) === JSON.stringify([{ callId: "a" }, { callId: "b" }, {}, { callId: "c" }, {}]), JSON.stringify(out));
+  check("merge: non-arrays are empty", JSON.stringify(api.hlMergeLeads(null, "x")) === "[]");
+  check("cover note: nothing when the answer was whole",
+    api.hlCoverNote({ cut: false, hotFailed: "x" }) === "" && api.hlCoverNote(undefined) === "");
 }
 
 // ------------------------------------------------------------------ re-run
@@ -534,11 +825,19 @@ console.log("\n--- the tab is wired into the page ---");
     JSON.stringify(buttons));
   check("nav button calls showTab then loadHotLeads()",
     hot >= 0 && /^showTab\('hotLeadsTab', this\); loadHotLeads\(\);$/.test(buttons[hot]), buttons[hot]);
-  check("nav label reads Hot Leads (Agent 1)",
-    /Hot Leads<span class="nav-tab-label-full"> \(Agent 1\)<\/span><\/button>/.test(nav));
+  check("nav label reads Clare's Leads (Agent 1)",
+    /Clare's Leads<span class="nav-tab-label-full"> \(Agent 1\)<\/span><\/button>/.test(nav));
+  check("the old Hot Leads label is gone from the nav", !nav.includes("Hot Leads"));
   const pane = (html.match(/<div id="hotLeadsTab" class="view-pane">([\s\S]*?)\n<\/div>/) || [, ""])[1];
   check("pane exists", pane.length > 0);
-  check("pane header text", pane.includes("Hot leads from Clare's calls"));
+  check("pane header text", pane.includes("<span>Leads from Clare's calls</span>"));
+  // Every hot caller is stored, with or without a state; warm and nurture only with one.
+  check("explanation: every hot caller, and warm or nurture who gave a state; hot callers get a call booked",
+    /Every hot caller from Clare's calls, and every warm or nurture caller who gave a\s+state/.test(pane)
+    && /<strong>Hot<\/strong> callers also get a discovery call booked/.test(pane)
+    && !pane.includes("graded <strong>hot</strong>"));
+  check("explanation does not claim every caller gave a state",
+    !/Every caller Clare graded after a call where they gave a state/.test(pane));
   for (const id of ["hotLeadsBadge", "hotLeadsRefresh", "hotLeadsContent"])
     check("pane has #" + id, pane.includes('id="' + id + '"'));
   check("Refresh forces a reload", /id="hotLeadsRefresh"[^>]*onclick="loadHotLeads\(true\)"/.test(pane));
