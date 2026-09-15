@@ -97,7 +97,8 @@ class handler(BaseHTTPRequestHandler):
     Reachable only through the site login: middleware.js matches "/(.*)" and serves exactly
     two things without a session -- the exact path /r (the client share page), and a POST to
     exactly /api/research carrying an x-spb-service-key header equal to SPB_SERVICE_KEY
-    (Agent 1's webhook starting a research on a hot lead). Everything else, this included,
+    (Agent 1's webhook starting a research on a hot, warm or nurture caller who gave a state;
+    hot-only until 15 Sep 2026). Everything else, this included,
     answers 401 without a session — verified against the deployed host.
     """
 

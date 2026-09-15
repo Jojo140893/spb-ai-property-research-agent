@@ -1,4 +1,5 @@
-"""The Hot Leads (Agent 1) tab.
+"""The Clare's Leads (Agent 1) tab -- "Hot Leads" until 15 Sep, when it widened to every hot
+caller and every warm or nurture caller who gave a state (booking stayed hot-only).
 
 Every string on that tab came from someone else: the name, the reason and the brief are a
 phone caller's speech as transcribed, and the buildings are scraped listings. So the thing
@@ -65,6 +66,40 @@ MUTANTS = {
         "advertised price is the price"),
     "test records are asked for without ?hl_test=1": (
         "(v.length === 1 && v[0] === '1')", "(true)", "include_test not sent"),
+    # 15 Sep: warm and nurture callers are researched and stored, so they are listed.
+    "warm and nurture callers are dropped from the list": (
+        ".filter(l => l && typeof l === 'object' && hlGrade(l) !== '')",
+        ".filter(l => l && typeof l === 'object' && hlGrade(l) === 'hot')",
+        "warm and nurture kept"),
+    # A grade straight from the record would put a closed caller on the tab and the
+    # record's own text into the pill's class attribute.
+    "any grade the record carries is trusted": (
+        "return HL_GRADES.includes(lead.grade) ? lead.grade : '';",
+        "return String(lead.grade);",
+        "closed and junk dropped"),
+    # Booking is hot-only, so a warm card with no call is not a missed booking.
+    "a warm caller with no booking is told to follow up": (
+        "if (grade === 'warm' || grade === 'nurture') {", "if (false) {",
+        "only hot callers are booked"),
+    "the filter does not hide the other grades": (
+        "if (card) card.hidden = !on;", "if (card) card.hidden = false;",
+        "filter Warm hides"),
+    "Refresh forgets the filter": (
+        "hlLeadCard(l, i, !hlShows(l, f))", "hlLeadCard(l, i, false)",
+        "kept after Refresh"),
+    # Numbering the filtered list would send the wrong caller's brief to Re-run.
+    "cards are numbered by their place in the filtered list": (
+        "list.map((l, i) => hlLeadCard(l, i, !hlShows(l, f)))",
+        "list.filter(l => hlShows(l, f)).map((l, i) => hlLeadCard(l, i, false))",
+        "re-run from a filtered list"),
+    # Since 15 Sep warm and nurture callers share the hook's answer with hot ones, so a cut-off
+    # answer can leave an older hot caller out; the tab then asks for hot callers on their own.
+    "hot callers are not looked up when the answer is cut off": (
+        "if (all.cut) {", "if (false) {", "every hot caller in the store is on the tab"),
+    "a caller in both answers is listed twice": (
+        "if (seen.has(id)) return;", "if (false) return;", "no caller listed twice"),
+    "a failed hot lookup is not said": (
+        "if (c.hotFailed) {", "if (false) {", "hot lookup failed: says a hot caller may be missing"),
 }
 
 

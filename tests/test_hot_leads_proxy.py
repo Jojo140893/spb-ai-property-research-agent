@@ -1,7 +1,8 @@
-"""GET /api/hot_leads -- the Hot Leads tab's server-side read of Agent 1's hot leads.
+"""GET /api/hot_leads -- the Clare's Leads tab's server-side read of the callers Agent 1
+stored (hot only until 15 Sep; hot, warm and nurture since).
 
-The hook that stores hot leads answers only a caller holding SPB_SERVICE_KEY, and a hot
-lead is a person's name, phone number, email and appointment. So the proxy has two jobs
+The hook that stores them answers only a caller holding SPB_SERVICE_KEY, and a lead is a
+person's name, phone number, email and appointment. So the proxy has two jobs
 that fail silently if they are wrong: it must send the key upstream and NEVER send it
 anywhere else (the page, a log, an error message, a redirect target), and it must make a
 failed read look like a failure rather than like an empty list of leads.
@@ -298,6 +299,71 @@ def test_anything_but_exactly_include_test_1_is_not_forwarded(monkeypatch, path)
     url = up.calls[0][0].full_url
     assert url == H.DEFAULT_URL, url
     assert "include_test" not in url
+
+
+# ------------------------------------------------------------------ ?grade=
+# Since 15 Sep the hook stores hot, warm and nurture callers. The tab filters the list it
+# already has, but a reader may ask the hook for one grade; like include_test, only an exact
+# answer is passed on, and only as a literal written in hot_leads.py.
+
+@pytest.mark.parametrize("grade", ["hot", "warm", "nurture"])
+def test_an_exact_grade_is_forwarded(monkeypatch, grade):
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    up, _ = _ok(monkeypatch)
+    assert _call("GET", f"/api/hot_leads?grade={grade}")[0] == 200
+    url = up.calls[0][0].full_url
+    assert url == H.DEFAULT_URL + "?grade=" + grade, url
+
+
+def test_grade_travels_with_include_test_and_a_limit(monkeypatch):
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    up, _ = _ok(monkeypatch)
+    _call("GET", "/api/hot_leads?grade=warm&include_test=1&limit=5")
+    url = up.calls[0][0].full_url
+    assert urllib.parse.parse_qs(urllib.parse.urlsplit(url).query) == {
+        "limit": ["5"], "include_test": ["1"], "grade": ["warm"]}, url
+    assert url.startswith(H.DEFAULT_URL + "?")
+
+
+def test_grade_joins_a_query_the_override_already_has(monkeypatch):
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    monkeypatch.setenv("SPB_HOT_LEADS_URL", "https://hook.example/api/hot-leads?region=vic")
+    up, _ = _ok(monkeypatch)
+    _call("GET", "/api/hot_leads?grade=nurture")
+    assert up.calls[0][0].full_url == "https://hook.example/api/hot-leads?region=vic&grade=nurture"
+
+
+@pytest.mark.parametrize("path", [
+    "/api/hot_leads?grade=",
+    "/api/hot_leads?grade=closed",                  # not researched, so never stored
+    "/api/hot_leads?grade=all",
+    "/api/hot_leads?grade=HOT",
+    "/api/hot_leads?grade=Warm",
+    "/api/hot_leads?grade=nurturing",
+    "/api/hot_leads?grade=hot,warm",
+    "/api/hot_leads?grade=%20hot",                  # " hot"
+    "/api/hot_leads?grade=hot%26include_test%3D1",  # "hot&include_test=1", smuggling
+    "/api/hot_leads?grade=hot&grade=warm",          # two answers is not one
+    "/api/hot_leads?grade=hot&grade=hot",
+    "/api/hot_leads?GRADE=hot",
+    "/api/hot_leads?grades=hot",
+])
+def test_anything_but_exactly_one_known_grade_is_not_forwarded(monkeypatch, path):
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    up, _ = _ok(monkeypatch)
+    assert _call("GET", path)[0] == 200
+    url = up.calls[0][0].full_url
+    assert url == H.DEFAULT_URL, url
+    assert "grade" not in url and "include_test" not in url
+
+
+@pytest.mark.parametrize("grade", ["closed", "HOT", "hot&include_test=1", "", None, 1])
+def test_fetch_itself_refuses_a_grade_outside_the_three(monkeypatch, grade):
+    """A second guard behind grade_from: a future caller of fetch cannot splice text in."""
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    up, _ = _ok(monkeypatch)
+    assert H.fetch(grade=grade)[0] == 200
+    assert up.calls[0][0].full_url == H.DEFAULT_URL
 
 
 # ------------------------------------------------------------------ upstream failures
