@@ -174,6 +174,15 @@ class SuburbGeoIndex:
             return None
         return sorted(self._canonical.get(s, s.title()) for s in filed)
 
+    def localities(self, state: str) -> List[str]:
+        """Every locality of `state`, in the dataset's spelling. Empty for an unknown state.
+
+        Public for api/_location_resolver.py. Live, 15 Sep 2026: gpt-oss-20b at low effort
+        answered "Wyndum Vale" unknown and left "Cragieburn" out of its answer, so the
+        resolver now looks for the closest spellings itself and hands them to the model.
+        """
+        return [s for s, _lat, _lng in self._by_state.get(str(state or "").strip().upper(), ())]
+
     def _spoken_hits(self, suburb: str) -> Dict[str, set]:
         """{state: {suburb_lower}} sharing this name's spoken key. {} if it has none.
 

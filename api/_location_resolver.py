@@ -24,6 +24,15 @@ is ever sent, let alone replaced, and neither is a real locality of another stat
 nothing survives, the phrase is searched exactly as it was said -- today's behaviour,
 including its "not recognised" handling downstream.
 
+THE INDEX ALSO HELPS THE MODEL, AND STANDS IN FOR IT. Live, 15 Sep 2026 (gpt-oss-20b, low
+effort): "Wyndum Vale" came back unknown, "Cragieburn" was left out of the answer, and
+"western suburbs of Melbourne" included Coburg and Brunswick, due north of the CBD. So a
+phrase that is not an area is sent with the localities of the brief's state spelt closest
+to it (_candidates); a phrase Groq still does not settle is searched as its closest spelling
+only when that one is close and alone (_fuzzy, method "fuzzy"); and an area phrase that
+says a compass direction of or from a place it names keeps only names that lie that way
+(_gate).
+
 NEVER A 500, NEVER SILENT. No key, a timeout, a non-200 or an answer that is not the JSON
 asked for all leave the brief exactly as geo.py's fold left it. What was done to every
 phrase is returned as `location_resolution` so the Research tab, the call hook and Clare's
@@ -34,6 +43,7 @@ the reasoning-model token budget). Bundled via build_web._FUNCTION_ENTRY.
 """
 import difflib
 import json
+import math
 import os
 import re
 import sys
@@ -90,13 +100,101 @@ MISHEARD_RATIO = 0.7
 AREA_WORDS = frozenset((
     "near", "nearby", "around", "area", "areas", "region", "suburb", "suburbs", "surrounds",
     "surrounding", "close", "corridor", "outskirts", "north", "south", "east", "west",
-    "northern", "southern", "eastern", "western", "inner", "outer"))
+    "northern", "southern", "eastern", "western", "inner", "outer",
+    "northeast", "northwest", "southeast", "southwest",
+    "northeastern", "northwestern", "southeastern", "southwestern"))
 # How a caller says an estate. An estate is in one locality, so such a phrase keeps one name.
 ESTATE_WORDS = frozenset(("estate", "estates", "development", "community"))
+
+# THE CLOSEST SPELLINGS, HANDED TO THE MODEL. Live, 15 Sep 2026, gpt-oss-20b at low effort:
+# "Wyndum Vale" came back unknown and "Cragieburn" was left out of the answer altogether --
+# misspellings a person corrects at a glance. The model was being asked to recall the
+# gazetteer; now it chooses from it. A phrase that is not an area is sent with up to this
+# many localities of the brief's state, closest by spoken key first...
+CANDIDATE_COUNT = 5
+# ...none less alike than this. "Wyndum Vale" against Wyndham Vale is 0.86, against
+# Humevale (its fifth) 0.67; below this a name is not a spelling of the phrase at all.
+CANDIDATE_FLOOR = 0.6
+
+# THE BACKSTOP, WHEN THE MODEL STILL DOES NOT SAY. A phrase Groq did not settle -- unknown,
+# left out, a failure, no key -- is searched as its closest locality in the brief's state
+# only when that locality is at least FUZZY_RATIO alike and FUZZY_MARGIN clear of the next
+# one, and the phrase is spelt like one name: no digit, no one-letter word, no area or
+# estate word, at least FUZZY_MIN_KEY letters.
+#
+# Measured 15 Sep 2026 over data/au_suburbs.csv, one misspelling of each kind per locality (a
+# letter dropped, doubled, swapped with the next, a vowel changed). Re-measured after review
+# the same day, with the 241 postal names out of the ranking and out of what is said
+# (_POSTAL) and "the"/"of" phrases refused: 17,296 localities; 69,026 of 69,176 misspellings
+# reach the backstop (150 spell another real locality and resolve first). At these values
+# and with the crowd rule below, 50,881 (73.7%) come back as the locality meant -- doubled
+# 85.2%, dropped 71.5%, swapped 69.6%, vowel 68.5% -- 7 (0.01%) come back as another ("Oberne"
+# with a vowel changed read as Osborne, "Albert" swapped as Larbert), and the rest are
+# searched as said. Every locality said as itself and left out of the ranking: 0 read as a
+# different one. No real name reaches the backstop at all: 0 of 140,296 name-and-state
+# lookups through resolve() (first measurement; an exact name is settled before anything is
+# ranked). The ratio is no higher because "Wyndum Vale", live, is 0.857 from Wyndham Vale; in
+# the first measurement 0.08 rather than 0.06 cost 1.1 points of recovery and removed 36 of
+# the 46 wrong readings.
+FUZZY_RATIO = 0.85
+FUZZY_MARGIN = 0.08
+FUZZY_MIN_KEY = 6
+# A NAME IN A CROWD IS NOT CHOSEN. The same measurement without this rule, at 0.86 and 0.06:
+# 773 real localities, each said as itself and left out of the ranking, were read as another
+# (Brookdale as Brookvale, Black Creek as Back Creek), and 157 still at 0.92 and 0.10 -- one
+# letter apart is one letter apart whichever of the two was meant. So the closest locality
+# is taken only when no OTHER locality of the state is spelt within FUZZY_RATIO minus this
+# of it, which no pair of real names that close can pass. A slack of 0 already measured 0.
+FUZZY_CROWD_SLACK = 0.0
+# (csv path, state, name) -> similarity of the closest other locality; see _closest_other.
+_CLOSEST_OTHER = {}
+# A MAIL CENTRE IS NOT WHERE ANYONE BUYS A HOUSE. Review, 15 Sep 2026, offline with no key:
+# "Gold Coast" was read as Gold Coast Mc (0.90), "Sunshine Coast" as Sunshine Coast Mc,
+# "Central Coast" as Central Coast Mc and "Gippsland" as Gippsland Mc -- one postal point, 221
+# km from Melbourne, for a region hundreds of km wide, and a name no stock row carries. The
+# same names came first among the candidates sent to Groq. data/au_suburbs.csv carries 241
+# such rows (mail, delivery and business centres, post offices; none has a sal_code), so
+# they are never ranked as a spelling of anything. They were also twins of their towns under
+# the crowd rule: Ballarat Mc kept every misspelling of Ballarat from the backstop. Said
+# exactly, such a name still resolves as itself. "Centre" is not here: Booleroo Centre, SA,
+# is a town.
+_POSTAL = re.compile(r"\s(?:mc|dc|bc|po|msc|gpo)$|\bdelivery\b", re.IGNORECASE)
+
+# WEST OF MELBOURNE IS WEST. Live, 15 Sep 2026: "western suburbs of Melbourne" came back as
+# Footscray, Sunshine, Williamstown, Altona, Maribyrnong, Essendon, Coburg and Brunswick, and
+# every one is a real VIC locality within 50 km, so no gate above objected. Coburg (bearing 2
+# degrees from the Melbourne locality) and Brunswick (355) are due north. An area phrase that
+# says a compass direction from a place it names keeps only the names that lie within this
+# many degrees either side of that direction, measured from the named place's locality.
+DIRECTION_HALF_ANGLE = 67.5
+# Closer to the named place than this, a bearing is noise; such a name is left to the other
+# gates rather than dropped for a direction nobody can read.
+DIRECTION_MIN_KM = 1.0
+# "inner" and "outer" are not gated: they say how far, not which way, and where the inner
+# suburbs end is a different distance for every city -- nothing the index could check.
+_COMPASS = {"north": (0.0, 1.0), "east": (1.0, 0.0), "south": (0.0, -1.0), "west": (-1.0, 0.0)}
+_COMPASS_WORD = re.compile(r"(north|south)?(east|west)?(?:ern)?")
+_DIGIT = re.compile(r"\d")
+# Word breaks for the one-letter rule, as geo._WORD_BREAK: an apostrophe stays in the word.
+_WORD_BREAK = re.compile(r"[^a-z'‘’]+")
+# (csv path, state) -> (locality count, {key length: [(spoken key, name)]}) -- see _state_keys.
+_STATE_KEYS = {}
+# Words that join a phrase together rather than name anything.
+_CONNECTIVES = frozenset(("the", "of", "in", "at", "to", "a", "an", "and", "or", "by", "on",
+                          "from"))
 # Words that say what kind of place a phrase is, never which one. Left out when the phrase's
 # own words are looked up as a locality or as an estate the stock knows.
-_FILLER = AREA_WORDS | ESTATE_WORDS | frozenset(
-    ("the", "of", "in", "at", "to", "a", "an", "and", "or", "by", "on", "from"))
+_FILLER = AREA_WORDS | ESTATE_WORDS | _CONNECTIVES
+# FROM WHERE A DIRECTION IS SAID. Review, 15 Sep 2026: the gate measured from any place the
+# phrase named, so "western suburbs around Werribee" dropped Tarneit, Hoppers Crossing,
+# Point Cook and Truganina "as not west of Werribee", and "northern suburbs like Craigieburn"
+# dropped Roxburgh Park, Greenvale and Epping -- the suburb was an example inside the area,
+# not the centre of it. A direction is measured only from the place after "of" or "from"
+# ("western suburbs of Melbourne", "north of Brisbane"); these words may stand between the
+# direction and that "of".
+_TOWARD_WORDS = frozenset(("suburbs", "suburb", "side", "sides", "area", "areas", "region",
+                           "part", "parts", "and", "or", "the"))
+_FROM_WORDS = frozenset(("of", "from"))
 _WORD = re.compile(r"[A-Za-z][A-Za-z'\-]*")
 
 # THE SAME QUESTION TWICE IS ONE CALL. The call hook sends one brief at 20 km and again at
@@ -113,8 +211,11 @@ _CACHE = {}                               # (phrases, state, model) -> (monotoni
 SYSTEM = (
     "You map what a caller said about WHERE they want to buy property in Australia to "
     "official locality (suburb) names, spelt as in the Australia Post and ABS gazetteer. "
-    "The words were spoken on a phone call and transcribed, so a name may be misheard, "
-    "misspelt, split or joined. For each phrase return at most 8 official locality names: "
+    "The words were spoken on a phone call and transcribed, so callers' place names are "
+    "often misheard, misspelt, split or joined. A phrase may come with 'candidates': real "
+    "localities in the state spelt closest to what was said. When one of them plausibly is "
+    "the place the caller meant, prefer it; they are only a hint, so when none fits and you "
+    "do not know, still answer 'unknown'. For each phrase return at most 8 official locality names: "
     "exactly one name for a misheard or misspelt suburb; the main residential localities "
     "for an area or region phrase (for example 'western suburbs of Melbourne', 'near "
     "Ipswich', 'north of Brisbane'); the locality it is in for a housing estate, "
@@ -151,13 +252,19 @@ def _km(index, a, b, state):
     return haversine_km(pa[0], pa[1], pb[0], pb[1])
 
 
-def _prompt(phrases, state):
+def _prompt(phrases, state, candidates=None):
     where = (f"State: {state}. Return only localities in {state}."
              if state else
              "The state was not given. Return a locality only when the phrase clearly "
              "means one place; it may be in any state.")
-    data = {"state": state or "not given",
-            "phrases": [{"id": i, "said": p} for i, p in enumerate(phrases, 1)]}
+    items = []
+    for i, p in enumerate(phrases, 1):
+        item = {"id": i, "said": p}
+        near = candidates[i - 1] if candidates and i <= len(candidates) else []
+        if near:
+            item["candidates"] = list(near)
+        items.append(item)
+    data = {"state": state or "not given", "phrases": items}
     return where + "\n\nPhrases:\n" + json.dumps(data, ensure_ascii=False)
 
 
@@ -218,14 +325,17 @@ def _post(req):
     return (body["choices"][0]["message"]["content"] or "").strip()
 
 
-def _ask_groq(phrases, state):
-    """({id: (names, confidence)}, error). Every failure is an error string, never raised."""
+def _ask_groq(phrases, state, candidates=None):
+    """({id: (names, confidence)}, error). Every failure is an error string, never raised.
+
+    `candidates` is a list of locality names per phrase, in the order of `phrases`.
+    """
     payload = {
         "model": MODEL,
         "temperature": TEMPERATURE,
         "max_completion_tokens": MAX_TOKENS,
         "messages": [{"role": "system", "content": SYSTEM},
-                     {"role": "user", "content": _prompt(phrases, state)}],
+                     {"role": "user", "content": _prompt(phrases, state, candidates)}],
     }
     # As in api/narrative.py: only where the model understands it, since an unknown
     # parameter is a 400 elsewhere.
@@ -313,17 +423,291 @@ def _words(said):
     return _WORD.findall(said or "")
 
 
+def _lowered(said):
+    """The phrase's words in lower case, and each part of a hyphenated one as well.
+
+    "south-eastern suburbs" says south-east as surely as "south eastern suburbs" does.
+    """
+    out = set()
+    for word in _words(said):
+        low = word.lower()
+        out.add(low)
+        out.update(part for part in low.split("-") if part)
+    return out
+
+
+def _part_of_a_name(index, words, i, state):
+    """True when words[i] belongs to a locality of `state` said around it.
+
+    "West" in "near West Footscray" and "North" in "North Melbourne" name places, not
+    directions: gated as directions, a search around North Melbourne would keep only the
+    suburbs north of the CBD.
+    """
+    for size in (1, 2, 3):
+        for start in range(max(0, i - size + 1), min(i, len(words) - size) + 1):
+            if index.locate(" ".join(words[start:start + size]), state, spoken=True):
+                return True
+    return False
+
+
+def _compass_ways(word):
+    """{'south', 'east'} for "south-eastern" or "southeast"; empty for a word that is not one."""
+    found = set()
+    for part in word.lower().split("-"):
+        m = _COMPASS_WORD.fullmatch(part) if part else None
+        if m and (m.group(1) or m.group(2)):
+            found.update(way for way in m.groups() if way)
+    return found
+
+
+def _direction_origin(index, said, state):
+    """The locality of `state` a direction in `said` is measured from, or ''.
+
+    Only a place after "of" or "from" -- see _TOWARD_WORDS. "western suburbs of Melbourne" is
+    Melbourne; "western suburbs around Werribee" is nothing, and neither is "western Sydney".
+    """
+    words = _words(said)
+    for i, word in enumerate(words):
+        if not _compass_ways(word) or _part_of_a_name(index, words, i, state):
+            continue
+        j = i + 1
+        while j < len(words) and (words[j].lower() in _TOWARD_WORDS or _compass_ways(words[j])):
+            j += 1
+        if j >= len(words) or words[j].lower() not in _FROM_WORDS:
+            continue
+        j += 1
+        if j < len(words) and words[j].lower() == "the":
+            j += 1
+        for size in (3, 2, 1):
+            chunk = words[j:j + size]
+            name = " ".join(chunk)
+            if len(chunk) == size and index.locate(name, state):
+                return index.canonical_suburb(name) or name
+    return ""
+
+
+def _heading(index, said, state):
+    """(bearing, label) for the compass direction a phrase says, or None.
+
+    "western" is (270, 'west'), "south-east" and "southeastern" (135, 'south-east'). None
+    when no direction is said, or two that cancel ("north and south of Brisbane").
+    """
+    words = _words(said)
+    said_ways = set()
+    for i, word in enumerate(words):
+        found = _compass_ways(word)
+        if found and not _part_of_a_name(index, words, i, state):
+            said_ways |= found
+    if not said_ways or {"north", "south"} <= said_ways or {"east", "west"} <= said_ways:
+        return None
+    x = sum(_COMPASS[way][0] for way in said_ways)
+    y = sum(_COMPASS[way][1] for way in said_ways)
+    label = "-".join(way for way in ("north", "south", "east", "west") if way in said_ways)
+    return math.degrees(math.atan2(x, y)) % 360, label
+
+
+def _bearing(index, a, b, state):
+    """Degrees clockwise from north, from locality `a` to locality `b` of `state`, or None
+    when either is not one or they are under DIRECTION_MIN_KM apart."""
+    from geo import haversine_km                  # lazily, as _spoken_key
+    pa, pb = index.locate(a, state), index.locate(b, state)
+    if not pa or not pb or haversine_km(pa[0], pa[1], pb[0], pb[1]) < DIRECTION_MIN_KM:
+        return None
+    p1, p2 = math.radians(pa[0]), math.radians(pb[0])
+    dl = math.radians(pb[1] - pa[1])
+    y = math.sin(dl) * math.cos(p2)
+    x = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
+    return math.degrees(math.atan2(y, x)) % 360
+
+
+def _estate_elsewhere(index, name, state):
+    """True when `name` is an estate the stock files in `state` under some other locality."""
+    filed = index.estate_suburbs(name, state)
+    return filed is not None and name.lower() not in {f.lower() for f in filed}
+
+
+def _state_keys(index, state):
+    """{key length: [(spoken key, name)]} for every locality of `state`, built once a state.
+
+    research.py builds a new SuburbGeoIndex for every request, so this is kept on the module
+    and keyed on the file and the state; the locality count is checked so a reloaded file is
+    rebuilt. VIC (3,344 localities) takes a few milliseconds to build.
+    """
+    from geo import spoken_key                    # lazily, as _spoken_key
+    names = index.localities(state) if hasattr(index, "localities") else []
+    cache = (str(getattr(index, "csv_path", "")), state)
+    hit = _STATE_KEYS.get(cache)
+    if hit and hit[0] == len(names):
+        return hit[1]
+    buckets = {}
+    for name in names:
+        if _POSTAL.search(name):
+            continue                      # never a reading of what a caller said: _POSTAL
+        key = spoken_key(name)
+        if key:
+            buckets.setdefault(len(key), []).append((key, name))
+    _STATE_KEYS[cache] = (len(names), buckets)
+    return buckets
+
+
+def _phrase_key(said):
+    """The spoken key of what was said, without the words that only say it is an estate."""
+    return _spoken_key(" ".join(w for w in _words(said) if w.lower() not in ESTATE_WORDS))
+
+
+def _ranked(index, key, state):
+    """[(similarity, name, its spoken key)] for every locality of `state` at least
+    CANDIDATE_FLOOR alike to `key`, closest first and then by name. Same-key names included.
+
+    Not a scan of every name with the full ratio. Measured 15 Sep 2026 over the VIC names:
+    43 ms a phrase that way, 8-10 ms with the two cheap bounds below, and the same top five.
+    ratio is 2M/(n+m), so a name whose length alone keeps it under the floor is never
+    compared, and quick_ratio (letters in common, order ignored) is an upper bound on ratio.
+    """
+    if not key or not state:
+        return []
+    floor, n = CANDIDATE_FLOOR, len(key)
+    shortest = math.ceil(n * floor / (2 - floor) - 1e-9)
+    longest = math.floor(n * (2 - floor) / floor + 1e-9)
+    matcher = difflib.SequenceMatcher(None, autojunk=False)
+    matcher.set_seq2(key)
+    buckets = _state_keys(index, state)
+    out = []
+    for length in range(shortest, longest + 1):
+        for other, name in buckets.get(length, ()):
+            matcher.set_seq1(other)
+            if matcher.quick_ratio() < floor:
+                continue
+            similarity = matcher.ratio()
+            if similarity >= floor:
+                out.append((similarity, name, other))
+    out.sort(key=lambda r: (-r[0], r[1]))
+    return out
+
+
+def _candidates(index, said, state, ranked):
+    """Up to CANDIDATE_COUNT names from `ranked` to show Groq beside `said`.
+
+    None for an area phrase: "western suburbs of Melbourne" is not a spelling of anything,
+    and nor is a phrase joined by "the" or "of" ("The Hills", "City of Wyndham").
+    Never a name Groq's answer could not keep: one with the phrase's own spoken key (the
+    fold refused it on purpose) or an estate's name the stock files elsewhere.
+
+    ONLY WHERE THE INDEX CAN TELL. Review, 15 Sep 2026, with a model that answers with the
+    first candidate: "Aradale" came back as Armadale (Taradale is as close), "Bradfor" as
+    Bradford (Broadford 0.88), "Narelan" as Narellan (a twin of Barellan), "Yarra Valley" as
+    Tarra Valley in Gippsland, the Cloverton estate as Laverton and the Everleigh estate as
+    Riverleigh -- each kept as method "groq", past every rule that makes the backstop
+    measure 0 wrong. The prompt asks the model to prefer a candidate, so a list whose first
+    name is a near tie or a twin steers it to a coin toss. Candidates are offered only when
+    the first clears the next by FUZZY_MARGIN and has no twin (the crowd rule); otherwise the
+    model answers from what it knows, as it did live for "Tarn eat" (Tarneit 0.86 is 0.04
+    clear of Tarwin East, so it is sent without them). Measured over the 69,026 misspellings
+    in the FUZZY_RATIO note, a model that always took the first candidate would search the
+    wrong locality for 61 (0.1%), down from 1,017 (1.5%); the price is 8,157 (11.8%) whose
+    first candidate was right and are now sent without any.
+    """
+    if not state or _lowered(said) & (AREA_WORDS | _CONNECTIVES):
+        return []
+    own = _spoken_key(said)
+    offered = []
+    for similarity, name, key in ranked:
+        if key == own or _estate_elsewhere(index, name, state):
+            continue
+        offered.append((similarity, name))
+        if len(offered) == CANDIDATE_COUNT:
+            break
+    if not offered:
+        return []
+    second = offered[1][0] if len(offered) > 1 else 0.0
+    if offered[0][0] - second < FUZZY_MARGIN or \
+            _closest_other(index, offered[0][1], state) >= FUZZY_RATIO - FUZZY_CROWD_SLACK:
+        return []
+    return [name for _similarity, name in offered]
+
+
+def _closest_other(index, name, state):
+    """How alike the locality of `state` spelt closest to locality `name` is -- any but itself
+    and names sharing its spoken key. Remembered: a pick is usually asked about again."""
+    cache = (str(getattr(index, "csv_path", "")), state, name)
+    if cache not in _CLOSEST_OTHER:
+        if len(_CLOSEST_OTHER) >= 4096:
+            _CLOSEST_OTHER.clear()
+        own = _phrase_key(name)
+        _CLOSEST_OTHER[cache] = max((s for s, n, k in _ranked(index, own, state)
+                                     if n != name and k != own), default=0.0)
+    return _CLOSEST_OTHER[cache]
+
+
+def _spelt_like_one_name(said):
+    """True when `said` could be a misspelling of one locality and nothing else.
+
+    A digit is a lot or a postcode, a one-letter word a fragment ("Lot A"), an area or an
+    estate word a different kind of place, and a short name is one letter from too many:
+    the same rules geo._spoken_hits keeps for its fold.
+
+    A "the" or an "of" is a region's name. Review, 15 Sep 2026, offline with no key: "The
+    Hills" -- Sydney's Hills District -- was read as The Hill, NSW (0.93, Tighes Hill next at
+    0.78), a locality in Newcastle 117 km from Sydney, and the search went there. Measured
+    over data/au_suburbs.csv, refusing these words costs 0.4 points of recovery (301 of the
+    69,026 misspellings in the FUZZY_RATIO note): 112 localities hold one (The Basin, Bend Of
+    Islands), and a misspelling of those is left to Groq.
+    """
+    if _DIGIT.search(said or ""):
+        return False
+    if any(len(re.sub(r"[^a-z]", "", w)) == 1 for w in _WORD_BREAK.split(said.lower())):
+        return False
+    if _lowered(said) & _FILLER:
+        return False
+    return len(_spoken_key(said)) >= FUZZY_MIN_KEY
+
+
+def _fuzzy(index, said, state, ranked):
+    """(name, detail) when `said` is read as its closest locality of `state`; ('', why) when a
+    near tie is why not; ('', '') otherwise. `ranked` is _ranked for the phrase.
+
+    Only as close as FUZZY_RATIO and FUZZY_MARGIN clear of the runner-up. Never when a
+    locality of the state shares the phrase's own spoken key -- geo's fold refused that on
+    purpose (two localities share it, or an estate is filed elsewhere) -- nor when the
+    phrase or the name is an estate the stock files somewhere else.
+    """
+    if not state or not ranked or not _spelt_like_one_name(said):
+        return "", ""
+    own = _spoken_key(said)
+    if any(key == own for _s, _n, key in ranked) or index.estate_suburbs(said, state) is not None:
+        return "", ""
+    best, name, _key = ranked[0]
+    second, runner = (ranked[1][0], ranked[1][1]) if len(ranked) > 1 else (0.0, "")
+    if best < FUZZY_RATIO:
+        return "", ""
+    if best - second < FUZZY_MARGIN:
+        return "", (f"its closest spellings in {state}, {name} ({best:.2f}) and {runner} "
+                    f"({second:.2f}), are too alike to choose between")
+    if _estate_elsewhere(index, name, state):
+        return "", ""
+    if _closest_other(index, name, state) >= FUZZY_RATIO - FUZZY_CROWD_SLACK:
+        return "", (f"its closest spelling in {state}, {name} ({best:.2f}), is itself spelt "
+                    "almost like another locality there, so it was not chosen")
+    return name, (f"similarity {best:.2f}; the next closest, {runner}, {second:.2f}"
+                  if runner else f"similarity {best:.2f}; no other locality comes close")
+
+
 def _named_in_phrase(index, said, state):
     """A locality of `state` the phrase names in its own words, longest first, or ''.
 
-    "Ipswich" in "near Ipswich", "Marsden Park" in "Newpark Marsden Park". Only words that
-    are not _FILLER, so "north" or "estate" never becomes a place.
+    "Ipswich" in "near Ipswich", "Marsden Park" in "Newpark Marsden Park". Never words that
+    are all _FILLER, so "north" or "estate" alone never becomes a place.
+
+    A NAME MAY HOLD A COMPASS WORD. Review, 15 Sep 2026: every chunk holding a _FILLER word
+    was skipped, so in "south east, Clyde North area" the place named was Clyde, not Clyde
+    North, and the direction gate then dropped Clyde North -- the suburb the caller said --
+    "as not south-east of Clyde". Clyde North, Werribee South and Box Hill North are names.
     """
     words = _words(said)
     for size in (3, 2, 1):
         for i in range(len(words) - size + 1):
             chunk = words[i:i + size]
-            if any(w.lower() in _FILLER for w in chunk):
+            if all(w.lower() in _FILLER for w in chunk):
                 continue
             name = " ".join(chunk)
             if index.locate(name, state):
@@ -338,11 +722,13 @@ def _gate(index, said, names, state):
       1. the estate: when the phrase's own words are an estate the stock knows in `state`,
          only the localities its listings are filed under;
       2. the map: only names within MAX_KM_FROM_ANCHOR of the anchor;
-      3. the count: one name, when the phrase names one place rather than an area.
+      3. the direction: for an area said as a compass direction of or from a place the
+         phrase names, only names that lie that way (DIRECTION_HALF_ANGLE);
+      4. the count: one name, when the phrase names one place rather than an area.
     """
     why = []
     words = _words(said)
-    lowered = {w.lower() for w in words}
+    lowered = _lowered(said)
     rest = " ".join(w for w in words if w.lower() not in _FILLER)
     filed = index.estate_suburbs(rest, state) if rest else None
     if filed is not None:
@@ -376,6 +762,23 @@ def _gate(index, said, names, state):
             why.append(f"{len(names) - len(kept)} more than {MAX_KM_FROM_ANCHOR} km from "
                        f"{anchor} dropped")
         names = kept
+    named = _direction_origin(index, said, state) if names and (lowered & AREA_WORDS) else ""
+    heading = _heading(index, said, state) if named else None
+    if heading:
+        # Only from a place the phrase NAMES, after "of" or "from" (_TOWARD_WORDS).
+        # "western suburbs" alone has no centre the index can vouch for, the anchor the names
+        # agree on is itself one of Groq's, and "around Werribee" is inside the area.
+        toward, label = heading
+        off = []
+        for n in names:
+            bearing = _bearing(index, named, n, state)
+            if bearing is not None and \
+                    abs((bearing - toward + 180) % 360 - 180) > DIRECTION_HALF_ANGLE:
+                off.append(n)
+        if off:
+            why.append(f"{len(off)} dropped as not {label} of {named} ({', '.join(off)}: "
+                       f"more than {DIRECTION_HALF_ANGLE:g} degrees off due {label})")
+            names = [n for n in names if n not in off]
     if len(names) > 1 and not (lowered & AREA_WORDS):
         sounds_like = difflib.SequenceMatcher(
             None, _spoken_key(said), _spoken_key(names[0])).ratio() >= MISHEARD_RATIO
@@ -434,14 +837,39 @@ def resolve(phrases, state, index):
 
     pending = [s for s in slots if not s["method"]]
     inferred = ""
+    ranked_ms = 0
+    if pending and st:
+        # The closest spellings, for the prompt and the backstop alike -- computed once.
+        # Only with the brief's own state: without one there is no gazetteer to rank against.
+        # Only as many as can ever be asked or added (MAX_PRIMARY_SUBURBS): a ranking is tens
+        # of milliseconds in NSW, and a brief naming thirty odd things is not thirty rankings.
+        started = time.monotonic()
+        for s in pending:
+            s["ranked"], s["candidates"] = [], []
+        try:
+            for s in pending[:MAX_PRIMARY_SUBURBS]:
+                # Neither the prompt nor the backstop reads a spelling for these: _candidates.
+                area = bool(_lowered(s["said"]) & (AREA_WORDS | _CONNECTIVES))
+                s["ranked"] = [] if area else _ranked(index, _phrase_key(s["said"]), st)
+                s["candidates"] = _candidates(index, s["said"], st, s["ranked"])
+        except Exception as ex:                                        # noqa: BLE001
+            # Never costs the Groq call or the brief: the phrase simply goes without hints.
+            _log(f"candidates error={type(ex).__name__}")
+            for s in pending:
+                s["ranked"], s["candidates"] = [], []
+        ranked_ms = int((time.monotonic() - started) * 1000)
     if pending:
         inferred = _resolve_with_groq(pending, slots, st, index)
+    if pending and st:
+        _backstop(pending, slots, st, index, ranked_ms)
     for s in pending:
-        if s["method"] != "groq":
+        if s["method"] not in ("groq", "fuzzy"):
             s["method"] = "unresolved"
             s["used"] = [s["fallback"]]
             # Only a phrase past the MAX_PRIMARY_SUBURBS sent to Groq arrives here unnoted.
             s["note"] = s["note"] or "not a locality; searched as said (not sent to Groq)"
+            if s.get("tie"):
+                s["note"] += "; " + s["tie"]
 
     suburbs, seen = [], set()
     for s in slots:
@@ -452,6 +880,43 @@ def resolve(phrases, state, index):
     report = [{"said": s["said"], "used": list(s["used"]), "method": s["method"],
                "note": s["note"]} for s in slots]
     return {"suburbs": suburbs, "location_resolution": report, "state": inferred}
+
+
+_SEARCHED_AS_SAID = re.compile(r"searched as said \((.*)\)$")
+
+
+def _backstop(pending, slots, st, index, ranked_ms):
+    """Read each pending phrase Groq did not settle as its closest spelling -- see _fuzzy."""
+    taken = {n.lower() for s in slots if s["method"] for n in s["used"]}
+    room = MAX_PRIMARY_SUBURBS - len(taken)
+    checked = used = 0
+    for s in pending:
+        if s["method"] == "groq" or not s.get("ranked"):
+            continue
+        checked += 1
+        try:
+            name, detail = _fuzzy(index, s["said"], st, s["ranked"])
+        except Exception as ex:                                        # noqa: BLE001
+            _log(f"fuzzy error={type(ex).__name__}")
+            continue
+        if not name:
+            s["tie"] = detail
+            continue
+        already = name.lower() in taken
+        if not already and room <= 0:
+            continue                       # the search is full; searched as said, as before
+        if not already:
+            taken.add(name.lower())
+            room -= 1
+        used += 1
+        # Why Groq did not settle it, from the note that would otherwise have been shown.
+        m = _SEARCHED_AS_SAID.search(s["note"] or "")
+        why = m.group(1) if m else (s["note"] or "not sent to Groq")
+        s.update(method="fuzzy", used=[name],
+                 note=(f"not a locality in {st}; read as {name}, the one locality in {st} "
+                       f"spelt this closely ({detail}); Groq did not settle it ({why})"
+                       + ("; already in the search" if already else "")))
+    _log(f"fuzzy checked={checked} used={used} candidates_ms={ranked_ms}")
 
 
 def _resolve_with_groq(pending, slots, st, index):
@@ -465,7 +930,7 @@ def _resolve_with_groq(pending, slots, st, index):
     where = f"in {st}" if st else "anywhere"
     if not _key():
         return unresolved(f"not a locality {where}; searched as said "
-                          "(GROQ_API_KEY is not set, so nothing else was tried)")
+                          "(GROQ_API_KEY is not set, so Groq was not asked)")
     taken = {n.lower() for s in slots if s["method"] for n in s["used"]}
     room = MAX_PRIMARY_SUBURBS - len(taken)
     if room <= 0:
@@ -481,7 +946,9 @@ def _resolve_with_groq(pending, slots, st, index):
     if cached:
         answers, error = hit[1], ""
     else:
-        answers, error = _ask_groq(phrases, st)
+        # The candidates are not in the cache key: they follow from the phrases, the state
+        # and the locality file, and every remembered answer is validated again anyway.
+        answers, error = _ask_groq(phrases, st, [s.get("candidates") or [] for s in asked])
         if not error:
             _remember(cache_key, answers)
     ms = int((time.monotonic() - started) * 1000)
