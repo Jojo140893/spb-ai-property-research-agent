@@ -1113,6 +1113,264 @@ console.log("\n--- Needs confirming: amber, closed, dated, and never in the shor
     && out.includes("Card 29"), `${(out.match(/class="prop-card/g) || []).length} cards`);
 }
 
+// ------------------------------------------------------------------ W14 review: counts as a person reads them
+console.log("\n--- the panel's counts read as one line per meaning, in thousands (W14 review) ---");
+{
+  // Werribee VIC <= $700k on the full 17 Sep snapshot printed "8 repeat another listing" and,
+  // on the next line, "1 repeats another listing": same_listing_collapsed and duplicates_merged
+  // mean the same thing to a consultant. Any state with no ceiling printed "11716 listings are
+  // priced at any price".
+  const { out } = await renderExplained(explained({
+    shortlist: Array.from({ length: 6 }, (_, i) => prop({ content_hash: `v2:w${i}` })), shortlist_count: 6,
+    brief_used: { state: "", budget_min: 0, budget_max: 9007199254740991 },
+    search_help: searchHelp({
+      funnel: {
+        gates: [
+          { code: "not_available", stage: "before_scoring", count: 1589, in_price_range: 1589 },
+          { code: "same_listing_collapsed", stage: "pool", count: 316, in_price_range: null },
+          { code: "duplicates_merged", stage: "pool", count: 3, in_price_range: null },
+          { code: "truncated", stage: "pool", count: 7622, in_price_range: null },
+        ],
+        in_price_range: { available: 8538, not_available: 1589 }, in_price_range_total: 11716,
+      },
+      relaxations: [],
+    }),
+  }));
+  const lines = (out.match(/<div class="sh-gate[^"]*">[^<]*<\/div>/g) || []).map(l => l.replace(/<[^>]+>/g, ""));
+  check("two codes that both mean 'repeat another listing' are one line, added together",
+    lines.filter(l => /repeats? another listing/.test(l)).length === 1 && lines.includes("319 repeat another listing"),
+    lines.join(" | "));
+  check("counts in the thousands are written with separators",
+    out.includes("11,716 listings") && lines.includes("1,589 are marked Sold, On Hold or otherwise not available")
+    && lines.includes("8,538 passed every check before scoring; of those:")
+    && lines.includes("7,622 were past the most the search can score at once"), out.slice(0, 700));
+  check("with no price limits the headline says so plainly",
+    out.includes("Across every state, 11,716 listings have a price.") && !out.includes("priced at any price"),
+    (out.match(/class="sh-line">[^<]*/) || [""])[0]);
+}
+{
+  // W13 says when the needs-confirming count may be short: the search's own pool was cut
+  // at the candidate cap, so stale matches beyond it were never scored or counted.
+  const cut = explained({ search_help: searchHelp({ needs_confirming: { count: 3, listed: 3, count_may_be_short: true } }) });
+  const { out, el } = await renderExplained(cut);
+  check("a count that may be short reads 'At least N' in the group",
+    out.includes("<summary>At least 3 more listings match but need confirming before you send them</summary>"),
+    (out.match(/<details class="nc-group"><summary>[^<]*/) || [""])[0]);
+  check("... and 'N+ to confirm' on the badge", el("shortlistBadge").textContent === "2 Qualified · 3+ to confirm (1438 Filtered)",
+    el("shortlistBadge").textContent);
+  const exact = await renderExplained(explained({ search_help: searchHelp({ needs_confirming: { count: 3, count_may_be_short: false } }) }));
+  check("an exact count stays exact", exact.out.includes("<summary>3 more listings match")
+    && exact.el("shortlistBadge").textContent === "2 Qualified · 3 to confirm (1438 Filtered)", exact.el("shortlistBadge").textContent);
+}
+
+// ------------------------------------------------------------------ W14 review: searches that overlap
+console.log("\n--- only the latest search paints the results (W14 review) ---");
+{
+  // An explained search takes seconds longer than a plain one, and a thin search (the one
+  // that prices relaxations) longer than a broad one. So the page-load run -- every state,
+  // no ceiling -- can answer AFTER the consultant's QLD <= $750k, and used to paint national
+  // results, their Kommo payload and their shortlist under a form that reads QLD.
+  const s = sandbox();
+  let releaseOld;
+  const oldBody = success({ shortlist: [prop({ content_hash: "v2:national", lot_address: "Lot 9 National" })],
+    shortlist_count: 509, rejected_count: 11208, kommo_payload: { note: "national" } });
+  const newBody = explained({ kommo_payload: { note: "qld750" } });
+  let n = 0;
+  s.respond(async () => {
+    n++;
+    if (n === 1) return new Promise(resolve => { releaseOld = () => resolve(reply(200, oldBody)); });
+    return reply(200, newBody);
+  });
+  const pageLoad = s.api.runResearchAgent();          // not awaited: still waiting on the server
+  await settle();
+  await s.api.runResearchAgent({ explain: true });    // the consultant's search answers first
+  await settle();
+  releaseOld();
+  await pageLoad;
+  await settle();
+  const out = dump(s.el("resultsContent"));
+  check("a search that answers after a newer one paints nothing",
+    !out.includes("Lot 9 National") && out.includes("search-help") && out.includes("nc-group"), out.slice(0, 300));
+  check("... and leaves the newer search's badge, shortlist and Kommo payload in place",
+    s.el("shortlistBadge").textContent === "2 Qualified · 3 to confirm (1438 Filtered)"
+    && s.ctx.LAST_SHORTLIST.map(p => p.content_hash).join() === "v2:one,v2:two"
+    && s.ctx.currentPayload && s.ctx.currentPayload.note === "qld750",
+    JSON.stringify({ badge: s.el("shortlistBadge").textContent, last: s.ctx.LAST_SHORTLIST.map(p => p.content_hash),
+      payload: s.ctx.currentPayload }));
+}
+{
+  // The same when the older search fails: its error must not replace the newer results.
+  const s = sandbox();
+  s.ctx.setTimeout = fn => { setImmediate(fn); return 0; };   // the 1.2 s retry wait, without the wait
+  let failOld;
+  let n = 0;
+  s.respond(async () => {
+    n++;
+    if (n === 1) return new Promise((_, reject) => { failOld = () => reject(new Error("dropped")); });
+    if (n === 2) return reply(200, explained());
+    return reply(502, {});
+  });
+  const older = s.api.runResearchAgent();
+  await settle();
+  await s.api.runResearchAgent({ explain: true });
+  await settle();
+  failOld();
+  await older;
+  await settle();
+  const out = dump(s.el("resultsContent"));
+  check("an older search that fails does not overwrite the newer results with its error",
+    out.includes("search-help") && !out.includes("didn't complete") && !out.includes("retrying"),
+    out.slice(0, 300));
+  check("... and does not retry once a newer search has answered",
+    s.calls.fetch.length === 2, `${s.calls.fetch.length} POSTs`);
+}
+{
+  // The older search's first try fails at once, so it is waiting to retry when the newer
+  // search starts and answers. Waking up, it must not try again.
+  const s = sandbox();
+  let n = 0;
+  s.respond(async () => {
+    n++;
+    if (n === 1) throw new Error("dropped");
+    if (n === 2) return reply(200, explained());
+    return reply(502, {});
+  });
+  let wake = null;
+  s.ctx.setTimeout = fn => { wake = fn; return 0; };   // the retry wait ends when this test says
+  const older = s.api.runResearchAgent();
+  await settle();                                       // failed once; waiting to retry
+  const waiting = typeof wake === "function";
+  await s.api.runResearchAgent({ explain: true });
+  await settle();
+  if (wake) wake();
+  await older;
+  await settle();
+  const out = dump(s.el("resultsContent"));
+  check("an older search waiting to retry does not retry once a newer search has answered",
+    waiting && s.calls.fetch.length === 2 && out.includes("search-help") && !out.includes("didn't complete"),
+    `waiting ${waiting}; ${s.calls.fetch.length} POSTs; ${out.slice(0, 160)}`);
+}
+{
+  // Every other place an older search could still write: a late 401, a late body, a body
+  // that will not parse.
+  const late = async (settleOld) => {
+    const s = sandbox();
+    let n = 0, release;
+    s.respond(async () => {
+      n++;
+      if (n === 1) return new Promise(resolve => { release = resolve; });
+      return reply(200, explained());
+    });
+    const older = s.api.runResearchAgent();
+    await settle();
+    await s.api.runResearchAgent({ explain: true });
+    await settle();
+    settleOld(release);
+    await older;
+    await settle();
+    return dump(s.el("resultsContent"));
+  };
+  const signIn = await late(release => release(reply(401, { error: "auth_required" })));
+  check("an older search's late 401 does not replace the newer results with 'sign in again'",
+    signIn.includes("search-help") && !signIn.includes("sign-in has expired"), signIn.slice(0, 300));
+}
+{
+  // A body that turns out not to parse, still being read when the newer search paints.
+  const s = sandbox();
+  let n = 0, spoil;
+  s.respond(async () => {
+    n++;
+    if (n === 1) {
+      return { status: 200, ok: true, headers: { get: () => "application/json" },
+        json: () => new Promise((_, reject) => { spoil = () => reject(new Error("Unexpected token < in JSON")); }) };
+    }
+    return reply(200, explained());
+  });
+  const older = s.api.runResearchAgent();
+  await settle();
+  await s.api.runResearchAgent({ explain: true });
+  await settle();
+  if (spoil) spoil();
+  await older;
+  await settle();
+  const bad = dump(s.el("resultsContent"));
+  check("an older search whose body will not parse does not replace the newer results with its error",
+    !!spoil && bad.includes("search-help") && !bad.includes("could not be") && !bad.includes("Unexpected token"),
+    bad.slice(0, 300));
+}
+{
+  // A body that is still being read when the newer search paints.
+  const s = sandbox();
+  let n = 0, parse;
+  s.respond(async () => {
+    n++;
+    if (n === 1) {
+      return { status: 200, ok: true, headers: { get: () => "application/json" },
+        json: () => new Promise(resolve => { parse = () => resolve(JSON.parse(JSON.stringify(
+          success({ shortlist: [prop({ lot_address: "Lot 9 National" })], shortlist_count: 509 })))); }) };
+    }
+    return reply(200, explained());
+  });
+  const older = s.api.runResearchAgent();
+  await settle();                                       // the older search is reading its body
+  await s.api.runResearchAgent({ explain: true });
+  await settle();
+  if (parse) parse();
+  await older;
+  await settle();
+  const out = dump(s.el("resultsContent"));
+  check("an older search whose body is read late paints nothing: the newer results stay",
+    !!parse && !out.includes("Lot 9 National") && s.el("shortlistBadge").textContent.startsWith("2 Qualified"),
+    `${s.el("shortlistBadge").textContent} ${out.slice(0, 200)}`);
+}
+
+// ------------------------------------------------------------------ W14 review: a count for the brief that was searched
+console.log("\n--- a relaxation's count is for the brief that was searched (W14 review) ---");
+{
+  // The button says "Budget up to $825,000 -> 12 matches". The 12 was counted over the brief
+  // that was posted. Edit the form afterwards and the click would post a different search,
+  // under a button that promised 12.
+  const s = sandbox();
+  s.el("clientName").value = "Colin";
+  s.el("stateSelect").value = "QLD";
+  s.el("budgetMax").value = "750000";
+  s.respond(async () => reply(200, explained()));
+  await s.api.runResearchAgent({ explain: true });
+  await settle();
+  const helpBox = child(s, "search-help");
+  const plus10 = helpBox ? helpBox.querySelectorAll(".relax-btn").find(x => x.dataset.relax === "2") : null;
+  const said = helpBox ? helpBox.querySelector(".sh-said") : null;
+  s.el("bedrooms").value = "4";                        // edited after the search
+  if (plus10 && typeof plus10.onclick === "function") plus10.onclick();
+  await settle();
+  check("after the brief is edited, a relaxation click searches nothing and writes nothing",
+    s.calls.fetch.length === 1 && s.el("budgetMax").value === "750000" && s.el("bedrooms").value === "4",
+    `${s.calls.fetch.length} POST(s), budgetMax ${s.el("budgetMax").value}`);
+  check("... and says why, in the panel",
+    !!said && /changed since/.test(said.textContent) && /Execute/.test(said.textContent),
+    said ? JSON.stringify(said.textContent) : "no .sh-said line in the panel");
+  s.el("bedrooms").value = "";                         // back to the brief as searched
+  s.el("clientName").value = "Colin Smith";            // a name is not part of the count
+  if (plus10 && typeof plus10.onclick === "function") plus10.onclick();
+  await settle();
+  const body = s.calls.fetch[1] ? JSON.parse(s.calls.fetch[1].opts.body) : {};
+  check("the brief as searched (the client name aside) still runs the counted change",
+    s.calls.fetch.length === 2 && body.client_brief && body.client_brief.budget_max === 825000,
+    `${s.calls.fetch.length} POST(s)`);
+}
+{
+  // A patch whose keys the form has, but whose value a box cannot hold (a state the select
+  // does not offer), is never a button that silently does nothing when clicked.
+  const { out } = await renderExplained(explained({ search_help: searchHelp({ relaxations: [
+    { id: "whole_state", kind: "rerun", label: "All of TAS, not only Hobart",
+      brief_patch: { state: "TAS", primary_suburbs: [], search_radius_km: 0 },
+      shortlist_count: 7, adds: 5, count_status: "exact" },
+  ] }) }), s => { s.el("stateSelect").value = "QLD"; });
+  check("a patch the form cannot hold is offered as text, not as a button that does nothing",
+    !/relax-btn[^>]*>All of TAS/.test(out) && out.includes("Change the brief above to try: All of TAS, not only Hobart → 7 matches (+5)"),
+    (out.match(/<button[^>]*relax-btn[\s\S]*?<\/button>|class="sh-grey">[^<]*/g) || []).join(" | "));
+}
+
 // ------------------------------------------------------------------ the card's own date (guard)
 console.log("\n--- the card's date warning reads the row's own date (unchanged, guarded) ---");
 {

@@ -4011,15 +4011,16 @@ python state_sync.py push</pre>
         return Math.abs(q - Math.round(q)) < 1e-9;
     };
 
-    /* Writes a relaxation's brief_patch into the form, so the search that runs next is the
-       one that was counted AND the consultant can see what changed. Blank means "any" on
-       every minimum box, so a 0 is written as blank rather than as a 0 somebody has to
-       read. Returns false, writing nothing, for a patch the form cannot express: a field
-       it has no box for, a state the select does not offer, or a figure a box's own
-       validation would refuse. Every value is worked out first and written only once all
-       of them fit, so a refused patch never leaves the form half changed. */
-    function applyBriefPatch(patch) {
-        if (!patchFits(patch)) return false;
+    /* The writes a relaxation's brief_patch would make to the form, as [element, property,
+       value], worked out WITHOUT writing any. Blank means "any" on every minimum box, so a
+       0 is written as blank rather than as a 0 somebody has to read. null for a patch the
+       form cannot express: a field it has no box for, a state the select does not offer, or
+       a figure a box's own validation would refuse. The panel asks this before it offers a
+       button (W14 review: a TAS whole-state patch was a button that did nothing when
+       clicked), and applyBriefPatch writes only a complete answer, so a refused patch never
+       leaves the form half changed. */
+    function briefPatchWrites(patch) {
+        if (!patchFits(patch)) return null;
         const box = id => document.getElementById(id);
         const amount = v => {
             const n = Number(v);
@@ -4035,7 +4036,7 @@ python state_sync.py push</pre>
                 continue;
             }
             const el = box(BRIEF_PATCH_BOX[key]);
-            if (!el) return false;
+            if (!el) return null;
             let text;
             if (key === 'requires_incentive') {
                 writes.push([el, 'checked', value === true]);
@@ -4043,7 +4044,7 @@ python state_sync.py push</pre>
             } else if (key === 'state') {
                 const want = String(value ?? '').trim();
                 text = /^any state$/i.test(want) ? '' : want.toUpperCase();
-                if (el.options && ![...el.options].some(o => o.value === text)) return false;
+                if (el.options && ![...el.options].some(o => o.value === text)) return null;
                 writes.push([el, 'value', text]);
                 continue;
             } else if (key === 'primary_suburbs') {
@@ -4062,9 +4063,18 @@ python state_sync.py push</pre>
             } else {
                 text = amount(value);
             }
-            if (!boxHolds(el, text)) return false;
+            if (!boxHolds(el, text)) return null;
             writes.push([el, 'value', text]);
         }
+        return writes;
+    }
+
+    /* Writes a relaxation's brief_patch into the form, so the search that runs next is the
+       one that was counted AND the consultant can see what changed. false, writing nothing,
+       when briefPatchWrites refuses the patch. */
+    function applyBriefPatch(patch) {
+        const writes = briefPatchWrites(patch);
+        if (!writes) return false;
         for (const [el, prop, v] of writes) el[prop] = v;
         // The price echo describes the boxes; they just changed without an input event.
         paintBudgetEcho();
@@ -4111,7 +4121,9 @@ python state_sync.py push</pre>
                 const status = String(r.count_status ?? '').trim();
                 const said = r.label;
                 return {
-                    key, reveal, patch, fits: patchFits(patch), count, adds, capped: r.capped === true,
+                    // Offered as a button only when the form can hold the whole patch now.
+                    key, reveal, patch, fits: briefPatchWrites(patch) !== null, count, adds,
+                    capped: r.capped === true,
                     failed: status === 'error',
                     exact: count !== null && (status === 'exact' || (!status && !reveal)),
                     label: (typeof said === 'string' || typeof said === 'number') && String(said).trim()
@@ -4168,6 +4180,20 @@ python state_sync.py push</pre>
         if (said) return said[n === 1 ? 0 : 1];
         return String(code).replace(/^(scorer|admitted)[.:]/, '').replace(/_/g, ' ');
     };
+    // Two codes with one meaning read as one line, added together, where the first stood:
+    // same_listing_collapsed and duplicates_merged both "repeat another listing", and the
+    // full 17 Sep snapshot printed them one under the other (W14 review).
+    const byMeaning = lines => {
+        const said = new Map();
+        for (const g of lines) {
+            const key = gateLabel(g.code, 2);
+            if (said.has(key)) said.get(key).n += g.n;
+            else said.set(key, { code: g.code, n: g.n });
+        }
+        return [...said.values()];
+    };
+    // 11,716, not 11716: these counts reach the thousands on a broad search.
+    const inThousands = n => Number(n).toLocaleString('en-AU');
 
     /* The panel. Open when the search found fewer than EXPLAIN_BELOW; on a longer shortlist
        it is folded away as "How this search was counted". '' when the server sent no
@@ -4192,7 +4218,7 @@ python state_sync.py push</pre>
         const top = Number(used.budget_max);
         const hi = top > 0 && top < RESEARCH_NO_CEILING ? top : 0;
         const range = lo && hi ? `between ${echoMoney(lo)} and ${echoMoney(hi)}`
-            : hi ? `at or under ${echoMoney(hi)}` : lo ? `at ${echoMoney(lo)} or more` : 'at any price';
+            : hi ? `at or under ${echoMoney(hi)}` : lo ? `at ${echoMoney(lo)} or more` : '';
         const total = wholeCount(funnel.in_price_range_total);
         const allGates = (Array.isArray(funnel.gates) ? funnel.gates : [])
             .filter(g => g && typeof g === 'object' && typeof g.code === 'string' && g.code.trim());
@@ -4212,19 +4238,20 @@ python state_sync.py push</pre>
             .map(g => ({ code: g.code.trim(), n: wholeCount(g.count) }))
             .filter(g => g.n !== null && g.n > 0);
         if (total !== null || gates.length) {
-            parts.push(`<div class="sh-line">${esc(total !== null
-                ? `${where}, ${total} listing${total === 1 ? ' is' : 's are'} priced ${range}.`
-                : `${where}, priced ${range}:`)}</div>`);
-            parts.push(`<div class="sh-gate">${esc(`${found} made the shortlist`)}</div>`);
-            for (const g of gates) {
-                parts.push(`<div class="sh-gate">${esc(`${g.n} ${gateLabel(g.code, g.n)}`)}</div>`);
+            const headline = total === null ? `${where}, ${range ? `priced ${range}` : 'at any price'}:`
+                : range ? `${where}, ${inThousands(total)} listing${total === 1 ? ' is' : 's are'} priced ${range}.`
+                : `${where}, ${inThousands(total)} listing${total === 1 ? ' has' : 's have'} a price.`;
+            parts.push(`<div class="sh-line">${esc(headline)}</div>`);
+            parts.push(`<div class="sh-gate">${esc(`${inThousands(found)} made the shortlist`)}</div>`);
+            for (const g of byMeaning(gates)) {
+                parts.push(`<div class="sh-gate">${esc(`${inThousands(g.n)} ${gateLabel(g.code, g.n)}`)}</div>`);
             }
             if (passed !== null && passed > 0) {
-                parts.push(`<div class="sh-gate">${esc(`${passed} passed every check before scoring`
+                parts.push(`<div class="sh-gate">${esc(`${inThousands(passed)} passed every check before scoring`
                     + (after.length ? '; of those:' : ''))}</div>`);
             }
-            for (const g of (passed !== null && passed > 0) ? after : []) {
-                parts.push(`<div class="sh-gate sh-sub">${esc(`${g.n} ${gateLabel(g.code, g.n)}`)}</div>`);
+            for (const g of (passed !== null && passed > 0) ? byMeaning(after) : []) {
+                parts.push(`<div class="sh-gate sh-sub">${esc(`${inThousands(g.n)} ${gateLabel(g.code, g.n)}`)}</div>`);
             }
         }
 
@@ -4255,11 +4282,15 @@ python state_sync.py push</pre>
             if (r.failed) { failed.push(r.label); return; }
             if (!r.exact) { notCounted.push(r.label); return; }
             if (!(r.adds > 0)) { noChange.push(r.label); return; }
-            const text = `${r.label} → ${r.count}${r.capped ? '+' : ''} match${r.count === 1 ? '' : 'es'} (+${r.adds})`;
+            const text = `${r.label} → ${inThousands(r.count)}${r.capped ? '+' : ''} match${r.count === 1 ? '' : 'es'} (+${inThousands(r.adds)})`;
             if (!r.fits) { byHand.push(text); return; }
             offers.push(`<button type="button" class="relax-btn" data-relax="${i}">${esc(text)}</button>`);
         });
-        if (offers.length) parts.push(`<div class="sh-offers">${offers.join('')}</div>`);
+        if (offers.length) {
+            parts.push(`<div class="sh-offers">${offers.join('')}</div>`);
+            // Filled by a click that cannot run (see runResearchAgent). Plain text only.
+            parts.push('<div class="sh-said sh-grey"></div>');
+        }
         if (byHand.length) parts.push(`<div class="sh-grey">${esc(`Change the brief above to try: ${byHand.join('; ')}`)}</div>`);
         if (noChange.length) parts.push(`<div class="sh-grey">${esc(`No change: ${noChange.join(', ')}`)}</div>`);
         if (notCounted.length) parts.push(`<div class="sh-grey">${esc(`Not counted in time: ${notCounted.join(', ')}`)}</div>`);
@@ -4373,9 +4404,9 @@ python state_sync.py push</pre>
             .filter(x => x && typeof x === 'object' && !Array.isArray(x));
         if (!list.length) return '';
         const total = Math.max(wholeCount(d.needs_confirming_count) ?? 0, list.length);
-        const head = total === 1
-            ? '1 more listing matches but needs confirming before you send it'
-            : `${total} more listings match but need confirming before you send them`;
+        const one = total === 1;
+        const head = `${confirmCountShort(d) ? 'At least ' : ''}${inThousands(total)} more listing`
+            + `${one ? ' matches' : 's match'} but need${one ? 's' : ''} confirming before you send ${one ? 'it' : 'them'}`;
         const hiddenBy = (d.needs_confirming_hidden && typeof d.needs_confirming_hidden === 'object')
             ? Object.entries(d.needs_confirming_hidden) : [];
         // Summed by what they say, so two codes with one meaning read as one line.
@@ -4397,22 +4428,26 @@ python state_sync.py push</pre>
         </details>`;
     }
 
+    /* True when the server says its needs-confirming count may be short: the search's own
+       pool was cut at the candidate cap, so stale matches past the cut were never scored or
+       counted (Any state, no ceiling: 7,622 cut on the 17 Sep snapshot). The group then
+       says "At least N" and the badge "N+" (W14 review). */
+    const confirmCountShort = d => {
+        const help = d && d.search_help;
+        const nc = help && typeof help === 'object' ? help.needs_confirming : null;
+        return !!(nc && typeof nc === 'object' && nc.count_may_be_short === true);
+    };
+
     // What the badge counts as "to confirm": the server's exact count, when it sent the rows.
     const needsConfirmingCount = d => {
         const list = d && Array.isArray(d.needs_confirming) ? d.needs_confirming.length : 0;
         return list ? Math.max(wholeCount(d.needs_confirming_count) ?? 0, list) : 0;
     };
 
-    async function runResearchAgent(options) {
-        // explain:true asks the server for search_help and needs_confirming. Only a search
-        // someone asked for sends it -- a form submit, a relaxation click, "search without
-        // this minimum" -- never the page-load run: the explanation re-runs the search for
-        // every relaxation, which is seconds nobody is waiting on when the page opens.
-        const explain = !!(options && options.explain === true);
-        // Programmatic re-runs (search without a minimum) change the boxes without an
-        // input event; keep the echo in step with what is about to be sent.
-        paintBudgetEcho();
-        const brief = {
+    /* The brief exactly as the form states it now. A search posts this; a relaxation click
+       compares it with what the search posted (see briefKey). */
+    function readBriefForm() {
+        return {
             client_name: document.getElementById('clientName').value || 'Unnamed Client',
             // A BLANK BUDGET MEANS NO CEILING, not a ceiling of zero. The form used to
             // ship pre-filled with a fictional client (Sarah & Mark Johnson, $780,000,
@@ -4443,6 +4478,33 @@ python state_sync.py push</pre>
                 .map(el => el.value),
             requires_incentive: !!(document.getElementById('requiresIncentive') || {}).checked
         };
+    }
+    // What a relaxation's count was made over: the whole brief but the client's name, which
+    // changes nothing about the stock that matches.
+    const briefKey = brief => JSON.stringify({ ...brief, client_name: '' });
+
+    /* ONLY THE LATEST SEARCH PAINTS (W14 review, 17 Sep). An explained search takes
+       seconds longer than a plain one, and a thin search -- the kind that prices
+       relaxations -- longer than a broad one. So the page-load run (every state, no
+       ceiling) could answer AFTER the consultant's own QLD <= $750k and paint national
+       results, their Kommo payload and LAST_SHORTLIST under a form reading QLD. Every
+       search takes a number; one that is no longer the latest drops its answer, or its
+       error, at each await. */
+    let RESEARCH_RUN = 0;
+
+    async function runResearchAgent(options) {
+        // explain:true asks the server for search_help and needs_confirming. Only a search
+        // someone asked for sends it -- a form submit, a relaxation click, "search without
+        // this minimum" -- never the page-load run: the explanation re-runs the search for
+        // every relaxation, which is seconds nobody is waiting on when the page opens.
+        const explain = !!(options && options.explain === true);
+        const run = ++RESEARCH_RUN;
+        const overtaken = () => run !== RESEARCH_RUN;
+        // Programmatic re-runs (search without a minimum) change the boxes without an
+        // input event; keep the echo in step with what is about to be sent.
+        paintBudgetEcho();
+        const brief = readBriefForm();
+        const searchedKey = briefKey(brief);
 
         const resultsDiv = document.getElementById('resultsContent');
         resultsDiv.innerHTML = '<div style="text-align:center; padding:3rem; color:var(--accent-blue); font-weight:600;">Processing Property Evaluation & Benchmarking...</div>';
@@ -4463,8 +4525,10 @@ python state_sync.py push</pre>
             let res = null, lastErr = null, authExpired = false;
             for (let attempt = 1; attempt <= 2; attempt++) {
                 if (attempt === 2) {
+                    if (overtaken()) return;
                     resultsDiv.innerHTML = '<div style="text-align:center; padding:3rem; color:var(--accent-blue); font-weight:600;">Still working — retrying…</div>';
                     await new Promise(r => setTimeout(r, 1200));
+                    if (overtaken()) return;
                 }
                 try {
                     res = await fetch('/api/research', {
@@ -4487,6 +4551,7 @@ python state_sync.py push</pre>
                     res = null;
                 }
             }
+            if (overtaken()) return;       // a newer search owns the results now
             if (!res && authExpired) {
                 // A 12-hour session (SESSION_SECONDS in middleware.js). The brief is still
                 // on the page, so signing in and pressing the button again costs nothing.
@@ -4513,6 +4578,7 @@ python state_sync.py push</pre>
             }
 
             const data = await res.json();
+            if (overtaken()) return;
             if (data.status === 'success') {
                 resultsDiv.innerHTML = '';
                 // "· M to confirm" only when the server sent needs_confirming rows. They are
@@ -4520,7 +4586,8 @@ python state_sync.py push</pre>
                 // listing that did not make the shortlist), so M is a part of F, not added to it.
                 const toConfirm = needsConfirmingCount(data);
                 document.getElementById('shortlistBadge').textContent = `${data.shortlist_count} Qualified`
-                    + (toConfirm ? ` · ${toConfirm} to confirm` : '') + ` (${data.rejected_count} Filtered)`;
+                    + (toConfirm ? ` · ${toConfirm}${confirmCountShort(data) ? '+' : ''} to confirm` : '')
+                    + ` (${data.rejected_count} Filtered)`;
 
                 // "Searched: ..." and the notes, above everything else -- see searchNotesHtml.
                 const notesHtml = searchNotesHtml(data);
@@ -4550,6 +4617,15 @@ python state_sync.py push</pre>
                                 if (typeof ncGroup.scrollIntoView === 'function') {
                                     ncGroup.scrollIntoView({ behavior: 'smooth', block: 'start' });
                                 }
+                                return;
+                            }
+                            // The count on the button was made over the brief this search
+                            // posted. Edited since, the click would post a different search
+                            // under a button promising that count: say so, run nothing.
+                            const said = helpBox.querySelector('.sh-said');
+                            if (briefKey(readBriefForm()) !== searchedKey) {
+                                if (said) said.textContent = 'The brief above has changed since these '
+                                    + 'were counted. Press Execute to count again.';
                                 return;
                             }
                             // Straight to the search, never through the form's submit: its
@@ -4969,6 +5045,7 @@ python state_sync.py push</pre>
                 }
             }
         } catch (e) {
+            if (overtaken()) return;
             // Reached only if rendering the results throws — the fetch itself is
             // handled above with a retry. "Error executing system" tells a
             // non-technical reader nothing they can act on.
