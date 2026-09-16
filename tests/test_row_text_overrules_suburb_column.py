@@ -436,11 +436,18 @@ def test_the_rollback_command_re_resolves_every_moved_row(tmp_path, monkeypatch)
 # ------------------------------------------------------------------ never stops the run
 
 @pytest.mark.parametrize("broken", ["text_locality_elsewhere", "overrule_evidence"])
-def test_a_crash_in_the_check_falls_back_to_todays_states_and_exits_2(tmp_path, monkeypatch,
-                                                                     broken):
+def test_a_crash_in_the_check_falls_back_to_todays_states_and_exits_degraded(tmp_path,
+                                                                            monkeypatch,
+                                                                            broken):
     """enrich is a REQUIRED nightly step: an exception here would abort the run and keep
     yesterday's snapshot. The row keeps today's answer, everything else is still written,
-    and exit 2 marks the run degraded so CI goes red after publishing."""
+    and run_daily.DEGRADED_EXIT marks the run degraded so CI goes red after publishing.
+
+    Not 2: run_daily files 2 as a PARTIAL harvest, writes _harvest_partial, and CI then
+    reports a dead channel and prescribes a portal login. The code enrich really returned
+    is fed through run_daily._run to prove the runner reads it as DEGRADED, not PARTIAL."""
+    import run_daily
+
     rows = [_riverhills_14905(), _wollert_vic_sibling(),
             # an ordinary unresolved row the rest of enrich must still write
             _row(700, suburb="Tarneit", postcode="3029", lot_address="7 Example St, Tarneit")]
@@ -450,7 +457,27 @@ def test_a_crash_in_the_check_falls_back_to_todays_states_and_exits_2(tmp_path, 
         raise RuntimeError("simulated failure in the new check")
 
     monkeypatch.setattr(enrich_buildings, broken, boom)
-    assert _enrich(monkeypatch, db) == 2
+    code = _enrich(monkeypatch, db)
+    assert enrich_buildings.DEGRADED_EXIT == run_daily.DEGRADED_EXIT, \
+        "the step and the runner must agree"
+    assert code == run_daily.DEGRADED_EXIT, code
     states = _states(db)
     assert states[14905] == ("QLD", "suburb")
     assert states[700][0] == "VIC", "the rest of enrich stopped writing"
+
+    step_dir = tmp_path / "runner"
+    step_dir.mkdir()
+    (step_dir / "enrich_step.py").write_text(f"import sys\nsys.exit({code})\n",
+                                             encoding="utf-8")
+    monkeypatch.setattr(run_daily, "APP", step_dir)
+    run_daily._DEGRADED.clear()
+    run_daily._PARTIAL.clear()
+    try:
+        assert run_daily._run("2/7  Enrich: state, suburb, builder",
+                              ["enrich_step.py"], False) is True
+        assert run_daily._PARTIAL == [], "a crash in the check is not a dead harvest channel"
+        assert len(run_daily._DEGRADED) == 1, run_daily._DEGRADED
+        assert run_daily._DEGRADED[0].startswith("2/7  Enrich")
+    finally:
+        run_daily._DEGRADED.clear()
+        run_daily._PARTIAL.clear()

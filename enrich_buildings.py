@@ -75,6 +75,13 @@ from state_resolver import (TEXT_LOCALITY_SOURCE, disagreement, file_is_national
 
 STATE_RE = re.compile(r"\b(VIC|NSW|QLD|SA|WA|NT|ACT|TAS)\b", re.I)
 
+# The exit code for "every state was written by today's rules, the row-text check failed
+# and was dropped". It must equal run_daily.DEGRADED_EXIT (tests pin them): run_daily reads
+# it as finished-but-DEGRADED, so the chain publishes and CI goes red afterwards. Not 2:
+# run_daily files 2 as a PARTIAL harvest and CI then names a dead channel and prescribes a
+# portal login, which is the wrong cure for a crash in this check.
+DEGRADED_EXIT = 70
+
 # Signals that are only ever a claim about the file a row arrived in. A state resting on
 # one of these is re-resolved on every run, not left alone like a blank field: the whole
 # Hudson error was already written to the column, so a pass that only filled blanks would
@@ -251,8 +258,8 @@ def main(argv=None):
                    and not rollback)
     # Problems in the NEW check only. It runs inside a required nightly step, so it must
     # never be what stops the run: on any error the row keeps the state today's rules give
-    # it, the error is printed, and the exit code is 2 so run_daily marks the run
-    # degraded and CI goes red AFTER publishing.
+    # it, the error is printed, and the exit code is DEGRADED_EXIT so run_daily marks the
+    # run degraded and CI goes red AFTER publishing.
     degraded: List[str] = []
     overruled: List[tuple] = []
 
@@ -558,9 +565,9 @@ def main(argv=None):
         print()
         for line in degraded:
             print(f"  [DEGRADED] ERROR in the row-text state check: {line}")
-        print("  Every other state decision above was written as normal. Exit 2 so the run "
-              "is marked degraded and goes red after publishing.")
-        return 2
+        print(f"  Every other state decision above was written as normal. Exit "
+              f"{DEGRADED_EXIT} so the run is marked degraded and goes red after publishing.")
+        return DEGRADED_EXIT
     return 0
 
 
