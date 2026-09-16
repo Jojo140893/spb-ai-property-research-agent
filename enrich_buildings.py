@@ -25,17 +25,46 @@ canonical spelling of themselves.
 
 Also records which aggregator a listing came from so E-Agent stock is identifiable.
 Idempotent: safe to re-run after every harvest.
+
+A STATE THAT RESTS ON A SUBURB MATCH IS CHECKED AGAINST THE ROW'S OWN TEXT (Part C, W02).
+When the only thing behind a state is a suburb-name match -- signal 'suburb', or 'suburb +
+e-agent page' on a suburb guessed from the address -- and the row's own line names a
+locality in exactly one OTHER state where the catalogue holds live stock ("Available
+Wollert Titled Townhouse 618" filed QLD off an estate called Riverhills), the state is
+rewritten to that other state with state_source 'row text locality (over suburb column)'.
+Every such write is printed with its evidence. See state_resolver.text_locality_elsewhere.
+
+Switched off by SPB_TEXT_LOCALITY_OVERRULE=0. ROLLBACK -- re-resolve every row this check
+moved, by today's rules with the check switched off:
+
+    SPB_DATABASE_PATH=<db> python enrich_buildings.py --rollback-text-locality
+
+That undoes the writes for this run only; the check re-applies on the next run unless the
+change is reverted or SPB_TEXT_LOCALITY_OVERRULE=0 is set where the nightly runs. After a
+code revert the flag no longer exists, and the same rollback is the SQL below followed by
+a plain `python enrich_buildings.py`, which re-resolves the blanked rows:
+
+    UPDATE buildings SET state=NULL, state_source=NULL
+     WHERE state_source='row text locality (over suburb column)';
+
+Re-resolved is not restored: a row in a stocklist whose own rows prove two states comes
+back blank rather than with the state the suburb match once gave it.
 """
 
+import argparse
+import os
 import re
 import sqlite3
-from typing import Dict
+import sys
+import traceback
+from typing import Dict, List
 from urllib.parse import unquote
 
 import config
 from database import ResearchDatabase
 from geo import SuburbGeoIndex
-from state_resolver import (disagreement, file_is_national, own_state, resolve_state)
+from state_resolver import (TEXT_LOCALITY_SOURCE, disagreement, file_is_national, own_state,
+                            resolve_state, text_locality_elsewhere)
 
 STATE_RE = re.compile(r"\b(VIC|NSW|QLD|SA|WA|NT|ACT|TAS)\b", re.I)
 
@@ -110,7 +139,90 @@ def file_of(row) -> str:
     return ""
 
 
-def main():
+def rests_on_a_suburb_match(signal, suburb_from_column: bool) -> bool:
+    """True when a state's only support is a suburb-name match.
+
+    'suburb' is a lone gazetteer vote, whether the suburb came from the column or was
+    guessed from the address. 'suburb + e-agent page' counts only when the suburb was
+    GUESSED: then the page picked between the states of a name the extractor never read
+    as a suburb ("Windermere" out of "Windermere Mambourin").
+
+    The same test is applied to a state being resolved now and to one already written, so
+    a row lands on the same answer whichever way it reaches the check, and a second run
+    has nothing left to change.
+    """
+    signal = (signal or "").strip()
+    return signal == "suburb" or (signal == "suburb + e-agent page" and not suburb_from_column)
+
+
+def overrule_evidence(rows, geo):
+    """What the catalogue itself says about places: (stocked, estates).
+
+    stocked  {(locality lower-case, state)} for every live row whose suburb COLUMN is a
+             locality of its stored state.
+    estates  {(builder lower-case, estate lower-case): {state: {row ids}}} over live rows.
+    """
+    stocked, estates = set(), {}
+    for r in rows:
+        if r["superseded_by"]:
+            continue
+        st = (r["state"] or "").strip().upper()
+        if not STATE_RE.fullmatch(st or ""):
+            continue
+        sub = (r["suburb"] or "").strip()
+        if sub and geo.locate(sub, st):
+            stocked.add((sub.lower(), st))
+        estate = (r["estate_name"] or "").strip().lower()
+        if estate:
+            key = ((r["builder_name"] or "").strip().lower(), estate)
+            estates.setdefault(key, {}).setdefault(st, set()).add(r["id"])
+    return stocked, estates
+
+
+def overruled_state(r, suburb, state, geo, evidence):
+    """(other_state, evidence text) when the row's own text overrules `state`, else None.
+
+    Two ways, in this order:
+      1. its text names a locality of one other state that holds stock there
+         (state_resolver.text_locality_elsewhere);
+      2. its suburb value IS its estate name, and that builder's other live rows of the
+         same estate sit in exactly one state, which is not this one. Riverhills: the
+         column holds the estate, Riverhills is a QLD suburb, and Hattan's other Riverhills
+         rows are all VIC. A NAMED builder only: estate names repeat across the country,
+         and rows with no builder are every unnamed builder at once.
+    """
+    stocked, estates = evidence
+    text = " ".join(str(r[k] or "") for k in ("source_text", "lot_address"))
+    hit = text_locality_elsewhere(text, state, geo, stocked)
+    if hit:
+        return hit[1], f"text names {hit[0]!r}"
+    estate = (r["estate_name"] or "").strip().lower()
+    builder = (r["builder_name"] or "").strip().lower()
+    if builder and estate and suburb and suburb.strip().lower() == estate:
+        key = (builder, estate)
+        where = {st for st, ids in estates.get(key, {}).items() if ids - {r["id"]}}
+        if len(where) == 1 and state not in where:
+            other = next(iter(where))
+            return other, f"estate {r['estate_name']!r} is stocked in {other} by the same builder"
+    return None
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Backfill state on harvested stock.")
+    ap.add_argument("--rollback-text-locality", action="store_true",
+                    help=f"re-resolve every row whose state_source is "
+                         f"'{TEXT_LOCALITY_SOURCE}', with that check switched off")
+    args = ap.parse_args([] if argv is None else argv)
+    rollback = args.rollback_text_locality
+    overrule_on = (os.environ.get("SPB_TEXT_LOCALITY_OVERRULE", "1").strip() != "0"
+                   and not rollback)
+    # Problems in the NEW check only. It runs inside a required nightly step, so it must
+    # never be what stops the run: on any error the row keeps the state today's rules give
+    # it, the error is printed, and the exit code is 2 so run_daily marks the run
+    # degraded and CI goes red AFTER publishing.
+    degraded: List[str] = []
+    overruled: List[tuple] = []
+
     # Constructing the database applies the column migration, so a newly declared field
     # (state_source) exists before the raw sqlite3 connection below tries to write it.
     ResearchDatabase()
@@ -132,6 +244,13 @@ def main():
 
     conn = sqlite3.connect(str(config.DATABASE_PATH))
     conn.row_factory = sqlite3.Row
+    if rollback:
+        # Not committed on its own: the rows are re-resolved below on this connection,
+        # and the clear lands in the same commit as their new states or not at all.
+        n = conn.execute("UPDATE buildings SET state=NULL, state_source=NULL "
+                         "WHERE state_source=?", (TEXT_LOCALITY_SOURCE,)).rowcount
+        print(f"  ROLLBACK: {n} row(s) held a state from '{TEXT_LOCALITY_SOURCE}' -- "
+              f"cleared, and re-resolved below with that check switched off")
     rows = conn.execute("SELECT * FROM buildings").fetchall()
 
     fixed_state = fixed_suburb = 0
@@ -144,9 +263,21 @@ def main():
     # read before any of them is resolved.
     proven: Dict[int, tuple] = {}
     per_file: Dict[str, set] = {}
+    # Whether the suburb pass 2 votes with came out of the column or was guessed from the
+    # address below -- a guessed "Windermere" is weaker than a stated one.
+    from_column: Dict[int, bool] = {}
+    evidence = (set(), {})
+    if overrule_on:
+        try:
+            evidence = overrule_evidence(rows, geo)
+        except Exception as exc:                                       # noqa: BLE001
+            overrule_on = False
+            degraded.append(f"building the stock-by-place evidence failed: {exc!r}")
+            traceback.print_exc()
     for r in rows:
         rid = r["id"]
         suburb = (r["suburb"] or "").strip()
+        from_column[rid] = bool(suburb)
         if not suburb:
             # IN MEMORY ONLY. This used to also
             #
@@ -184,6 +315,26 @@ def main():
 
     national = {f for f, states in per_file.items() if file_is_national(states)}
 
+    check_errors: List[str] = []
+
+    def text_overrules(r, suburb, state, signal):
+        """(other_state, evidence) when this row's own text overrules a suburb-match state.
+
+        None when the check is off, the row is superseded, the state does not rest on a
+        suburb match, or the check itself raised -- in which case the row keeps today's
+        answer and the run is reported degraded.
+        """
+        if not (overrule_on and state and not r["superseded_by"]
+                and rests_on_a_suburb_match(signal, from_column[r["id"]])):
+            return None
+        try:
+            return overruled_state(r, suburb, state, geo, evidence)
+        except Exception as exc:                                       # noqa: BLE001
+            if not check_errors:
+                traceback.print_exc()
+            check_errors.append(f"id {r['id']}: {exc!r}")
+            return None
+
     # --- pass 2: resolve ------------------------------------------------------
     for r in rows:
         rid = r["id"]
@@ -204,6 +355,19 @@ def main():
         # already written, so a fill-the-blanks pass would skip all 149 of them.
         settled = bool(state) and bool(STATE_RE.fullmatch(state or "")) \
             and (r["state_source"] or "") not in HINT_ONLY_SIGNALS
+        # A SETTLED STATE THAT RESTS ON A SUBURB MATCH is still checked against the row's
+        # own text. Settled rows are never re-resolved, which is right for most of them --
+        # re-resolving every 'suburb' state blanked 64 correct ones, because their files
+        # prove more than one state -- but it also meant a state resting on an estate name
+        # in the suburb column was never looked at again. Checked, not re-resolved: the
+        # state changes only when the text names another state's locality.
+        if settled:
+            hit = text_overrules(r, suburb, state, r["state_source"])
+            if hit:
+                _write(conn, rid, state=hit[0], state_source=TEXT_LOCALITY_SOURCE)
+                overruled.append((rid, state, hit[0], suburb, from_column[rid], hit[1]))
+                corrected_states += 1
+                state = hit[0]
         if not settled:
             page = r["source_state_hint"] if "source_state_hint" in r.keys() else ""
             if file_of(r) in national:
@@ -216,6 +380,13 @@ def main():
                 new_state, signal = resolve_state(postcode=r["postcode"], suburb=suburb,
                                                   page_state=page, geo=geo,
                                                   listing_state=mine)
+                # The same check as for a settled row, so the answer does not depend on
+                # whether the state was already written when the check first ran.
+                hit = text_overrules(r, suburb, new_state, signal)
+                if hit:
+                    overruled.append((rid, state or "-", hit[0], suburb, from_column[rid],
+                                      hit[1]))
+                    new_state, signal = hit[0], TEXT_LOCALITY_SOURCE
                 if not new_state:                  # last resort: the file's own name
                     from_file = state_from_filename(url)
                     if from_file:
@@ -272,6 +443,15 @@ def main():
           f"   same state, better signal: {retraced_states}")
     for sig, n in sorted(by_signal.items(), key=lambda kv: -kv[1]):
         print(f"            via {sig:<34} {n:>5}")
+    # Every move, with what justified it. Printed in full because each one changes which
+    # state's searches a listing appears in, and a person reviewing the nightly log must be
+    # able to check it against the line itself.
+    print(f"  state   overruled by the row's own text: {len(overruled)}"
+          + ("" if overrule_on else
+             "   (check switched off" + (" -- rollback run)" if rollback else ")")))
+    for rid, was, now, sub, col, why in overruled:
+        print(f"            id {rid:<7} {was:<3} -> {now:<3}  suburb {sub!r} "
+              f"({'column' if col else 'guessed'})  {why}")
     if national:
         # The file, not the row, is what was wrong. Printed in full because each one is a
         # decision to stop trusting a whole file, and a human should be able to check it.
@@ -338,6 +518,18 @@ def main():
     _report_non_canonical_names(conn)
     conn.close()
 
+    if check_errors:
+        degraded.append(f"the row-text check raised on {len(check_errors)} row(s), first "
+                        f"{check_errors[0]}; those rows kept today's state")
+    if degraded:
+        print()
+        for line in degraded:
+            print(f"  [DEGRADED] ERROR in the row-text state check: {line}")
+        print("  Every other state decision above was written as normal. Exit 2 so the run "
+              "is marked degraded and goes red after publishing.")
+        return 2
+    return 0
+
 
 def _report_non_canonical_names(conn):
     """Which stored builder names are not the canonical spelling of themselves.
@@ -367,4 +559,4 @@ def _report_non_canonical_names(conn):
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main(sys.argv[1:]))
