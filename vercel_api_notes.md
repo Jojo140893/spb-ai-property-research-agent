@@ -243,10 +243,20 @@ crawl. Consequences, all surfaced in the UI rather than hidden:
   at $1.05 M: *scored 33 of 4,308 — 3,046 outside QLD, 86 with no state, 88 not
   available, 580 over the ceiling, 69 with no suburb, 399 without the facts the brief's
   minimums are checked against.* `rejected_count` counts in-state rows only; rows for
-  other states are out of scope, not "filtered".
-* **`rejected_log` is capped at 30 pipeline entries** (`SPB_MAX_REJECTED_LOG`) because
-  `index.html` renders one card per entry. `rejected_count` stays exact and a card says
-  the list was trimmed.
+  other states are out of scope, not "filtered". Since Part C (W12) it counts every one
+  of them, and the response carries `in_state_rows` so that
+  `shortlist_count + rejected_count == in_state_rows` can be checked.
+* **`rejected_log` lists up to 30 pending-confirmation entries, then up to 30 hard
+  rejections** (`SPB_MAX_REJECTED_LOG` each) because `index.html` renders one card per
+  entry. Pending entries come first so a stale match is never cut off. `rejected_count`
+  stays exact and a card says what was trimmed.
+* **The brief is read the way the form meant it** (`_normalised_brief`): a price of
+  1-9,999 is thousands, "750k" / "$750,000" / "1.2m" are read, a missing budget_max is
+  no ceiling (not $0), a minimum above the maximum is swapped, a state typed into Target
+  Suburbs becomes the state, and a radius with no suburb is noted. Every change is listed
+  in `brief_adjustments`; `brief_used` is what was searched. One JSON line per search
+  (`"event":"spb_research"`, no client name) goes to stdout so a search can be replayed
+  from the function logs.
 * **Verification lapses instead of being asserted.** A stored row *was* verified — by
   the scrape that captured it (`sources/e_agent.py:467`). The deployment cannot
   re-verify it, so the recorded verification is honoured for

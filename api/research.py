@@ -27,6 +27,7 @@ read-only and never written.
 
 import json
 import os
+import re
 import sys
 import traceback
 from http.server import BaseHTTPRequestHandler
@@ -47,8 +48,22 @@ class BadRequest(ValueError):
     """The request itself was malformed — answered 400, not 500."""
 
 
-def _shortlist_entry(p):
-    """Identical field-for-field to server.py's shortlist serialisation."""
+def _shortlist_entry(p, availability=None):
+    """Identical field-for-field to server.py's shortlist serialisation, plus the two
+    availability fields below.
+
+    `availability` is {content_hash: {'availability_by_the_sheet', 'availability_status'}}
+    from the packages and snapshot rows behind this search, for a CandidateProperty that
+    does not carry them itself (see _availability_by_hash).
+    """
+    _known = (availability or {}).get(getattr(p, 'content_hash', '') or '') or {}
+    _by_the_sheet = getattr(p, 'availability_by_the_sheet', None)
+    if _by_the_sheet is None:
+        _by_the_sheet = _known.get('availability_by_the_sheet', False)
+    # A blank on the candidate is "not carried", not "the source said nothing": both come
+    # from the same snapshot row, so the row's own statement is the fallback.
+    _status = (getattr(p, 'availability_status', None)
+               or _known.get('availability_status', ''))
     return {
         'property_id': p.property_id,
         # NOT property_id — that is "PROP-{n}" assigned per search, so it names a
@@ -104,6 +119,13 @@ def _shortlist_entry(p):
         # so its rows kept being served as current while going three days stale. A
         # consultant about to send one to a buyer has to be able to see that.
         'date_checked': getattr(p, 'date_checked', ''),
+        # THE SOURCE NEVER SAID THE WORD. True when this lot is on a price list with no
+        # status column anywhere, so being listed is the only evidence it is for sale
+        # (_candidates.py, "A SHEET WITH NO STATUS COLUMN"). The card shows "Confirm
+        # availability" for it, and Clare must not call it "available" on its strength.
+        'availability_by_the_sheet': bool(_by_the_sheet),
+        # The availability exactly as the source row stated it ('' when it stated none).
+        'availability_status': str(_status or ''),
         # Benchmark A: could this buyer find comparable stock cheaper right now?
         # Attached by run_research below; None until a comparables provider is licensed,
         # which the card renders as "couldn't verify" rather than as any kind of claim.
@@ -166,6 +188,9 @@ def _pairwise_comparisons(brief_dict, shortlist):
 def _empty_kommo_payload(brief_dict, record_id, coverage_reason):
     """What the pipeline would have produced with nothing to shortlist."""
     from datetime import datetime
+    # `or`, not a get() default: the form sends a blank name as '', which a default
+    # cannot catch, and the note then read "Client: " with nothing after it.
+    client = brief_dict.get('client_name') or 'Unnamed Client'
     return {
         'research_record_id': record_id,
         'kommo_lead_status': 'Awaiting Consultant Review',
@@ -178,11 +203,10 @@ def _empty_kommo_payload(brief_dict, record_id, coverage_reason):
         },
         'kommo_internal_note': "SPB Property Research Completed\nRecord ID: %s\n"
                                "Client: %s\n\nNo stored listing could be scored.\n%s"
-                               % (record_id, brief_dict.get('client_name', 'Client'),
-                                  coverage_reason),
+                               % (record_id, client, coverage_reason),
         'consultant_review_task': {
             'task_type': 'Consultant Review & Approval',
-            'title': "Review Property Research for %s" % brief_dict.get('client_name', 'Client'),
+            'title': "Review Property Research for %s" % client,
             'due_date_hours': 24,
             'status': 'Pending Review',
         },
@@ -195,8 +219,220 @@ _LIST_FIELDS = ("primary_suburbs", "secondary_suburbs", "must_have_features",
                 "nice_to_have_features", "excluded_suburbs", "preferred_builders")
 
 
+# The form's "no maximum": index.html sends Number.MAX_SAFE_INTEGER for a blank Max box.
+NO_CEILING = 9007199254740991
+# A figure from 1 to 9,999 in a price box is thousands. No listing is priced under
+# $10,000 (the lowest of 12,153 is $50,000), so "750" can only mean $750,000. index.html's
+# budget echo applies the same rule (THOUSANDS_BELOW) -- keep the two identical, or the
+# echo promises a search that is not run.
+THOUSANDS_BELOW = 10000
+_MONEY_FIELDS = ("budget_min", "budget_max", "preferred_spending_cap")
+# "$750,000", "750k", "1.2m", "750 000", "1.2 million".
+_MONEY_TEXT = re.compile(r"^(\d+(?:\.\d+)?|\.\d+)(k|thousand|m|mil|million)?$")
+_MONEY_SUFFIX = {"k": 1e3, "thousand": 1e3, "m": 1e6, "mil": 1e6, "million": 1e6}
+
+# A state, named or abbreviated, as a consultant might type it into Target Suburbs. None
+# of these is a locality anywhere in data/au_suburbs.csv, so reading one as a state can
+# never take a real suburb away from a search.
+STATE_NAMES = {
+    "queensland": "QLD", "qld": "QLD",
+    "new south wales": "NSW", "nsw": "NSW",
+    "victoria": "VIC", "vic": "VIC",
+    "south australia": "SA", "sa": "SA",
+    "western australia": "WA", "wa": "WA",
+    "tasmania": "TAS", "tas": "TAS",
+    "northern territory": "NT", "nt": "NT",
+    "australian capital territory": "ACT", "act": "ACT",
+}
+
+
+# What brief_used and the record id say for a blank state: a search of every state.
+ANY_STATE = "Any state"
+
+
+def _state_named(text):
+    """'QLD' for "Queensland", " qld ", "QUEENSLAND"; '' for anything else."""
+    return STATE_NAMES.get(" ".join(str(text or "").split()).lower(), "")
+
+
+def _tidy_number(value):
+    """750000.0 -> 750000, so what the response echoes reads the way it was typed."""
+    value = round(float(value), 2)
+    return int(value) if value.is_integer() else value
+
+
+def _read_money(value):
+    """(amount, how) for one price box. how is one of:
+
+      'missing'     nothing was given (absent, None, blank text)
+      'number'      a number, used as it is
+      'thousands'   a number from 1 to 9,999, read as thousands
+      'text'        text that reads as an amount ("$750,000", "750k", "1.2m")
+      'unreadable'  something that is not an amount ("abc", true, a list, NaN)
+    """
+    if value is None:
+        return None, "missing"
+    if isinstance(value, bool):
+        return None, "unreadable"
+    how = "number"
+    if isinstance(value, str):
+        text = value.strip().lower().replace("$", "").replace(",", "")
+        text = "".join(text.split())
+        if not text:
+            return None, "missing"
+        found = _MONEY_TEXT.match(text)
+        if not found:
+            return None, "unreadable"
+        amount = float(found.group(1)) * _MONEY_SUFFIX.get(found.group(2) or "", 1.0)
+        if found.group(2):
+            # A stated unit is not read as thousands a second time.
+            return _tidy_number(amount), "text"
+        how = "text"
+    elif isinstance(value, (int, float)):
+        try:
+            amount = float(value)
+        except OverflowError:
+            return None, "unreadable"
+    else:
+        return None, "unreadable"
+    if amount != amount or amount in (float("inf"), float("-inf")):
+        return None, "unreadable"
+    if 1 <= amount < THOUSANDS_BELOW:
+        return _tidy_number(amount * 1000), "thousands"
+    return (_tidy_number(amount) if amount < NO_CEILING else NO_CEILING), how
+
+
+def _normalised_money(out, adjustments):
+    """Price boxes read the way a consultant meant them, each change named."""
+    for field in _MONEY_FIELDS:
+        present = field in out
+        raw = out.get(field)
+        amount, how = _read_money(raw)
+        shown = raw if isinstance(raw, (str, int, float)) and not isinstance(raw, bool) \
+            else (None if raw is None else str(raw))
+        if field == "budget_max":
+            if how in ("missing", "unreadable") or (amount is not None and amount <= 0):
+                # NO MAXIMUM, NOT A $0 CEILING. brief_parser reads a missing budget_max as
+                # 0.0 and the scorer then rejects every listing as over budget: QLD with
+                # no budget_max key returned 0 while the same search with the form's
+                # blank Max returned 378.
+                out[field] = NO_CEILING
+                adjustments.append({
+                    "field": field, "code": "no_budget_max", "from": shown,
+                    "to": NO_CEILING,
+                    "why": ("could not be read as a price, so no price ceiling was applied"
+                            if how == "unreadable" else
+                            "no maximum price was given, so no price ceiling was applied"
+                            if how == "missing" or not present else
+                            "a maximum of $0 or less would rule out every listing, so no "
+                            "price ceiling was applied")})
+                continue
+        elif how == "missing":
+            continue
+        elif how == "unreadable" or (amount is not None and amount < 0):
+            if field == "budget_min":
+                out[field] = 0
+                why = "could not be read as a price, so no minimum was applied"
+            else:
+                # The parser falls back to the maximum when there is no preferred price.
+                out.pop(field, None)
+                why = "could not be read as a price, so the maximum was used instead"
+            adjustments.append({"field": field, "code": "budget_unreadable",
+                                "from": shown, "to": out.get(field), "why": why})
+            continue
+        if how == "thousands":
+            out[field] = amount
+            adjustments.append({
+                "field": field, "code": "budget_in_thousands", "from": shown, "to": amount,
+                "why": "a figure under %s is read as thousands"
+                       % format(THOUSANDS_BELOW, ",")})
+        elif how == "text":
+            out[field] = amount
+            adjustments.append({"field": field, "code": "budget_from_text", "from": shown,
+                                "to": amount, "why": "read from the text typed"})
+        elif amount != raw:
+            # A number that needed no reading, only tidying (750000.0, or past the
+            # form's own no-maximum): not worth a note.
+            out[field] = amount
+    low = _read_money(out.get("budget_min"))[0] or 0
+    high = _read_money(out.get("budget_max"))[0]
+    if low > 0 and high is not None and 0 < high < NO_CEILING and low > high:
+        # SWAPPED, NOT REFUSED. "750000 to 300000" is a range typed the wrong way round;
+        # searched as typed it asks for listings above $750,000 and below $300,000 at
+        # once, which is nothing at all.
+        out["budget_min"], out["budget_max"] = high, low
+        adjustments.append({
+            "field": "budget_min/budget_max", "code": "min_max_swapped",
+            "from": [low, high], "to": [high, low],
+            "why": "the minimum was above the maximum, so the two were swapped"})
+
+
+def _normalised_location(out, adjustments):
+    """A state typed where a suburb goes, a full state name, a radius with no origin."""
+    state = str(out.get("state") or "").strip()
+    if state.lower() == ANY_STATE.lower():
+        # This endpoint's own label for a blank state (brief_used), so a logged search can
+        # be posted back exactly as logged. Not a slip, so not noted.
+        out["state"] = state = ""
+    named = _state_named(state)
+    if named and named != state.upper():
+        # "Queensland" in the State field matched no row's "QLD" and emptied the search.
+        out["state"] = named
+        adjustments.append({"field": "state", "code": "state_full_name", "from": state,
+                            "to": named, "why": "read as the state's code"})
+    current = str(out.get("state") or "").strip().upper()
+
+    suburbs = out.get("primary_suburbs")
+    if isinstance(suburbs, list) and suburbs:
+        kept = []
+        for said in suburbs:
+            code = _state_named(said)
+            if not code:
+                kept.append(said)
+                continue
+            if not current:
+                # "Any state" left selected and "Queensland" typed as the suburb: the
+                # search was for a suburb called Queensland, in every state -- 0 results.
+                current = code
+                out["state"] = code
+                adjustments.append({
+                    "field": "state", "code": "state_typed_as_suburb", "said": said,
+                    "from": "", "to": code,
+                    "why": '"%s" in Target suburbs is a state, so %s was searched'
+                           % (said, code)})
+            elif code == current:
+                adjustments.append({
+                    "field": "primary_suburbs", "code": "state_typed_as_suburb",
+                    "said": said, "from": [said], "to": [],
+                    "why": '"%s" is the selected state, not a suburb, so the whole of %s '
+                           'was searched' % (said, code)})
+            else:
+                # Two different answers to "which state"; the consultant's own State
+                # choice stands, and the typed name is searched exactly as it was typed.
+                kept.append(said)
+                adjustments.append({
+                    "field": "primary_suburbs", "code": "state_name_conflicts",
+                    "said": said,
+                    "note": '"%s" names %s, but the selected state is %s; it was searched '
+                            'as typed' % (said, code, current)})
+        out["primary_suburbs"] = kept
+
+    from brief_parser import coerce_number
+    # Read the way brief_parser reads it -- a radius is kilometres, never thousands.
+    radius = coerce_number(out.get("search_radius_km"), 0) or 0
+    if radius > 0 and not out.get("primary_suburbs"):
+        # The scorer already ignores it (scoring_engine: "A radius with NO origin cannot
+        # be applied"), so this changes no result -- it makes "within 20 km of nowhere"
+        # visible instead of silently meaning the whole state.
+        adjustments.append({"field": "search_radius_km", "code": "radius_without_suburb",
+                            "from": out.get("search_radius_km"), "to": 0,
+                            "why": "radius ignored: no suburb to measure from"})
+        out["search_radius_km"] = 0
+
+
 def _normalised_brief(brief):
-    """Coerce a caller's brief into the shape every consumer below already assumes.
+    """(brief, brief_adjustments): the caller's brief in the shape every consumer below
+    already assumes, read the way the consultant meant it, and every change named.
 
     Done ONCE here rather than defensively at each reader, because the two crashes this
     fixes were in different files reading the same field two different ways:
@@ -207,8 +443,22 @@ def _normalised_brief(brief):
     The second is the worse of the two: it is in the ZERO-RESULTS branch, which returns
     early and therefore never passes through the parser that would have cleaned the value
     up. That is the path a caller hits when their search is already going badly.
+
+    FORM SLIPS ARE READ, NOT SEARCHED LITERALLY. Part C, 16 Sep: Colin searched "QLD under
+    $750k" and got nothing useful, and each of these on its own turns that search into 0
+    results with nothing on screen saying why -- replayed against the deployed snapshot:
+
+        budget_max 750 / "750k"              a $750 (or $0) ceiling            -> 0
+        no budget_max at all                 a $0 ceiling                      -> 0
+        min 750000, max 300000               above $750k AND below $300k       -> 0
+        "Queensland" / "QLD" as a suburb     a suburb called Queensland        -> 0
+
+    Each is corrected here and listed in brief_adjustments, which the Research tab prints
+    above the results: {field, code, from, to, why} or {field, code, note}. Nothing is
+    corrected silently, and a brief with no slip comes back with no adjustments.
     """
     out = dict(brief)
+    adjustments = []
     for field in _LIST_FIELDS:
         value = out.get(field)
         if value is None or isinstance(value, list):
@@ -226,7 +476,181 @@ def _normalised_brief(brief):
         if isinstance(out.get(field), list):
             out[field] = [str(v).strip() for v in out[field]
                           if isinstance(v, (str, int, float)) and str(v).strip()]
+    _normalised_money(out, adjustments)
+    _normalised_location(out, adjustments)
+    return out, adjustments
+
+
+def _state_resolution(adjustments):
+    """location_resolution entries (method 'state') for suburbs that were read as a state.
+
+    Only for the names taken out of the suburb list: one kept because it conflicts with
+    the selected state goes on to the resolver, which reports it like any other phrase.
+    """
+    out = []
+    for a in adjustments:
+        if a.get("code") != "state_typed_as_suburb":
+            continue
+        code = a["to"] if a.get("field") == "state" else ""
+        out.append({"said": a.get("said", ""), "used": [], "method": "state",
+                    "note": "a state, not a suburb, so it was not searched as a suburb"
+                            + ("; the search is of %s" % code if code else "")})
     return out
+
+
+def _several_states_notes(brief_dict, index):
+    """A note for each target suburb that is a locality in more than one state, when no
+    state was chosen: "Springfield" is in six, and with Any state all six can match."""
+    if str(brief_dict.get("state") or "").strip() or index is None:
+        return []
+    notes = []
+    for said in brief_dict.get("primary_suburbs") or []:
+        try:
+            states = (index.states_for_suburb(said)
+                      or index.states_for_suburb(said, spoken=True))
+        except Exception:                                           # noqa: BLE001
+            continue
+        if len(states) > 1:
+            notes.append({
+                "field": "primary_suburbs", "code": "suburb_in_several_states",
+                "said": said, "states": list(states),
+                "note": "%s is a locality in %s; no state was selected, so listings in "
+                        "any of them can match" % (said, _joined(states))})
+    return notes
+
+
+def _joined(names):
+    names = list(names)
+    return names[0] if len(names) == 1 else "%s and %s" % (", ".join(names[:-1]), names[-1])
+
+
+def _whole(value):
+    return _tidy_number(value) if isinstance(value, float) else value
+
+
+def _brief_used(brief_dict):
+    """What was actually searched, after every adjustment and the location resolver.
+
+    Keyed like the brief itself (primary_suburbs, search_radius_km, ...), so a logged
+    brief_used can be posted back as a client_brief and replay the search. A blank state
+    reads 'Any state', which _normalised_brief reads back as blank. The numbers are the
+    ones the pipeline reads: brief_parser truncates minimums to whole numbers, so
+    bathrooms 2.5 shows as 2.
+    """
+    from brief_parser import coerce_number
+
+    def number(key, default=0):
+        value = coerce_number(brief_dict.get(key), None)
+        return default if value is None else _whole(value)
+
+    def whole(key, default=0):
+        value = coerce_number(brief_dict.get(key), None)
+        return default if value is None else int(value)
+
+    product = brief_dict.get("product_type")
+    if isinstance(product, (list, tuple, set)):
+        product = [str(p).strip() for p in product if str(p).strip()]
+    else:
+        product = [str(product).strip()] if str(product or "").strip() else []
+    budget_max = number("budget_max", NO_CEILING)
+    return {
+        "state": str(brief_dict.get("state") or "").strip().upper() or ANY_STATE,
+        "budget_min": number("budget_min"),
+        "budget_max": budget_max,
+        # brief_parser's default: the maximum, when no preferred price was given.
+        "preferred_spending_cap": number("preferred_spending_cap", budget_max),
+        "primary_suburbs": list(brief_dict.get("primary_suburbs") or []),
+        "search_radius_km": number("search_radius_km"),
+        "bedrooms_min": whole("bedrooms_min"),
+        "bathrooms_min": whole("bathrooms_min"),
+        "car_spaces_min": whole("car_spaces_min"),
+        "storeys_max": whole("storeys_max", None),
+        "land_size_min_sqm": number("land_size_min_sqm"),
+        "house_size_min_sqm": number("house_size_min_sqm"),
+        "product_type": product,
+        "requires_incentive": bool(brief_dict.get("requires_incentive")),
+    }
+
+
+# Every in-state row a search did not shortlist, by what stopped it. Out-of-scope rows
+# (superseded, other states, no state) are not "filtered" -- they were never in the search.
+# storey_unknown_and_binding is NOT here: it tags a row that is still scored, so counting
+# it too counted that row twice.
+FILTERED_COUNTS = (
+    "not_available", "availability_unstated", "price_unverified", "no_price",
+    "over_budget", "under_minimum", "no_suburb", "suburb_not_a_locality",
+    "incomplete_facts", "other_product_type", "no_incentive",
+    "truncated", "same_listing_collapsed", "duplicates_merged",
+)
+OUT_OF_SCOPE_COUNTS = ("superseded", "other_state", "state_unknown")
+
+# The pipeline's reason for a candidate it scored but held back as unconfirmed
+# (kommo_agent.py, "SOP Step 5"). Matched on the text, which has not changed since the
+# pipeline was written, rather than on a 'kind' field that only some versions add.
+PENDING_REASON = "Pending Confirmation"
+
+
+def _is_pending(entry):
+    return str(entry.get("reason") or "").startswith(PENDING_REASON)
+
+
+def _capped_rejected_log(entries, cap):
+    """(entries kept, pending left out, hard rejections left out).
+
+    Up to `cap` pending entries AHEAD of up to `cap` hard rejections. The log used to be
+    cut at `cap` in pipeline order, hard rejections first, so any search with more than
+    30 of those never listed a single stale match: Werribee VIC <= $700k, 4 bed, hid its
+    one pending lot behind 933 scorer rejections. A stale match is the most useful line
+    in the log -- it is a real listing a consultant can confirm with one phone call.
+    """
+    pending = [e for e in entries if _is_pending(e)]
+    hard = [e for e in entries if not _is_pending(e)]
+    return (pending[:cap] + hard[:cap], max(0, len(pending) - cap),
+            max(0, len(hard) - cap))
+
+
+def _availability_by_hash(shortlist, packages, rows):
+    """{content_hash: {availability_by_the_sheet, availability_status}} for the shortlist.
+
+    The package says whether a row is available only by the sheet; the snapshot row says
+    what its source stated. Read from both by content_hash, because the CandidateProperty
+    the pipeline hands back carries neither.
+    """
+    wanted = {str(getattr(p, 'content_hash', '') or '') for p in shortlist} - {''}
+    if not wanted:
+        return {}
+    out = {h: {'availability_by_the_sheet': False, 'availability_status': ''}
+           for h in wanted}
+    for pkg in packages:
+        h = str(pkg.get('content_hash') or '')
+        if h in out:
+            out[h]['availability_by_the_sheet'] = bool(pkg.get('availability_by_the_sheet'))
+    for row in rows:
+        h = str(row.get('content_hash') or '').strip()
+        if h in out and not row.get('superseded_by'):
+            out[h]['availability_status'] = str(
+                row.get('availability_status') or '').strip()
+    return out
+
+
+def _log_search(response, counts):
+    """One stdout JSON line per search, so a "returned nothing" can be replayed from the
+    function logs: post brief_used back, exactly as logged, as the client_brief. No
+    client name, and nothing a search does not already show the consultant.
+    Never fatal: a log line must not cost anyone their results."""
+    try:
+        print(json.dumps({
+            "event": "spb_research",
+            "brief_used": response.get("brief_used"),
+            "brief_adjustments": [a.get("code") for a in response.get("brief_adjustments")
+                                  or []],
+            "shortlist_count": response.get("shortlist_count"),
+            "rejected_count": response.get("rejected_count"),
+            "in_state_rows": response.get("in_state_rows"),
+            "counts": counts,
+        }, default=str, separators=(",", ":")), flush=True)
+    except Exception as exc:                                          # noqa: BLE001
+        print("research log line unavailable: %s" % type(exc).__name__, file=sys.stderr)
 
 
 def run_research(payload):
@@ -240,7 +664,7 @@ def run_research(payload):
     if not isinstance(brief_dict, dict):
         raise BadRequest("'client_brief' must be a JSON object, got %s"
                          % type(brief_dict).__name__)
-    brief_dict = _normalised_brief(brief_dict)
+    brief_dict, adjustments = _normalised_brief(brief_dict)
 
     agent = _bootstrap.get_agent()
 
@@ -260,7 +684,11 @@ def run_research(payload):
     # question than the one typed must be visible rather than silent.
     _expanded = {}
     # What was done to every primary suburb the brief named -- see _location_resolver.
-    _location = []
+    # A state typed as a suburb was taken out by _normalised_brief before the resolver
+    # could see it, so its entry (method 'state') is kept here and leads the list: the
+    # resolver's report replaces _location below and would otherwise drop it.
+    _state_entries = _state_resolution(adjustments)
+    _location = list(_state_entries)
     try:
         import _regions
         from geo import SuburbGeoIndex
@@ -295,7 +723,7 @@ def run_research(payload):
             import _location_resolver
             _resolved = _location_resolver.resolve(_asked, _state, _index)
             _spelt = _resolved["suburbs"]
-            _location = _resolved["location_resolution"]
+            _location = _state_entries + list(_resolved["location_resolution"])
             if _resolved["state"] and not _state:
                 # Only from a locality that exists in one state alone -- and the note on
                 # that phrase says so.
@@ -303,12 +731,15 @@ def run_research(payload):
         except Exception as exc:                                      # noqa: BLE001
             # Never fatal, and never different from the research before it existed.
             print("location resolver unavailable: %s" % type(exc).__name__, file=sys.stderr)
-            _location = []
+            _location = list(_state_entries)
             _spelt = [s if _index.locate(s, _state)
                       else (_index.canonical_suburb(s, _state, spoken=True) or s)
                       for s in _asked]
         if _spelt != _asked:
             brief_dict = dict(brief_dict, primary_suburbs=_spelt)
+        # "Springfield" with Any state is six places at once. Said once, before the
+        # region list can widen the names.
+        adjustments.extend(_several_states_notes(brief_dict, _index))
         _known = {str(r.get("suburb") or "").strip().lower() for r in rows
                   if not r.get("superseded_by")}
         _wider, _expanded = _regions.expand(
@@ -336,10 +767,19 @@ def run_research(payload):
     # Everything in the requested state that never reached the scoring matrix. Rows
     # for other states are out of scope, not "filtered", so they are excluded here
     # (they are still named in the coverage note).
-    pre_filtered = (counts['not_available'] + counts['no_price'] + counts['over_budget']
-                    + counts['no_suburb'] + counts.get('suburb_not_a_locality', 0)
-                    + counts['incomplete_facts']
-                    + counts['storey_unknown_and_binding'] + counts['truncated'])
+    #
+    # THE WHOLE OF IT, AND NOTHING TWICE. This sum used to leave out availability_unstated
+    # (632 rows in Colin's QLD <= $750k search), price_unverified, under_minimum,
+    # other_product_type and no_incentive, and to add storey_unknown_and_binding -- a tag on
+    # rows that are still scored, so those were counted twice. The badge read "2 Qualified
+    # (1420 Filtered)" with 632 more rows hidden and not counted. Now every in-state row is
+    # either shortlisted or in the Filtered count, which in_state_rows lets anyone check:
+    #
+    #     shortlist_count + rejected_count == in_state_rows
+    pre_filtered = sum(counts.get(code, 0) for code in FILTERED_COUNTS)
+    in_state_rows = counts['snapshot_rows'] - sum(counts.get(code, 0)
+                                                  for code in OUT_OF_SCOPE_COUNTS)
+    brief_used = _brief_used(brief_dict)
 
     # kind='coverage' so the UI stops drawing this as a rejected property under a
     # "Hard Rejection" pill. It is the pipeline accounting for what it did and did
@@ -372,14 +812,22 @@ def run_research(payload):
         # 500 on the exact path a caller hits when their search found nothing.
         budget = coerce_number(brief_dict.get('budget_max'), 0) or 0
         record_id = "%s - %s/%s - $%s - %s" % (
-            brief_dict.get('client_name', 'Unnamed Client'),
-            str(brief_dict.get('state') or 'QLD').upper(), suburb,
+            # `or`, not a get() default: the form sends a blank name as '', and the record
+            # id then began " - QLD/General". brief_parser already says 'Unnamed Client'
+            # on the main path; this branch returns before the parser runs.
+            brief_dict.get('client_name') or 'Unnamed Client',
+            # A blank state is a search of every state (brief_parser), not of QLD.
+            str(brief_dict.get('state') or '').strip().upper() or ANY_STATE, suburb,
             format(budget, ',.0f'), datetime.now().strftime('%Y-%m-%d'))
-        return {
+        response = {
             'status': 'success',
             'research_record_id': record_id,
             'shortlist_count': 0,
+            # Nothing reached scoring, so every in-state row is in the Filtered count.
             'rejected_count': pre_filtered,
+            'in_state_rows': in_state_rows,
+            'brief_used': brief_used,
+            'brief_adjustments': adjustments,
             'rejected_log': [coverage_entry],
             'shortlist': [],
             'reports': [],
@@ -392,11 +840,15 @@ def run_research(payload):
             'location_resolution': _location,
             'builder_coverage': {},
             'client_report_html': '',
+            # Present on both paths, so a caller reads one response shape.
+            'comparisons': {},
             'client_report_path': '',
             'qa_passed': False,
             'qa_failures': ['QA Item 2 Failed: No candidate packages evaluated.'],
             'kommo_payload': _empty_kommo_payload(brief_dict, record_id, coverage),
         }
+        _log_search(response, counts)
+        return response
 
     result = agent.run_property_research(brief_dict, packages)
 
@@ -460,28 +912,40 @@ def run_research(payload):
         # it must not cost the consultant their results.
         print("competitive benchmark unavailable: %s" % exc, file=sys.stderr)
 
-    rejected_log = list(result['rejected_log'])
-    trimmed = 0
-    if len(rejected_log) > MAX_REJECTED_LOG:
-        trimmed = len(rejected_log) - MAX_REJECTED_LOG
-        rejected_log = rejected_log[:MAX_REJECTED_LOG]
+    rejected_log, pending_trimmed, hard_trimmed = _capped_rejected_log(
+        result['rejected_log'], MAX_REJECTED_LOG)
+    trimmed = pending_trimmed + hard_trimmed
     if trimmed:
         rejected_log.append({
             'property_id': 'REJECTED-TRUNCATED',
             'address': '%d further rejection(s) not listed' % trimmed,
-            'reason': 'The rejection log is capped at %d entries for the browser '
-                      '(SPB_MAX_REJECTED_LOG); the count above is complete.'
-                      % MAX_REJECTED_LOG,
+            'reason': 'The rejection log lists up to %d listings pending confirmation and '
+                      'up to %d hard rejections for the browser (SPB_MAX_REJECTED_LOG); '
+                      'not listed: %d pending, %d rejected. The count above is complete.'
+                      % (MAX_REJECTED_LOG, MAX_REJECTED_LOG, pending_trimmed, hard_trimmed),
         })
     rejected_log.insert(0, coverage_entry)
 
-    return {
+    # SPB_SHORTLIST_MAX (unset by default) cuts qualifying lots from the end of the
+    # shortlist without logging them anywhere. They are in-state rows that were not
+    # shortlisted, so they are Filtered too, or the count would silently fall short.
+    shortlist_capped = max(0, len(packages) - result['rejected_count']
+                           - result['shortlist_count'])
+    availability = _availability_by_hash(result['shortlist'], packages, rows)
+
+    response = {
         'status': 'success',
         'research_record_id': result['research_record_id'],
         'shortlist_count': result['shortlist_count'],
-        'rejected_count': result['rejected_count'] + pre_filtered,
+        'rejected_count': result['rejected_count'] + pre_filtered + shortlist_capped,
+        # The in-state rows this search looked at: shortlist_count + rejected_count.
+        'in_state_rows': in_state_rows,
+        # What was searched, after every brief adjustment and the location resolver.
+        'brief_used': brief_used,
+        # Every change made to the brief as sent, and why. See _normalised_brief.
+        'brief_adjustments': adjustments,
         'rejected_log': rejected_log,
-        'shortlist': [_shortlist_entry(p) for p in result['shortlist']],
+        'shortlist': [_shortlist_entry(p, availability) for p in result['shortlist']],
         'reports': result['reports'],
         'search_area': result.get('search_area', []),
         'region_expansion': result.get('region_expansion') or _expanded,
@@ -504,6 +968,8 @@ def run_research(payload):
         'qa_failures': result.get('qa_failures', []),
         'kommo_payload': result['kommo_payload'],
     }
+    _log_search(response, counts)
+    return response
 
 
 class handler(BaseHTTPRequestHandler):
