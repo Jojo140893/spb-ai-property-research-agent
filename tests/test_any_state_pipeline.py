@@ -16,6 +16,7 @@ filter at all.
 """
 import copy
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -112,11 +113,34 @@ def test_the_zero_packages_record_id_names_the_client_and_the_state(
     assert out["kommo_payload"]["research_record_id"] == out["research_record_id"]
 
 
+class _FixtureToday(datetime):
+    """build_packages' today, frozen on the day the fixture was cut (16/09/2026)."""
+    @classmethod
+    def now(cls, tz=None):
+        return gen.TODAY if tz is None else gen.TODAY.replace(tzinfo=tz)
+
+
 def test_the_pipeline_record_id_for_a_blank_name_and_any_state(monkeypatch):
     """The same brief shape WITH packages goes through kommo_agent instead."""
+    import _bootstrap
+    import _candidates
     import research
     monkeypatch.setenv("SPB_SNAPSHOT_JSON", str(gen.FIXTURE))
+    # Today frozen, or this ages with the fixture: run_research reads the real clock, and
+    # from about 30/09/2026 every fixture row is past the 14-day rule, the shortlist is
+    # empty, and "the pipeline ran" could no longer be read off shortlist_count.
+    monkeypatch.setattr(_candidates, "datetime", _FixtureToday)
+    agent = _bootstrap.get_agent()
+    calls = []
+    real = agent.run_property_research
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+    monkeypatch.setattr(agent, "run_property_research", spy)
+
     out = research.run_research({"client_brief": gen._brief(client_name="", state="")})
+    assert calls == [1], "the zero-packages branch answered, so kommo_agent's id is untested"
     assert out["shortlist_count"] > 0
     assert out["research_record_id"].startswith("Unnamed Client - Any state/General - "), (
         out["research_record_id"])

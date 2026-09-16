@@ -125,6 +125,14 @@ def test_only_a_package_with_no_date_at_all_is_dated_today_in_aest(agent, monkey
         "Lot 3 Stored Street": "",
         "Lot 4 Stored Street": "03/09/2026",
     }
+    # The property summary each shortlisted lot gets (result["reports"]) says the same.
+    # Its own fallback was today, so a row with no readable date still read as checked
+    # on the day of the search there.
+    summary = {r["address"]: r["summary_markdown"] for r in result["reports"]}
+    assert "**Date Checked:** 03/09/2026" in summary["Lot 4 Stored Street"]
+    for blank in ("Lot 2 Stored Street", "Lot 3 Stored Street"):
+        assert "**Date Checked:** Not recorded at the source" in summary[blank], summary[blank]
+        assert "17/09/2026" not in summary[blank] and "16/09/2026" not in summary[blank]
 
 
 def test_every_card_in_colins_search_carries_its_rows_date():
