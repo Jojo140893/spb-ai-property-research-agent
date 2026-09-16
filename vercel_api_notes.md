@@ -252,7 +252,8 @@ crawl. Consequences, all surfaced in the UI rather than hidden:
   stays exact and a card says what was trimmed.
 * **The brief is read the way the form meant it** (`_normalised_brief`): a price of
   1-9,999 is thousands, "750k" / "$750,000" / "1.2m" are read, a missing budget_max is
-  no ceiling (not $0), a minimum above the maximum is swapped, a state typed into Target
+  no ceiling (not $0), a minimum above the maximum is swapped (and a preferred price
+  equal to the typed maximum moves with it), a state typed into Target
   Suburbs becomes the state, and a radius with no suburb is noted. Every change is listed
   in `brief_adjustments`; `brief_used` is what was searched. One JSON line per search
   (`"event":"spb_research"`, no client name) goes to stdout so a search can be replayed

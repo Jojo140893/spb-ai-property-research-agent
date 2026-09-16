@@ -145,6 +145,51 @@ def test_a_minimum_above_the_maximum_is_swapped_and_said(research):
     assert meant["brief_adjustments"] == []
 
 
+def test_a_swapped_range_as_the_form_sends_it_is_scored_like_the_range_meant(research):
+    """The form sends the Max box as preferred_spending_cap when Preferred is blank, so a
+    range typed the wrong way round arrives with the preferred price at the typed maximum.
+    Swapping only min and max left it there, at the new minimum, and every lot above
+    $300,000 lost budget points: the same hashes, scored and ranked differently."""
+    typed = _run(research, _brief(budget_min=750000, budget_max=300000,
+                                  preferred_spending_cap=300000))
+    meant = _run(research, _brief(budget_min=300000, budget_max=750000,
+                                  preferred_spending_cap=750000))
+
+    def ranked(out):
+        return [(p["content_hash"], p["score"], p["scoring_details"]["budget_fit"])
+                for p in out["shortlist"]]
+
+    assert meant["shortlist_count"] > 0, "premise: QLD $300k-$750k shortlists"
+    # PREMISE: a lot above $300,000, so a preferred price left at $300,000 would bite.
+    assert any(p["realistic_total_price"] > 300000 for p in meant["shortlist"])
+    assert ranked(typed) == ranked(meant)
+    assert typed["brief_used"]["preferred_spending_cap"] == 750000
+    assert [a["code"] for a in typed["brief_adjustments"]] == [
+        "min_max_swapped", "preferred_follows_swap"]
+    # A preferred price the consultant typed on its own is not the maximum, and stays.
+    own = _run(research, _brief(budget_min=750000, budget_max=300000,
+                                preferred_spending_cap=500000))
+    assert own["brief_used"]["preferred_spending_cap"] == 500000
+    assert [a["code"] for a in own["brief_adjustments"]] == ["min_max_swapped"]
+
+
+@pytest.mark.parametrize("field", ["budget_max", "budget_min", "preferred_spending_cap"])
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf"), "9" * 400 + "k"],
+                         ids=["nan", "inf", "-inf", "400-nines-k"])
+def test_a_non_finite_price_is_answered_in_json_a_browser_can_parse(research, field, bad):
+    """json.loads accepts NaN, Infinity and a 1e400 literal, and brief_adjustments echoes
+    what was sent. json.dumps writes a non-finite float as `NaN` / `Infinity`, which the
+    browser's JSON.parse rejects -- losing the whole response, results and all."""
+    out = _run(research, _brief(**{field: bad}))
+    json.dumps(out, allow_nan=False, default=str)       # ValueError on NaN / Infinity
+    if field == "budget_max":
+        # Unreadable, so no ceiling -- and searched as no ceiling, not as a $0 one that
+        # brief_parser makes of an infinity.
+        no_ceiling = _run(research, _brief(budget_max=NO_CEILING))
+        assert out["brief_used"]["budget_max"] == NO_CEILING
+        assert _hashes(out) == _hashes(no_ceiling) and out["shortlist_count"] > 0
+
+
 # ------------------------------------------------------------ a state typed as a suburb
 
 @pytest.mark.parametrize("state,said", [("", "Queensland"), ("", "QLD"), ("", "queensland"),
@@ -249,6 +294,9 @@ def test_both_returns_carry_the_same_keys(research, qld_750k):
 @pytest.mark.parametrize("typed,amount", [
     ("1.2m", 1200000), ("1.2 million", 1200000), ("$1,200k", 1200000), (".5m", 500000),
     (1200000, 1200000), (9999, 9999000), (1, 1000), (10000, 10000), (750000.0, 750000),
+    # A stated unit is never read as thousands again, and never passes the form's own
+    # "no maximum" either.
+    ("5k", 5000), ("9" * 25 + "k", NO_CEILING),
 ])
 def test_money_is_read_as_meant(research, typed, amount):
     brief, _adjustments = research._normalised_brief({"budget_max": typed})

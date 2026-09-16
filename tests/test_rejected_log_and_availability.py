@@ -201,3 +201,22 @@ def test_a_candidate_that_carries_the_flag_itself_is_believed(research):
     looked_up = research._shortlist_entry(_candidate(content_hash="v2:y"), {"v2:y": {
         "availability_by_the_sheet": True, "availability_status": ""}})
     assert looked_up["availability_by_the_sheet"] is True
+
+
+def test_a_carried_false_never_hides_the_rows_own_by_the_sheet(research):
+    """Clare reads availability_by_the_sheet False as "showing as available" and True as
+    "on the builder's list, a consultant confirms" (vapi-kommo-hook lib/tools/verify.js).
+    The candidate and the package both come from one row, so they disagree only through a
+    bug -- a CandidateProperty field with a False default nothing copies onto, say -- and
+    the answer must then be the one that cannot call a sold lot available."""
+    from tests.test_benchmark_buildings import _candidate
+
+    carried = _candidate(content_hash="v2:z")
+    carried.availability_by_the_sheet = False
+    entry = research._shortlist_entry(carried, {"v2:z": {
+        "availability_by_the_sheet": True, "availability_status": ""}})
+    assert entry["availability_by_the_sheet"] is True
+    # Neither saying so is still False: the flag is not simply switched on.
+    entry = research._shortlist_entry(carried, {"v2:z": {
+        "availability_by_the_sheet": False, "availability_status": "Available"}})
+    assert entry["availability_by_the_sheet"] is False

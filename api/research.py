@@ -57,9 +57,13 @@ def _shortlist_entry(p, availability=None):
     does not carry them itself (see _availability_by_hash).
     """
     _known = (availability or {}).get(getattr(p, 'content_hash', '') or '') or {}
-    _by_the_sheet = getattr(p, 'availability_by_the_sheet', None)
-    if _by_the_sheet is None:
-        _by_the_sheet = _known.get('availability_by_the_sheet', False)
+    # EITHER SOURCE SAYING "ONLY BY THE SHEET" IS ENOUGH. Both come from the same snapshot
+    # row, so they only disagree through a bug -- e.g. a CandidateProperty field added with
+    # a False default that nothing copies onto it. Clare reads True as "on the builder's
+    # list, a consultant confirms" and False as "showing as available"
+    # (vapi-kommo-hook lib/tools/verify.js), so the costly mistake is a False too many.
+    _by_the_sheet = (bool(getattr(p, 'availability_by_the_sheet', False))
+                     or bool(_known.get('availability_by_the_sheet', False)))
     # A blank on the candidate is "not carried", not "the source said nothing": both come
     # from the same snapshot row, so the row's own statement is the fallback.
     _status = (getattr(p, 'availability_status', None)
@@ -275,6 +279,7 @@ def _read_money(value):
     if isinstance(value, bool):
         return None, "unreadable"
     how = "number"
+    unit = False
     if isinstance(value, str):
         text = value.strip().lower().replace("$", "").replace(",", "")
         text = "".join(text.split())
@@ -284,9 +289,8 @@ def _read_money(value):
         if not found:
             return None, "unreadable"
         amount = float(found.group(1)) * _MONEY_SUFFIX.get(found.group(2) or "", 1.0)
-        if found.group(2):
-            # A stated unit is not read as thousands a second time.
-            return _tidy_number(amount), "text"
+        # A stated unit is not read as thousands a second time.
+        unit = bool(found.group(2))
         how = "text"
     elif isinstance(value, (int, float)):
         try:
@@ -295,11 +299,27 @@ def _read_money(value):
             return None, "unreadable"
     else:
         return None, "unreadable"
+    # A unit too goes through these two checks: "999...9k" (400 nines) is infinity, which
+    # brief_parser reads as a $0 ceiling and json.dumps writes as `Infinity` -- not JSON a
+    # browser can parse.
     if amount != amount or amount in (float("inf"), float("-inf")):
         return None, "unreadable"
-    if 1 <= amount < THOUSANDS_BELOW:
+    if not unit and 1 <= amount < THOUSANDS_BELOW:
         return _tidy_number(amount * 1000), "thousands"
     return (_tidy_number(amount) if amount < NO_CEILING else NO_CEILING), how
+
+
+def _shown(raw):
+    """A price box's value as sent, safe to echo in JSON: NaN and infinities (json.loads
+    accepts both) would make json.dumps write `NaN` / `Infinity`, and the browser's
+    JSON.parse then rejects the WHOLE response -- the search results with it."""
+    if raw is None:
+        return None
+    if isinstance(raw, float) and (raw != raw or raw in (float("inf"), float("-inf"))):
+        return str(raw)
+    if isinstance(raw, (str, int, float)) and not isinstance(raw, bool):
+        return raw
+    return str(raw)
 
 
 def _normalised_money(out, adjustments):
@@ -308,8 +328,7 @@ def _normalised_money(out, adjustments):
         present = field in out
         raw = out.get(field)
         amount, how = _read_money(raw)
-        shown = raw if isinstance(raw, (str, int, float)) and not isinstance(raw, bool) \
-            else (None if raw is None else str(raw))
+        shown = _shown(raw)
         if field == "budget_max":
             if how in ("missing", "unreadable") or (amount is not None and amount <= 0):
                 # NO MAXIMUM, NOT A $0 CEILING. brief_parser reads a missing budget_max as
@@ -365,6 +384,17 @@ def _normalised_money(out, adjustments):
             "field": "budget_min/budget_max", "code": "min_max_swapped",
             "from": [low, high], "to": [high, low],
             "why": "the minimum was above the maximum, so the two were swapped"})
+        if _read_money(out.get("preferred_spending_cap"))[0] == high:
+            # The form sends the Max box as the preferred price when Preferred is blank
+            # (index.html runResearchAgent), so it arrives equal to the maximum AS TYPED.
+            # Left behind, it would sit at the new minimum and grade every lot above
+            # $300,000 down on budget: the same lots as the range typed the right way
+            # round, but scored and ranked differently.
+            out["preferred_spending_cap"] = low
+            adjustments.append({
+                "field": "preferred_spending_cap", "code": "preferred_follows_swap",
+                "from": high, "to": low,
+                "why": "it was the maximum as typed, so it moved with the swap"})
 
 
 def _normalised_location(out, adjustments):
