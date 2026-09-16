@@ -271,7 +271,8 @@ crawl. Consequences, all surfaced in the UI rather than hidden:
     minimums and filters, until `SPB_EXPLAIN_BUDGET_MS` (4000) runs out (`not_computed`).
     Posting `brief_patch` over the form returns exactly its `shortlist_count`; after a
     swapped min/max a price patch carries the whole range as searched so that stays true.
-    `include_needs_confirming` has no patch: it reveals the list below.
+    `include_needs_confirming` has no patch: it reveals the list below, and its `capped`
+    repeats `search_help.needs_confirming.count_may_be_short`.
   * `needs_confirming`, `needs_confirming_count`, `needs_confirming_hidden` — matches a
     consultant may confirm by phone: Pending candidates whose `confirm_guard` is None, and
     a separate admit pass over exceptions-only lists with its own collapse and cap, so it

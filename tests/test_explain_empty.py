@@ -362,6 +362,47 @@ def test_a_swapped_range_is_patched_as_it_was_searched(research, explained):
         rel["drop_price_floor"]["shortlist_count"]
 
 
+_MINIMUM_FIELDS = ("bedrooms_min", "bathrooms_min", "car_spaces_min", "house_size_min_sqm",
+                   "land_size_min_sqm")
+
+
+def test_every_re_run_patches_exactly_the_change_its_label_names(explained):
+    """The re-POST self-check above cannot see a patch that is wrong but self-consistent:
+    "No minimums at all" dropping only bedrooms, "Within 50 km" re-running at 10 km, or
+    "All of QLD" keeping the suburbs would each re-post to its own count. So every kind's
+    patch is pinned to the brief it was offered for, and a relaxation never narrows."""
+    seen = set()
+    for name, out in explained.items():
+        brief = _brief(name)
+        swapped = any(a["code"] == "min_max_swapped" for a in out["brief_adjustments"])
+        set_minimums = [f for f in _MINIMUM_FIELDS if (brief.get(f) or 0) > 0]
+        for r in _relaxations(out):
+            rid = r["id"]
+            if r["kind"] != "rerun" or rid.startswith("budget_") or (
+                    swapped and rid == "drop_price_floor"):
+                continue        # budget steps and swapped ranges: pinned in their own tests
+            if rid.startswith("drop_") and rid[len("drop_"):] in _MINIMUM_FIELDS:
+                want = {rid[len("drop_"):]: 0}
+            else:
+                want = {
+                    "drop_all_minimums": {f: 0 for f in set_minimums},
+                    "radius_20": {"search_radius_km": 20},
+                    "radius_50": {"search_radius_km": 50},
+                    "whole_state": {"state": out["brief_used"]["state"],
+                                    "primary_suburbs": [], "search_radius_km": 0},
+                    "drop_product_type": {"product_type": []},
+                    "drop_incentive": {"requires_incentive": False},
+                    "drop_price_floor": {"budget_min": 0},
+                }[rid]
+            assert r["brief_patch"] == want, (name, rid, r["brief_patch"])
+            assert r["adds"] >= 0, (name, rid, r["adds"])
+            seen.add(rid)
+    # PREMISE: every kind was offered somewhere, and every minimum on one brief.
+    assert {"drop_all_minimums", "radius_20", "radius_50", "whole_state",
+            "drop_product_type", "drop_incentive", "drop_price_floor"} \
+        | {"drop_" + f for f in _MINIMUM_FIELDS} <= seen, seen
+
+
 def test_the_relaxations_can_change_the_answer(explained):
     """PREMISE for the self-check: a count that never moves could not be wrong."""
     adds = {(n, r["id"]): r["adds"] for n, out in explained.items()

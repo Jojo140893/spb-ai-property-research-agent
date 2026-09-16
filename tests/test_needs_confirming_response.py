@@ -415,11 +415,23 @@ def test_on_the_full_snapshot_vic_900k_4bed_shortlist_is_unchanged(monkeypatch):
         colin = _run(module, _brief(), explain=True)
     finally:
         mp.undo()
-    if len(_candidates._read_json(Path(path))) < 15000:
+    full_rows = _candidates._read_json(Path(path))
+    if len(full_rows) < 15000:
         pytest.skip("SPB_SNAPSHOT_JSON is not a full snapshot")
     assert out["search_help"]["funnel"]["capped"], "premise: the cap bites"
     assert [e["content_hash"] for e in out["shortlist"]] == [
         e["content_hash"] for e in plain["shortlist"]]
+    # The numbers below belong to the 17 Sep snapshot, not to any full snapshot: a later
+    # one (C5 applied, new stock) moves them. Same gate as W04's full-snapshot goldens.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "make_colin_subset", APP / "tests" / "fixtures" / "make_colin_subset.py")
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+    golden = json.loads(gen.GOLDEN.read_text(encoding="utf-8"))
+    if gen.fingerprint(full_rows) != golden["full_snapshot_fingerprint"]:
+        pytest.skip("the unchanged VIC shortlist held; the acceptance numbers are pinned to "
+                    "the 17 Sep snapshot and SPB_SNAPSHOT_JSON is another one")
     # Acceptance 2 (pre-C5, 16/09/2026): $825,000 finds 12.
     rel = {r["id"]: r for r in colin["search_help"]["relaxations"]}
     assert rel["budget_plus_10pct"]["shortlist_count"] == 12
@@ -529,6 +541,30 @@ def test_refusals_are_counted_only_for_lots_that_match_the_brief(synthetic):
                                      primary_suburbs=["Walloon"]), explain=True)
     assert walloon["needs_confirming_hidden"] == {"build_only": 1}
     assert _hashes(walloon["needs_confirming"]) == ["v2:syn-admitted"]
+
+
+@pytest.mark.parametrize("slots,count_short,hidden_short", [
+    # Room for everything: nothing may be short.
+    (600, False, False),
+    # 3 slots: the search (1 row) and the admit pass (2) fit, but the refusal pass -- every
+    # unstated row searched as though stated, beside the confirmed lot, 5 rows -- is cut.
+    # Only the hidden count may be short, and only it says so.
+    (3, False, True),
+    # 1 slot: the admit pass is cut too, so the count and the reveal say so as well.
+    (1, True, True),
+])
+def test_each_pass_the_cap_cuts_says_which_number_may_be_short(synthetic, monkeypatch, slots,
+                                                                count_short, hidden_short):
+    monkeypatch.setattr(_candidates, "MAX_CANDIDATES", slots)
+    out = _run(synthetic, _brief(budget_max=650000, preferred_spending_cap=650000),
+               explain=True)
+    assert out["shortlist_count"] == 1 and out["search_help"]["funnel"]["capped"] is False
+    flags = out["search_help"]["needs_confirming"]
+    assert (flags["count_may_be_short"], flags["hidden_may_be_short"]) == (count_short,
+                                                                           hidden_short)
+    (reveal,) = [r for r in out["search_help"]["relaxations"] if r["kind"] == "reveal"]
+    assert reveal["count"] == out["needs_confirming_count"] == 1
+    assert reveal["count_status"] == "exact" and reveal["capped"] is count_short
 
 
 def test_with_nothing_to_score_an_admitted_lot_is_still_offered(synthetic):

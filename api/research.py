@@ -1115,11 +1115,16 @@ def _shortlist_count_for(agent, brief_dict, rows, prepared):
 
 
 def _relaxations(agent, brief_dict, rows, prepared, counts, base_count,
-                 needs_confirming_count, started, adjustments=()):
+                 needs_confirming_count, started, adjustments=(),
+                 needs_confirming_short=False):
     """Every relaxation with a TRUE count: each is the whole search re-run with its
     brief_patch applied to the brief as searched. Posting that patch back over the form
     returns exactly shortlist_count (count_status 'exact'). Past EXPLAIN_BUDGET_MS the rest
-    are 'not_computed'; one that fails is 'error' and costs nothing else."""
+    are 'not_computed'; one that fails is 'error' and costs nothing else.
+
+    capped means what it means on a re-run: the candidate cap cut a pass, so the count may
+    be short. On the reveal that is search_help.needs_confirming.count_may_be_short, so the
+    button and the count beside it never disagree about whether the number is whole."""
     out = []
     for offer in _relaxation_offers(brief_dict, counts, needs_confirming_count,
                                     adjustments):
@@ -1127,7 +1132,8 @@ def _relaxations(agent, brief_dict, rows, prepared, counts, base_count,
             known = needs_confirming_count is not None
             out.append(dict(offer, count=needs_confirming_count,
                             adds=needs_confirming_count,
-                            count_status="exact" if known else "not_computed"))
+                            count_status="exact" if known else "not_computed",
+                            capped=bool(needs_confirming_short) if known else None))
             continue
         if _out_of_time(started):
             out.append(dict(offer, shortlist_count=None, adds=None,
@@ -1201,7 +1207,9 @@ def _with_explain(response, brief_dict, rows, prepared, counts, packages, result
                 help_["relaxations"] = _relaxations(
                     agent, brief_dict, rows, prepared, counts, base,
                     extra["needs_confirming_count"], started,
-                    response.get("brief_adjustments") or ())
+                    response.get("brief_adjustments") or (),
+                    needs_confirming_short=(help_.get("needs_confirming") or {}).get(
+                        "count_may_be_short"))
             except Exception as exc:                                  # noqa: BLE001
                 traceback.print_exc(file=sys.stderr)
                 help_["relaxations"] = []
