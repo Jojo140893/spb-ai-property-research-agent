@@ -44,6 +44,9 @@ QLD_750K = {"client_name": "trace_listing", "state": "QLD", "budget_max": 750000
 DAWN_1228 = ("v2:aec543504396f6d91db67fdeda1594f2a82cf326b69f9adeae1589dcb84afafa",
              "v2:c48b45992d8c5d69d81b986a3bb2baa44cdda6fc19ed4bcf550a4fd6b910e249")
 DAWN_STALE = "stale -> needs confirming (checked 20/08/2026)"
+DAWN_1229 = ("v2:30440e5989d86c38a65e24ee0d5412553c59583ac32f8a7423b6867b8b737416",
+             "v2:9fb1f79e894b1e141248a4c2cdfa3dbd08ac540346632108bc9a0da838ac233b")
+JUBILEE_4402 = "v2:0e9a289e6b10e3a3bdc69014d09fe38e902c18789eeb819f2bc760557f15b57f"
 
 # Torsion's filter-row fragment, as the 17 Sep snapshot publishes it. Not in the subset:
 # its document is not one of the seed documents.
@@ -82,12 +85,16 @@ DB_ROWS = [
     _db_row(id=14940, content_hash=DAWN_1228[1], checked_at="2026-08-20T09:46:43",
             first_seen="19/08/2026", last_seen="20/08/2026", source_url=DAWN_EMAIL,
             source_page=2),
-    _db_row(id=11879, content_hash="v2:30440e5989d86c38a65e24ee0d5412553c59583ac32f8a7423"
-            "b6867b8b737416", checked_at="2026-08-20T09:46:43", first_seen="17/08/2026",
-            source_url=DAWN_EMAIL, source_page=2),
+    _db_row(id=11879, content_hash=DAWN_1229[0], checked_at="2026-08-20T09:46:43",
+            first_seen="17/08/2026", source_url=DAWN_EMAIL, source_page=2),
     _db_row(id=11880, content_hash="v2:325f845742d7cb3c7806e9d7ae3e65dd04685c22bbeec6b3d8"
             "5759db8b44a645", checked_at="2026-08-20T09:46:43", first_seen="17/08/2026",
             source_url=DAWN_EMAIL, source_page=2),
+    _db_row(id=14941, content_hash=DAWN_1229[1], checked_at="2026-08-20T09:46:43",
+            first_seen="19/08/2026", source_url=DAWN_EMAIL, source_page=2),
+    # The same e-mail's VIC page: "Lot 4402, Jubilee, Wyndham Vale", $716,900, no lot column.
+    _db_row(id=11871, content_hash=JUBILEE_4402, checked_at="2026-08-20T09:46:43",
+            first_seen="17/08/2026", source_url=DAWN_EMAIL, source_page=1),
     _db_row(id=15899, content_hash="v2:3b141dd88332708082ae739c3f81e273bac545ecbff7fd9a83"
             "7dc1e1a1bfdb46", checked_at="2026-09-01T11:56:53", first_seen="22/08/2026",
             last_seen="01/09/2026", source_url=FAKE_SHEET, stocklist_file=FAKE_SHEET,
@@ -251,6 +258,41 @@ def test_14905_is_shortlisted_with_a_warning_that_its_state_rests_on_the_suburb_
     assert any("rests on the suburb column" in w for w in item["warnings"]), item["warnings"]
 
 
+def test_another_state_is_a_parse_gap_only_when_the_text_says_so(catalogue, agent_factory):
+    """14905 is filed QLD on a suburb match while its line names Wollert: a VIC client is
+    denied it by a parse error. Hattan's correct VIC copy of the lot, 19510, rests on a
+    suburb match too, but nothing in it says QLD -- to a QLD client it is simply elsewhere."""
+    vic = dict(QLD_750K, state="VIC")
+    item = _by_id(_trace(catalogue, agent_factory, brief=vic, ids=[14905]))[14905]
+    assert item["kind"] == "parse", item
+    assert item["verdict"] == ("hidden: filed QLD, the brief asks for VIC (its text names "
+                               "Wollert, a VIC locality)")
+    report = _trace(catalogue, agent_factory, hashes=["v2:303d19e1"])
+    twin = report["matches"][0]
+    assert str(twin["row"].get("state_source")).startswith("suburb")
+    assert (twin["kind"], twin["verdict"]) == (
+        "brief", "hidden: filed VIC, the brief asks for QLD")
+
+
+def test_the_elsewhere_warning_asks_what_enrich_asks():
+    """W02's question, asked the way enrich_buildings asks it: over the row's source_text
+    as well as its lot_address, with a place counted as stocked unless its own state rests
+    on the suburb column alone ('suburb + e-agent page' still vouches)."""
+    target = {"lot_address": "Lot 618, Riverhills QLD", "suburb": "Riverhills",
+              "state": "QLD", "state_source": "suburb", "estate_name": "Riverhills",
+              "db": {"source_text": "Available Wollert Titled Townhouse 618 $553,284"}}
+
+    def warnings(stocking_source):
+        wollert = {"suburb": "Wollert", "state": "VIC", "state_source": stocking_source,
+                   "lot_address": "Lot 618, Riverhills", "estate_name": "Riverhills"}
+        catalogue = T.Catalogue([wollert, target], [], [], "test", "test.db")
+        return T.Tracer(catalogue, dict(QLD_750K), TODAY).warnings(target)
+
+    found = warnings("suburb + e-agent page")
+    assert found and found[0].endswith("; its text names Wollert, a VIC locality"), found
+    assert "Wollert" not in " ".join(warnings("suburb"))
+
+
 def test_the_dawn_verdict_is_the_searchs_own_and_can_go_red(catalogue, agent_factory,
                                                            monkeypatch):
     """Stub the search's explanation to call every passing row verified and scored, and
@@ -317,6 +359,105 @@ def test_a_builder_or_estate_said_another_way_is_still_the_listing():
     assert T.nearness(T.Query(builder="Torsion", price=790000), developer) == (0, [])
     score, reasons = T.nearness(q224, developer)
     assert score and reasons[0].startswith("another builder")
+
+
+def test_a_lot_its_address_states_is_a_fact_without_a_lot_column(catalogue, agent_factory):
+    """Shape Homes lot 1229 at $721,900 is the two Dawn captures -- not "Lot 4402, Jubilee,
+    Wyndham Vale" at $716,900 from the same e-mail, whose lot column is blank and which
+    agreed on builder (its e-mail names Shape Homes) and price (0.7% away)."""
+    report = _trace(catalogue, agent_factory, builder="Shape Homes", lot="1229",
+                    price=721900)
+    assert {item["content_hash"] for item in report["matches"]} == set(DAWN_1229)
+    jubilee = next(r for r in catalogue.rows if r["content_hash"] == JUBILEE_4402)
+    assert not jubilee.get("lot_number") and "Lot 4402" in jubilee["lot_address"]
+    assert T.match_statuses(T.Query(lot="1229"), jubilee)["lot"] == "no"
+    assert T.match_statuses(T.Query(lot="4402"), jubilee)["lot"] == "yes"
+    assert T.match_statuses(T.Query(lot="7"), {"lot_address": "Somewhere St"})["lot"] == (
+        "unknown")
+    # And near, by the lot its address states.
+    _score, reasons = T.nearness(T.Query(builder="Shape Homes", lot="4401"), jubilee)
+    assert "lot 4402 (+1)" in reasons
+
+
+def test_json_lines_stay_json_when_a_value_holds_a_link():
+    item = {"row": {"content_hash": "v2:x", "db": {"id": 7}}, "content_hash": "v2:x",
+            "kind": "gate", "gate": "superseded", "confirm_guard": None,
+            # A link that ENDS a value: scrubbing the dumped line would eat its closing
+            # quote and the comma after it.
+            "verdict": "superseded: withdrawn, see https://example.com/a?b=1",
+            "warnings": ["its text names docs.example.com/x/y"]}
+    lines = T.json_lines({"matches": [item], "nearest": [], "not_found": False,
+                          "query": "id 7"})
+    entry = json.loads(lines[0])
+    assert entry["verdict"] == "superseded: withdrawn, see [link removed]"
+    assert entry["warnings"] == ["its text names [link removed]"]
+    assert entry["id"] == 7 and entry["gate"] == "superseded"
+
+
+def test_a_file_name_that_is_its_links_key_is_not_printed():
+    keyed = {"source_channel": "E-Agent", "source_doc": "d0c",
+             "db": {"source_url": "https://static.wixstatic.example/ugd/"
+                                  "abc123_0123456789abcdef0123456789abcdef.pdf"}}
+    assert T.document_label(keyed) == "E-Agent file, [doc d0c]"
+    titled = {"db": {"stocklist_file": "D:/lists/Taylors Run Price List- 24.06.26.pdf"}}
+    assert T.document_label(titled) == 'file "Taylors Run Price List- 24.06.26.pdf"'
+    assert T._file_name("x/Q3Zk9mWq2Lp7Rt5Yv8Bn4Hs6Jd1Fg0Kx.xlsx") == ""
+    # A bare domain with a path is a link; a bare domain is a name.
+    assert T._no_links("from docs.google.com/spreadsheets/d/abc/edit today") == (
+        "from [link removed] today")
+    assert T._no_links("builder hattan.com.au, 4.5/14.07, stock.json") == (
+        "builder hattan.com.au, 4.5/14.07, stock.json")
+
+
+def test_listings_end_with_one_verdict_line_each(files, agent_factory, tmp_path,
+                                                 monkeypatch):
+    """Colin's listings, traced under one search: each gets its rows and then ONE line
+    saying where it was lost -- and the catalogue is explained once, not per listing."""
+    stock, db = files
+    listings = tmp_path / "colin.csv"
+    listings.write_text(
+        "builder,estate,lot,price,label\n"
+        "Shape Homes,Dawn,1228,\"$721,900\",emailed list\n"
+        "Shape Homes,Dawn,1230,723900,a builder's rep\n"
+        "Silkwood Homes,Maplewood,,595k,Google Sheet\n"
+        "Hattan Homes,Riverhills,618,553284,\n", encoding="utf-8")
+    calls = []
+    real = C.explain_rows
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(T.C, "explain_rows", counted)
+    common = ["--listings", str(listings), "--state", "QLD", "--budget", "750000",
+              "--today", TODAY_TEXT, "--snapshot", str(stock), "--db", str(db)]
+    code, text = _cli(common, agent_factory)
+    assert code == 0 and len(calls) == 1
+    summary = text.split("One line per listing:\n", 1)[1].splitlines()
+    assert len(summary) == 4, summary
+    assert summary[0].startswith('  1. builder "Shape Homes", estate "Dawn", lot 1228, '
+                                 'price $721,900 (emailed list) -> [needs confirming] id 11878')
+    assert summary[0].endswith(DAWN_STALE + " (2 rows hold it)")
+    assert "(a builder's rep) -> [intake gap] not in the catalogue; nearest is id 11" in (
+        summary[1])
+    assert "-> [hidden by a rule] id 15899 (v2:3b141dd8): hidden: document re-read " in (
+        summary[2])
+    # Superseded captures of lot 618 hold it too; the live, shown one speaks for it.
+    assert re.search(r"-> \[shortlisted\] id 14905 \(v2:1c5ca48e\): shortlisted "
+                     r"\(\d+ rows hold it\)$", summary[3]), summary[3]
+    assert text.count("LISTING ") == 4
+
+    _code, text = _cli(common + ["--json"], agent_factory)
+    entries = [json.loads(line) for line in text.splitlines()]
+    verdicts = {e["listing"]: e for e in entries if e.get("summary")}
+    assert [verdicts[n]["kind"] for n in (1, 2, 3, 4)] == ["confirm", "intake", "gate",
+                                                           "shown"]
+    assert verdicts[1]["label"] == "emailed list"
+
+    bad = tmp_path / "bad.csv"
+    bad.write_text("builder,price\nShape Homes,lots\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        _cli(["--listings", str(bad), "--snapshot", str(stock)], agent_factory)
 
 
 def test_superseded_rows_are_traced_to_the_capture_that_replaced_them(catalogue,
@@ -472,8 +613,14 @@ def test_a_scorer_that_cannot_run_is_said_not_hidden(catalogue):
 
 # ------------------------------------------------------------------ the 17 Sep catalogue
 
+# Read at import, before any test runs: test_harvest_buildings pops SPB_DATABASE_PATH from
+# the environment while the suite runs, and this check would then skip in the full suite.
+_FULL_SNAPSHOT_ENV = os.environ.get("SPB_SNAPSHOT_JSON")
+_FULL_DATABASE_ENV = os.environ.get("SPB_DATABASE_PATH")
+
+
 def _full_catalogue_paths():
-    snap, db = os.environ.get("SPB_SNAPSHOT_JSON"), os.environ.get("SPB_DATABASE_PATH")
+    snap, db = _FULL_SNAPSHOT_ENV, _FULL_DATABASE_ENV
     if not snap or not Path(snap).is_file():
         pytest.skip("local-only: SPB_SNAPSHOT_JSON does not point at a snapshot")
     if not db or not Path(db).is_file():
@@ -510,4 +657,7 @@ def test_the_named_cases_on_the_17_sep_catalogue(agent_factory):
     assert {entry["content_hash"] for entry in dawn} == set(DAWN_1228)
     assert [entry["verdict"] for entry in dawn].count(DAWN_STALE) == 1
     assert not re.search(r"https?:|www\.", text)
+    _code, text = _cli(["--builder", "Shape Homes", "--lot", "1229", "--price", "721900"]
+                       + common, agent_factory)
+    assert {json.loads(line)["content_hash"] for line in text.splitlines()} == set(DAWN_1229)
     assert (Path(db).stat().st_mtime_ns, Path(db).stat().st_size) == before

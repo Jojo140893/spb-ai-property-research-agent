@@ -16,6 +16,12 @@ each one the next piece of work depends on WHERE it was lost:
         --price 721900 --state QLD --budget 750000 [--today 16/09/2026]
     python trace_listing.py --id 15899 --state QLD --budget 750k
     python trace_listing.py --hash v2:1c5ca48e --state QLD --budget 750000 --build
+    python trace_listing.py --listings colin.csv --state QLD --budget 770000
+
+--listings traces several listings under one search (a CSV with the header builder, estate,
+lot, price and an optional label saying how each reached Colin, or a JSON list of the same)
+and ends with one verdict line per listing -- the line that decides whether the next work
+is harvest, email intake or the parser.
 
 WHAT IT READS. The rows a search sees are the SNAPSHOT's (states borrowed, suburbs
 resolved, source_doc derived at build time), not the database table's, so a listing is
@@ -33,7 +39,9 @@ score_candidates), exactly as api/research.py does. Superseded rows are traced t
 superseded them. Nothing matching prints "not in the catalogue" and the nearest rows.
 
 NEVER PRINTS A URL. A document is named by its kind, file name, sheet position, e-mail
-subject and its short source_doc hash. Every printed value is passed through _no_links.
+subject and its short source_doc hash -- and not by a file name that is itself a key (an
+E-Agent file is "069fe0_<32 hex>.pdf", the secret half of its link). Every printed value
+is passed through _no_links.
 """
 import argparse
 import difflib
@@ -111,8 +119,20 @@ HIDDEN_BECAUSE = {
     "commercial": "availability not stated, and the price is commercial",
 }
 
-_LINK = re.compile(r"(?:[a-z][a-z0-9+.-]*:/+|www\.)\S*|\S+@\S+\.\S+", re.I)
+# A scheme ("https:/", even cut short), "www.", an e-mail address, or a bare domain with a
+# path ("docs.google.com/spreadsheets/d/...", "dropbox.com/scl/fi/..."), which a row's text
+# can carry without its scheme. A bare domain alone ("hattan.com.au", a builder_name) is a
+# name, not a link, and stays.
+_LINK = re.compile(r"(?:[a-z][a-z0-9+.-]*:/+|www\.)\S*|\S+@\S+\.\S+"
+                   r"|\b[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}(?::\d+)?/\S*", re.I)
+# A file name that is a random key, not a title: E-Agent's files are named
+# "<6 hex>_<32 hex>.xlsx", and that name is the unguessable part of the link it came from.
+# Printed, it is the link less its host. A run of 16 hex digits, or of 24 letters and
+# digits mixing both, is a key; "Price List 24.06.26" is a title. See _key_like.
+_HEX_RUN = re.compile(r"[0-9a-f]{16,}", re.I)
+_ALNUM_RUN = re.compile(r"[A-Za-z0-9]{24,}")
 _WORD = re.compile(r"[a-z0-9]+")
+_LOT_IN_TEXT = re.compile(r"\blot\s*([a-z]?\d+[a-z]?)\b", re.I)
 _ESTATE_STOPWORDS = {"estate", "the", "stage", "at", "of", "and", "release", "precinct"}
 _GENERIC_BUILDER_WORDS = {"homes", "home", "group", "builders", "builder", "building",
                           "buildings", "construction", "constructions", "developments",
@@ -124,6 +144,13 @@ _DOC_EXTENSIONS = (".pdf", ".xlsx", ".xls", ".xlsm", ".csv", ".docx", ".doc")
 def _no_links(value):
     """Text with every link and e-mail address replaced. The last thing before print."""
     return _LINK.sub("[link removed]", str("" if value is None else value))
+
+
+def _key_like(stem):
+    """Whether a file name's stem is a key rather than a title (see _HEX_RUN)."""
+    return bool(_HEX_RUN.search(stem)) or any(
+        re.search(r"\d", run) and re.search(r"[A-Za-z]", run)
+        for run in _ALNUM_RUN.findall(stem))
 
 
 def _money(value):
@@ -374,7 +401,9 @@ def _file_name(ref):
     except ValueError:
         return ""
     name = unquote(re.split(r"[\\/]", path)[-1]).strip()
-    return name if name.lower().endswith(_DOC_EXTENSIONS) else ""
+    if not name.lower().endswith(_DOC_EXTENSIONS):
+        return ""
+    return "" if _key_like(name.rsplit(".", 1)[0]) else name
 
 
 def _builder_names(query_builder, text):
@@ -425,16 +454,26 @@ def _estate_status(query, row):
     return "unknown"
 
 
+def _row_lots(row):
+    """The lot numbers a row states: its lot column, or else every "Lot N" in its address.
+
+    No lot column does not mean no lot. "Lot 4402, Jubilee" is not lot 1229, and without
+    reading the address a Shape Homes lot 1229 at $721,900 "matched" that Wyndham Vale lot
+    at $716,900 on builder and price alone."""
+    have = _norm_lot(row.get("lot_number"))
+    if have:
+        return {have}
+    text = " ".join(str(row.get(f) or "") for f in ("street_address", "lot_address"))
+    return {_norm_lot(m) for m in _LOT_IN_TEXT.findall(text)}
+
+
 def _lot_status(query, row):
     if not query.lot:
         return None
-    have = _norm_lot(row.get("lot_number"))
-    if have:
-        return "yes" if have == query.lot else "no"
-    text = " ".join(str(row.get(f) or "") for f in ("street_address", "lot_address"))
-    if re.search(r"\blot\s*%s\b" % re.escape(query.lot), text, re.I):
+    stated = _row_lots(row)
+    if query.lot in stated:
         return "yes"
-    return "unknown"
+    return "no" if stated else "unknown"
 
 
 def _price_status(query, row, share=PRICE_MATCH_SHARE):
@@ -482,8 +521,10 @@ def nearness(query, row):
         near = True
         reasons.append("estate")
     if query.lot:
-        a, b = _as_int(query.lot), _as_int(_norm_lot(row.get("lot_number")))
-        if a is not None and b is not None and abs(a - b) <= NEAR_LOT:
+        a = _as_int(query.lot)
+        lots = sorted(n for n in map(_as_int, _row_lots(row)) if n is not None)
+        b = min(lots, key=lambda n: abs(n - a)) if a is not None and lots else None
+        if b is not None and abs(a - b) <= NEAR_LOT:
             score += 2 if a == b else 1
             near = True
             reasons.append("lot %s" % b if a == b else "lot %s (%+d)" % (b, b - a))
@@ -600,6 +641,7 @@ class Tracer:
         self._scored = None
         self._scorer_error = None
         self._stocked = None
+        self._geo = None
 
     def agent(self):
         """The pipeline object, built once and only when a row reaches scoring."""
@@ -672,9 +714,16 @@ class Tracer:
             return ("hidden: no state recorded, and none could be borrowed from its "
                     "estate, document or builder", "parse")
         if gate == "other_state":
-            kind = "parse" if self._state_rests_on_suburb(row) else "brief"
-            return ("hidden: filed %s, the brief asks for %s"
-                    % (detail.get("state"), self.brief.get("state")), kind)
+            # A parse gap only when the row's own text places it in the brief's state and
+            # its filed state rests on a suburb match: Hattan's Wollert lot filed QLD is
+            # lost to a VIC client. Its correct VIC twin is simply outside a QLD brief.
+            wanted = str(self.brief.get("state") or "").strip().upper()
+            elsewhere = (self._text_names_elsewhere(row)
+                         if self._state_rests_on_suburb(row) else None)
+            text = "hidden: filed %s, the brief asks for %s" % (detail.get("state"), wanted)
+            if elsewhere and elsewhere[1] == wanted:
+                return (text + " (its text names %s, a %s locality)" % elsewhere, "parse")
+            return text, "brief"
         if gate == "other_product_type":
             return ("hidden: product type %r is not one the brief asks for"
                     % (detail.get("product_type") or "unknown"), "brief")
@@ -814,9 +863,11 @@ class Tracer:
     def warnings(self, row):
         out = []
         if self._state_rests_on_suburb(row):
-            text = ("the state %s rests on the suburb column (state_source %r), not on "
+            source = str(row.get("state_source") or "").strip()
+            text = ("the state %s rests on the suburb column%s (state_source %r), not on "
                     "the row's own text" % (row.get("state") or "(none)",
-                                             row.get("state_source")))
+                                             "" if source.lower() == "suburb"
+                                             else " and its document", source))
             elsewhere = self._text_names_elsewhere(row)
             if elsewhere:
                 text += "; its text names %s, a %s locality" % elsewhere
@@ -827,24 +878,28 @@ class Tracer:
 
     def _text_names_elsewhere(self, row):
         """(locality, state) when the row's text names a place in one other state that
-        the catalogue stocks -- W02's evidence (state_resolver.text_locality_elsewhere) --
-        or None. Advisory only, and never fatal."""
+        the catalogue stocks -- W02's evidence, asked as enrich_buildings asks it
+        (state_resolver.text_locality_elsewhere over source_text and lot_address, against
+        a plain gazetteer) -- or None. Advisory only, and never fatal."""
         try:
+            from geo import SuburbGeoIndex
             from state_resolver import text_locality_elsewhere
-            geo = self.agent().geo
             if self._stocked is None:
+                self._geo = SuburbGeoIndex()
                 # As enrich's overrule_evidence: live rows whose suburb is a locality of
-                # their state, and whose state does not itself rest on the suburb column.
+                # their state, unless that state rests on the suburb column alone.
                 self._stocked = {
                     (str(r.get("suburb") or "").strip().lower(),
                      str(r.get("state") or "").strip().upper())
                     for r in self.catalogue.rows
                     if not r.get("superseded_by") and r.get("suburb") and r.get("state")
-                    and not self._state_rests_on_suburb(r)
-                    and geo.locate(str(r.get("suburb")), str(r.get("state")))}
-            text = " ".join(str(row.get(f) or "") for f in ("lot_address", "street_address"))
-            return text_locality_elsewhere(text, row.get("state"), geo, self._stocked,
-                                           estate=row.get("estate_name"))
+                    and str(r.get("state_source") or "").strip() != "suburb"
+                    and self._geo.locate(str(r.get("suburb")).strip(),
+                                         str(r.get("state")).strip().upper())}
+            text = " ".join(str(v or "") for v in (_db(row).get("source_text"),
+                                                   row.get("lot_address")))
+            return text_locality_elsewhere(text, row.get("state"), self._geo,
+                                           self._stocked, estate=row.get("estate_name"))
         except Exception:                                             # noqa: BLE001
             return None
 
@@ -898,9 +953,12 @@ def nearest_rows(everything, query, exclude, limit, state=""):
 
 
 def run_trace(catalogue, query, brief, today, adjustments=(), agent_factory=pipeline_agent,
-              nearest=5, limit=20):
-    """The whole trace as data: {header, matches, more, nearest, not_found}."""
-    tracer = Tracer(catalogue, brief, today, agent_factory=agent_factory)
+              nearest=5, limit=20, tracer=None):
+    """The whole trace as data: {header, matches, more, nearest, not_found}.
+
+    `tracer` is a Tracer for this catalogue, brief and day to reuse: tracing several
+    listings against one search explains and scores the catalogue once."""
+    tracer = tracer or Tracer(catalogue, brief, today, agent_factory=agent_factory)
     matches, everything = find_rows(catalogue, query)
     report = {
         "query": query.describe(),
@@ -925,6 +983,68 @@ def run_trace(catalogue, query, brief, today, adjustments=(), agent_factory=pipe
     return report
 
 
+# The order a listing's verdict is taken from when several rows hold it: if any capture
+# is shown, the listing is shown; a live capture speaks before a superseded one.
+_KIND_RANK = ("shown", "confirm", "gate", "brief", "parse", "snapshot")
+
+
+def summarise(report):
+    """(kind, text): the one-line verdict for the listing a report traced."""
+    if report["not_found"]:
+        text = "not in the catalogue"
+        if report["nearest"]:
+            item = report["nearest"][0]
+            text += "; nearest is %s (%s): [%s] %s" % (
+                _row_name(item["row"]), ", ".join(item.get("near") or ()),
+                KIND_LABELS[item["kind"]], item["verdict"])
+        return "intake", text
+    best = min(report["matches"],
+               key=lambda i: (_KIND_RANK.index(i["kind"]),
+                              1 if i["row"].get("superseded_by") else 0))
+    text = "%s: %s" % (_row_name(best["row"]), best["verdict"])
+    rows = len(report["matches"]) + report["more"]
+    if rows > 1:
+        text += " (%d rows hold it)" % rows
+    return best["kind"], text
+
+
+def read_listings(path):
+    """[(label, Query)] from Colin's listings: a CSV with a header row, or a JSON list of
+    objects. Columns builder, estate, lot, price, and optionally label (how it reached
+    him: portal, email, E-Agent, a builder's rep). Prices are read as the brief reads
+    money: 721900, $721,900, 722k."""
+    import csv
+    import research
+    path = Path(path)
+    text = path.read_text(encoding="utf-8-sig")
+    if path.suffix.lower() == ".json":
+        records = json.loads(text)
+        if not isinstance(records, list):
+            raise ValueError("%s: expected a JSON list of listings" % path.name)
+    else:
+        records = list(csv.DictReader(text.splitlines()))
+    listings = []
+    for number, record in enumerate(records, 1):
+        if not isinstance(record, dict):
+            raise ValueError("%s: listing %d is not an object" % (path.name, number))
+        record = {str(k or "").strip().lower(): v for k, v in record.items()}
+        price = None
+        if str(record.get("price") or "").strip():
+            price, _how = research._read_money(record.get("price"))
+            if price is None:
+                raise ValueError("%s: listing %d has price %r, which is not a price"
+                                 % (path.name, number, record.get("price")))
+        query = Query(record.get("builder"), record.get("estate"),
+                      None if record.get("lot") is None else str(record.get("lot")), price)
+        if not query.criteria():
+            raise ValueError("%s: listing %d names no builder, estate, lot or price"
+                             % (path.name, number))
+        listings.append((str(record.get("label") or "").strip(), query))
+    if not listings:
+        raise ValueError("%s holds no listings" % path.name)
+    return listings
+
+
 def _row_title(row):
     address = C._display_address(row) if row.get("lot_address") is not None else ""
     place = " ".join(p for p in (str(row.get("suburb") or "").strip(),
@@ -943,9 +1063,36 @@ def _describe_brief(brief):
 
 def render(report):
     """The report as printable lines. Every line has been through _no_links."""
+    lines = _render_header(report, report["query"]) + [""] + _render_body(report)
+    return [_no_links(line) for line in lines]
+
+
+def render_many(reports):
+    """[(label, report)] -- several listings under one search -- as printable lines: each
+    listing's rows, then one verdict line per listing. Every line has been through
+    _no_links."""
+    notes = []
+    for _label, report in reports:
+        notes += [n for n in report["notes"] if n not in notes]
+    lines = _render_header(reports[0][1], "%d listings" % len(reports), notes)
+    for number, (label, report) in enumerate(reports, 1):
+        lines += ["", "=" * 78,
+                  "LISTING %d: %s%s" % (number, report["query"],
+                                        " (%s)" % label if label else ""), ""]
+        lines += _render_body(report)
+    lines += ["", "=" * 78, "One line per listing:"]
+    for number, (label, report) in enumerate(reports, 1):
+        kind, text = summarise(report)
+        lines.append("  %d. %s%s -> [%s] %s" % (number, report["query"],
+                                               " (%s)" % label if label else "",
+                                               KIND_LABELS[kind], text))
+    return [_no_links(line) for line in lines]
+
+
+def _render_header(report, looking_for, notes=None):
     lines = [
         "trace_listing (read-only)",
-        "  looking for : %s" % report["query"],
+        "  looking for : %s" % looking_for,
         "  brief       : %s, as the Research tab searches it" % _describe_brief(
             report["brief"]),
         "  today       : %s (AEST)" % report["today"],
@@ -955,9 +1102,13 @@ def render(report):
     for adj in report["adjustments"]:
         lines.append("  adjusted    : %s %s (%s)" % (adj.get("field"), adj.get("code"),
                                                      adj.get("why") or adj.get("note")))
-    for note in report["notes"]:
+    for note in report["notes"] if notes is None else notes:
         lines.append("  note        : %s" % note)
-    lines.append("")
+    return lines
+
+
+def _render_body(report):
+    lines = []
     if report["not_found"]:
         lines.append("NOT IN THE CATALOGUE (intake gap): no row matches %s." % report["query"])
         if report["nearest"]:
@@ -982,7 +1133,33 @@ def render(report):
     for item in report["matches"]:
         lines.append("  %-18s [%s] %s" % (_row_name(item["row"]), KIND_LABELS[item["kind"]],
                                           item["verdict"]))
-    return [_no_links(line) for line in lines]
+    return lines
+
+
+def _scrubbed(value):
+    """A JSON-ready value with _no_links applied to every string inside it -- before
+    json.dumps, since scrubbing the dumped text would eat the quotes after a link."""
+    if isinstance(value, str):
+        return _no_links(value)
+    if isinstance(value, dict):
+        return {k: _scrubbed(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_scrubbed(v) for v in value]
+    return value
+
+
+def json_lines(report, **extra):
+    """The verdicts as JSON objects: a row each, and an intake line when nothing matched."""
+    out = []
+    for item in report["matches"] or report["nearest"]:
+        out.append(dict(extra, id=_row_id(item["row"]), content_hash=item["content_hash"],
+                        kind=item["kind"], gate=item.get("gate"), verdict=item["verdict"],
+                        confirm_guard=item.get("confirm_guard"),
+                        warnings=item["warnings"], nearest=bool(item.get("near"))))
+    if report["not_found"]:
+        out.append(dict(extra, kind="intake", verdict="not in the catalogue",
+                        query=report["query"]))
+    return [json.dumps(_scrubbed(line)) for line in out]
 
 
 def _render_item(item, near=False):
@@ -1023,7 +1200,8 @@ def _render_item(item, near=False):
 def _parser():
     ap = argparse.ArgumentParser(
         description="Explain a listing against the catalogue, read-only.",
-        epilog="Name at least one of --builder --estate --lot --price --id --hash.")
+        epilog="Name at least one of --builder --estate --lot --price --id --hash, or "
+               "pass --listings.")
     ap.add_argument("--builder")
     ap.add_argument("--estate")
     ap.add_argument("--lot")
@@ -1032,6 +1210,10 @@ def _parser():
                     help="a database id (repeatable)")
     ap.add_argument("--hash", action="append", default=[],
                     help="a content_hash or its prefix, e.g. v2:1c5ca48e (repeatable)")
+    ap.add_argument("--listings",
+                    help="several listings under one search: a CSV (header builder, estate, "
+                         "lot, price[, label]) or a JSON list; ends with one verdict line "
+                         "per listing")
     ap.add_argument("--state", help="the brief's state; blank is Any state")
     ap.add_argument("--budget", help="the brief's budget_max: 750000, 750k, $750,000")
     ap.add_argument("--db", help="the database (default SPB_DATABASE_PATH, then the app's)")
@@ -1072,8 +1254,18 @@ def main(argv=None, out=None, agent_factory=pipeline_agent):
         if price is None:
             ap.error("--price %r is not a price" % args.price)
     query = Query(args.builder, args.estate, args.lot, price, args.id, args.hash)
-    if not (query.criteria() or query.ids or query.hashes):
-        ap.error("name at least one of --builder --estate --lot --price --id --hash")
+    named = bool(query.criteria() or query.ids or query.hashes)
+    listings = None
+    if args.listings:
+        if named:
+            ap.error("--listings replaces --builder --estate --lot --price --id --hash")
+        try:
+            listings = read_listings(args.listings)
+        except (OSError, ValueError) as exc:
+            ap.error("--listings: %s" % exc)
+    elif not named:
+        ap.error("name at least one of --builder --estate --lot --price --id --hash, or "
+                 "pass --listings")
     try:
         today = parse_today(args.today)
     except ValueError:
@@ -1097,23 +1289,25 @@ def main(argv=None, out=None, agent_factory=pipeline_agent):
         if label:
             catalogue.snapshot_label += ", " + label
             catalogue.db_label = "%s (copied read-only)" % db_path.name
-        report = run_trace(catalogue, query, brief, today, adjustments,
-                           agent_factory=agent_factory, nearest=args.nearest,
-                           limit=args.limit)
-    if args.json:
-        for item in report["matches"] or report["nearest"]:
-            print(_no_links(json.dumps({
-                "id": _row_id(item["row"]),
-                "content_hash": item["content_hash"], "kind": item["kind"],
-                "verdict": item["verdict"], "confirm_guard": item.get("confirm_guard"),
-                "warnings": item["warnings"], "nearest": bool(item.get("near")),
-            })), file=out)
-        if report["not_found"]:
-            print(_no_links(json.dumps({"kind": "intake", "verdict": "not in the catalogue",
-                                        "query": report["query"]})), file=out)
+        tracer = Tracer(catalogue, brief, today, agent_factory=agent_factory)
+        reports = [(label, run_trace(catalogue, q, brief, today, adjustments,
+                                     nearest=args.nearest, limit=args.limit, tracer=tracer))
+                   for label, q in (listings or [("", query)])]
+    if listings is None:
+        report = reports[0][1]
+        lines = json_lines(report) if args.json else render(report)
+    elif args.json:
+        lines = []
+        for number, (label, report) in enumerate(reports, 1):
+            lines += json_lines(report, listing=number)
+            kind, text = summarise(report)
+            lines.append(json.dumps(_scrubbed({
+                "listing": number, "label": label, "query": report["query"],
+                "summary": True, "kind": kind, "verdict": text})))
     else:
-        for line in render(report):
-            print(line, file=out)
+        lines = render_many(reports)
+    for line in lines:
+        print(line, file=out)
     return 0
 
 
