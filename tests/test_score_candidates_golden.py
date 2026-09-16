@@ -257,6 +257,70 @@ def test_the_pipeline_output_equals_the_golden_on_the_full_snapshot(name, full_r
     assert full_record(result) == saved
 
 
+# ------------------------------------------------------------------ what W10 adds
+
+@pytest.mark.parametrize("name", list(BRIEFS))
+def test_pending_confirmation_is_the_processed_candidates_that_are_not_verified(
+        name, subset_rows, subset_agent):
+    result, packages = run(subset_agent, BRIEFS[name], subset_rows)
+    processed, _rejected = subset_agent.score_candidates(dict(BRIEFS[name]),
+                                                         copy.deepcopy(packages))
+    unconfirmed = [c.property_id for c in processed
+                   if c.verification_status.value != "Verified" and not c.consultant_approved]
+    assert [c.property_id for c in result["pending_confirmation"]] == unconfirmed
+    assert unconfirmed == GOLDEN["briefs"][name]["subset"]["pending"]
+    shortlisted = {c.property_id for c in result["shortlist"]}
+    assert not shortlisted & set(unconfirmed), "a pending candidate reached the shortlist"
+
+
+@pytest.mark.parametrize("name", list(BRIEFS))
+def test_score_candidates_is_the_loop_and_writes_nothing(name, subset_rows, subset_agent,
+                                                         monkeypatch):
+    result, packages = run(subset_agent, BRIEFS[name], subset_rows)
+
+    def refuse(*_a, **_k):
+        raise AssertionError("score_candidates wrote an audit row or built a payload")
+    monkeypatch.setattr(subset_agent.db, "save_research_run", refuse)
+    monkeypatch.setattr(subset_agent, "_build_kommo_update_payload", refuse)
+    import client_report
+    monkeypatch.setattr(client_report.ClientReportGenerator, "generate_html", refuse)
+
+    processed, rejected = subset_agent.score_candidates(dict(BRIEFS[name]),
+                                                        copy.deepcopy(packages))
+    # Ranked, and exactly the shortlist plus the pending candidates, in that ranking.
+    scores = [c.scoring.total_score for c in processed]
+    assert scores == sorted(scores, reverse=True)
+    ranked = {c.property_id: i for i, c in enumerate(processed)}
+    assert sorted(ranked) == sorted([c.property_id for c in result["shortlist"]]
+                                    + [c.property_id for c in result["pending_confirmation"]])
+    assert [c.property_id for c in result["shortlist"]] == sorted(
+        (c.property_id for c in result["shortlist"]), key=ranked.get)
+    # The hard rejections, as run_property_research logged them, and nothing else.
+    assert rejected == [e for e in result["rejected_log"] if e.get("kind") == "rejection"]
+    # A ClientBrief is accepted as well as the raw dict.
+    from brief_parser import ClientBriefParser
+    again, again_rejected = subset_agent.score_candidates(
+        ClientBriefParser.parse_dict(dict(BRIEFS[name])), copy.deepcopy(packages))
+    assert [c.property_id for c in again] == [c.property_id for c in processed]
+    assert again_rejected == rejected
+
+
+@pytest.mark.parametrize("name", list(BRIEFS))
+def test_every_rejected_entry_carries_codes(name, subset_rows, subset_agent):
+    from scoring_engine import REJECTION_CODES
+    result, _packages = run(subset_agent, BRIEFS[name], subset_rows)
+    assert result["rejected_log"]
+    for entry in result["rejected_log"]:
+        assert set(entry) - set(LEGACY_REJECTED_KEYS) <= W10_REJECTED_KEYS, entry
+        if entry.get("reason") == PENDING_REASON:
+            assert entry["kind"] == "pending_confirmation"
+            assert entry["codes"] == ["pending_confirmation"]
+        else:
+            assert entry["kind"] == "rejection"
+            assert entry["codes"] and set(entry["codes"]) <= set(REJECTION_CODES), entry
+            assert len(entry["codes"]) == len(entry["reason"].split("; ")), entry
+
+
 # ------------------------------------------------------------------ writing it
 
 def _write(snapshot):
