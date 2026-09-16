@@ -687,10 +687,10 @@ def _log_search(response, counts):
 # ------------------------------------------------------------------------------ explain
 #
 # WHY ONLY N MATCHED, AND WHAT ELSE A CONSULTANT COULD SEND. Part C, 16 Sep: Colin searched
-# "QLD under $750k" and saw two cards and a badge. Nothing said that the catalogue holds 17
-# listings it can place in that range, that three Shape Homes lots in Walloon match but were
-# last read 27 days ago, or that $825,000 would find 12. Everything below answers that, for
-# the Research tab only.
+# "QLD under $750k" and saw two cards and a badge. Nothing said that 23 in-state listings
+# sit in that price range, that three Shape Homes lots in Walloon match but were last read
+# 27 days ago, or that $825,000 would find 12. Everything below answers that, for the
+# Research tab only.
 #
 # OPT-IN, AND ONLY BY A LITERAL `"explain": true`. Clare's hook (vapi-kommo-hook
 # lib/deps.js) posts {client_brief} alone and reads json.shortlist; the Hot Leads re-run
@@ -807,6 +807,10 @@ def _listing_key(lot_address, house_design, price):
                            str(house_design or "").strip().lower(), price)
 
 
+# How _candidates labels a snapshot package's channel: "<source_channel> - database snapshot".
+_SNAPSHOT_CHANNEL_SUFFIX = " - database snapshot"
+
+
 def _candidate_key(cand):
     return _listing_key(cand.lot_address, cand.house_design,
                         cand.price_breakdown.advertised_package_price)
@@ -824,6 +828,15 @@ def _needs_confirming_entry(cand, pkg, row):
     row = row or {}
     stated = str(row.get("availability_status") or "").strip()
     first_seen = str(pkg.get("email_first_seen") or "").strip()
+    channel = str(row.get("source_channel") or "").strip()
+    if not channel:
+        # No live row behind the candidate (a row with no content_hash): the package
+        # carries the channel as "<channel> - database snapshot". The card's "email last
+        # read" wording turns on this, so it is not left blank while the package knows it.
+        carried = str(pkg.get("source_channel") or "").strip()
+        if carried.endswith(_SNAPSHOT_CHANNEL_SUFFIX):
+            carried = carried[:-len(_SNAPSHOT_CHANNEL_SUFFIX)].strip()
+        channel = "" if carried == "stored stock" else carried
     return {
         "content_hash": str(cand.content_hash or ""),
         "lot_address": cand.lot_address,
@@ -852,7 +865,7 @@ def _needs_confirming_entry(cand, pkg, row):
         "date_checked": str(pkg.get("date_checked") or ""),
         "age_days": pkg.get("age_days"),
         "fresh_days": _candidates.FRESH_DAYS,
-        "source_channel": str(row.get("source_channel") or "").strip(),
+        "source_channel": channel,
         "first_seen": first_seen or None,
         "list_age_days": pkg.get("list_age_days"),
     }
@@ -908,7 +921,7 @@ def _refused_matches(agent, brief_dict, rows, prepared):
 
 
 def _needs_confirming(agent, brief_dict, rows, prepared, packages, result, shortlist):
-    """(entries, count, hidden, hidden_capped): matches a consultant may confirm and send.
+    """(entries, count, hidden, capped): matches a consultant may confirm and send.
 
     Two sources, never the main pool:
       (a) the pipeline's Pending Confirmation candidates -- stale or demoted rows that passed
@@ -923,6 +936,10 @@ def _needs_confirming(agent, brief_dict, rows, prepared, packages, result, short
     hidden is {reason: n} over matches that were NOT offered: (a) candidates a guard hides
     (newer_capture_disagrees, over_confirm_limit, ...) and unstated rows refused admission
     (document_reread_without_row, build_only, ...), both counted after scoring.
+
+    capped is {'admit_pass': bool, 'refusal_pass': bool}: True where the candidate cap cut
+    that pass, so what it contributed may be short. (a) is short whenever the search's own
+    pool was cut, which the caller knows from counts['truncated'].
     """
     live = _live_rows_by_hash(rows)
     taken_hashes = {str(getattr(p, "content_hash", "") or "") for p in shortlist} - {""}
@@ -966,19 +983,47 @@ def _needs_confirming(agent, brief_dict, rows, prepared, packages, result, short
             continue
         offer(cand, pkg)
 
-    hidden_capped = bool(admit_counts.get("truncated"))
+    capped = {"admit_pass": bool(admit_counts.get("truncated")), "refusal_pass": False}
     if admit_counts.get("unstated_not_admitted"):
-        refused, capped = _refused_matches(agent, brief_dict, rows, prepared)
+        refused, capped["refusal_pass"] = _refused_matches(agent, brief_dict, rows, prepared)
         for reason, n in refused.items():
             hidden[reason] = hidden.get(reason, 0) + n
-        hidden_capped = hidden_capped or capped
 
     entries.sort(key=lambda e: (-(e["score"] or 0), e["advertised_package_price"] or 0,
                                 e["content_hash"]))
-    return entries[:max(0, MAX_NEEDS_CONFIRMING)], len(entries), hidden, hidden_capped
+    return entries[:max(0, MAX_NEEDS_CONFIRMING)], len(entries), hidden, capped
 
 
-def _relaxation_offers(brief_dict, counts, needs_confirming_count):
+_PRICE_FIELDS = ("budget_min", "budget_max", "preferred_spending_cap")
+
+
+def _as_posted(offers, brief_dict, adjustments):
+    """offers, with each price patch made safe to post back over the form AS SENT.
+
+    A brief_patch is applied to the form, and the form goes through _normalised_brief
+    again. That is the brief as searched for every slip but one: a swapped range. The form
+    still says min $750,000 / max $300,000, so a patch of only budget_max 800000 re-posts
+    $750,000-$800,000 -- not the $300,000-$800,000 that was counted -- and "no minimum
+    price" re-posts $0-$300,000. After a swap, a patch that touches any price carries all
+    three as searched, so the count on the button is what the click returns.
+    """
+    if not any(a.get("code") == "min_max_swapped" for a in adjustments or ()):
+        return offers
+    for offer in offers:
+        patch = offer.get("brief_patch")
+        if not patch or not set(patch) & set(_PRICE_FIELDS):
+            continue
+        whole = {}
+        for field in _PRICE_FIELDS:
+            if field in patch:
+                whole[field] = patch[field]
+            elif brief_dict.get(field) is not None:
+                whole[field] = brief_dict[field]
+        offer["brief_patch"] = whole
+    return offers
+
+
+def _relaxation_offers(brief_dict, counts, needs_confirming_count, adjustments=()):
     """The relaxations worth pricing for this brief, IN THE ORDER THEY ARE PRICED.
 
     The order is the time budget's priority (critique #24): the reveal costs nothing, the
@@ -1053,7 +1098,7 @@ def _relaxation_offers(brief_dict, counts, needs_confirming_count):
     if counts.get("under_minimum"):
         offers.append({"id": "drop_price_floor", "kind": "rerun",
                        "label": "No minimum price", "brief_patch": {"budget_min": 0}})
-    return offers
+    return _as_posted(offers, brief_dict, adjustments)
 
 
 def _shortlist_count_for(agent, brief_dict, rows, prepared):
@@ -1070,13 +1115,14 @@ def _shortlist_count_for(agent, brief_dict, rows, prepared):
 
 
 def _relaxations(agent, brief_dict, rows, prepared, counts, base_count,
-                 needs_confirming_count, started):
+                 needs_confirming_count, started, adjustments=()):
     """Every relaxation with a TRUE count: each is the whole search re-run with its
     brief_patch applied to the brief as searched. Posting that patch back over the form
     returns exactly shortlist_count (count_status 'exact'). Past EXPLAIN_BUDGET_MS the rest
     are 'not_computed'; one that fails is 'error' and costs nothing else."""
     out = []
-    for offer in _relaxation_offers(brief_dict, counts, needs_confirming_count):
+    for offer in _relaxation_offers(brief_dict, counts, needs_confirming_count,
+                                    adjustments):
         if offer["kind"] == "reveal":
             known = needs_confirming_count is not None
             out.append(dict(offer, count=needs_confirming_count,
@@ -1127,16 +1173,23 @@ def _with_explain(response, brief_dict, rows, prepared, counts, packages, result
         errors.append("funnel: %s" % type(exc).__name__)
     if agent is not None:
         try:
-            listed, total, hidden, hidden_capped = _needs_confirming(
+            listed, total, hidden, capped = _needs_confirming(
                 agent, brief_dict, rows, prepared, packages, result,
                 (result or {}).get("shortlist") or [])
             extra.update(needs_confirming=listed, needs_confirming_count=total,
                          needs_confirming_hidden=hidden)
-            help_["needs_confirming"] = {"count": total, "listed": len(listed),
-                                         "list_cap": MAX_NEEDS_CONFIRMING,
-                                         "hidden": dict(hidden),
-                                         "hidden_may_be_short": hidden_capped,
-                                         "ms": _elapsed_ms(started)}
+            # EXACT OVER WHAT WAS SCORED. The Pending candidates come from the search's own
+            # pool, so when the candidate cap cut that pool (VIC <= $900k, 4 bed: 933 rows)
+            # stale matches beyond it were never scored and cannot be counted. Said, not
+            # implied: the count is complete only when nothing was cut.
+            pool_cut = bool(counts.get("truncated"))
+            help_["needs_confirming"] = {
+                "count": total, "listed": len(listed), "list_cap": MAX_NEEDS_CONFIRMING,
+                "hidden": dict(hidden),
+                "count_may_be_short": pool_cut or capped["admit_pass"],
+                "hidden_may_be_short": (pool_cut or capped["admit_pass"]
+                                        or capped["refusal_pass"]),
+                "ms": _elapsed_ms(started)}
         except Exception as exc:                                      # noqa: BLE001
             traceback.print_exc(file=sys.stderr)
             errors.append("needs_confirming: %s" % type(exc).__name__)
@@ -1147,7 +1200,8 @@ def _with_explain(response, brief_dict, rows, prepared, counts, packages, result
             try:
                 help_["relaxations"] = _relaxations(
                     agent, brief_dict, rows, prepared, counts, base,
-                    extra["needs_confirming_count"], started)
+                    extra["needs_confirming_count"], started,
+                    response.get("brief_adjustments") or ())
             except Exception as exc:                                  # noqa: BLE001
                 traceback.print_exc(file=sys.stderr)
                 help_["relaxations"] = []

@@ -26,6 +26,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -229,6 +230,46 @@ def test_the_list_is_capped_and_the_count_stays_exact(research, monkeypatch):
     assert out["search_help"]["needs_confirming"]["listed"] == 2
 
 
+def test_the_count_says_when_the_candidate_cap_may_have_cut_it_short(research, budgets):
+    """Pending matches come from the search's own pool. When the 600-candidate cap cut that
+    pool, stale matches beyond it were never scored, so the count is exact only over what
+    was scored -- and search_help says so rather than implying a complete count."""
+    _plain, colin = budgets[750000]
+    assert colin["search_help"]["funnel"]["capped"] is False
+    assert colin["search_help"]["needs_confirming"]["count_may_be_short"] is False
+    assert colin["search_help"]["needs_confirming"]["hidden_may_be_short"] is False
+    wide = _run(research, _brief(state="", budget_max=NO_CEILING,
+                                 preferred_spending_cap=NO_CEILING), explain=True)
+    assert wide["search_help"]["funnel"]["capped"] is True, "premise: the cap bites"
+    assert wide["search_help"]["needs_confirming"]["count_may_be_short"] is True
+    assert wide["search_help"]["needs_confirming"]["hidden_may_be_short"] is True
+
+
+def test_without_its_row_an_entry_still_knows_it_came_by_email(research):
+    """Critique #27's "email last read" turns on source_channel. A candidate with no live
+    row behind it (no content_hash) takes the channel from its package's label."""
+    cand = SimpleNamespace(
+        content_hash="", lot_address="Lot 1228, Dawn, Walloon", lot_number="1228",
+        suburb="Walloon", state="QLD", builder_name="", estate_context="Dawn, Walloon",
+        house_design="", price_breakdown=SimpleNamespace(advertised_package_price=721900.0),
+        bedrooms=4, bathrooms=2, car_spaces=2, storeys=None, land_size_sqm=0.0,
+        house_size_sqm=None, scoring=None, source_link=None)
+    pkg = {"source_channel": "digital email - database snapshot", "confirm": ["stale"],
+           "date_checked": "20/08/2026", "age_days": 27, "email_first_seen": "17/08/2026",
+           "list_age_days": 30}
+    entry = research._needs_confirming_entry(cand, pkg, None)
+    assert entry["source_channel"] == "digital email"
+    assert (entry["date_checked"], entry["first_seen"], entry["list_age_days"]) == (
+        "20/08/2026", "17/08/2026", 30)
+    assert entry["builder_name"] == "Builder not identified in source"
+    assert entry["availability_as_stated"] is None
+    unnamed = dict(pkg, source_channel="stored stock - database snapshot")
+    assert research._needs_confirming_entry(cand, unnamed, None)["source_channel"] == ""
+    # The row's own channel wins over the package's label.
+    assert research._needs_confirming_entry(
+        cand, pkg, {"source_channel": "E-Agent"})["source_channel"] == "E-Agent"
+
+
 def test_the_list_is_ranked_by_score(research):
     out = _run(research, _brief(budget_max=NO_CEILING, preferred_spending_cap=750000),
                explain=True)
@@ -292,6 +333,50 @@ def test_after_the_data_fixes_every_exact_relaxation_re_posts_to_its_count(c5):
             r["shortlist_count"], r["id"]
 
 
+# --------------------------------------- critique #3: whichever Dawn twin survives
+
+# W18's identity-twin pass keeps the fresher row, and on a tie falls back to the higher id:
+# it would retire 11878-11880 in favour of 14940-14942. Simulated here in memory.
+W18_RETIRES = {"v2:aec54350": "v2:c48b4599", "v2:30440e59": "v2:9fb1f79e",
+               "v2:325f8457": "v2:67246ddb"}
+
+
+@pytest.fixture(scope="module")
+def w18_snapshot(tmp_path_factory):
+    rows = _candidates._read_json(SUBSET)
+    full = {str(r.get("content_hash") or "")[:11]: r["content_hash"] for r in rows
+            if r.get("content_hash")}
+    patched = []
+    for row in rows:
+        h = str(row.get("content_hash") or "")[:11]
+        if h in W18_RETIRES and not row.get("superseded_by"):
+            row = dict(row, superseded_by=full[W18_RETIRES[h]])
+        patched.append(row)
+    assert sum(1 for r in patched if str(r.get("content_hash") or "")[:11] in W18_RETIRES
+               and r.get("superseded_by")) == 3, "premise: all three were live"
+    path = tmp_path_factory.mktemp("w18") / "stock.json"
+    path.write_text(json.dumps({"buildings": patched}), encoding="utf-8")
+    return path
+
+
+def test_the_dawn_lots_need_confirming_whichever_twin_survives(w18_snapshot, research,
+                                                                budgets):
+    mp, module = _research_on(w18_snapshot)
+    try:
+        out = _run(module, _brief(), explain=True)
+    finally:
+        mp.undo()
+    _assert_the_dawn_lots(out["needs_confirming"])
+    # PREMISE: the other twin of each lot is the one offered now, and today it is not.
+    assert {e["content_hash"][:11] for e in out["needs_confirming"]} == set(
+        W18_RETIRES.values())
+    _plain, colin = budgets[750000]
+    assert {e["content_hash"][:11] for e in colin["needs_confirming"]} == set(W18_RETIRES)
+    assert out["needs_confirming_hidden"] == colin["needs_confirming_hidden"]
+    for entry in out["needs_confirming"]:
+        assert (entry["date_checked"], entry["first_seen"]) == ("20/08/2026", "19/08/2026")
+
+
 # ------------------------------------------------ (f) never the confirmed search's pool
 
 @pytest.mark.parametrize("changes", [
@@ -312,7 +397,12 @@ def test_admitted_rows_never_change_the_confirmed_shortlist(research, changes):
 
 
 def test_on_the_full_snapshot_vic_900k_4bed_shortlist_is_unchanged(monkeypatch):
-    """(f) on the 17 Sep snapshot, where the confirmed pool is capped (local-only)."""
+    """(f) on the 17 Sep snapshot, where the confirmed pool is capped (local-only).
+
+    A regression check only. That snapshot was built before W07 published price evidence,
+    so its admit pass admits nothing (every unstated row is refused no_price_evidence) and
+    a pool shared with admitted rows could not change it. The red proof for (f) is
+    test_an_admitted_lot_never_takes_a_confirmed_lots_place_under_the_cap."""
     path = _FULL_SNAPSHOT_ENV
     if not path or not Path(path).exists() or Path(path).resolve() == SUBSET.resolve():
         pytest.skip("SPB_SNAPSHOT_JSON does not point at a full snapshot (local-only check)")
@@ -408,6 +498,25 @@ def test_a_lot_already_shortlisted_is_not_offered_again_under_another_hash(synth
     assert entry["availability_as_stated"] is None
     assert entry["date_checked"] == "15/09/2026" and entry["age_days"] == 1
     assert entry["first_seen"] is None and entry["list_age_days"] is None
+
+
+def test_an_admitted_lot_never_takes_a_confirmed_lots_place_under_the_cap(synthetic,
+                                                                         monkeypatch):
+    """(f) where the cap bites on a fixture: one candidate slot. The admitted lot at $590,000
+    is cheaper than the confirmed one at $600,000, so a pool shared and cut by price would
+    give it the only slot and the confirmed lot would never be scored."""
+    monkeypatch.setattr(_candidates, "MAX_CANDIDATES", 1)
+    brief = _brief(budget_max=650000, preferred_spending_cap=650000)
+    plain = _run(synthetic, brief)
+    out = _run(synthetic, brief, explain=True)
+    assert _hashes(plain["shortlist"]) == _hashes(out["shortlist"]) == ["v2:syn-confirmed"]
+    assert out["shortlist_count"] == plain["shortlist_count"] == 1
+    (entry,) = out["needs_confirming"]
+    assert entry["content_hash"] == "v2:syn-admitted"
+    # PREMISE: cheaper than the confirmed lot, so a shared price-ordered cut keeps it.
+    assert entry["advertised_package_price"] < out["shortlist"][0]["advertised_package_price"]
+    # Its own pool was cut too (2 admitted, 1 slot), and the count says it may be short.
+    assert out["search_help"]["needs_confirming"]["count_may_be_short"] is True
 
 
 def test_refusals_are_counted_only_for_lots_that_match_the_brief(synthetic):

@@ -89,6 +89,10 @@ BRIEFS = {
     # Max left blank, $750k preferred: 402 shortlisted, so nothing is priced.
     "variant_E_max_blank_pref_750k": {"budget_max": NO_CEILING,
                                       "preferred_spending_cap": 750000},
+    # The range typed the wrong way round, exactly as the form posts it (a blank Preferred
+    # box sends the Max box): searched as $600,000-$750,000 after the normaliser's swap.
+    "qld_swapped_range_750k_to_600k": {"budget_min": 750000, "budget_max": 600000,
+                                       "preferred_spending_cap": 600000},
 }
 
 
@@ -329,6 +333,33 @@ def test_every_exact_relaxation_re_posts_to_its_count(research, explained, name)
         assert r["adds"] == r["shortlist_count"] - explained[name]["shortlist_count"]
         checked += 1
     assert checked, "premise: something was re-run"
+
+
+def test_a_swapped_range_is_patched_as_it_was_searched(research, explained):
+    """The form still holds min $750,000 / max $600,000 after a swapped search. A patch of
+    only the raised maximum would re-post $750,000-$800,000 (and "no minimum price" would
+    re-post $0-$600,000): not the search that was counted. A price patch on a swapped
+    brief therefore carries the whole range as searched."""
+    name = "qld_swapped_range_750k_to_600k"
+    out = explained[name]
+    assert [a["code"] for a in out["brief_adjustments"]] == ["min_max_swapped",
+                                                             "preferred_follows_swap"]
+    rel = {r["id"]: r for r in _relaxations(out)}
+    assert rel["budget_plus_50k"]["brief_patch"] == {
+        "budget_min": 600000, "budget_max": 800000, "preferred_spending_cap": 800000}
+    assert rel["drop_price_floor"]["brief_patch"] == {
+        "budget_min": 0, "budget_max": 750000, "preferred_spending_cap": 750000}
+    # A patch that touches no price is re-posted over the form and swapped again, as sent.
+    for r in _relaxations(out):
+        if r["kind"] == "rerun" and not r["id"].startswith(("budget_", "drop_price")):
+            assert not set(r["brief_patch"]) & {"budget_min", "budget_max",
+                                                "preferred_spending_cap"}, r
+    # PREMISE: patched as the form alone would be, the counts really differ.
+    brief = _brief(name)
+    assert _run(research, dict(brief, budget_max=800000, preferred_spending_cap=800000))[
+        "shortlist_count"] != rel["budget_plus_50k"]["shortlist_count"]
+    assert _run(research, dict(brief, budget_min=0))["shortlist_count"] != \
+        rel["drop_price_floor"]["shortlist_count"]
 
 
 def test_the_relaxations_can_change_the_answer(explained):
