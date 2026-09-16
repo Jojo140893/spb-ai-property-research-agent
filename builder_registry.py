@@ -145,7 +145,12 @@ class BuilderRegistry:
         return self.builders
 
     def get_builders_by_state(self, state: str) -> List[Dict[str, Any]]:
-        state_upper = state.strip().upper()
+        state_upper = (state or '').strip().upper()
+        # No state is "Any state": every builder is in scope. `'' in b['states']` is
+        # False for a list, so a blank state used to return only the few builders with
+        # no states listed, and an Any-state search reported its coverage against those.
+        if not state_upper:
+            return list(self.builders)
         return [b for b in self.builders if state_upper in b['states'] or not b['states']]
 
     def search_builder_by_name(self, name: str) -> Optional[Dict[str, Any]]:
