@@ -121,6 +121,22 @@ def test_a_lot_number_on_another_estate_is_another_lot():
     assert _guard(vic, [vic, same_doc]) == "newer_capture_disagrees"
 
 
+def test_a_later_capture_marked_gone_disagrees_at_any_price():
+    """A lot re-priced and then put On Hold is still on hold: the 2% band is for
+    'newer_capture_exists' only. Aldrich lot 633, Timbarra: Available $608,060 on 10/09,
+    Sold at $619,370 on 16/09."""
+    old = _row("v2:old-633", date_checked="25/08/2026", source_channel="digital email")
+    repriced_gone = _row("v2:gone-633", date_checked="10/09/2026", price=741900.0 * 1.10,
+                         availability_status="Sold", source_channel="digital email")
+    repriced_live = dict(repriced_gone, content_hash="v2:live-633",
+                         availability_status="Available")
+    assert _guard(old, [old, repriced_gone]) == "newer_capture_disagrees"
+    assert _guard(old, [old, repriced_live]) is None
+    fresh = dict(old, content_hash="v2:fresh-633", date_checked="09/09/2026")
+    (pkg,), counts = _packages([fresh, repriced_gone])
+    assert pkg["verified"] is False and counts["newer_capture_demoted"] == 1
+
+
 def test_newer_capture_exists_only_at_the_same_price():
     old = _row("v2:old", date_checked="25/08/2026", source_channel="digital email")
     within = _row("v2:within", date_checked="10/09/2026", price=741900.0 * 1.019,
@@ -413,6 +429,49 @@ def test_the_exceptions_only_admission_rules():
     assert C.admission_refusal(stale, _prepared(stale_list), TODAY)[0] == "over_confirm_limit"
 
 
+BUILDING_B_UNDER_CONTRACT = ("Building B Level 3 Type 17 B302 2 BRM + 2 BATH 1 Standard South "
+                             "Balcony 72 14 86 $910,000 Under contract")
+BUILDING_B_CUT_OFF = ("Building B Level 1 Type 12 B101 2 BRM + 2 BATH 1 Standard North South "
+                      "Balcony 76 32 108 $956,000 Under contrac")
+BUILDING_B_OPEN = ("Building B level 4 Type 13 B404 2 BRM + 2 BATH 1 Standard North Balcony "
+                   "73.5 16 89.5 $929,000")
+UNDER_CONSTRUCTION = "PR9002 14 Walloon Estate Under Construction 450 $611,500 Hampton 220 4/2/2"
+
+
+def test_a_line_that_says_it_has_gone_is_not_offered_to_confirm():
+    """The NSW 'Building B' list marks 7 lots Sold, which the status column holds, and 10
+    'Under contract' / 'Under contact', which it does not. Those 10 are blank on a list
+    that marks lots gone -- exactly the exceptions-only shape -- and 6 passed every other
+    rule on the 17 Sep copy. Their own line says they are under contract."""
+    contract = _evidenced("v2:bb-b302", BUILDING_B_UNDER_CONTRACT, 910000.0,
+                          product_type="Apartment")
+    cut_off = _evidenced("v2:bb-b101", BUILDING_B_CUT_OFF, 956000.0, product_type="Apartment")
+    typo = dict(contract, content_hash="v2:bb-b105", lot_number="b105",
+                lot_address=BUILDING_B_UNDER_CONTRACT.replace("contract", "contact"))
+    open_lot = _evidenced("v2:bb-b404", BUILDING_B_OPEN, 929000.0, product_type="Apartment")
+    building = _evidenced("v2:uc-9002", UNDER_CONSTRUCTION, 611500.0)
+    negated = dict(open_lot, content_hash="v2:bb-neg", lot_number="neg",
+                   lot_address="Lot 7 is not on hold exclusively $929,000")
+    rows = _exceptions_list(contract, cut_off, typo, open_lot, building, negated)
+    prepared = _prepared(rows)
+    why = {r["content_hash"]: C.admission_refusal(r, prepared, TODAY)[0] for r in rows[1:]}
+    assert why == {"v2:bb-b302": "text_marks_unavailable", "v2:bb-b101": "text_marks_unavailable",
+                   "v2:bb-b105": "text_marks_unavailable", "v2:bb-b404": None,
+                   "v2:uc-9002": None, "v2:bb-neg": None}
+    # A row that still carries its source_text (a database-joined row) is read there too.
+    address_only = dict(contract, content_hash="v2:bb-b6", lot_number="b6",
+                        lot_address="1 Standard North Court, Yard",
+                        source_text=BUILDING_B_UNDER_CONTRACT)
+    assert C.admission_refusal(address_only, _prepared(rows + [address_only]),
+                               TODAY)[0] == "text_marks_unavailable"
+
+    admitted, counts = _packages(rows, {"state": "QLD", "budget_max": 1000000},
+                                 admit=ADMIT, only_admitted=True)
+    assert sorted(p["content_hash"] for p in admitted) == ["v2:bb-b404", "v2:bb-neg",
+                                                           "v2:uc-9002"]
+    assert counts["unstated_not_admitted"] == {"text_marks_unavailable": 3}
+
+
 # ------------------------------------------------------ Colin's search, on the fixture
 
 WINDERMERE = ("v2:d32b17a9", "v2:50cabe9b", "v2:b399f290")
@@ -492,6 +551,25 @@ def test_price_evidence_and_the_emailed_list_are_snapshot_fields():
     assert build_web._email_list_cells(dict(email, source_channel="E-Agent"), failures) == {
         "email_list": None, "email_first_seen": None}
     assert failures == []
+
+
+def test_a_row_that_breaks_the_email_cells_does_not_stop_the_build(monkeypatch):
+    """build_web.py is a required nightly step (critique 5): an exception computing one
+    row's emailed-list cells must publish nulls and record the failure, never abort the
+    chain and leave the dashboard on yesterday's snapshot."""
+    import build_web
+    import api._candidates as bundled
+
+    def boom(row):
+        raise ValueError("unreadable subject")
+
+    monkeypatch.setattr(bundled, "snapshot_email_cells", boom)
+    failures = []
+    cells = build_web._email_list_cells(
+        {"content_hash": "v2:bad", "source_channel": "digital email",
+         "source_url": "email:Fwd: Shape Homes - Stock List 13.08.2026"}, failures)
+    assert cells == {"email_list": None, "email_first_seen": None}
+    assert failures == [("v2:bad", "ValueError: unreadable subject")]
 
 
 def test_the_email_cells_are_taken_before_source_url_and_first_seen_are_dropped():

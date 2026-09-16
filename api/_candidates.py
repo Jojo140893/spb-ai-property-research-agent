@@ -1484,6 +1484,36 @@ def _truthy(value):
     return bool(value)
 
 
+# A BLANK STATUS CELL IS NOT A BLANK LINE. The status column is filled by a vocabulary
+# (NOT_AVAILABLE, repair_rows' sold words) that does not know every phrase a price list
+# uses. Measured on the 17 Sep copy: the NSW 'Building B' apartment list (E-Agent) marks
+# 7 lots "Sold", which the parser read, and 10 more "Under contract" / "Under contact",
+# which it did not -- so those 10 are blank on a list that marks lots gone, and 6 of them
+# passed every other admission rule and would have been offered to confirm while their
+# own line says they are under contract. Read on the text the snapshot carries
+# (lot_address, often the whole flattened line; title_status) and on source_text when a
+# row still has it. "Under construction" is a build stage, not a sale, and must not match.
+_TEXT_UNAVAILABLE = re.compile(
+    r"\b(?:sold|on\s*hold|under\s*offer|under\s*(?:contract|contrac|contra|contact)|"
+    r"reserved|withdrawn|deposit\s*taken|settled|contract\s*pending|not\s+available|"
+    r"unavailable|no\s+longer\s+available|off\s*market)\b", re.I)
+# "it is not on hold exclusively or at this stage sold" (repair_rows._NEGATED): a sentence
+# saying the lot is NOT gone.
+_TEXT_UNAVAILABLE_NEGATED = re.compile(
+    r"\b(?:not|isn'?t|nor|never)\s+(?:\w+\s+){0,2}?"
+    r"(?:sold|on\s*hold|under\s*offer|under\s*contract|reserved|withdrawn)\b", re.I)
+_TEXT_STATUS_COLUMNS = ("lot_address", "title_status", "source_text")
+
+
+def text_marks_unavailable(row):
+    """True when the row's own text says the lot has gone, whatever its status cell says."""
+    for field in _TEXT_STATUS_COLUMNS:
+        text = str(row.get(field) or "")
+        if _TEXT_UNAVAILABLE.search(text) and not _TEXT_UNAVAILABLE_NEGATED.search(text):
+            return True
+    return False
+
+
 def admission_refusal(row, prepared, today=None):
     """(reason or None, notes): may this UNSTATED row be admitted to confirm?
 
@@ -1497,6 +1527,8 @@ def admission_refusal(row, prepared, today=None):
       document_states_available    ...which has no live row stated available
       document_marks_no_exceptions ...and marks at least one row gone (a superseded capture
                                    counts: the Gallery list's 11 On Hold rows dropped off)
+      text_marks_unavailable       the row's own text does not say it has gone ("Under
+                                   contract" in a cell the status vocabulary missed)
       no_price_evidence            the snapshot carries price evidence for the row
       price_not_in_text            the stored price is printed on the row's own line
       larger_total_in_text         nothing larger than price + 2% is printed on it (the
@@ -1512,6 +1544,8 @@ def admission_refusal(row, prepared, today=None):
         return "document_states_available", []
     if not marked_gone:
         return "document_marks_no_exceptions", []
+    if text_marks_unavailable(row):
+        return "text_marks_unavailable", []
     if all(row.get(f) is None for f in ("price_kind", "text_price_max", "price_in_text")):
         return "no_price_evidence", []
     if not _truthy(row.get("price_in_text")):
