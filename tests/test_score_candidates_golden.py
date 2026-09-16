@@ -10,7 +10,8 @@ That move had to change nothing. tests/fixtures/golden_score_candidates.json was
 by THIS file's __main__ from the code BEFORE the extraction, with today frozen at
 16/09/2026, for three briefs:
 
-  * qld_750k                 Colin's search: 16 packages, shortlisted, pending, rejected
+  * qld_750k                 Colin's search: shortlisted, pending, rejected (16 packages
+                             when saved; 8 since W11 dropped the $50k budget headroom)
   * werribee_vic_700k_4bed   a suburb brief, so the requested-suburb and bedroom gates run
   * qld_no_budget            the form's blank maximum: every QLD package, 501 of them
 
@@ -20,7 +21,10 @@ separately: a card carries its row's own date_checked (tests/test_candidate_date
 and rejected entries gain `codes`, with `kind` on pending ones.
 
 Never regenerate the golden to make a failure go away. A failure here means scoring
-moved, and that is the thing this file exists to catch.
+moved, and that is the thing this file exists to catch. When the PACKAGES this pipeline
+is fed change on purpose (W11 did), regenerate with the pre-extraction kommo_agent.py
+(merge-base 8d86f05) against the new api/_candidates.py, and record the proof in the
+golden's "history".
 
     python tests/test_score_candidates_golden.py --write [--snapshot <17 Sep stock.json>]
 """
@@ -227,9 +231,13 @@ def test_the_golden_is_frozen_and_matches_the_fixture(subset_rows):
     # The golden must exercise all three outcomes, or "identical" is a weak claim.
     qld = GOLDEN["briefs"]["qld_750k"]["subset"]
     assert qld["shortlist"] and qld["pending"]
-    assert any(r[LEGACY_REJECTED_KEYS.index("kind")] == "rejection"
-               for r in qld["rejected_log"])
+    # Hard rejections come from the suburb brief: since W11 (budget headroom 0) every
+    # package Colin's brief scores is in budget, and its only rejections are pending lots.
+    werribee = GOLDEN["briefs"]["werribee_vic_700k_4bed"]["subset"]
+    assert sum(r[LEGACY_REJECTED_KEYS.index("kind")] == "rejection"
+               for r in werribee["rejected_log"]) > 100
     assert len(GOLDEN["briefs"]["qld_no_budget"]["subset"]["shortlist"]) > 100
+    assert GOLDEN["briefs"]["qld_no_budget"]["subset"]["pending"]
 
 
 def _first_difference(mine, saved):
@@ -336,6 +344,8 @@ def _write(snapshot):
         "note": ("run_property_research output saved BEFORE score_candidates was "
                  "extracted (W10). Card dates and the W10 keys codes/kind are excluded "
                  "by record(); never regenerate to hide a change."),
+        # Why and how each regeneration was proven; a rewrite keeps it.
+        "history": GOLDEN.get("history", []),
         "today": gen.TODAY.strftime("%d/%m/%Y"),
         "subset_fingerprint": gen.fingerprint(subset),
         "briefs": {n: {"brief": b} for n, b in BRIEFS.items()},

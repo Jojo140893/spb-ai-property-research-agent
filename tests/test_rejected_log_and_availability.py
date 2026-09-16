@@ -95,9 +95,14 @@ def _uncapped_and_capped(research, monkeypatch, brief):
 # ------------------------------------------------------------------ 1. the rejected log
 
 def test_pending_matches_are_listed_ahead_of_thirty_hard_rejections(research, monkeypatch):
-    """QLD <= $900k, 4 bed: 26 pending lots and more than 30 hard rejections. Cut in
-    pipeline order, the log listed 30 rejections and not one pending lot."""
-    brief = _brief(budget_max=900000, preferred_spending_cap=900000, bedrooms_min=4)
+    """QLD, no ceiling, 4 bed, 2 car: 68 pending lots and 55 hard rejections, so both
+    caps bite. Cut in pipeline order, the log listed 30 rejections and not one pending lot.
+
+    (Written against QLD <= $900k, 4 bed. Once W11 set the budget headroom to 0 the scorer
+    no longer rejects lots just over the budget, and that brief keeps only 11 hard
+    rejections, too few for the cap to hide anything.)"""
+    brief = _brief(budget_max=NO_CEILING, preferred_spending_cap=NO_CEILING, bedrooms_min=4,
+                   car_spaces_min=2)
     everything, capped = _uncapped_and_capped(research, monkeypatch, brief)
     all_pending = _pending(_listed(everything["rejected_log"]))
     all_hard = [e for e in _listed(everything["rejected_log"]) if e not in all_pending]

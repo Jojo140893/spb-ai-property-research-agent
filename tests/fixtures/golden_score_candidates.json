@@ -1,5 +1,9 @@
 {
  "note": "run_property_research output saved BEFORE score_candidates was extracted (W10). Card dates and the W10 keys codes/kind are excluded by record(); never regenerate to hide a change.",
+ "history": [
+  "W10: saved from run_property_research BEFORE score_candidates was extracted (kommo_agent.py at merge-base 8d86f05), today 16/09/2026, on W04's packages.",
+  "W10+W11 integration (partc-search): regenerated because W11 changed the packages this pipeline is fed, not the pipeline. Proof: the pre-W10 kommo_agent.py and report_generator.py with 8d86f05's api/_candidates.py and subset fixture rewrote the W10 file byte for byte; the same pre-W10 pipeline on W11's api/_candidates.py and enriched fixture wrote this file; the merged score_candidates pipeline matches it. Every difference is W11's: (1) BUDGET_HEADROOM 50,000 -> 0, so the scorer's 'exceeds max budget' rejections are gone and nothing else in rejected_log moved -- qld_750k 14 -> 6 rejected (candidates_reviewed 16 -> 8), werribee 301 -> 190 on the subset and 595 -> 574 on the full 17 Sep snapshot. (2) Critique 28: v2:46bc9cca (Avia lot 57, The Hills Collection, Glenvale; On Hold in a later capture) is no longer verified, so qld_no_budget shortlists 402 (was 403) and lists 95 pending (was 94); full snapshot 383 -> 382 and 210 -> 211. Every other shortlisted row kept its score, recommendation, verification and order."
+ ],
  "today": "16/09/2026",
  "subset_fingerprint": "4254d8713c3ed40919607a5eeb958fafba0577fc9594b8b15bc5b5f400b2daab",
  "briefs": {
@@ -49,62 +53,6 @@
     ],
     "rejected_log": [
      [
-      "PROP-9",
-      "Lot , Windermere Mambourin",
-      "Advertised package price ($752,400) exceeds max budget ($750,000) by $2,400",
-      "Bedroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-10",
-      "Lot 1009, Dawn, Walloon, Walloon QLD",
-      "Advertised package price ($791,404) exceeds max budget ($750,000) by $41,404",
-      "Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-11",
-      "Lot , Warralily Armstrong Creek",
-      "Advertised package price ($793,900) exceeds max budget ($750,000) by $43,900",
-      "Bedroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-12",
-      "Lot 162, 2026",
-      "Advertised package price ($799,900) exceeds max budget ($750,000) by $49,900",
-      "",
-      "rejection"
-     ],
-     [
-      "PROP-13",
-      "Lot 162, Rosewood Green",
-      "Advertised package price ($799,900) exceeds max budget ($750,000) by $49,900",
-      "",
-      "rejection"
-     ],
-     [
-      "PROP-14",
-      "Lot , Warralily Armstrong Creek",
-      "Advertised package price ($799,900) exceeds max budget ($750,000) by $49,900",
-      "Bedroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-15",
-      "Lot 148",
-      "Advertised package price ($799,980) exceeds max budget ($750,000) by $49,980",
-      "",
-      "rejection"
-     ],
-     [
-      "PROP-16",
-      "Highland Walloon, Lot 224",
-      "Advertised package price ($799,995) exceeds max budget ($750,000) by $49,995",
-      "",
-      "rejection"
-     ],
-     [
       "PROP-2",
       "Lot 1228, Dawn, Walloon, Walloon QLD",
       "Pending Confirmation - excluded from final list until verified or consultant-approved",
@@ -148,7 +96,7 @@
      ]
     ],
     "shortlist_count": 2,
-    "rejected_count": 14,
+    "rejected_count": 6,
     "kommo_payload": {
      "research_record_id": "Part C golden - QLD/General - $750,000 - <date>",
      "kommo_lead_status": "Awaiting Consultant Review",
@@ -157,9 +105,9 @@
       "top_property_match": "Lot 618, Riverhills QLD",
       "top_property_price": 553284.0,
       "top_property_score": 84.5,
-      "candidates_reviewed": 16
+      "candidates_reviewed": 8
      },
-     "kommo_internal_note": "SPB Property Research Completed\nRecord ID: Part C golden - QLD/General - $750,000 - <date>\nClient: Part C golden | Budget Ceiling: $750,000\n\nTop Shortlisted Properties:\n1. Lot 618, Riverhills QLD, Riverhills - $553,284 (Score: 84.5/100 - Recommend)\n2. BRISBANE EAST, Howard QLD, Howard - $746,632 (Score: 82.5/100 - Recommend)\n\nRejected Options: 14 candidate(s) filtered out.\nStatus: Awaiting Consultant Review",
+     "kommo_internal_note": "SPB Property Research Completed\nRecord ID: Part C golden - QLD/General - $750,000 - <date>\nClient: Part C golden | Budget Ceiling: $750,000\n\nTop Shortlisted Properties:\n1. Lot 618, Riverhills QLD, Riverhills - $553,284 (Score: 84.5/100 - Recommend)\n2. BRISBANE EAST, Howard QLD, Howard - $746,632 (Score: 82.5/100 - Recommend)\n\nRejected Options: 6 candidate(s) filtered out.\nStatus: Awaiting Consultant Review",
      "consultant_review_task": {
       "task_type": "Consultant Review & Approval",
       "title": "Review Property Research for Part C golden",
@@ -169,13 +117,13 @@
     }
    },
    "full_snapshot": {
-    "digest": "94d94ac5a549f44661d10be063759a80bd0a661562abb761ff589ba50a1239fd",
+    "digest": "009330fec2b25e94828b495559abbca73a1a73506e53be303d3ddf2cb02f93a5",
     "shortlist_hashes": [
      "v2:1c5ca48e5472180f0e458762a153aab5d60362a04578863c4ffcd044f16be5f9",
      "v2:43802e2db5012419a3dd96848d151add4c2dd3794c6c04bb5bee85db9ef08041"
     ],
     "pending_count": 6,
-    "rejected_count": 14
+    "rejected_count": 6
    }
   },
   "werribee_vic_700k_4bed": {
@@ -1532,787 +1480,10 @@
       "Rockbank is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
       "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
       "rejection"
-     ],
-     [
-      "PROP-191",
-      "129 Tallara Blvd, Sunbury",
-      "Advertised package price ($700,137) exceeds max budget ($700,000) by $137; Sunbury is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-192",
-      "1154 Stockyard Rd, Beveridge",
-      "Advertised package price ($700,937) exceeds max budget ($700,000) by $937; Beveridge is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-193",
-      "33 Romanesque Dr, Deanside",
-      "Advertised package price ($701,230) exceeds max budget ($700,000) by $1,230; Bedrooms (3) below minimum mandatory requirement (4); Deanside is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-194",
-      "643 Louden Drive",
-      "Advertised package price ($702,600) exceeds max budget ($700,000) by $2,600; Lucas is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "",
-      "rejection"
-     ],
-     [
-      "PROP-195",
-      "150 Cortina Drive",
-      "Advertised package price ($702,800) exceeds max budget ($700,000) by $2,800; Winter Valley is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "",
-      "rejection"
-     ],
-     [
-      "PROP-196",
-      "Lot 4609 Unit 4609, 19 Hoff Boulevard, Soutbank, VIC, 3006",
-      "Advertised package price ($703,000) exceeds max budget ($700,000) by $3,000; Bedrooms (1) below minimum mandatory requirement (4); Southbank is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-197",
-      "26 Orchard Green",
-      "Advertised package price ($703,181) exceeds max budget ($700,000) by $3,181; Melton South is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-198",
-      "2026 Orchard Green",
-      "Advertised package price ($703,181) exceeds max budget ($700,000) by $3,181; Melton South is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-199",
-      "134 Prenton Ave",
-      "Advertised package price ($703,652) exceeds max budget ($700,000) by $3,652; Strathtulloh is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-200",
-      "307 Splitters Rd, Diggers Rest",
-      "Advertised package price ($704,393) exceeds max budget ($700,000) by $4,393; Diggers Rest is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-201",
-      "Lot 4709 Unit 4709, 19 Hoff Boulevard, Soutbank, VIC, 3006",
-      "Advertised package price ($705,000) exceeds max budget ($700,000) by $5,000; Bedrooms (1) below minimum mandatory requirement (4); Southbank is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-202",
-      "28 English Street",
-      "Advertised package price ($705,760) exceeds max budget ($700,000) by $5,760; Morwell is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "",
-      "rejection"
-     ],
-     [
-      "PROP-203",
-      "952 Homeland Parade",
-      "Advertised package price ($707,000) exceeds max budget ($700,000) by $7,000; Bedrooms (3) below minimum mandatory requirement (4); Clyde North is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "",
-      "rejection"
-     ],
-     [
-      "PROP-204",
-      "157 Hancock Way, Greenvale",
-      "Advertised package price ($707,155) exceeds max budget ($700,000) by $7,155; Bedrooms (3) below minimum mandatory requirement (4); Greenvale is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-205",
-      "Lot 4809 Unit 4809, 19 Hoff Boulevard, Soutbank, VIC, 3006",
-      "Advertised package price ($708,000) exceeds max budget ($700,000) by $8,000; Bedrooms (1) below minimum mandatory requirement (4); Southbank is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-206",
-      "7305 Recreation Rd, Aintree",
-      "Advertised package price ($708,281) exceeds max budget ($700,000) by $8,281; Bedrooms (3) below minimum mandatory requirement (4); Aintree is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-207",
-      "Basalt St, NORTH",
-      "Advertised package price ($708,741) exceeds max budget ($700,000) by $8,741; Beveridge is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-208",
-      "3538 Crafter St, Clyde North",
-      "Advertised package price ($708,749) exceeds max budget ($700,000) by $8,749; Bedrooms (3) below minimum mandatory requirement (4); Clyde North is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-209",
-      "9209 Empress St, Wyndham Vale",
-      "Advertised package price ($708,871) exceeds max budget ($700,000) by $8,871; Bedrooms (3) below minimum mandatory requirement (4); Wyndham Vale is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-210",
-      "Lot 323, 323 Splitters Rd",
-      "Advertised package price ($709,393) exceeds max budget ($700,000) by $9,393; Diggers Rest is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-211",
-      "Lot 3344, Smiths Lane",
-      "Advertised package price ($709,500) exceeds max budget ($700,000) by $9,500; Bedrooms (3) below minimum mandatory requirement (4); Clyde North is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-212",
-      "9 Leni St, Cranbourne East",
-      "Advertised package price ($709,806) exceeds max budget ($700,000) by $9,806; Cranbourne East is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-213",
-      "Lot 502, REGIONAL, Warragul VIC",
-      "Advertised package price ($709,848) exceeds max budget ($700,000) by $9,848; Warragul is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-214",
-      "Lot 4909 Unit 4909, 19 Hoff Boulevard, Soutbank, VIC, 3006",
-      "Advertised package price ($710,000) exceeds max budget ($700,000) by $10,000; Bedrooms (1) below minimum mandatory requirement (4); Southbank is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-215",
-      "Lot 5009 Unit 5009, 19 Hoff Boulevard, Soutbank, VIC, 3006",
-      "Advertised package price ($712,000) exceeds max budget ($700,000) by $12,000; Bedrooms (1) below minimum mandatory requirement (4); Southbank is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-216",
-      "Lot 324, Yallarah",
-      "Advertised package price ($712,117) exceeds max budget ($700,000) by $12,117; Echuca is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "",
-      "rejection"
-     ],
-     [
-      "PROP-217",
-      "26 Serenity Rise, REGIONAL",
-      "Advertised package price ($712,913) exceeds max budget ($700,000) by $12,913; Warragul is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-218",
-      "Lot 216 Unit 216, 216, THORNHILL PARK, VIC, 3335",
-      "Advertised package price ($712,930) exceeds max budget ($700,000) by $12,930; Thornhill Park is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-219",
-      "Lot 1052, Westwood, Fraser Rise VIC",
-      "Advertised package price ($713,118) exceeds max budget ($700,000) by $13,118; Fraser Rise is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-220",
-      "Lot 58, Parkside Collective, Berwick, Berwick VIC",
-      "Advertised package price ($713,250) exceeds max budget ($700,000) by $13,250; Bedrooms (3) below minimum mandatory requirement (4); Berwick is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-221",
-      "33 Romanesque Dr, Deanside",
-      "Advertised package price ($713,471) exceeds max budget ($700,000) by $13,471; Deanside is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-222",
-      "Lot 3341, Smiths Lane",
-      "Advertised package price ($713,500) exceeds max budget ($700,000) by $13,500; Bedrooms (3) below minimum mandatory requirement (4); Clyde North is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-223",
-      "2-Part Detached SS North 605 Acclaim Estate Donnybrook 289 Enzo 3 / 2/ / 2",
-      "Advertised package price ($713,655) exceeds max budget ($700,000) by $13,655; Bedrooms (3) below minimum mandatory requirement (4); Donnybrook is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-224",
-      "2-Part Detached SS North 608 Acclaim Estate Donnybrook 289 Enzo 3 / 2/ / 2",
-      "Advertised package price ($713,655) exceeds max budget ($700,000) by $13,655; Bedrooms (3) below minimum mandatory requirement (4); Donnybrook is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-225",
-      "1036 Rigby Dr, Beveridge",
-      "Advertised package price ($713,681) exceeds max budget ($700,000) by $13,681; Beveridge is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-226",
-      "Lot 5109 Unit 5109, 19 Hoff Boulevard, Soutbank, VIC, 3006",
-      "Advertised package price ($714,000) exceeds max budget ($700,000) by $14,000; Bedrooms (1) below minimum mandatory requirement (4); Southbank is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-227",
-      "105 Renpet Rd, Epping",
-      "Advertised package price ($714,020) exceeds max budget ($700,000) by $14,020; Bedrooms (3) below minimum mandatory requirement (4); Epping is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-228",
-      "111 Copelands Rd, Warragul",
-      "Advertised package price ($714,136) exceeds max budget ($700,000) by $14,136; Warragul is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-229",
-      "104 Renpet Rd, Epping",
-      "Advertised package price ($714,320) exceeds max budget ($700,000) by $14,320; Bedrooms (3) below minimum mandatory requirement (4); Epping is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-230",
-      "Lot 5209 Unit 5209, 19 Hoff Boulevard, Soutbank, VIC, 3006",
-      "Advertised package price ($716,000) exceeds max budget ($700,000) by $16,000; Bedrooms (1) below minimum mandatory requirement (4); Southbank is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-231",
-      "151 Nutans Cres, Cobblebank",
-      "Advertised package price ($716,063) exceeds max budget ($700,000) by $16,063; Cobblebank is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-232",
-      "2-Part Detached SS North 822 Balmain Estate Donnybrook 302 Enzo Broc",
-      "Advertised package price ($717,750) exceeds max budget ($700,000) by $17,750; Bedrooms (3) below minimum mandatory requirement (4); Donnybrook is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-233",
-      "2-Part Detached SS North Balmain Estate Donnybrook 302 Enzo Brochure",
-      "Advertised package price ($717,750) exceeds max budget ($700,000) by $17,750; Bedrooms (3) below minimum mandatory requirement (4); Donnybrook is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-234",
-      "2-Part Detached SS North 822 Balmain Donnybrook 302 Enzo Broc",
-      "Advertised package price ($717,750) exceeds max budget ($700,000) by $17,750; Bedrooms (3) below minimum mandatory requirement (4); Donnybrook is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-235",
-      "2-Part Detached SS West 319 Oaklands Estate Bonnie Brook 290 Enzo BR",
-      "Advertised package price ($717,880) exceeds max budget ($700,000) by $17,880; Bedrooms (3) below minimum mandatory requirement (4); Bonnie Brook is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-236",
-      "Lot 1052, Boundary RD, Charlemont, Charlemont VIC",
-      "Advertised package price ($717,900) exceeds max budget ($700,000) by $17,900; Charlemont is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-237",
-      "2-Part Detached SS North 58 Lumina Estate Sunbury 263 VGU19 3 / 2/ / 2 Broch",
-      "Advertised package price ($717,925) exceeds max budget ($700,000) by $17,925; Bedrooms (3) below minimum mandatory requirement (4); Sunbury is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-238",
-      "Lot 5309 Unit 5309, 19 Hoff Boulevard, Soutbank, VIC, 3006",
-      "Advertised package price ($718,000) exceeds max budget ($700,000) by $18,000; Bedrooms (1) below minimum mandatory requirement (4); Southbank is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-239",
-      "2-Part Detached SS North 55 Lumina Estate Sunbury 263 VGU19 3 / 2/ / 2 Broch",
-      "Advertised package price ($718,025) exceeds max budget ($700,000) by $18,025; Bedrooms (3) below minimum mandatory requirement (4); Sunbury is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-240",
-      "26 Copelands Grove, REGIONAL",
-      "Advertised package price ($718,583) exceeds max budget ($700,000) by $18,583; Warragul is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-241",
-      "Lot 3724, 3724 Fernhollow Loop",
-      "Advertised package price ($719,278) exceeds max budget ($700,000) by $19,278; Bedrooms (3) below minimum mandatory requirement (4); Clyde North is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-242",
-      "3724 Fernhollow Loop",
-      "Advertised package price ($719,278) exceeds max budget ($700,000) by $19,278; Bedrooms (3) below minimum mandatory requirement (4); Clyde North is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-243",
-      "148 Hadar Way",
-      "Advertised package price ($719,850) exceeds max budget ($700,000) by $19,850; Bedrooms (3) below minimum mandatory requirement (4); Clyde North is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "",
-      "rejection"
-     ],
-     [
-      "PROP-244",
-      "1128 Plumcot Loop",
-      "Advertised package price ($720,100) exceeds max budget ($700,000) by $20,100; Tarneit is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "",
-      "rejection"
-     ],
-     [
-      "PROP-245",
-      "725 Fennel Way",
-      "Advertised package price ($720,450) exceeds max budget ($700,000) by $20,450; Bedrooms (3) below minimum mandatory requirement (4); Clyde North is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "",
-      "rejection"
-     ],
-     [
-      "PROP-246",
-      "407 Garnet Close",
-      "Advertised package price ($720,700) exceeds max budget ($700,000) by $20,700; Leopold is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "",
-      "rejection"
-     ],
-     [
-      "PROP-247",
-      "7305 Recreation Rd, Aintree",
-      "Advertised package price ($720,768) exceeds max budget ($700,000) by $20,768; Aintree is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-248",
-      "Lot 5409 Unit 5409, 19 Hoff Boulevard, Soutbank, VIC, 3006",
-      "Advertised package price ($721,000) exceeds max budget ($700,000) by $21,000; Bedrooms (1) below minimum mandatory requirement (4); Southbank is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-249",
-      "1012 Platinum Way",
-      "Advertised package price ($721,600) exceeds max budget ($700,000) by $21,600; Fraser Rise is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "",
-      "rejection"
-     ],
-     [
-      "PROP-250",
-      "26 Copelands Grove, REGIONAL",
-      "Advertised package price ($721,924) exceeds max budget ($700,000) by $21,924; Warragul is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-251",
-      "2-Part Detached SS West 316 Oaklands Estate Bonnie Brook 290 Enzo BR",
-      "Advertised package price ($722,040) exceeds max budget ($700,000) by $22,040; Bedrooms (3) below minimum mandatory requirement (4); Bonnie Brook is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-252",
-      "743 Holistic Rd, Fraser Rise",
-      "Advertised package price ($722,350) exceeds max budget ($700,000) by $22,350; Bedrooms (3) below minimum mandatory requirement (4); Fraser Rise is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-253",
-      "4560 Stature Cct, Werribee",
-      "Advertised package price ($722,731) exceeds max budget ($700,000) by $22,731",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-254",
-      "21 Hesby St, Diggers Rest",
-      "Advertised package price ($722,813) exceeds max budget ($700,000) by $22,813; Diggers Rest is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-255",
-      "27 Wollert Rise, NORTH",
-      "Advertised package price ($722,815) exceeds max budget ($700,000) by $22,815; Wollert is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-256",
-      "336 Bowerbird Dr, Clyde North",
-      "Advertised package price ($723,803) exceeds max budget ($700,000) by $23,803; Clyde North is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-257",
-      "1110 Snowbank Dr, Tarneit",
-      "Advertised package price ($724,644) exceeds max budget ($700,000) by $24,644; Tarneit is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-258",
-      "2-Part Detached SS North 57 Lumina Estate Sunbury 263 VGU19 3 / 2/ / 2 Broch",
-      "Advertised package price ($725,425) exceeds max budget ($700,000) by $25,425; Bedrooms (3) below minimum mandatory requirement (4); Sunbury is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-259",
-      "27 Smiths Lane, SOUTH EAST",
-      "Advertised package price ($725,435) exceeds max budget ($700,000) by $25,435; Bedrooms (3) below minimum mandatory requirement (4); Clyde North is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-260",
-      "2027 Smiths Lane, SOUTH EAST",
-      "Advertised package price ($725,435) exceeds max budget ($700,000) by $25,435; Bedrooms (3) below minimum mandatory requirement (4); Clyde North is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-261",
-      "Lot 320, Yallarah",
-      "Advertised package price ($725,592) exceeds max budget ($700,000) by $25,592; Echuca is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "",
-      "rejection"
-     ],
-     [
-      "PROP-262",
-      "2-Part Detached SS West 309 Watsons Reach Diggers Rest 312 Elara 18",
-      "Advertised package price ($726,540) exceeds max budget ($700,000) by $26,540; Diggers Rest is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-263",
-      "1056 Fraser Rise, Brochure Masterplan",
-      "Advertised package price ($727,155) exceeds max budget ($700,000) by $27,155; Bedrooms (3) below minimum mandatory requirement (4); Fraser Rise is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-264",
-      "Lot 10, East 35",
-      "Advertised package price ($727,362) exceeds max budget ($700,000) by $27,362; Charlemont is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "",
-      "rejection"
-     ],
-     [
-      "PROP-265",
-      "2442 Easterngrey Dr",
-      "Advertised package price ($728,013) exceeds max budget ($700,000) by $28,013; Deanside is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-266",
-      "2-Part Detached SS North 56 Lumina Estate Sunbury 263 VGU19 3 / 2/ / 2 Broch",
-      "Advertised package price ($728,025) exceeds max budget ($700,000) by $28,025; Bedrooms (3) below minimum mandatory requirement (4); Sunbury is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-267",
-      "2-Part Detached SS Geelong Warralily Estate Armstrong Creek 350 Enzo",
-      "Advertised package price ($728,750) exceeds max budget ($700,000) by $28,750; Bedrooms (3) below minimum mandatory requirement (4); Geelong is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-268",
-      "319 Kestrel St, Clyde North",
-      "Advertised package price ($728,853) exceeds max budget ($700,000) by $28,853; Clyde North is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-269",
-      "Lot 4907 Unit 4907, 19 Hoff Boulevard, Soutbank, VIC, 3006",
-      "Advertised package price ($732,000) exceeds max budget ($700,000) by $32,000; Bedrooms (1) below minimum mandatory requirement (4); Southbank is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-270",
-      "Danube Rd, Truganina",
-      "Advertised package price ($732,363) exceeds max budget ($700,000) by $32,363; Truganina is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-271",
-      "1037 Gower Street",
-      "Advertised package price ($734,200) exceeds max budget ($700,000) by $34,200; Mickleham is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "",
-      "rejection"
-     ],
-     [
-      "PROP-272",
-      "Lot 245 Unit 245, 245, THORNHILL PARK, VIC, 3335",
-      "Advertised package price ($734,485) exceeds max budget ($700,000) by $34,485; Thornhill Park is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-273",
-      "2-Part Detached SS Geelong 1334 Austin Estate Lara 448 Cura 20 B Brochure",
-      "Advertised package price ($735,050) exceeds max budget ($700,000) by $35,050; Geelong is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-274",
-      "119 Socket Dr, Rockbank",
-      "Advertised package price ($735,993) exceeds max budget ($700,000) by $35,993; Rockbank is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-275",
-      "2-Part Detached SS Geelong 1320 Austin Estate Lara 367 Cura 20B Brochure",
-      "Advertised package price ($736,050) exceeds max budget ($700,000) by $36,050; Geelong is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-276",
-      "27 Smiths Lane, SOUTH EAST",
-      "Advertised package price ($736,345) exceeds max budget ($700,000) by $36,345; Clyde North is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-277",
-      "1241 Ardmayle Drive",
-      "Advertised package price ($736,650) exceeds max budget ($700,000) by $36,650; Sunbury is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "",
-      "rejection"
-     ],
-     [
-      "PROP-278",
-      "321 Starling Rd, Officer",
-      "Advertised package price ($737,006) exceeds max budget ($700,000) by $37,006; Officer is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-279",
-      "202 Tiger Dr, Deanside",
-      "Advertised package price ($737,768) exceeds max budget ($700,000) by $37,768; Deanside is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-280",
-      "164 Nascent Dr, Tarneit",
-      "Advertised package price ($738,837) exceeds max budget ($700,000) by $38,837; Tarneit is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-281",
-      "Yamuna St, Truganina",
-      "Advertised package price ($739,082) exceeds max budget ($700,000) by $39,082; Truganina is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-282",
-      "2-Part Detached SS West 805 Harlow Tarneit 312 Elara 18 Brochure M",
-      "Advertised package price ($739,700) exceeds max budget ($700,000) by $39,700; Tarneit is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-283",
-      "2-Part Detached SS West 805 Harlow Tarneit 312 Elara 18 Brochure Masterpl",
-      "Advertised package price ($739,700) exceeds max budget ($700,000) by $39,700; Tarneit is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-284",
-      "Lot 390, Thornhill Central",
-      "Advertised package price ($740,300) exceeds max budget ($700,000) by $40,300; Thornhill Park is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-285",
-      "1105 Majorelle Blvd, NORTH",
-      "Advertised package price ($740,513) exceeds max budget ($700,000) by $40,513; Wollert is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-286",
-      "2141 Racecourse Rd, Fraser Rise",
-      "Advertised package price ($740,891) exceeds max budget ($700,000) by $40,891; Fraser Rise is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-287",
-      "Lot 5307 Unit 5307, 19 Hoff Boulevard, Soutbank, VIC, 3006",
-      "Advertised package price ($741,000) exceeds max budget ($700,000) by $41,000; Bedrooms (1) below minimum mandatory requirement (4); Southbank is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-288",
-      "1056 Fraser Rise, Brochure Masterplan",
-      "Advertised package price ($741,655) exceeds max budget ($700,000) by $41,655; Bedrooms (3) below minimum mandatory requirement (4); Fraser Rise is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-289",
-      "712 Buckingham Rd, Strathtulloh",
-      "Advertised package price ($743,583) exceeds max budget ($700,000) by $43,583; Strathtulloh is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-290",
-      "2-Part Detached SS West 809 Harlow Tarneit 313 Elara 18 Brochure M",
-      "Advertised package price ($744,200) exceeds max budget ($700,000) by $44,200; Tarneit is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-291",
-      "2-Part Detached SS West 809 Harlow Tarneit 313 Elara 18 Brochure Masterpl",
-      "Advertised package price ($744,200) exceeds max budget ($700,000) by $44,200; Tarneit is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-292",
-      "124 Avalon St, Fraser Rise",
-      "Advertised package price ($745,231) exceeds max budget ($700,000) by $45,231; Fraser Rise is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-293",
-      "707 Jira Crescent",
-      "Advertised package price ($746,050) exceeds max budget ($700,000) by $46,050; Tarneit is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "",
-      "rejection"
-     ],
-     [
-      "PROP-294",
-      "337 Pear Pde, Fraser Rise",
-      "Advertised package price ($746,432) exceeds max budget ($700,000) by $46,432; Fraser Rise is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-295",
-      "2-Part Detached SS North 817 Balmain Estate Donnybrook 302 Elara 18 Broch",
-      "Advertised package price ($747,750) exceeds max budget ($700,000) by $47,750; Donnybrook is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-296",
-      "2-Part Detached SS North 822 Balmain Estate Donnybrook 302 Elara 18 Broch",
-      "Advertised package price ($747,750) exceeds max budget ($700,000) by $47,750; Donnybrook is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-297",
-      "2-Part Detached SS West 324 Watsons Reach Diggers Rest 371 Enzo",
-      "Advertised package price ($748,135) exceeds max budget ($700,000) by $48,135; Bedrooms (3) below minimum mandatory requirement (4); Diggers Rest is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-298",
-      "Lot 927, Banyan Place, Officer, Officer VIC",
-      "Advertised package price ($748,400) exceeds max budget ($700,000) by $48,400; Bedrooms (3) below minimum mandatory requirement (4); Officer is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-299",
-      "Lot 520, 520 Ember Loop",
-      "Advertised package price ($749,343) exceeds max budget ($700,000) by $49,343; Sunbury is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "Bathroom count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; Car space count not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client; House size not stated in the builder's stocklist \u2014 confirm with the builder before presenting to the client",
-      "rejection"
-     ],
-     [
-      "PROP-300",
-      "1128 Plumcot Loop",
-      "Advertised package price ($750,000) exceeds max budget ($700,000) by $50,000; Tarneit is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "",
-      "rejection"
-     ],
-     [
-      "PROP-301",
-      "1129 Plumcot Loop",
-      "Advertised package price ($750,000) exceeds max budget ($700,000) by $50,000; Tarneit is not one of the requested suburbs (Werribee). Set a search radius to include nearby areas.",
-      "",
-      "rejection"
      ]
     ],
     "shortlist_count": 0,
-    "rejected_count": 301,
+    "rejected_count": 190,
     "kommo_payload": {
      "research_record_id": "Part C golden - VIC/Werribee - $700,000 - <date>",
      "kommo_lead_status": "Awaiting Consultant Review",
@@ -2321,9 +1492,9 @@
       "top_property_match": "No qualifying properties found",
       "top_property_price": 0,
       "top_property_score": 0,
-      "candidates_reviewed": 301
+      "candidates_reviewed": 190
      },
-     "kommo_internal_note": "SPB Property Research Completed\nRecord ID: Part C golden - VIC/Werribee - $700,000 - <date>\nClient: Part C golden | Budget Ceiling: $700,000\n\nTop Shortlisted Properties:\nNone\n\nRejected Options: 301 candidate(s) filtered out.\nStatus: Awaiting Consultant Review",
+     "kommo_internal_note": "SPB Property Research Completed\nRecord ID: Part C golden - VIC/Werribee - $700,000 - <date>\nClient: Part C golden | Budget Ceiling: $700,000\n\nTop Shortlisted Properties:\nNone\n\nRejected Options: 190 candidate(s) filtered out.\nStatus: Awaiting Consultant Review",
      "consultant_review_task": {
       "task_type": "Consultant Review & Approval",
       "title": "Review Property Research for Part C golden",
@@ -2333,14 +1504,14 @@
     }
    },
    "full_snapshot": {
-    "digest": "a5be60f559734c3b876ee530516d8bb6fb83b4247d2a28dc42d59414a3278669",
+    "digest": "e0c8df110ed574a1dc6c80b45616ef1830798556f7a93f365f7ea3e58ff89094",
     "shortlist_hashes": [
      "v2:58dfb6a925265f2ef361ab259da9098a287fbc064d328166eaf6e09f27219904",
      "v2:2607a7acda90fd0c31b1ae6a967aed323780713ba8049afd9b33b9b5431b7e6e",
      "v2:11e4d541db5d70755756d5b2e4d9a08e3f24d6171a2e2b53eee6b33e1fd52f61"
     ],
     "pending_count": 1,
-    "rejected_count": 595
+    "rejected_count": 574
    }
   },
   "qld_no_budget": {
@@ -2598,13 +1769,6 @@
      [
       "PROP-110",
       "v2:b801fc6fdb47075b157f6781ff6b02798259ac5874e702ac3f58081e0b3c4c6a",
-      92.0,
-      "Recommend",
-      "Verified"
-     ],
-     [
-      "PROP-113",
-      "v2:46bc9cca4c7da19e136cdce4250610a8c48b05d76b098556c271dc75ffb5aa8a",
       92.0,
       "Recommend",
       "Verified"
@@ -5201,6 +4365,7 @@
      "PROP-79",
      "PROP-92",
      "PROP-109",
+     "PROP-113",
      "PROP-114",
      "PROP-119",
      "PROP-125",
@@ -5377,6 +4542,13 @@
      [
       "PROP-109",
       "Lot 51, A'LURE ESTATE, Rosewood QLD",
+      "Pending Confirmation - excluded from final list until verified or consultant-approved",
+      null,
+      null
+     ],
+     [
+      "PROP-113",
+      "Lot 57, THE HILLS COLLECTION, Glenvale QLD",
       "Pending Confirmation - excluded from final list until verified or consultant-approved",
       null,
       null
@@ -5942,8 +5114,8 @@
       null
      ]
     ],
-    "shortlist_count": 403,
-    "rejected_count": 94,
+    "shortlist_count": 402,
+    "rejected_count": 95,
     "kommo_payload": {
      "research_record_id": "Part C golden - QLD/General - $9,007,199,254,740,991 - <date>",
      "kommo_lead_status": "Awaiting Consultant Review",
@@ -5954,7 +5126,7 @@
       "top_property_score": 93.5,
       "candidates_reviewed": 497
      },
-     "kommo_internal_note": "SPB Property Research Completed\nRecord ID: Part C golden - QLD/General - $9,007,199,254,740,991 - <date>\nClient: Part C golden | Budget Ceiling: $9,007,199,254,740,991\n\nTop Shortlisted Properties:\n1. Lot 162, Rosewood Green, Rosewood - $799,900 (Score: 93.5/100 - Recommend)\n2. Lot 545, Yarrabilba, Ridgeline, Yarrabilba - $824,900 (Score: 93.5/100 - Recommend)\n3. Lot 146, Rosewood Green, Rosewood - $832,500 (Score: 93.5/100 - Recommend)\n4. Lot 57, Alford Grove, Glenvale - $845,400 (Score: 93.5/100 - Recommend)\n5. Lot 5, Farriers Creek, Burpengary House & Land, Burpengary - $880,980 (Score: 93.5/100 - Recommend)\n6. Lot 18, Park Lane, Joyner - $899,900 (Score: 93.5/100 - Recommend)\n7. Lot 507, Banksia Rise, Greenbank - $944,900 (Score: 93.5/100 - Recommend)\n8. Lot 104, Riverstone Springs, Riverbend - $949,900 (Score: 93.5/100 - Recommend)\n9. Lot 510, Banksia Rise, Greenbank - $960,900 (Score: 93.5/100 - Recommend)\n10. Lot 2034, White Rock - $970,900 (Score: 93.5/100 - Recommend)\n11. Lot 21, Park Lane, Joyner - $984,900 (Score: 93.5/100 - Recommend)\n12. Lot 1302, Regent Quarter, Joyner - $999,800 (Score: 93.5/100 - Recommend)\n13. Lot 806, Regent Quarter, Joyner - $999,800 (Score: 93.5/100 - Recommend)\n14. Lot 5, 85A Wildey Street, Raceview, Raceview - $999,900 (Score: 93.5/100 - Recommend)\n15. Lot 1301, Regent Quarter, Joyner - $1,016,800 (Score: 93.5/100 - Recommend)\n16. Lot 805, Regent Quarter, Joyner - $1,018,900 (Score: 93.5/100 - Recommend)\n17. Lot 1408, Regent Quarter, Joyner - $1,019,900 (Score: 93.5/100 - Recommend)\n18. Lot 4027, Flagstone, Flagstone - $855,900 (Score: 92.0/100 - Recommend)\n19. Lot 153, Rosewood Green, Rosewood - $864,900 (Score: 92.0/100 - Recommend)\n20. Lot 56, Alford Grove, Glenvale - $865,400 (Score: 92.0/100 - Recommend)\n21. Lot 147, Rosewood Green, Rosewood - $877,900 (Score: 92.0/100 - Recommend)\n22. Lot 42, THE HILLS COLLECTION, Glenvale QLD, Glenvale - $878,400 (Score: 92.0/100 - Recommend)\n23. Lot 1912, Affinity, Morayfield - $879,600 (Score: 92.0/100 - Recommend)\n24. Lot 41, A'LURE ESTATE, Rosewood QLD, Rosewood - $881,700 (Score: 92.0/100 - Recommend)\n25. Lot 15, THE HILLS COLLECTION, Glenvale QLD, Glenvale - $884,200 (Score: 92.0/100 - Recommend)\n26. Lot 44, THE HILLS COLLECTION, Glenvale QLD, Glenvale - $887,200 (Score: 92.0/100 - Recommend)\n27. Lot 45, A'LURE ESTATE, Rosewood QLD, Rosewood - $887,700 (Score: 92.0/100 - Recommend)\n28. Lot 20, THE HILLS COLLECTION, Glenvale QLD, Glenvale - $889,900 (Score: 92.0/100 - Recommend)\n29. Lot 47, A'LURE ESTATE, Rosewood QLD, Rosewood - $890,400 (Score: 92.0/100 - Recommend)\n30. Lot 43, A'LURE ESTATE, Rosewood QLD, Rosewood - $890,900 (Score: 92.0/100 - Recommend)\n31. Lot 4045, Flagstone, Flagstone - $890,900 (Score: 92.0/100 - Recommend)\n32. Lot 60, THE HILLS COLLECTION, Glenvale QLD, Glenvale - $892,900 (Score: 92.0/100 - Recommend)\n33. Lot 29, A'LURE ESTATE, Rosewood QLD, Rosewood - $893,400 (Score: 92.0/100 - Recommend)\n34. Lot 74, Walloon - $894,900 (Score: 92.0/100 - Recommend)\n35. Lot 57, THE HILLS COLLECTION, Glenvale QLD, Glenvale - $896,000 (Score: 92.0/100 - Recommend)\n36. Lot 65, Walloon - $896,900 (Score: 92.0/100 - Recommend)\n37. Lot 54, A'LURE ESTATE, Rosewood QLD, Rosewood - $897,200 (Score: 92.0/100 - Recommend)\n38. Lot 66, Walloon - $901,900 (Score: 92.0/100 - Recommend)\n39. Lot 40, A'LURE ESTATE, Rosewood QLD, Rosewood - $902,200 (Score: 92.0/100 - Recommend)\n40. Lot 45, THE HILLS COLLECTION, Glenvale QLD, Glenvale - $906,600 (Score: 92.0/100 - Recommend)\n41. Lot 76, Walloon - $908,900 (Score: 92.0/100 - Recommend)\n42. Lot 78, Walloon - $908,900 (Score: 92.0/100 - Recommend)\n43. Lot 11, A'LURE ESTATE, Rosewood QLD, Rosewood - $911,800 (Score: 92.0/100 - Recommend)\n44. Lot 29, Walloon - $922,900 (Score: 92.0/100 - Recommend)\n45. 9 New Road, The Green, Morayfield House & Land, Morayfield - $924,980 (Score: 92.0/100 - Recommend)\n46. Lot 1252, Hayfield, Ripley - $959,900 (Score: 92.0/100 - Recommend)\n47. 1 New Road, The Green, Morayfield House & Land, Morayfield - $959,980 (Score: 92.0/100 - Recommend)\n48. Lot 68, Ripley - $989,900 (Score: 92.0/100 - Recommend)\n49. Lot 98, Sunnyvue, Ripley - $989,900 (Score: 92.0/100 - Recommend)\n50. Lot 49, Ripley - $993,900 (Score: 92.0/100 - Recommend)\n51. EDEN'S CROSSING ESTATE, Redbank Plains QLD, Redbank Plains - $999,100 (Score: 92.0/100 - Recommend)\n52. Lot 42, Ripley - $999,900 (Score: 92.0/100 - Recommend)\n53. Lot 101, Sunnyvue, Ripley - $999,900 (Score: 92.0/100 - Recommend)\n54. Lot 51, Ironbark, Pimpama - $999,900 (Score: 92.0/100 - Recommend)\n55. Lot 69, RIVERLEIGH ESTATE, Logan Reserve QLD, Logan Reserve - $999,999 (Score: 92.0/100 - Recommend)\n56. Lot 543, Banksia Rise, Greenbank - $1,004,900 (Score: 92.0/100 - Recommend)\n57. Lot 68, RIVERLEIGH ESTATE, Logan Reserve QLD, Logan Reserve - $1,007,500 (Score: 92.0/100 - Recommend)\n58. Lot 509, Banksia Rise, Greenbank - $1,007,900 (Score: 92.0/100 - Recommend)\n59. Lot 515, Banksia Rise, Greenbank - $1,007,900 (Score: 92.0/100 - Recommend)\n60. Lot 545, Banksia Rise, Greenbank - $1,007,900 (Score: 92.0/100 - Recommend)\n61. Lot 503, Banksia Rise, Greenbank - $1,009,900 (Score: 92.0/100 - Recommend)\n62. Lot 47, Ironbark, Pimpama - $1,009,900 (Score: 92.0/100 - Recommend)\n63. Lot 63, RIVERLEIGH ESTATE, Logan Reserve QLD, Logan Reserve - $1,014,100 (Score: 92.0/100 - Recommend)\n64. Lot 1287, EDEN'S CROSSING ESTATE, Redbank Plains QLD, Redbank Plains - $1,014,900 (Score: 92.0/100 - Recommend)\n65. Lot 59, RIVERLEIGH ESTATE, Logan Reserve QLD, Logan Reserve - $1,016,500 (Score: 92.0/100 - Recommend)\n66. Lot 38, Ripley - $1,019,900 (Score: 92.0/100 - Recommend)\n67. Lot 170, Riverstone Springs, Riverbend - $1,019,900 (Score: 92.0/100 - Recommend)\n68. Lot 342, HIGHGROVE ESTATE, Deebing Heights QLD, Deebing Heights - $1,027,475 (Score: 92.0/100 - Recommend)\n69. Lot 1406, Regent Quarter, Joyner - $1,027,800 (Score: 92.0/100 - Recommend)\n70. Lot 548, Banksia Rise, Greenbank - $1,029,900 (Score: 92.0/100 - Recommend)\n71. Lot 20, Park Lane, Joyner - $1,039,900 (Score: 92.0/100 - Recommend)\n72. Lot 52, RIVERLEIGH ESTATE, Logan Reserve QLD, Logan Reserve - $1,040,800 (Score: 92.0/100 - Recommend)\n73. Lot 74, RIVERLEIGH ESTATE, Logan Reserve QLD, Logan Reserve - $1,042,400 (Score: 92.0/100 - Recommend)\n74. Lot 2002, White Rock - $1,046,900 (Score: 92.0/100 - Recommend)\n75. Lot 501, Banksia Rise, Greenbank - $1,049,900 (Score: 92.0/100 - Recommend)\n76. Lot 552, Banksia Rise, Greenbank - $1,049,900 (Score: 92.0/100 - Recommend)\n77. Lot 553, Banksia Rise, Greenbank - $1,049,900 (Score: 92.0/100 - Recommend)\n78. Lot 551, Banksia Rise, Greenbank - $1,054,900 (Score: 92.0/100 - Recommend)\n79. Lot 555, Banksia Rise, Greenbank - $1,055,900 (Score: 92.0/100 - Recommend)\n80. Lot 4, COOLIBAH ESTATE, Lowood QLD, Lowood - $1,058,500 (Score: 92.0/100 - Recommend)\n81. Lot 1, COOLIBAH ESTATE, Lowood QLD, Lowood - $1,058,700 (Score: 92.0/100 - Recommend)\n82. Lot 517, Banksia Rise, Greenbank - $1,059,900 (Score: 92.0/100 - Recommend)\n83. Lot 201, Carvers, Park Ridge - $1,064,150 (Score: 92.0/100 - Recommend)\n84. Lot 550, Banksia Rise, Greenbank - $1,069,900 (Score: 92.0/100 - Recommend)\n85. Lot 554, Banksia Rise, Greenbank - $1,069,900 (Score: 92.0/100 - Recommend)\n86. Lot 556, Banksia Rise, Greenbank - $1,069,900 (Score: 92.0/100 - Recommend)\n87. WHITE ROCK ESTATE, White Rock QLD, White Rock - $1,084,400 (Score: 92.0/100 - Recommend)\n88. Lot 557, Banksia Rise, Greenbank - $1,084,900 (Score: 92.0/100 - Recommend)\n89. Lot 514, Banksia Rise, Greenbank - $1,089,900 (Score: 92.0/100 - Recommend)\n90. Lot 49, Ironbark, Pimpama - $1,132,000 (Score: 92.0/100 - Recommend)\n91. Lot 1, 152-156 Bancroft Terrace, Deception Bay - $1,140,900 (Score: 92.0/100 - Recommend)\n92. Lot 44, Ironbark, Pimpama - $1,159,900 (Score: 92.0/100 - Recommend)\n93. Lot 1, 152-156 Bancroft Terrace, Deception Bay - $1,162,900 (Score: 92.0/100 - Recommend)\n94. Lot 2, 152-156 Bancroft Terrace, Deception Bay - $1,163,900 (Score: 92.0/100 - Recommend)\n95. Lot 5, 85A Wildey Street, Raceview, Raceview - $1,164,900 (Score: 92.0/100 - Recommend)\n96. Lot 5, 152-156 Bancroft Terrace, Deception Bay - $1,169,900 (Score: 92.0/100 - Recommend)\n97. Lot 2, 152-156 Bancroft Terrace, Deception Bay - $1,178,900 (Score: 92.0/100 - Recommend)\n98. Lot 48, Ironbark, Pimpama - $1,183,000 (Score: 92.0/100 - Recommend)\n99. Lot 3, 152-156 Bancroft Terrace, Deception Bay - $1,189,900 (Score: 92.0/100 - Recommend)\n100. Lot 52, Ironbark, Pimpama - $1,206,000 (Score: 92.0/100 - Recommend)\n101. Lot 51, Ironbark, Pimpama - $1,234,900 (Score: 92.0/100 - Recommend)\n102. Lot 203, Paradise in Parkinson, Parkinson - $1,642,500 (Score: 92.0/100 - Recommend)\n103. Lot 205, Paradise in Parkinson, Parkinson - $1,649,360 (Score: 92.0/100 - Recommend)\n104. Lot 201, Paradise in Parkinson, Parkinson - $1,651,050 (Score: 92.0/100 - Recommend)\n105. Lot 206, Paradise in Parkinson, Parkinson - $1,656,550 (Score: 92.0/100 - Recommend)\n106. Lot 9, Ormiston Point, Ormiston, Ormiston - $1,657,000 (Score: 92.0/100 - Recommend)\n107. Lot 12, Ormiston Point, Ormiston, Ormiston - $1,663,400 (Score: 92.0/100 - Recommend)\n108. Lot 210, Paradise in Parkinson, Parkinson - $1,674,200 (Score: 92.0/100 - Recommend)\n109. Lot 212, Paradise in Parkinson, Parkinson - $1,719,050 (Score: 92.0/100 - Recommend)\n110. Lot 30, Greenbank - $1,268,516 (Score: 91.0/100 - Recommend)\n111. Lot 31, Greenbank - $1,269,516 (Score: 91.0/100 - Recommend)\n112. Lot 1930, Affinity, Morayfield - $909,900 (Score: 90.0/100 - Recommend)\n113. Lot 57, A'LURE ESTATE, Rosewood QLD, Rosewood - $932,300 (Score: 90.0/100 - Recommend)\n114. Lot 150, Rosewood Green, Rosewood - $939,900 (Score: 90.0/100 - Recommend)\n115. Lot 505, Banksia Rise, Greenbank - $1,104,900 (Score: 90.0/100 - Recommend)\n116. Lot 174, Carvers, Park Ridge - $1,105,650 (Score: 90.0/100 - Recommend)\n117. Lot 171, Carvers, Park Ridge - $1,107,650 (Score: 90.0/100 - Recommend)\n118. Lot 21, Park Lane, Joyner - $1,129,900 (Score: 90.0/100 - Recommend)\n119. 63 Oxford Street, Joyner Banksia, Joyner - $1,148,900 (Score: 90.0/100 - Recommend)\n120. 63 Oxford Street, Joyner Banksia, Joyner - $1,152,900 (Score: 90.0/100 - Recommend)\n121. Lot 20, Park Lane, Joyner - $1,175,900 (Score: 90.0/100 - Recommend)\n122. Lot 1, 152-156 Bancroft Terrace, Deception Bay - $1,289,900 (Score: 90.0/100 - Recommend)\n123. Lot 501, Banksia Rise, Greenbank - $1,329,900 (Score: 90.0/100 - Recommend)\n124. Lot 311, Arbourwood, Morayfield House & Land, Morayfield - $835,980 (Score: 89.0/100 - Recommend)\n125. Lot 46, A'LURE ESTATE, Rosewood QLD, Rosewood - $877,100 (Score: 89.0/100 - Recommend)\n126. Lot 2, Arbourwood, Morayfield House & Land, Morayfield - $891,980 (Score: 89.0/100 - Recommend)\n127. 6 EOI New Road, The Green, Morayfield House & Land, Morayfield - $894,980 (Score: 89.0/100 - Recommend)\n128. Lot 16, 85A Wildey Street, Raceview, Raceview - $1,142,500 (Score: 89.0/100 - Recommend)\n129. Lot 809, Regent Quarter, Joyner - $1,172,900 (Score: 89.0/100 - Recommend)\n130. Lot 606, Regent Quarter, Joyner - $1,174,800 (Score: 89.0/100 - Recommend)\n131. Lot 807, Regent Quarter, Joyner - $1,176,900 (Score: 89.0/100 - Recommend)\n132. Lot 605, Regent Quarter, Joyner - $1,177,500 (Score: 89.0/100 - Recommend)\n133. Lot 808, Regent Quarter, Joyner - $1,177,900 (Score: 89.0/100 - Recommend)\n134. Lot 148, Deception Bay - $799,980 (Score: 88.5/100 - Recommend)\n135. Lot 156, Deception Bay - $807,500 (Score: 88.5/100 - Recommend)\n136. Lot 2231, White Rock - $816,000 (Score: 88.5/100 - Recommend)\n137. Lot 160, Deception Bay - $835,000 (Score: 88.5/100 - Recommend)\n138. Lot 72, WOODCHESTER ESTATE, Gatton QLD, Gatton - $835,200 (Score: 88.5/100 - Recommend)\n139. 1 Belah Cres, Mallee Grove, Jimboomba House & Land, Jimboomba - $839,980 (Score: 88.5/100 - Recommend)\n140. Lot 70, WOODCHESTER ESTATE, Gatton QLD, Gatton - $841,200 (Score: 88.5/100 - Recommend)\n141. Lot 2226, White Rock - $849,000 (Score: 88.5/100 - Recommend)\n142. Lot 93, WOODCHESTER ESTATE, Gatton QLD, Gatton - $863,800 (Score: 88.5/100 - Recommend)\n143. Lot 8, A'LURE ESTATE, Rosewood QLD, Rosewood - $870,900 (Score: 88.5/100 - Recommend)\n144. Lot 1338, Jordan Springs - $873,900 (Score: 88.5/100 - Recommend)\n145. Lot 25, THE HILLS COLLECTION, Glenvale QLD, Glenvale - $875,300 (Score: 88.5/100 - Recommend)\n146. Lot 38, A'LURE ESTATE, Rosewood QLD, Rosewood - $876,700 (Score: 88.5/100 - Recommend)\n147. Lot 2239, White Rock - $885,500 (Score: 88.5/100 - Recommend)\n148. Lot 2240, White Rock - $885,500 (Score: 88.5/100 - Recommend)\n149. Lot 96, WOODCHESTER ESTATE, Gatton QLD, Gatton - $886,000 (Score: 88.5/100 - Recommend)\n150. Lot 97, WOODCHESTER ESTATE, Gatton QLD, Gatton - $887,300 (Score: 88.5/100 - Recommend)\n151. 13F New Road, FLAGSTONE ESTATE, Flagstone - $888,600 (Score: 88.5/100 - Recommend)\n152. Lot 4028, FLAGSTONE ESTATE, Flagstone - $896,465 (Score: 88.5/100 - Recommend)\n153. Lot 18, A'LURE ESTATE, Rosewood QLD, Rosewood - $899,900 (Score: 88.5/100 - Recommend)\n154. Lot 15, A'LURE ESTATE, Rosewood QLD, Rosewood - $901,100 (Score: 88.5/100 - Recommend)\n155. Lot 51, A'LURE ESTATE, Rosewood QLD, Rosewood - $901,800 (Score: 88.5/100 - Recommend)\n156. Lot 13, A'LURE ESTATE, Rosewood QLD, Rosewood - $914,300 (Score: 88.5/100 - Recommend)\n157. Lot 321, AIRE RIVERSIDE ESTATE, Lilywood QLD, Lilywood - $925,100 (Score: 88.5/100 - Recommend)\n158. Lot 522, AIRE ESTATE, Lilywood QLD, Lilywood - $931,600 (Score: 88.5/100 - Recommend)\n159. Lot 4029, FLAGSTONE ESTATE, Flagstone - $936,348 (Score: 88.5/100 - Recommend)\n160. Lot 80, Toowoomba QLD, Toowoomba - $936,800 (Score: 88.5/100 - Recommend)\n161. Lot 100, Gatton - $944,900 (Score: 88.5/100 - Recommend)\n162. Lot 99, Gatton - $947,900 (Score: 88.5/100 - Recommend)\n163. 28 New Road, Mallee Grove, Jimboomba House & Land, Jimboomba - $949,980 (Score: 88.5/100 - Recommend)\n164. 6074 New Road, YARRABILBA ESTATE, Yarrabilba - $953,700 (Score: 88.5/100 - Recommend)\n165. 642 New Road, YARRABILBA ESTATE, Yarrabilba - $953,700 (Score: 88.5/100 - Recommend)\n166. Lot 553, AIRE ESTATE, Lilywood QLD, Lilywood - $958,400 (Score: 88.5/100 - Recommend)\n167. Lot 2241, White Rock - $965,200 (Score: 88.5/100 - Recommend)\n168. Lot 64, Gympie QLD, Gympie - $965,500 (Score: 88.5/100 - Recommend)\n169. Lot 2035, White Rock - $966,900 (Score: 88.5/100 - Recommend)\n170. 1470 Stage 14D 441m2 Madrid 190 Fortitude 1902m2 4 2 2 2 Volos Availab, Caboolture - $973,344 (Score: 88.5/100 - Recommend)\n171. Lot 91, SUNNYVUE ESTATE, Ripley QLD, Ripley - $975,500 (Score: 88.5/100 - Recommend)\n172. Lot 501, AIRE ESTATE, Lilywood QLD, Lilywood - $988,300 (Score: 88.5/100 - Recommend)\n173. Lot 4, COOLIBAH ESTATE, Lowood QLD, Lowood - $990,038 (Score: 88.5/100 - Recommend)\n174. Lot 1, COOLIBAH ESTATE, Lowood QLD, Lowood - $990,441 (Score: 88.5/100 - Recommend)\n175. KINMA VALLEY, Morayfield QLD, Morayfield - $995,100 (Score: 88.5/100 - Recommend)\n176. Lot 521, AIRE ESTATE, Lilywood QLD, Lilywood - $995,400 (Score: 88.5/100 - Recommend)\n177. SIX MILE CREEK ESTATE, Collingwood Park QLD, Collingwood Park - $996,300 (Score: 88.5/100 - Recommend)\n178. SIX MILE CREEK ESTATE, Collingwood Park QLD, Collingwood Park - $997,300 (Score: 88.5/100 - Recommend)\n179. Lot 4, The Fairways, Durack, Durack - $998,900 (Score: 88.5/100 - Recommend)\n180. Lot 1, COOLIBAH ESTATE, Lowood QLD, Lowood - $999,428 (Score: 88.5/100 - Recommend)\n181. Lot 9, Bethania - $999,900 (Score: 88.5/100 - Recommend)\n182. Lot 4, COOLIBAH ESTATE, Lowood QLD, Lowood - $1,000,900 (Score: 88.5/100 - Recommend)\n183. 505 Stage 5 375m2 Lisbon 210 Fortitude 210m2 4 2 2 1 Volos Availabl, Lilywood - $1,006,900 (Score: 88.5/100 - Recommend)\n184. Lot 2036, White Rock - $1,006,900 (Score: 88.5/100 - Recommend)\n185. RIVERBANK ESTATE, Caboolture South QLD, Caboolture South - $1,009,100 (Score: 88.5/100 - Recommend)\n186. Lot 4, Bethania - $1,012,900 (Score: 88.5/100 - Recommend)\n187. SIX MILE CREEK ESTATE, Collingwood Park QLD, Collingwood Park - $1,020,800 (Score: 88.5/100 - Recommend)\n188. Lot 217, OAKVIEW HEIGHTS ESTATE, Beaudesert QLD, Beaudesert - $1,023,000 (Score: 88.5/100 - Recommend)\n189. Lot 5, COOLIBAH ESTATE, Lowood QLD, Lowood - $1,031,900 (Score: 88.5/100 - Recommend)\n190. Lot 11, COOLIBAH ESTATE, Lowood QLD, Lowood - $1,031,900 (Score: 88.5/100 - Recommend)\n191. Lot 608, SAGE ESTATE, Burpengary - $1,033,700 (Score: 88.5/100 - Recommend)\n192. Lot 553, Yarrabilba - $1,037,900 (Score: 88.5/100 - Recommend)\n193. Lot 2235, White Rock - $1,038,600 (Score: 88.5/100 - Recommend)\n194. SIX MILE CREEK ESTATE, Collingwood Park QLD, Collingwood Park - $1,042,800 (Score: 88.5/100 - Recommend)\n195. SAGE ESTATE, Burpengary QLD, Burpengary - $1,052,500 (Score: 88.5/100 - Recommend)\n196. Lot 6, Bethania - $1,053,900 (Score: 88.5/100 - Recommend)\n197. Lot 12, RACEVIEW RISE ESTATE, Raceview QLD, Raceview - $1,058,900 (Score: 88.5/100 - Recommend)\n198. Lot 552, Yarrabilba - $1,071,900 (Score: 88.5/100 - Recommend)\n199. Lot 5, Juniper, Taigum - $1,076,000 (Score: 88.5/100 - Recommend)\n200. Lot 5, Bethania - $1,078,900 (Score: 88.5/100 - Recommend)\n201. Lot 13, RACEVIEW RISE ESTATE, Raceview QLD, Raceview - $1,080,400 (Score: 88.5/100 - Recommend)\n202. Lot 20, Collingwood Park - $1,084,480 (Score: 88.5/100 - Recommend)\n203. 4 Pilny Street, Camira Beech, Camira - $1,090,900 (Score: 88.5/100 - Recommend)\n204. Lot 609, SAGE ESTATE, Burpengary - $1,094,600 (Score: 88.5/100 - Recommend)\n205. 4 Pilny Street, Camira Banksia, Camira - $1,115,900 (Score: 88.5/100 - Recommend)\n206. Lot 2, Birkdale, Birkdale - $1,145,980 (Score: 88.5/100 - Recommend)\n207. Lot 15, RACEVIEW RISE ESTATE, Raceview QLD, Raceview - $1,162,000 (Score: 88.5/100 - Recommend)\n208. Lot 142, Lilywood - $1,168,900 (Score: 88.5/100 - Recommend)\n209. Lot 39, Riverleigh, Logan Reserve Secondary Dwelling, Riverleigh - $1,169,480 (Score: 88.5/100 - Recommend)\n210. Lot 146, Lilywood - $1,169,900 (Score: 88.5/100 - Recommend)\n211. Lot 4, The Fairways, Durack, Durack - $1,197,900 (Score: 88.5/100 - Recommend)\n212. Lot 8, Juniper, Taigum - $1,207,900 (Score: 88.5/100 - Recommend)\n213. Lot 7, Juniper, Taigum - $1,213,900 (Score: 88.5/100 - Recommend)\n214. 6 EOI New Road, Deception Bay - $1,215,480 (Score: 88.5/100 - Recommend)\n215. Lot 1317, Narangba - $1,242,900 (Score: 88.5/100 - Recommend)\n216. Lot 534, Bellevue - $1,265,900 (Score: 88.5/100 - Recommend)\n217. Lot 535, Bellevue - $1,275,900 (Score: 88.5/100 - Recommend)\n218. Lot 38, Park Ridge - $1,280,900 (Score: 88.5/100 - Recommend)\n219. Lot 40, Park Ridge - $1,288,900 (Score: 88.5/100 - Recommend)\n220. Lot 530, Bellevue - $1,294,900 (Score: 88.5/100 - Recommend)\n221. Lot 1325, Narangba - $1,299,900 (Score: 88.5/100 - Recommend)\n222. Lot 1, 776 CABOOLTURE RIVER ROAD, UPPER CABOOLTURE, Upper Caboolture QLD, Upper Caboolture - $1,399,600 (Score: 88.5/100 - Recommend)\n223. Lot 148, Riverina, Nerang - $1,399,900 (Score: 88.5/100 - Recommend)\n224. Lot 3, 776 CABOOLTURE RIVER ROAD, UPPER CABOOLTURE, Upper Caboolture QLD, Upper Caboolture - $1,414,600 (Score: 88.5/100 - Recommend)\n225. Lot 711, FLOURISH ESTATE, South Maclean QLD, South Maclean - $1,434,900 (Score: 88.5/100 - Recommend)\n226. Lot 1, 51 Devries Road, Pallara, Pallara - $1,459,900 (Score: 88.5/100 - Recommend)\n227. Lot 5, Ormiston Point, Ormiston, Ormiston - $1,668,400 (Score: 88.5/100 - Recommend)\n228. Lot 2, Rochedale - $1,686,900 (Score: 88.5/100 - Recommend)\n229. Lot 1, Rochedale - $1,873,900 (Score: 88.5/100 - Recommend)\n230. Lot 264, Highland, Walloon QLD, Walloon - $819,100 (Score: 87.5/100 - Recommend)\n231. 2 New Road, TBC TBC, Birkdale - $819,980 (Score: 87.5/100 - Recommend)\n232. Lot 507, Bloom, Nikenbah QLD, Nikenbah - $910,130 (Score: 87.5/100 - Recommend)\n233. Lot 508, Bloom, Nikenbah QLD, Nikenbah - $924,130 (Score: 87.5/100 - Recommend)\n234. Highgrove, Deebing Heights QLD, Deebing Heights - $937,719 (Score: 87.5/100 - Recommend)\n235. BRISBANE EAST, Nikenbah QLD, Nikenbah - $982,275 (Score: 87.5/100 - Recommend)\n236. 392 Verran Street, Somerset Coastal, Bellbird Park - $1,028,394 (Score: 87.5/100 - Recommend)\n237. Lot 99, Gatton - $1,119,000 (Score: 87.5/100 - Recommend)\n238. Lot 100, Gatton - $1,119,900 (Score: 87.5/100 - Recommend)\n239. Lot 537, Bellevue - $1,167,900 (Score: 87.5/100 - Recommend)\n240. Lot 1313, Narangba - $1,226,900 (Score: 87.5/100 - Recommend)\n241. Lot 29, Jordan Springs - $1,268,516 (Score: 87.5/100 - Recommend)\n242. Lot 531, Bellevue - $1,298,900 (Score: 87.5/100 - Recommend)\n243. Ocean, Coral Cove QLD, Coral Cove - $872,617 (Score: 86.0/100 - Recommend)\n244. Lot 4051, Aurora, Flagstone QLD, Flagstone - $878,100 (Score: 86.0/100 - Recommend)\n245. Lot 4083, Aurora, Flagstone QLD, Flagstone - $888,100 (Score: 86.0/100 - Recommend)\n246. Ocean, Coral Cove QLD, Coral Cove - $888,433 (Score: 86.0/100 - Recommend)\n247. Ocean, Coral Cove QLD, Coral Cove - $896,943 (Score: 86.0/100 - Recommend)\n248. Lot 247, Highland, Walloon QLD, Walloon - $901,100 (Score: 86.0/100 - Recommend)\n249. Lot 4048, Aurora, Flagstone QLD, Flagstone - $903,100 (Score: 86.0/100 - Recommend)\n250. Lot 237, Highland, Walloon QLD, Walloon - $910,100 (Score: 86.0/100 - Recommend)\n251. Lot 136, Highland, Walloon QLD, Walloon - $914,100 (Score: 86.0/100 - Recommend)\n252. Lot 4053, Aurora, Flagstone QLD, Flagstone - $917,100 (Score: 86.0/100 - Recommend)\n253. Lot 4052, Aurora, Flagstone QLD, Flagstone - $922,400 (Score: 86.0/100 - Recommend)\n254. Lot 137, Highland, Walloon QLD, Walloon - $923,100 (Score: 86.0/100 - Recommend)\n255. TOOWOOMBA, Glenvale QLD, Glenvale - $926,709 (Score: 86.0/100 - Recommend)\n256. Lot 223, Highland, Walloon QLD, Walloon - $931,100 (Score: 86.0/100 - Recommend)\n257. Lot 207, Highland, Walloon QLD, Walloon - $935,100 (Score: 86.0/100 - Recommend)\n258. Lot 213, Highland, Walloon QLD, Walloon - $937,100 (Score: 86.0/100 - Recommend)\n259. Burpengary Ferriers Creek, Burpengary QLD, Burpengary - $968,900 (Score: 86.0/100 - Recommend)\n260. Lot 160, Central Springs, Caboolture QLD, Caboolture - $972,100 (Score: 86.0/100 - Recommend)\n261. Lot 1509, Brookhaven, Bahrs Scrub QLD, Bahrs Scrub - $973,100 (Score: 86.0/100 - Recommend)\n262. Lot 25, Burpengary Ferriers Creek, Burpengary QLD, Burpengary - $973,400 (Score: 86.0/100 - Recommend)\n263. Lot 1488, Brookhaven, Bahrs Scrub QLD, Bahrs Scrub - $978,100 (Score: 86.0/100 - Recommend)\n264. Lot 1459, Central Springs, Caboolture QLD, Caboolture - $986,400 (Score: 86.0/100 - Recommend)\n265. Burpengary Ferriers Creek, Burpengary QLD, Burpengary - $998,900 (Score: 86.0/100 - Recommend)\n266. Lot 5, Burpengary Ferriers Creek, Burpengary QLD, Burpengary - $998,900 (Score: 86.0/100 - Recommend)\n267. Lot 67, Central Springs, Caboolture QLD, Caboolture - $1,007,150 (Score: 86.0/100 - Recommend)\n268. Lot 162, Central Springs, Caboolture QLD, Caboolture - $1,008,100 (Score: 86.0/100 - Recommend)\n269. Lot 1480, Brookhaven, Bahrs Scrub QLD, Bahrs Scrub - $1,008,100 (Score: 86.0/100 - Recommend)\n270. BRISBANE EAST, Burpengary QLD, Burpengary - $1,019,937 (Score: 86.0/100 - Recommend)\n271. Lot 1487, Brookhaven, Bahrs Scrub QLD, Bahrs Scrub - $1,020,200 (Score: 86.0/100 - Recommend)\n272. Lot 1511, Brookhaven, Bahrs Scrub QLD, Bahrs Scrub - $1,023,200 (Score: 86.0/100 - Recommend)\n273. BRISBANE EAST, Joyner QLD, Joyner - $1,039,925 (Score: 86.0/100 - Recommend)\n274. Lot 5, Berlin Grove, Bethania QLD, Bethania - $1,049,600 (Score: 86.0/100 - Recommend)\n275. Lot 1598, Brookhaven, Bahrs Scrub QLD, Bahrs Scrub - $1,063,200 (Score: 86.0/100 - Recommend)\n276. Lot 390, Evergreen, Bellbird Park QLD, Bellbird Park - $1,070,600 (Score: 86.0/100 - Recommend)\n277. BRISBANE EAST, Joyner QLD, Joyner - $1,076,671 (Score: 86.0/100 - Recommend)\n278. Lot 391, Evergreen, Bellbird Park QLD, Bellbird Park - $1,096,100 (Score: 86.0/100 - Recommend)\n279. Lot 6, Berlin Grove, Bethania QLD, Bethania - $1,102,100 (Score: 86.0/100 - Recommend)\n280. Lot 573, KINMA VALLEY, Morayfield QLD, Morayfield - $1,106,100 (Score: 86.0/100 - Recommend)\n281. 155 Wattle Green, Burpengary Banksia, Burpengary - $1,178,900 (Score: 86.0/100 - Recommend)\n282. 63 Oxford Street, Joyner Rosewood, Joyner - $1,267,900 (Score: 86.0/100 - Recommend)\n283. Lot 203, Paradise in Parkinson, Parkinson - $1,373,300 (Score: 86.0/100 - Recommend)\n284. Lot 204, Paradise in Parkinson, Parkinson - $1,648,350 (Score: 86.0/100 - Recommend)\n285. Lot 213, Paradise in Parkinson, Parkinson - $2,414,700 (Score: 86.0/100 - Recommend)\n286. 1 EOI Belah Cres, Breezewood, Fernvale - $839,980 (Score: 85.5/100 - Recommend)\n287. 196 EOI New Road, Oakview - $938,480 (Score: 85.5/100 - Recommend)\n288. KINMA VALLEY, Morayfield QLD, Morayfield - $939,300 (Score: 85.5/100 - Recommend)\n289. Lot 39, A'LURE ESTATE, Rosewood QLD, Rosewood - $944,800 (Score: 85.5/100 - Recommend)\n290. 225 EOI New Road, Oakview - $957,480 (Score: 85.5/100 - Recommend)\n291. 218 EOI New Road, Oakview - $957,480 (Score: 85.5/100 - Recommend)\n292. Lot 13, Collingwood Park - $988,480 (Score: 85.5/100 - Recommend)\n293. 217 EOI New Road, Oakview - $1,028,980 (Score: 85.5/100 - Recommend)\n294. KINMA VALLEY, Morayfield QLD, Morayfield - $1,070,200 (Score: 85.5/100 - Recommend)\n295. Lot 102, Sunnyvue, Ripley - $1,219,900 (Score: 85.5/100 - Recommend)\n296. Lot 2, 147-151 Logan Street, Eagleby, Eagleby - $1,239,900 (Score: 85.5/100 - Recommend)\n297. Lot 1, 51 Devries Road, Pallara, Pallara - $1,505,900 (Score: 85.5/100 - Recommend)\n298. Lot 26, Burpengary Ferriers Creek, Burpengary QLD, Burpengary - $968,100 (Score: 85.0/100 - Recommend)\n299. 70 Arnica Street, BUNDABERG, Caboolture - $973,060 (Score: 85.0/100 - Recommend)\n300. 348 Centenary Drive, BRISBANE WEST, South Maclean - $990,320 (Score: 85.0/100 - Recommend)\n301. 5 New Road, BUNDABERG, Deception Bay - $1,161,410 (Score: 85.0/100 - Recommend)\n302. 4 New Road, BUNDABERG, Deception Bay - $1,161,620 (Score: 85.0/100 - Recommend)\n303. Lot 618, Riverhills QLD, Riverhills - $553,284 (Score: 84.5/100 - Recommend)\n304. coming soon New Road TBC TBC 4 2 2 TBC TBC + 27-Feb, Riverleigh - $819,980 (Score: 84.5/100 - Recommend)\n305. Lot 301, Arbourwood Morayfield, Morayfield - $828,000 (Score: 84.5/100 - Recommend)\n306. Lot 565, Yarrabilba, Yarrabilba - $887,400 (Score: 84.5/100 - Recommend)\n307. Ocean, Coral Cove QLD, Coral Cove - $934,527 (Score: 84.0/100 - Recommend)\n308. TOOWOOMBA, Glenvale QLD, Glenvale - $948,989 (Score: 84.0/100 - Recommend)\n309. Lot 252, Highland, Walloon QLD, Walloon - $950,100 (Score: 84.0/100 - Recommend)\n310. Lot 236, Highland, Walloon QLD, Walloon - $961,100 (Score: 84.0/100 - Recommend)\n311. BRISBANE EAST, Morayfield QLD, Morayfield - $1,039,845 (Score: 84.0/100 - Recommend)\n312. Lot 77, Riverleigh, Logan Reserve QLD, Logan Reserve - $1,067,920 (Score: 84.0/100 - Recommend)\n313. 3 Oxford Street, Kinchant Coastal, Joyner - $1,191,050 (Score: 84.0/100 - Recommend)\n314. Lot 146, Rosewood Green Rosewood, Rosewood - $820,400 (Score: 83.0/100 - Recommend)\n315. Lot 21, North Haven Villas Morayfield, Morayfield - $839,000 (Score: 83.0/100 - Recommend)\n316. Lot 13, North Haven Villas Morayfield, Morayfield - $839,000 (Score: 83.0/100 - Recommend)\n317. Lot 302, Arbourwood Morayfield, Morayfield - $848,000 (Score: 83.0/100 - Recommend)\n318. Lot 22, North Haven Villas Morayfield, Morayfield - $849,000 (Score: 83.0/100 - Recommend)\n319. Lot 155, Rosewood Green Rosewood, Rosewood - $868,900 (Score: 83.0/100 - Recommend)\n320. Lot 163, Rosewood Green Rosewood, Rosewood - $870,900 (Score: 83.0/100 - Recommend)\n321. Lot 1459, Central Springs Caboolture, Caboolture - $959,400 (Score: 83.0/100 - Recommend)\n322. Lot 513, Yarrabilba, Yarrabilba - $959,900 (Score: 83.0/100 - Recommend)\n323. Lot 513, Yarrabilba, Yarrabilba - $974,900 (Score: 83.0/100 - Recommend)\n324. 517 Ardour Street, Bellevue TITLED, South Ripley - $983,760 (Score: 83.0/100 - Recommend)\n325. Lot 1520, Riverbank, Caboolture - $998,400 (Score: 83.0/100 - Recommend)\n326. Lot 1520, Riverbank, Caboolture - $1,006,400 (Score: 83.0/100 - Recommend)\n327. Lot 1520, Riverbank, Caboolture - $1,013,400 (Score: 83.0/100 - Recommend)\n328. 574 New Road, Providence TITLED, South Ripley - $1,014,450 (Score: 83.0/100 - Recommend)\n329. Lot 1520, Riverbank, Caboolture - $1,024,400 (Score: 83.0/100 - Recommend)\n330. 315 Chapel Close, BRISBANE WEST, South Maclean - $1,041,860 (Score: 83.0/100 - Recommend)\n331. Lot 512, Bloom, Nikenbah QLD, Nikenbah - $1,097,700 (Score: 83.0/100 - Recommend)\n332. Lot 514, Bloom, Nikenbah QLD, Nikenbah - $1,100,700 (Score: 83.0/100 - Recommend)\n333. Lot 516, Bloom, Nikenbah QLD, Nikenbah - $1,106,200 (Score: 83.0/100 - Recommend)\n334. Lot 713, Bloom, Nikenbah QLD, Nikenbah - $1,119,700 (Score: 83.0/100 - Recommend)\n335. 7 Park Street, BUNDABERG, Deception Bay - $1,260,640 (Score: 83.0/100 - Recommend)\n336. BRISBANE EAST, Howard QLD, Howard - $746,632 (Score: 82.5/100 - Recommend)\n337. The Waverley Residences, Southport QLD, Southport - $885,000 (Score: 82.5/100 - Recommend)\n338. 11 Murdochs Road, Custom, Moore Park Beach - $890,290 (Score: 82.5/100 - Recommend)\n339. 16 Murdochs Road, Custom, Moore Park Beach - $894,990 (Score: 82.5/100 - Recommend)\n340. Drift, Woodgate QLD, Woodgate - $900,249 (Score: 82.5/100 - Recommend)\n341. 5 Murdochs Road, Somerset MOD Traditional, Moore Park Beach - $909,719 (Score: 82.5/100 - Recommend)\n342. 15 Murdochs Road, Somerset MOD Plantation, Moore Park Beach - $910,103 (Score: 82.5/100 - Recommend)\n343. 10 Murdochs Road, Geraldton MOD Traditional, Moore Park Beach - $917,397 (Score: 82.5/100 - Recommend)\n344. Oasis, Urraween QLD, Urraween - $940,574 (Score: 82.5/100 - Recommend)\n345. The Banks, Burnett Heads QLD, Burnett Heads - $961,335 (Score: 82.5/100 - Recommend)\n346. The Banks, Burnett Heads QLD, Burnett Heads - $970,119 (Score: 82.5/100 - Recommend)\n347. Huntingdale Central, Kawungan QLD, Kawungan - $975,362 (Score: 82.5/100 - Recommend)\n348. Huntingdale Central, Kawungan QLD, Kawungan - $977,370 (Score: 82.5/100 - Recommend)\n349. Oasis, Urraween QLD, Urraween - $1,058,141 (Score: 82.5/100 - Recommend)\n350. Drift, Woodgate QLD, Woodgate - $1,058,762 (Score: 82.5/100 - Recommend)\n351. Oasis, Urraween QLD, Urraween - $1,073,685 (Score: 82.5/100 - Recommend)\n352. 2 Senor Avenue, HERVEY BAY, Urangan - $1,089,092 (Score: 82.5/100 - Recommend)\n353. Lot 3, Victoria Point, Victoria Point - $1,159,400 (Score: 82.5/100 - Recommend)\n354. Lot 1, Victoria Point, Victoria Point - $1,165,300 (Score: 82.5/100 - Recommend)\n355. 17 Pandanus Place, Lisa Traditional, Tingalpa - $1,199,815 (Score: 82.5/100 - Recommend)\n356. Innes Park QLD, Innes Park - $1,216,360 (Score: 82.5/100 - Recommend)\n357. Residence, Southport QLD, Southport - $1,225,000 (Score: 82.5/100 - Recommend)\n358. Innes Park QLD, Innes Park - $1,228,701 (Score: 82.5/100 - Recommend)\n359. The Crest, Heathwood QLD, Heathwood - $1,233,351 (Score: 82.5/100 - Recommend)\n360. Innes Park QLD, Innes Park - $1,246,081 (Score: 82.5/100 - Recommend)\n361. Lot 183, The Reserve, Bald Hills QLD, Bald Hills - $1,274,650 (Score: 82.5/100 - Recommend)\n362. Lot 184, The Reserve, Bald Hills QLD, Bald Hills - $1,277,150 (Score: 82.5/100 - Recommend)\n363. The Crest, Heathwood QLD, Heathwood - $1,281,588 (Score: 82.5/100 - Recommend)\n364. Sunbar, Elliott Heads QLD, Elliott Heads - $1,282,331 (Score: 82.5/100 - Recommend)\n365. 4 Freshwater Drive, Duplex Moondarra Traditional, Branyan - $1,364,742 (Score: 82.5/100 - Recommend)\n366. Lot 2, Victoria Point, Victoria Point - $1,369,900 (Score: 82.5/100 - Recommend)\n367. 4 Freshwater Drive, Duplex Jindabyne Plantation, Branyan - $1,398,427 (Score: 82.5/100 - Recommend)\n368. Lot 36, Lilywood Landing, Upper Caboolture QLD, Upper Caboolture - $1,438,500 (Score: 82.5/100 - Recommend)\n369. Kinara, Bargara QLD, Bargara - $1,485,342 (Score: 82.5/100 - Recommend)\n370. 2 Senor Avenue, FRASER COAST, Urangan - $1,097,620 (Score: 81.5/100 - Recommend)\n371. 3 Senor Avenue, FRASER COAST, Urangan - $1,106,010 (Score: 81.5/100 - Recommend)\n372. Lot 1520, Riverbank, Caboolture - $1,059,900 (Score: 81.0/100 - Recommend)\n373. Lot 5, The Jefferson Collection, Loganlea QLD, Loganlea - $1,390,894 (Score: 80.5/100 - Recommend)\n374. Lot 2, The Jefferson Collection, Loganlea QLD, Loganlea - $1,434,900 (Score: 80.5/100 - Recommend)\n375. Lot 3, The Jefferson Collection, Loganlea QLD, Loganlea - $1,466,700 (Score: 80.5/100 - Recommend)\n376. Lot 4, The Jefferson Collection, Loganlea QLD, Loganlea - $1,474,100 (Score: 80.5/100 - Recommend)\n377. Arbourwood, Morayfield QLD, Morayfield - $1,091,520 (Score: 80.0/100 - Recommend)\n378. Lot 14, Burpengary Ferriers Creek, Burpengary QLD, Burpengary - $1,113,900 (Score: 80.0/100 - Recommend)\n379. Lot 1475, Central Springs, Caboolture QLD, Caboolture - $1,168,460 (Score: 80.0/100 - Recommend)\n380. 7 Oxford Street, Prosperine Coastal, Joyner - $1,297,850 (Score: 80.0/100 - Recommend)\n381. Lot 9, Flagstone Display Homes, Flagstone, Flagstone QLD, Flagstone - $1,488,500 (Score: 80.0/100 - Recommend)\n382. Australia, 5114, Murray QLD, Murray - $853,000 (Score: 79.5/100 - Recommend with Conditions)\n383. Lot 341, Flourish, South Maclean - $874,900 (Score: 79.5/100 - Recommend with Conditions)\n384. Lot 2301, White Rock, White Rock - $951,400 (Score: 79.5/100 - Recommend with Conditions)\n385. 668 Quartzite Close, BRISBANE WEST, South Ripley - $1,106,390 (Score: 79.0/100 - Recommend with Conditions)\n386. Lot 2231 Unit 2231, Whiterock, WHITE ROCK, QLD, 4306, White Rock - $816,000 (Score: 78.5/100 - Recommend with Conditions)\n387. Lot 2226 Unit 2226, White Rock, WHITE ROCK, QLD, 4306, White Rock - $849,000 (Score: 78.5/100 - Recommend with Conditions)\n388. Lot 2239 Unit 2239, White Rock, WHITE ROCK, QLD, 4306, White Rock - $885,500 (Score: 78.5/100 - Recommend with Conditions)\n389. Lot 2240 Unit 2240, Mellum Way, WHITE ROCK, QLD, 4306, White Rock - $885,500 (Score: 78.5/100 - Recommend with Conditions)\n390. Lot 2034 Unit 2034, Mellum Way, WHITE ROCK, QLD, 4306, White Rock - $927,900 (Score: 78.5/100 - Recommend with Conditions)\n391. Lot 2035 Unit 2035, Mellum Way, WHITE ROCK, QLD, 4306, White Rock - $928,900 (Score: 78.5/100 - Recommend with Conditions)\n392. Lot 2241 Unit 2241, Whiterock, WHITE ROCK, QLD, 4306, White Rock - $965,200 (Score: 78.5/100 - Recommend with Conditions)\n393. Lot 2036 Unit 2036, Mellum Way, WHITE ROCK, QLD, 4306, White Rock - $992,900 (Score: 78.5/100 - Recommend with Conditions)\n394. Lot 2033 Unit 2033, Mellum Way, WHITE ROCK, QLD, 4306, White Rock - $996,900 (Score: 78.5/100 - Recommend with Conditions)\n395. Lot 2002 Unit 2002, Whiterock, WHITE ROCK, QLD, 4306, White Rock - $1,025,900 (Score: 78.5/100 - Recommend with Conditions)\n396. Lot 2235 Unit 2235, Mellum Way, WHITE ROCK, QLD, 4306, White Rock - $1,038,600 (Score: 78.5/100 - Recommend with Conditions)\n397. Lot 802 Unit 802, Regents Quarter, JOYNER, QLD, 4502, Joyner - $1,126,900 (Score: 78.5/100 - Recommend with Conditions)\n398. Lot 714 Unit 714, Regents Quarter, JOYNER, QLD, 4501, Joyner - $1,136,900 (Score: 78.5/100 - Recommend with Conditions)\n399. Lot 3 Unit 3, 63 Oxford Street, JOYNER, QLD, 4500, Joyner - $1,148,900 (Score: 78.5/100 - Recommend with Conditions)\n400. Lot 7 Unit 7, 64 Oxford Street, JOYNER, QLD, 4500, Joyner - $1,152,900 (Score: 78.5/100 - Recommend with Conditions)\n401. Lot 47, Arbourwood Morayfield, Morayfield - $1,002,400 (Score: 77.0/100 - Recommend with Conditions)\n402. Lot 48, Arbourwood Morayfield, Morayfield - $1,031,400 (Score: 77.0/100 - Recommend with Conditions)\n403. Lot 39, Logan Reserve Riverleigh, Caboolture - $1,247,500 (Score: 77.0/100 - Recommend with Conditions)\n\nRejected Options: 94 candidate(s) filtered out.\nStatus: Awaiting Consultant Review",
+     "kommo_internal_note": "SPB Property Research Completed\nRecord ID: Part C golden - QLD/General - $9,007,199,254,740,991 - <date>\nClient: Part C golden | Budget Ceiling: $9,007,199,254,740,991\n\nTop Shortlisted Properties:\n1. Lot 162, Rosewood Green, Rosewood - $799,900 (Score: 93.5/100 - Recommend)\n2. Lot 545, Yarrabilba, Ridgeline, Yarrabilba - $824,900 (Score: 93.5/100 - Recommend)\n3. Lot 146, Rosewood Green, Rosewood - $832,500 (Score: 93.5/100 - Recommend)\n4. Lot 57, Alford Grove, Glenvale - $845,400 (Score: 93.5/100 - Recommend)\n5. Lot 5, Farriers Creek, Burpengary House & Land, Burpengary - $880,980 (Score: 93.5/100 - Recommend)\n6. Lot 18, Park Lane, Joyner - $899,900 (Score: 93.5/100 - Recommend)\n7. Lot 507, Banksia Rise, Greenbank - $944,900 (Score: 93.5/100 - Recommend)\n8. Lot 104, Riverstone Springs, Riverbend - $949,900 (Score: 93.5/100 - Recommend)\n9. Lot 510, Banksia Rise, Greenbank - $960,900 (Score: 93.5/100 - Recommend)\n10. Lot 2034, White Rock - $970,900 (Score: 93.5/100 - Recommend)\n11. Lot 21, Park Lane, Joyner - $984,900 (Score: 93.5/100 - Recommend)\n12. Lot 1302, Regent Quarter, Joyner - $999,800 (Score: 93.5/100 - Recommend)\n13. Lot 806, Regent Quarter, Joyner - $999,800 (Score: 93.5/100 - Recommend)\n14. Lot 5, 85A Wildey Street, Raceview, Raceview - $999,900 (Score: 93.5/100 - Recommend)\n15. Lot 1301, Regent Quarter, Joyner - $1,016,800 (Score: 93.5/100 - Recommend)\n16. Lot 805, Regent Quarter, Joyner - $1,018,900 (Score: 93.5/100 - Recommend)\n17. Lot 1408, Regent Quarter, Joyner - $1,019,900 (Score: 93.5/100 - Recommend)\n18. Lot 4027, Flagstone, Flagstone - $855,900 (Score: 92.0/100 - Recommend)\n19. Lot 153, Rosewood Green, Rosewood - $864,900 (Score: 92.0/100 - Recommend)\n20. Lot 56, Alford Grove, Glenvale - $865,400 (Score: 92.0/100 - Recommend)\n21. Lot 147, Rosewood Green, Rosewood - $877,900 (Score: 92.0/100 - Recommend)\n22. Lot 42, THE HILLS COLLECTION, Glenvale QLD, Glenvale - $878,400 (Score: 92.0/100 - Recommend)\n23. Lot 1912, Affinity, Morayfield - $879,600 (Score: 92.0/100 - Recommend)\n24. Lot 41, A'LURE ESTATE, Rosewood QLD, Rosewood - $881,700 (Score: 92.0/100 - Recommend)\n25. Lot 15, THE HILLS COLLECTION, Glenvale QLD, Glenvale - $884,200 (Score: 92.0/100 - Recommend)\n26. Lot 44, THE HILLS COLLECTION, Glenvale QLD, Glenvale - $887,200 (Score: 92.0/100 - Recommend)\n27. Lot 45, A'LURE ESTATE, Rosewood QLD, Rosewood - $887,700 (Score: 92.0/100 - Recommend)\n28. Lot 20, THE HILLS COLLECTION, Glenvale QLD, Glenvale - $889,900 (Score: 92.0/100 - Recommend)\n29. Lot 47, A'LURE ESTATE, Rosewood QLD, Rosewood - $890,400 (Score: 92.0/100 - Recommend)\n30. Lot 43, A'LURE ESTATE, Rosewood QLD, Rosewood - $890,900 (Score: 92.0/100 - Recommend)\n31. Lot 4045, Flagstone, Flagstone - $890,900 (Score: 92.0/100 - Recommend)\n32. Lot 60, THE HILLS COLLECTION, Glenvale QLD, Glenvale - $892,900 (Score: 92.0/100 - Recommend)\n33. Lot 29, A'LURE ESTATE, Rosewood QLD, Rosewood - $893,400 (Score: 92.0/100 - Recommend)\n34. Lot 74, Walloon - $894,900 (Score: 92.0/100 - Recommend)\n35. Lot 65, Walloon - $896,900 (Score: 92.0/100 - Recommend)\n36. Lot 54, A'LURE ESTATE, Rosewood QLD, Rosewood - $897,200 (Score: 92.0/100 - Recommend)\n37. Lot 66, Walloon - $901,900 (Score: 92.0/100 - Recommend)\n38. Lot 40, A'LURE ESTATE, Rosewood QLD, Rosewood - $902,200 (Score: 92.0/100 - Recommend)\n39. Lot 45, THE HILLS COLLECTION, Glenvale QLD, Glenvale - $906,600 (Score: 92.0/100 - Recommend)\n40. Lot 76, Walloon - $908,900 (Score: 92.0/100 - Recommend)\n41. Lot 78, Walloon - $908,900 (Score: 92.0/100 - Recommend)\n42. Lot 11, A'LURE ESTATE, Rosewood QLD, Rosewood - $911,800 (Score: 92.0/100 - Recommend)\n43. Lot 29, Walloon - $922,900 (Score: 92.0/100 - Recommend)\n44. 9 New Road, The Green, Morayfield House & Land, Morayfield - $924,980 (Score: 92.0/100 - Recommend)\n45. Lot 1252, Hayfield, Ripley - $959,900 (Score: 92.0/100 - Recommend)\n46. 1 New Road, The Green, Morayfield House & Land, Morayfield - $959,980 (Score: 92.0/100 - Recommend)\n47. Lot 68, Ripley - $989,900 (Score: 92.0/100 - Recommend)\n48. Lot 98, Sunnyvue, Ripley - $989,900 (Score: 92.0/100 - Recommend)\n49. Lot 49, Ripley - $993,900 (Score: 92.0/100 - Recommend)\n50. EDEN'S CROSSING ESTATE, Redbank Plains QLD, Redbank Plains - $999,100 (Score: 92.0/100 - Recommend)\n51. Lot 42, Ripley - $999,900 (Score: 92.0/100 - Recommend)\n52. Lot 101, Sunnyvue, Ripley - $999,900 (Score: 92.0/100 - Recommend)\n53. Lot 51, Ironbark, Pimpama - $999,900 (Score: 92.0/100 - Recommend)\n54. Lot 69, RIVERLEIGH ESTATE, Logan Reserve QLD, Logan Reserve - $999,999 (Score: 92.0/100 - Recommend)\n55. Lot 543, Banksia Rise, Greenbank - $1,004,900 (Score: 92.0/100 - Recommend)\n56. Lot 68, RIVERLEIGH ESTATE, Logan Reserve QLD, Logan Reserve - $1,007,500 (Score: 92.0/100 - Recommend)\n57. Lot 509, Banksia Rise, Greenbank - $1,007,900 (Score: 92.0/100 - Recommend)\n58. Lot 515, Banksia Rise, Greenbank - $1,007,900 (Score: 92.0/100 - Recommend)\n59. Lot 545, Banksia Rise, Greenbank - $1,007,900 (Score: 92.0/100 - Recommend)\n60. Lot 503, Banksia Rise, Greenbank - $1,009,900 (Score: 92.0/100 - Recommend)\n61. Lot 47, Ironbark, Pimpama - $1,009,900 (Score: 92.0/100 - Recommend)\n62. Lot 63, RIVERLEIGH ESTATE, Logan Reserve QLD, Logan Reserve - $1,014,100 (Score: 92.0/100 - Recommend)\n63. Lot 1287, EDEN'S CROSSING ESTATE, Redbank Plains QLD, Redbank Plains - $1,014,900 (Score: 92.0/100 - Recommend)\n64. Lot 59, RIVERLEIGH ESTATE, Logan Reserve QLD, Logan Reserve - $1,016,500 (Score: 92.0/100 - Recommend)\n65. Lot 38, Ripley - $1,019,900 (Score: 92.0/100 - Recommend)\n66. Lot 170, Riverstone Springs, Riverbend - $1,019,900 (Score: 92.0/100 - Recommend)\n67. Lot 342, HIGHGROVE ESTATE, Deebing Heights QLD, Deebing Heights - $1,027,475 (Score: 92.0/100 - Recommend)\n68. Lot 1406, Regent Quarter, Joyner - $1,027,800 (Score: 92.0/100 - Recommend)\n69. Lot 548, Banksia Rise, Greenbank - $1,029,900 (Score: 92.0/100 - Recommend)\n70. Lot 20, Park Lane, Joyner - $1,039,900 (Score: 92.0/100 - Recommend)\n71. Lot 52, RIVERLEIGH ESTATE, Logan Reserve QLD, Logan Reserve - $1,040,800 (Score: 92.0/100 - Recommend)\n72. Lot 74, RIVERLEIGH ESTATE, Logan Reserve QLD, Logan Reserve - $1,042,400 (Score: 92.0/100 - Recommend)\n73. Lot 2002, White Rock - $1,046,900 (Score: 92.0/100 - Recommend)\n74. Lot 501, Banksia Rise, Greenbank - $1,049,900 (Score: 92.0/100 - Recommend)\n75. Lot 552, Banksia Rise, Greenbank - $1,049,900 (Score: 92.0/100 - Recommend)\n76. Lot 553, Banksia Rise, Greenbank - $1,049,900 (Score: 92.0/100 - Recommend)\n77. Lot 551, Banksia Rise, Greenbank - $1,054,900 (Score: 92.0/100 - Recommend)\n78. Lot 555, Banksia Rise, Greenbank - $1,055,900 (Score: 92.0/100 - Recommend)\n79. Lot 4, COOLIBAH ESTATE, Lowood QLD, Lowood - $1,058,500 (Score: 92.0/100 - Recommend)\n80. Lot 1, COOLIBAH ESTATE, Lowood QLD, Lowood - $1,058,700 (Score: 92.0/100 - Recommend)\n81. Lot 517, Banksia Rise, Greenbank - $1,059,900 (Score: 92.0/100 - Recommend)\n82. Lot 201, Carvers, Park Ridge - $1,064,150 (Score: 92.0/100 - Recommend)\n83. Lot 550, Banksia Rise, Greenbank - $1,069,900 (Score: 92.0/100 - Recommend)\n84. Lot 554, Banksia Rise, Greenbank - $1,069,900 (Score: 92.0/100 - Recommend)\n85. Lot 556, Banksia Rise, Greenbank - $1,069,900 (Score: 92.0/100 - Recommend)\n86. WHITE ROCK ESTATE, White Rock QLD, White Rock - $1,084,400 (Score: 92.0/100 - Recommend)\n87. Lot 557, Banksia Rise, Greenbank - $1,084,900 (Score: 92.0/100 - Recommend)\n88. Lot 514, Banksia Rise, Greenbank - $1,089,900 (Score: 92.0/100 - Recommend)\n89. Lot 49, Ironbark, Pimpama - $1,132,000 (Score: 92.0/100 - Recommend)\n90. Lot 1, 152-156 Bancroft Terrace, Deception Bay - $1,140,900 (Score: 92.0/100 - Recommend)\n91. Lot 44, Ironbark, Pimpama - $1,159,900 (Score: 92.0/100 - Recommend)\n92. Lot 1, 152-156 Bancroft Terrace, Deception Bay - $1,162,900 (Score: 92.0/100 - Recommend)\n93. Lot 2, 152-156 Bancroft Terrace, Deception Bay - $1,163,900 (Score: 92.0/100 - Recommend)\n94. Lot 5, 85A Wildey Street, Raceview, Raceview - $1,164,900 (Score: 92.0/100 - Recommend)\n95. Lot 5, 152-156 Bancroft Terrace, Deception Bay - $1,169,900 (Score: 92.0/100 - Recommend)\n96. Lot 2, 152-156 Bancroft Terrace, Deception Bay - $1,178,900 (Score: 92.0/100 - Recommend)\n97. Lot 48, Ironbark, Pimpama - $1,183,000 (Score: 92.0/100 - Recommend)\n98. Lot 3, 152-156 Bancroft Terrace, Deception Bay - $1,189,900 (Score: 92.0/100 - Recommend)\n99. Lot 52, Ironbark, Pimpama - $1,206,000 (Score: 92.0/100 - Recommend)\n100. Lot 51, Ironbark, Pimpama - $1,234,900 (Score: 92.0/100 - Recommend)\n101. Lot 203, Paradise in Parkinson, Parkinson - $1,642,500 (Score: 92.0/100 - Recommend)\n102. Lot 205, Paradise in Parkinson, Parkinson - $1,649,360 (Score: 92.0/100 - Recommend)\n103. Lot 201, Paradise in Parkinson, Parkinson - $1,651,050 (Score: 92.0/100 - Recommend)\n104. Lot 206, Paradise in Parkinson, Parkinson - $1,656,550 (Score: 92.0/100 - Recommend)\n105. Lot 9, Ormiston Point, Ormiston, Ormiston - $1,657,000 (Score: 92.0/100 - Recommend)\n106. Lot 12, Ormiston Point, Ormiston, Ormiston - $1,663,400 (Score: 92.0/100 - Recommend)\n107. Lot 210, Paradise in Parkinson, Parkinson - $1,674,200 (Score: 92.0/100 - Recommend)\n108. Lot 212, Paradise in Parkinson, Parkinson - $1,719,050 (Score: 92.0/100 - Recommend)\n109. Lot 30, Greenbank - $1,268,516 (Score: 91.0/100 - Recommend)\n110. Lot 31, Greenbank - $1,269,516 (Score: 91.0/100 - Recommend)\n111. Lot 1930, Affinity, Morayfield - $909,900 (Score: 90.0/100 - Recommend)\n112. Lot 57, A'LURE ESTATE, Rosewood QLD, Rosewood - $932,300 (Score: 90.0/100 - Recommend)\n113. Lot 150, Rosewood Green, Rosewood - $939,900 (Score: 90.0/100 - Recommend)\n114. Lot 505, Banksia Rise, Greenbank - $1,104,900 (Score: 90.0/100 - Recommend)\n115. Lot 174, Carvers, Park Ridge - $1,105,650 (Score: 90.0/100 - Recommend)\n116. Lot 171, Carvers, Park Ridge - $1,107,650 (Score: 90.0/100 - Recommend)\n117. Lot 21, Park Lane, Joyner - $1,129,900 (Score: 90.0/100 - Recommend)\n118. 63 Oxford Street, Joyner Banksia, Joyner - $1,148,900 (Score: 90.0/100 - Recommend)\n119. 63 Oxford Street, Joyner Banksia, Joyner - $1,152,900 (Score: 90.0/100 - Recommend)\n120. Lot 20, Park Lane, Joyner - $1,175,900 (Score: 90.0/100 - Recommend)\n121. Lot 1, 152-156 Bancroft Terrace, Deception Bay - $1,289,900 (Score: 90.0/100 - Recommend)\n122. Lot 501, Banksia Rise, Greenbank - $1,329,900 (Score: 90.0/100 - Recommend)\n123. Lot 311, Arbourwood, Morayfield House & Land, Morayfield - $835,980 (Score: 89.0/100 - Recommend)\n124. Lot 46, A'LURE ESTATE, Rosewood QLD, Rosewood - $877,100 (Score: 89.0/100 - Recommend)\n125. Lot 2, Arbourwood, Morayfield House & Land, Morayfield - $891,980 (Score: 89.0/100 - Recommend)\n126. 6 EOI New Road, The Green, Morayfield House & Land, Morayfield - $894,980 (Score: 89.0/100 - Recommend)\n127. Lot 16, 85A Wildey Street, Raceview, Raceview - $1,142,500 (Score: 89.0/100 - Recommend)\n128. Lot 809, Regent Quarter, Joyner - $1,172,900 (Score: 89.0/100 - Recommend)\n129. Lot 606, Regent Quarter, Joyner - $1,174,800 (Score: 89.0/100 - Recommend)\n130. Lot 807, Regent Quarter, Joyner - $1,176,900 (Score: 89.0/100 - Recommend)\n131. Lot 605, Regent Quarter, Joyner - $1,177,500 (Score: 89.0/100 - Recommend)\n132. Lot 808, Regent Quarter, Joyner - $1,177,900 (Score: 89.0/100 - Recommend)\n133. Lot 148, Deception Bay - $799,980 (Score: 88.5/100 - Recommend)\n134. Lot 156, Deception Bay - $807,500 (Score: 88.5/100 - Recommend)\n135. Lot 2231, White Rock - $816,000 (Score: 88.5/100 - Recommend)\n136. Lot 160, Deception Bay - $835,000 (Score: 88.5/100 - Recommend)\n137. Lot 72, WOODCHESTER ESTATE, Gatton QLD, Gatton - $835,200 (Score: 88.5/100 - Recommend)\n138. 1 Belah Cres, Mallee Grove, Jimboomba House & Land, Jimboomba - $839,980 (Score: 88.5/100 - Recommend)\n139. Lot 70, WOODCHESTER ESTATE, Gatton QLD, Gatton - $841,200 (Score: 88.5/100 - Recommend)\n140. Lot 2226, White Rock - $849,000 (Score: 88.5/100 - Recommend)\n141. Lot 93, WOODCHESTER ESTATE, Gatton QLD, Gatton - $863,800 (Score: 88.5/100 - Recommend)\n142. Lot 8, A'LURE ESTATE, Rosewood QLD, Rosewood - $870,900 (Score: 88.5/100 - Recommend)\n143. Lot 1338, Jordan Springs - $873,900 (Score: 88.5/100 - Recommend)\n144. Lot 25, THE HILLS COLLECTION, Glenvale QLD, Glenvale - $875,300 (Score: 88.5/100 - Recommend)\n145. Lot 38, A'LURE ESTATE, Rosewood QLD, Rosewood - $876,700 (Score: 88.5/100 - Recommend)\n146. Lot 2239, White Rock - $885,500 (Score: 88.5/100 - Recommend)\n147. Lot 2240, White Rock - $885,500 (Score: 88.5/100 - Recommend)\n148. Lot 96, WOODCHESTER ESTATE, Gatton QLD, Gatton - $886,000 (Score: 88.5/100 - Recommend)\n149. Lot 97, WOODCHESTER ESTATE, Gatton QLD, Gatton - $887,300 (Score: 88.5/100 - Recommend)\n150. 13F New Road, FLAGSTONE ESTATE, Flagstone - $888,600 (Score: 88.5/100 - Recommend)\n151. Lot 4028, FLAGSTONE ESTATE, Flagstone - $896,465 (Score: 88.5/100 - Recommend)\n152. Lot 18, A'LURE ESTATE, Rosewood QLD, Rosewood - $899,900 (Score: 88.5/100 - Recommend)\n153. Lot 15, A'LURE ESTATE, Rosewood QLD, Rosewood - $901,100 (Score: 88.5/100 - Recommend)\n154. Lot 51, A'LURE ESTATE, Rosewood QLD, Rosewood - $901,800 (Score: 88.5/100 - Recommend)\n155. Lot 13, A'LURE ESTATE, Rosewood QLD, Rosewood - $914,300 (Score: 88.5/100 - Recommend)\n156. Lot 321, AIRE RIVERSIDE ESTATE, Lilywood QLD, Lilywood - $925,100 (Score: 88.5/100 - Recommend)\n157. Lot 522, AIRE ESTATE, Lilywood QLD, Lilywood - $931,600 (Score: 88.5/100 - Recommend)\n158. Lot 4029, FLAGSTONE ESTATE, Flagstone - $936,348 (Score: 88.5/100 - Recommend)\n159. Lot 80, Toowoomba QLD, Toowoomba - $936,800 (Score: 88.5/100 - Recommend)\n160. Lot 100, Gatton - $944,900 (Score: 88.5/100 - Recommend)\n161. Lot 99, Gatton - $947,900 (Score: 88.5/100 - Recommend)\n162. 28 New Road, Mallee Grove, Jimboomba House & Land, Jimboomba - $949,980 (Score: 88.5/100 - Recommend)\n163. 6074 New Road, YARRABILBA ESTATE, Yarrabilba - $953,700 (Score: 88.5/100 - Recommend)\n164. 642 New Road, YARRABILBA ESTATE, Yarrabilba - $953,700 (Score: 88.5/100 - Recommend)\n165. Lot 553, AIRE ESTATE, Lilywood QLD, Lilywood - $958,400 (Score: 88.5/100 - Recommend)\n166. Lot 2241, White Rock - $965,200 (Score: 88.5/100 - Recommend)\n167. Lot 64, Gympie QLD, Gympie - $965,500 (Score: 88.5/100 - Recommend)\n168. Lot 2035, White Rock - $966,900 (Score: 88.5/100 - Recommend)\n169. 1470 Stage 14D 441m2 Madrid 190 Fortitude 1902m2 4 2 2 2 Volos Availab, Caboolture - $973,344 (Score: 88.5/100 - Recommend)\n170. Lot 91, SUNNYVUE ESTATE, Ripley QLD, Ripley - $975,500 (Score: 88.5/100 - Recommend)\n171. Lot 501, AIRE ESTATE, Lilywood QLD, Lilywood - $988,300 (Score: 88.5/100 - Recommend)\n172. Lot 4, COOLIBAH ESTATE, Lowood QLD, Lowood - $990,038 (Score: 88.5/100 - Recommend)\n173. Lot 1, COOLIBAH ESTATE, Lowood QLD, Lowood - $990,441 (Score: 88.5/100 - Recommend)\n174. KINMA VALLEY, Morayfield QLD, Morayfield - $995,100 (Score: 88.5/100 - Recommend)\n175. Lot 521, AIRE ESTATE, Lilywood QLD, Lilywood - $995,400 (Score: 88.5/100 - Recommend)\n176. SIX MILE CREEK ESTATE, Collingwood Park QLD, Collingwood Park - $996,300 (Score: 88.5/100 - Recommend)\n177. SIX MILE CREEK ESTATE, Collingwood Park QLD, Collingwood Park - $997,300 (Score: 88.5/100 - Recommend)\n178. Lot 4, The Fairways, Durack, Durack - $998,900 (Score: 88.5/100 - Recommend)\n179. Lot 1, COOLIBAH ESTATE, Lowood QLD, Lowood - $999,428 (Score: 88.5/100 - Recommend)\n180. Lot 9, Bethania - $999,900 (Score: 88.5/100 - Recommend)\n181. Lot 4, COOLIBAH ESTATE, Lowood QLD, Lowood - $1,000,900 (Score: 88.5/100 - Recommend)\n182. 505 Stage 5 375m2 Lisbon 210 Fortitude 210m2 4 2 2 1 Volos Availabl, Lilywood - $1,006,900 (Score: 88.5/100 - Recommend)\n183. Lot 2036, White Rock - $1,006,900 (Score: 88.5/100 - Recommend)\n184. RIVERBANK ESTATE, Caboolture South QLD, Caboolture South - $1,009,100 (Score: 88.5/100 - Recommend)\n185. Lot 4, Bethania - $1,012,900 (Score: 88.5/100 - Recommend)\n186. SIX MILE CREEK ESTATE, Collingwood Park QLD, Collingwood Park - $1,020,800 (Score: 88.5/100 - Recommend)\n187. Lot 217, OAKVIEW HEIGHTS ESTATE, Beaudesert QLD, Beaudesert - $1,023,000 (Score: 88.5/100 - Recommend)\n188. Lot 5, COOLIBAH ESTATE, Lowood QLD, Lowood - $1,031,900 (Score: 88.5/100 - Recommend)\n189. Lot 11, COOLIBAH ESTATE, Lowood QLD, Lowood - $1,031,900 (Score: 88.5/100 - Recommend)\n190. Lot 608, SAGE ESTATE, Burpengary - $1,033,700 (Score: 88.5/100 - Recommend)\n191. Lot 553, Yarrabilba - $1,037,900 (Score: 88.5/100 - Recommend)\n192. Lot 2235, White Rock - $1,038,600 (Score: 88.5/100 - Recommend)\n193. SIX MILE CREEK ESTATE, Collingwood Park QLD, Collingwood Park - $1,042,800 (Score: 88.5/100 - Recommend)\n194. SAGE ESTATE, Burpengary QLD, Burpengary - $1,052,500 (Score: 88.5/100 - Recommend)\n195. Lot 6, Bethania - $1,053,900 (Score: 88.5/100 - Recommend)\n196. Lot 12, RACEVIEW RISE ESTATE, Raceview QLD, Raceview - $1,058,900 (Score: 88.5/100 - Recommend)\n197. Lot 552, Yarrabilba - $1,071,900 (Score: 88.5/100 - Recommend)\n198. Lot 5, Juniper, Taigum - $1,076,000 (Score: 88.5/100 - Recommend)\n199. Lot 5, Bethania - $1,078,900 (Score: 88.5/100 - Recommend)\n200. Lot 13, RACEVIEW RISE ESTATE, Raceview QLD, Raceview - $1,080,400 (Score: 88.5/100 - Recommend)\n201. Lot 20, Collingwood Park - $1,084,480 (Score: 88.5/100 - Recommend)\n202. 4 Pilny Street, Camira Beech, Camira - $1,090,900 (Score: 88.5/100 - Recommend)\n203. Lot 609, SAGE ESTATE, Burpengary - $1,094,600 (Score: 88.5/100 - Recommend)\n204. 4 Pilny Street, Camira Banksia, Camira - $1,115,900 (Score: 88.5/100 - Recommend)\n205. Lot 2, Birkdale, Birkdale - $1,145,980 (Score: 88.5/100 - Recommend)\n206. Lot 15, RACEVIEW RISE ESTATE, Raceview QLD, Raceview - $1,162,000 (Score: 88.5/100 - Recommend)\n207. Lot 142, Lilywood - $1,168,900 (Score: 88.5/100 - Recommend)\n208. Lot 39, Riverleigh, Logan Reserve Secondary Dwelling, Riverleigh - $1,169,480 (Score: 88.5/100 - Recommend)\n209. Lot 146, Lilywood - $1,169,900 (Score: 88.5/100 - Recommend)\n210. Lot 4, The Fairways, Durack, Durack - $1,197,900 (Score: 88.5/100 - Recommend)\n211. Lot 8, Juniper, Taigum - $1,207,900 (Score: 88.5/100 - Recommend)\n212. Lot 7, Juniper, Taigum - $1,213,900 (Score: 88.5/100 - Recommend)\n213. 6 EOI New Road, Deception Bay - $1,215,480 (Score: 88.5/100 - Recommend)\n214. Lot 1317, Narangba - $1,242,900 (Score: 88.5/100 - Recommend)\n215. Lot 534, Bellevue - $1,265,900 (Score: 88.5/100 - Recommend)\n216. Lot 535, Bellevue - $1,275,900 (Score: 88.5/100 - Recommend)\n217. Lot 38, Park Ridge - $1,280,900 (Score: 88.5/100 - Recommend)\n218. Lot 40, Park Ridge - $1,288,900 (Score: 88.5/100 - Recommend)\n219. Lot 530, Bellevue - $1,294,900 (Score: 88.5/100 - Recommend)\n220. Lot 1325, Narangba - $1,299,900 (Score: 88.5/100 - Recommend)\n221. Lot 1, 776 CABOOLTURE RIVER ROAD, UPPER CABOOLTURE, Upper Caboolture QLD, Upper Caboolture - $1,399,600 (Score: 88.5/100 - Recommend)\n222. Lot 148, Riverina, Nerang - $1,399,900 (Score: 88.5/100 - Recommend)\n223. Lot 3, 776 CABOOLTURE RIVER ROAD, UPPER CABOOLTURE, Upper Caboolture QLD, Upper Caboolture - $1,414,600 (Score: 88.5/100 - Recommend)\n224. Lot 711, FLOURISH ESTATE, South Maclean QLD, South Maclean - $1,434,900 (Score: 88.5/100 - Recommend)\n225. Lot 1, 51 Devries Road, Pallara, Pallara - $1,459,900 (Score: 88.5/100 - Recommend)\n226. Lot 5, Ormiston Point, Ormiston, Ormiston - $1,668,400 (Score: 88.5/100 - Recommend)\n227. Lot 2, Rochedale - $1,686,900 (Score: 88.5/100 - Recommend)\n228. Lot 1, Rochedale - $1,873,900 (Score: 88.5/100 - Recommend)\n229. Lot 264, Highland, Walloon QLD, Walloon - $819,100 (Score: 87.5/100 - Recommend)\n230. 2 New Road, TBC TBC, Birkdale - $819,980 (Score: 87.5/100 - Recommend)\n231. Lot 507, Bloom, Nikenbah QLD, Nikenbah - $910,130 (Score: 87.5/100 - Recommend)\n232. Lot 508, Bloom, Nikenbah QLD, Nikenbah - $924,130 (Score: 87.5/100 - Recommend)\n233. Highgrove, Deebing Heights QLD, Deebing Heights - $937,719 (Score: 87.5/100 - Recommend)\n234. BRISBANE EAST, Nikenbah QLD, Nikenbah - $982,275 (Score: 87.5/100 - Recommend)\n235. 392 Verran Street, Somerset Coastal, Bellbird Park - $1,028,394 (Score: 87.5/100 - Recommend)\n236. Lot 99, Gatton - $1,119,000 (Score: 87.5/100 - Recommend)\n237. Lot 100, Gatton - $1,119,900 (Score: 87.5/100 - Recommend)\n238. Lot 537, Bellevue - $1,167,900 (Score: 87.5/100 - Recommend)\n239. Lot 1313, Narangba - $1,226,900 (Score: 87.5/100 - Recommend)\n240. Lot 29, Jordan Springs - $1,268,516 (Score: 87.5/100 - Recommend)\n241. Lot 531, Bellevue - $1,298,900 (Score: 87.5/100 - Recommend)\n242. Ocean, Coral Cove QLD, Coral Cove - $872,617 (Score: 86.0/100 - Recommend)\n243. Lot 4051, Aurora, Flagstone QLD, Flagstone - $878,100 (Score: 86.0/100 - Recommend)\n244. Lot 4083, Aurora, Flagstone QLD, Flagstone - $888,100 (Score: 86.0/100 - Recommend)\n245. Ocean, Coral Cove QLD, Coral Cove - $888,433 (Score: 86.0/100 - Recommend)\n246. Ocean, Coral Cove QLD, Coral Cove - $896,943 (Score: 86.0/100 - Recommend)\n247. Lot 247, Highland, Walloon QLD, Walloon - $901,100 (Score: 86.0/100 - Recommend)\n248. Lot 4048, Aurora, Flagstone QLD, Flagstone - $903,100 (Score: 86.0/100 - Recommend)\n249. Lot 237, Highland, Walloon QLD, Walloon - $910,100 (Score: 86.0/100 - Recommend)\n250. Lot 136, Highland, Walloon QLD, Walloon - $914,100 (Score: 86.0/100 - Recommend)\n251. Lot 4053, Aurora, Flagstone QLD, Flagstone - $917,100 (Score: 86.0/100 - Recommend)\n252. Lot 4052, Aurora, Flagstone QLD, Flagstone - $922,400 (Score: 86.0/100 - Recommend)\n253. Lot 137, Highland, Walloon QLD, Walloon - $923,100 (Score: 86.0/100 - Recommend)\n254. TOOWOOMBA, Glenvale QLD, Glenvale - $926,709 (Score: 86.0/100 - Recommend)\n255. Lot 223, Highland, Walloon QLD, Walloon - $931,100 (Score: 86.0/100 - Recommend)\n256. Lot 207, Highland, Walloon QLD, Walloon - $935,100 (Score: 86.0/100 - Recommend)\n257. Lot 213, Highland, Walloon QLD, Walloon - $937,100 (Score: 86.0/100 - Recommend)\n258. Burpengary Ferriers Creek, Burpengary QLD, Burpengary - $968,900 (Score: 86.0/100 - Recommend)\n259. Lot 160, Central Springs, Caboolture QLD, Caboolture - $972,100 (Score: 86.0/100 - Recommend)\n260. Lot 1509, Brookhaven, Bahrs Scrub QLD, Bahrs Scrub - $973,100 (Score: 86.0/100 - Recommend)\n261. Lot 25, Burpengary Ferriers Creek, Burpengary QLD, Burpengary - $973,400 (Score: 86.0/100 - Recommend)\n262. Lot 1488, Brookhaven, Bahrs Scrub QLD, Bahrs Scrub - $978,100 (Score: 86.0/100 - Recommend)\n263. Lot 1459, Central Springs, Caboolture QLD, Caboolture - $986,400 (Score: 86.0/100 - Recommend)\n264. Burpengary Ferriers Creek, Burpengary QLD, Burpengary - $998,900 (Score: 86.0/100 - Recommend)\n265. Lot 5, Burpengary Ferriers Creek, Burpengary QLD, Burpengary - $998,900 (Score: 86.0/100 - Recommend)\n266. Lot 67, Central Springs, Caboolture QLD, Caboolture - $1,007,150 (Score: 86.0/100 - Recommend)\n267. Lot 162, Central Springs, Caboolture QLD, Caboolture - $1,008,100 (Score: 86.0/100 - Recommend)\n268. Lot 1480, Brookhaven, Bahrs Scrub QLD, Bahrs Scrub - $1,008,100 (Score: 86.0/100 - Recommend)\n269. BRISBANE EAST, Burpengary QLD, Burpengary - $1,019,937 (Score: 86.0/100 - Recommend)\n270. Lot 1487, Brookhaven, Bahrs Scrub QLD, Bahrs Scrub - $1,020,200 (Score: 86.0/100 - Recommend)\n271. Lot 1511, Brookhaven, Bahrs Scrub QLD, Bahrs Scrub - $1,023,200 (Score: 86.0/100 - Recommend)\n272. BRISBANE EAST, Joyner QLD, Joyner - $1,039,925 (Score: 86.0/100 - Recommend)\n273. Lot 5, Berlin Grove, Bethania QLD, Bethania - $1,049,600 (Score: 86.0/100 - Recommend)\n274. Lot 1598, Brookhaven, Bahrs Scrub QLD, Bahrs Scrub - $1,063,200 (Score: 86.0/100 - Recommend)\n275. Lot 390, Evergreen, Bellbird Park QLD, Bellbird Park - $1,070,600 (Score: 86.0/100 - Recommend)\n276. BRISBANE EAST, Joyner QLD, Joyner - $1,076,671 (Score: 86.0/100 - Recommend)\n277. Lot 391, Evergreen, Bellbird Park QLD, Bellbird Park - $1,096,100 (Score: 86.0/100 - Recommend)\n278. Lot 6, Berlin Grove, Bethania QLD, Bethania - $1,102,100 (Score: 86.0/100 - Recommend)\n279. Lot 573, KINMA VALLEY, Morayfield QLD, Morayfield - $1,106,100 (Score: 86.0/100 - Recommend)\n280. 155 Wattle Green, Burpengary Banksia, Burpengary - $1,178,900 (Score: 86.0/100 - Recommend)\n281. 63 Oxford Street, Joyner Rosewood, Joyner - $1,267,900 (Score: 86.0/100 - Recommend)\n282. Lot 203, Paradise in Parkinson, Parkinson - $1,373,300 (Score: 86.0/100 - Recommend)\n283. Lot 204, Paradise in Parkinson, Parkinson - $1,648,350 (Score: 86.0/100 - Recommend)\n284. Lot 213, Paradise in Parkinson, Parkinson - $2,414,700 (Score: 86.0/100 - Recommend)\n285. 1 EOI Belah Cres, Breezewood, Fernvale - $839,980 (Score: 85.5/100 - Recommend)\n286. 196 EOI New Road, Oakview - $938,480 (Score: 85.5/100 - Recommend)\n287. KINMA VALLEY, Morayfield QLD, Morayfield - $939,300 (Score: 85.5/100 - Recommend)\n288. Lot 39, A'LURE ESTATE, Rosewood QLD, Rosewood - $944,800 (Score: 85.5/100 - Recommend)\n289. 225 EOI New Road, Oakview - $957,480 (Score: 85.5/100 - Recommend)\n290. 218 EOI New Road, Oakview - $957,480 (Score: 85.5/100 - Recommend)\n291. Lot 13, Collingwood Park - $988,480 (Score: 85.5/100 - Recommend)\n292. 217 EOI New Road, Oakview - $1,028,980 (Score: 85.5/100 - Recommend)\n293. KINMA VALLEY, Morayfield QLD, Morayfield - $1,070,200 (Score: 85.5/100 - Recommend)\n294. Lot 102, Sunnyvue, Ripley - $1,219,900 (Score: 85.5/100 - Recommend)\n295. Lot 2, 147-151 Logan Street, Eagleby, Eagleby - $1,239,900 (Score: 85.5/100 - Recommend)\n296. Lot 1, 51 Devries Road, Pallara, Pallara - $1,505,900 (Score: 85.5/100 - Recommend)\n297. Lot 26, Burpengary Ferriers Creek, Burpengary QLD, Burpengary - $968,100 (Score: 85.0/100 - Recommend)\n298. 70 Arnica Street, BUNDABERG, Caboolture - $973,060 (Score: 85.0/100 - Recommend)\n299. 348 Centenary Drive, BRISBANE WEST, South Maclean - $990,320 (Score: 85.0/100 - Recommend)\n300. 5 New Road, BUNDABERG, Deception Bay - $1,161,410 (Score: 85.0/100 - Recommend)\n301. 4 New Road, BUNDABERG, Deception Bay - $1,161,620 (Score: 85.0/100 - Recommend)\n302. Lot 618, Riverhills QLD, Riverhills - $553,284 (Score: 84.5/100 - Recommend)\n303. coming soon New Road TBC TBC 4 2 2 TBC TBC + 27-Feb, Riverleigh - $819,980 (Score: 84.5/100 - Recommend)\n304. Lot 301, Arbourwood Morayfield, Morayfield - $828,000 (Score: 84.5/100 - Recommend)\n305. Lot 565, Yarrabilba, Yarrabilba - $887,400 (Score: 84.5/100 - Recommend)\n306. Ocean, Coral Cove QLD, Coral Cove - $934,527 (Score: 84.0/100 - Recommend)\n307. TOOWOOMBA, Glenvale QLD, Glenvale - $948,989 (Score: 84.0/100 - Recommend)\n308. Lot 252, Highland, Walloon QLD, Walloon - $950,100 (Score: 84.0/100 - Recommend)\n309. Lot 236, Highland, Walloon QLD, Walloon - $961,100 (Score: 84.0/100 - Recommend)\n310. BRISBANE EAST, Morayfield QLD, Morayfield - $1,039,845 (Score: 84.0/100 - Recommend)\n311. Lot 77, Riverleigh, Logan Reserve QLD, Logan Reserve - $1,067,920 (Score: 84.0/100 - Recommend)\n312. 3 Oxford Street, Kinchant Coastal, Joyner - $1,191,050 (Score: 84.0/100 - Recommend)\n313. Lot 146, Rosewood Green Rosewood, Rosewood - $820,400 (Score: 83.0/100 - Recommend)\n314. Lot 21, North Haven Villas Morayfield, Morayfield - $839,000 (Score: 83.0/100 - Recommend)\n315. Lot 13, North Haven Villas Morayfield, Morayfield - $839,000 (Score: 83.0/100 - Recommend)\n316. Lot 302, Arbourwood Morayfield, Morayfield - $848,000 (Score: 83.0/100 - Recommend)\n317. Lot 22, North Haven Villas Morayfield, Morayfield - $849,000 (Score: 83.0/100 - Recommend)\n318. Lot 155, Rosewood Green Rosewood, Rosewood - $868,900 (Score: 83.0/100 - Recommend)\n319. Lot 163, Rosewood Green Rosewood, Rosewood - $870,900 (Score: 83.0/100 - Recommend)\n320. Lot 1459, Central Springs Caboolture, Caboolture - $959,400 (Score: 83.0/100 - Recommend)\n321. Lot 513, Yarrabilba, Yarrabilba - $959,900 (Score: 83.0/100 - Recommend)\n322. Lot 513, Yarrabilba, Yarrabilba - $974,900 (Score: 83.0/100 - Recommend)\n323. 517 Ardour Street, Bellevue TITLED, South Ripley - $983,760 (Score: 83.0/100 - Recommend)\n324. Lot 1520, Riverbank, Caboolture - $998,400 (Score: 83.0/100 - Recommend)\n325. Lot 1520, Riverbank, Caboolture - $1,006,400 (Score: 83.0/100 - Recommend)\n326. Lot 1520, Riverbank, Caboolture - $1,013,400 (Score: 83.0/100 - Recommend)\n327. 574 New Road, Providence TITLED, South Ripley - $1,014,450 (Score: 83.0/100 - Recommend)\n328. Lot 1520, Riverbank, Caboolture - $1,024,400 (Score: 83.0/100 - Recommend)\n329. 315 Chapel Close, BRISBANE WEST, South Maclean - $1,041,860 (Score: 83.0/100 - Recommend)\n330. Lot 512, Bloom, Nikenbah QLD, Nikenbah - $1,097,700 (Score: 83.0/100 - Recommend)\n331. Lot 514, Bloom, Nikenbah QLD, Nikenbah - $1,100,700 (Score: 83.0/100 - Recommend)\n332. Lot 516, Bloom, Nikenbah QLD, Nikenbah - $1,106,200 (Score: 83.0/100 - Recommend)\n333. Lot 713, Bloom, Nikenbah QLD, Nikenbah - $1,119,700 (Score: 83.0/100 - Recommend)\n334. 7 Park Street, BUNDABERG, Deception Bay - $1,260,640 (Score: 83.0/100 - Recommend)\n335. BRISBANE EAST, Howard QLD, Howard - $746,632 (Score: 82.5/100 - Recommend)\n336. The Waverley Residences, Southport QLD, Southport - $885,000 (Score: 82.5/100 - Recommend)\n337. 11 Murdochs Road, Custom, Moore Park Beach - $890,290 (Score: 82.5/100 - Recommend)\n338. 16 Murdochs Road, Custom, Moore Park Beach - $894,990 (Score: 82.5/100 - Recommend)\n339. Drift, Woodgate QLD, Woodgate - $900,249 (Score: 82.5/100 - Recommend)\n340. 5 Murdochs Road, Somerset MOD Traditional, Moore Park Beach - $909,719 (Score: 82.5/100 - Recommend)\n341. 15 Murdochs Road, Somerset MOD Plantation, Moore Park Beach - $910,103 (Score: 82.5/100 - Recommend)\n342. 10 Murdochs Road, Geraldton MOD Traditional, Moore Park Beach - $917,397 (Score: 82.5/100 - Recommend)\n343. Oasis, Urraween QLD, Urraween - $940,574 (Score: 82.5/100 - Recommend)\n344. The Banks, Burnett Heads QLD, Burnett Heads - $961,335 (Score: 82.5/100 - Recommend)\n345. The Banks, Burnett Heads QLD, Burnett Heads - $970,119 (Score: 82.5/100 - Recommend)\n346. Huntingdale Central, Kawungan QLD, Kawungan - $975,362 (Score: 82.5/100 - Recommend)\n347. Huntingdale Central, Kawungan QLD, Kawungan - $977,370 (Score: 82.5/100 - Recommend)\n348. Oasis, Urraween QLD, Urraween - $1,058,141 (Score: 82.5/100 - Recommend)\n349. Drift, Woodgate QLD, Woodgate - $1,058,762 (Score: 82.5/100 - Recommend)\n350. Oasis, Urraween QLD, Urraween - $1,073,685 (Score: 82.5/100 - Recommend)\n351. 2 Senor Avenue, HERVEY BAY, Urangan - $1,089,092 (Score: 82.5/100 - Recommend)\n352. Lot 3, Victoria Point, Victoria Point - $1,159,400 (Score: 82.5/100 - Recommend)\n353. Lot 1, Victoria Point, Victoria Point - $1,165,300 (Score: 82.5/100 - Recommend)\n354. 17 Pandanus Place, Lisa Traditional, Tingalpa - $1,199,815 (Score: 82.5/100 - Recommend)\n355. Innes Park QLD, Innes Park - $1,216,360 (Score: 82.5/100 - Recommend)\n356. Residence, Southport QLD, Southport - $1,225,000 (Score: 82.5/100 - Recommend)\n357. Innes Park QLD, Innes Park - $1,228,701 (Score: 82.5/100 - Recommend)\n358. The Crest, Heathwood QLD, Heathwood - $1,233,351 (Score: 82.5/100 - Recommend)\n359. Innes Park QLD, Innes Park - $1,246,081 (Score: 82.5/100 - Recommend)\n360. Lot 183, The Reserve, Bald Hills QLD, Bald Hills - $1,274,650 (Score: 82.5/100 - Recommend)\n361. Lot 184, The Reserve, Bald Hills QLD, Bald Hills - $1,277,150 (Score: 82.5/100 - Recommend)\n362. The Crest, Heathwood QLD, Heathwood - $1,281,588 (Score: 82.5/100 - Recommend)\n363. Sunbar, Elliott Heads QLD, Elliott Heads - $1,282,331 (Score: 82.5/100 - Recommend)\n364. 4 Freshwater Drive, Duplex Moondarra Traditional, Branyan - $1,364,742 (Score: 82.5/100 - Recommend)\n365. Lot 2, Victoria Point, Victoria Point - $1,369,900 (Score: 82.5/100 - Recommend)\n366. 4 Freshwater Drive, Duplex Jindabyne Plantation, Branyan - $1,398,427 (Score: 82.5/100 - Recommend)\n367. Lot 36, Lilywood Landing, Upper Caboolture QLD, Upper Caboolture - $1,438,500 (Score: 82.5/100 - Recommend)\n368. Kinara, Bargara QLD, Bargara - $1,485,342 (Score: 82.5/100 - Recommend)\n369. 2 Senor Avenue, FRASER COAST, Urangan - $1,097,620 (Score: 81.5/100 - Recommend)\n370. 3 Senor Avenue, FRASER COAST, Urangan - $1,106,010 (Score: 81.5/100 - Recommend)\n371. Lot 1520, Riverbank, Caboolture - $1,059,900 (Score: 81.0/100 - Recommend)\n372. Lot 5, The Jefferson Collection, Loganlea QLD, Loganlea - $1,390,894 (Score: 80.5/100 - Recommend)\n373. Lot 2, The Jefferson Collection, Loganlea QLD, Loganlea - $1,434,900 (Score: 80.5/100 - Recommend)\n374. Lot 3, The Jefferson Collection, Loganlea QLD, Loganlea - $1,466,700 (Score: 80.5/100 - Recommend)\n375. Lot 4, The Jefferson Collection, Loganlea QLD, Loganlea - $1,474,100 (Score: 80.5/100 - Recommend)\n376. Arbourwood, Morayfield QLD, Morayfield - $1,091,520 (Score: 80.0/100 - Recommend)\n377. Lot 14, Burpengary Ferriers Creek, Burpengary QLD, Burpengary - $1,113,900 (Score: 80.0/100 - Recommend)\n378. Lot 1475, Central Springs, Caboolture QLD, Caboolture - $1,168,460 (Score: 80.0/100 - Recommend)\n379. 7 Oxford Street, Prosperine Coastal, Joyner - $1,297,850 (Score: 80.0/100 - Recommend)\n380. Lot 9, Flagstone Display Homes, Flagstone, Flagstone QLD, Flagstone - $1,488,500 (Score: 80.0/100 - Recommend)\n381. Australia, 5114, Murray QLD, Murray - $853,000 (Score: 79.5/100 - Recommend with Conditions)\n382. Lot 341, Flourish, South Maclean - $874,900 (Score: 79.5/100 - Recommend with Conditions)\n383. Lot 2301, White Rock, White Rock - $951,400 (Score: 79.5/100 - Recommend with Conditions)\n384. 668 Quartzite Close, BRISBANE WEST, South Ripley - $1,106,390 (Score: 79.0/100 - Recommend with Conditions)\n385. Lot 2231 Unit 2231, Whiterock, WHITE ROCK, QLD, 4306, White Rock - $816,000 (Score: 78.5/100 - Recommend with Conditions)\n386. Lot 2226 Unit 2226, White Rock, WHITE ROCK, QLD, 4306, White Rock - $849,000 (Score: 78.5/100 - Recommend with Conditions)\n387. Lot 2239 Unit 2239, White Rock, WHITE ROCK, QLD, 4306, White Rock - $885,500 (Score: 78.5/100 - Recommend with Conditions)\n388. Lot 2240 Unit 2240, Mellum Way, WHITE ROCK, QLD, 4306, White Rock - $885,500 (Score: 78.5/100 - Recommend with Conditions)\n389. Lot 2034 Unit 2034, Mellum Way, WHITE ROCK, QLD, 4306, White Rock - $927,900 (Score: 78.5/100 - Recommend with Conditions)\n390. Lot 2035 Unit 2035, Mellum Way, WHITE ROCK, QLD, 4306, White Rock - $928,900 (Score: 78.5/100 - Recommend with Conditions)\n391. Lot 2241 Unit 2241, Whiterock, WHITE ROCK, QLD, 4306, White Rock - $965,200 (Score: 78.5/100 - Recommend with Conditions)\n392. Lot 2036 Unit 2036, Mellum Way, WHITE ROCK, QLD, 4306, White Rock - $992,900 (Score: 78.5/100 - Recommend with Conditions)\n393. Lot 2033 Unit 2033, Mellum Way, WHITE ROCK, QLD, 4306, White Rock - $996,900 (Score: 78.5/100 - Recommend with Conditions)\n394. Lot 2002 Unit 2002, Whiterock, WHITE ROCK, QLD, 4306, White Rock - $1,025,900 (Score: 78.5/100 - Recommend with Conditions)\n395. Lot 2235 Unit 2235, Mellum Way, WHITE ROCK, QLD, 4306, White Rock - $1,038,600 (Score: 78.5/100 - Recommend with Conditions)\n396. Lot 802 Unit 802, Regents Quarter, JOYNER, QLD, 4502, Joyner - $1,126,900 (Score: 78.5/100 - Recommend with Conditions)\n397. Lot 714 Unit 714, Regents Quarter, JOYNER, QLD, 4501, Joyner - $1,136,900 (Score: 78.5/100 - Recommend with Conditions)\n398. Lot 3 Unit 3, 63 Oxford Street, JOYNER, QLD, 4500, Joyner - $1,148,900 (Score: 78.5/100 - Recommend with Conditions)\n399. Lot 7 Unit 7, 64 Oxford Street, JOYNER, QLD, 4500, Joyner - $1,152,900 (Score: 78.5/100 - Recommend with Conditions)\n400. Lot 47, Arbourwood Morayfield, Morayfield - $1,002,400 (Score: 77.0/100 - Recommend with Conditions)\n401. Lot 48, Arbourwood Morayfield, Morayfield - $1,031,400 (Score: 77.0/100 - Recommend with Conditions)\n402. Lot 39, Logan Reserve Riverleigh, Caboolture - $1,247,500 (Score: 77.0/100 - Recommend with Conditions)\n\nRejected Options: 95 candidate(s) filtered out.\nStatus: Awaiting Consultant Review",
      "consultant_review_task": {
       "task_type": "Consultant Review & Approval",
       "title": "Review Property Research for Part C golden",
@@ -5964,7 +5136,7 @@
     }
    },
    "full_snapshot": {
-    "digest": "9ea80869953ce18141811ee0b4b4beaaaf4363dc2dd9a3a303367a791352e5c8",
+    "digest": "4d87d7e0b20c63f70b2338e80b260b9586153b4cbdc3154cde40ccd27570aede",
     "shortlist_hashes": [
      "v2:fd7719211104abea78a486176b0226cd5a77f72b5c09cb0644439bd9be9ee794",
      "v2:3947a3e54285a0916f8b328be222d90e326387d854da3f60d702ebfe069a85b2",
@@ -6001,7 +5173,6 @@
      "v2:8f60c56c10a405c8d5f2aaf7b35e1ea153615e9248e8412709fc672e06a74ee8",
      "v2:41b619318bb65102734364406feb292878655a051cdd0dcb1d080c1cfc72cf14",
      "v2:b801fc6fdb47075b157f6781ff6b02798259ac5874e702ac3f58081e0b3c4c6a",
-     "v2:46bc9cca4c7da19e136cdce4250610a8c48b05d76b098556c271dc75ffb5aa8a",
      "v2:7d3f1dfe43c1d04537c7a496216f92a57be40b2c78a593ab1ba820aa2af0722c",
      "v2:c04c9fce73002e0d3923dab71779ed65204785a4c9cfcccb6f323c845c0185a1",
      "v2:728edbb371a757babc6daa4fb8dd3daba6e104aa8f41b594ed8014eb615e5e79",
@@ -6350,8 +5521,8 @@
      "v2:1a72110687327b9d93765fe0a70df382ea186ba6a078ad574859b2d6f907bbcf",
      "v2:52aaabf5e3347853b7fe0d789e0bd5b4b590b2b8c9bf5982b0c160ec0ebea3a6"
     ],
-    "pending_count": 210,
-    "rejected_count": 210
+    "pending_count": 211,
+    "rejected_count": 211
    }
   }
  },
