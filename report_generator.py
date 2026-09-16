@@ -4,7 +4,6 @@ Implements SOP Step 12 & Section 7 (Property Summary Template).
 """
 
 from schema import CandidateProperty, ClientBrief
-from datetime import datetime
 
 # The specs are Optional: a stocklist that never recorded a bedroom count or a house size
 # leaves None, and "{None:,.0f}" raises rather than printing anything. Say what is not
@@ -25,7 +24,10 @@ class ReportGenerator:
     def generate_property_summary_markdown(brief: ClientBrief, prop: CandidateProperty) -> str:
         sc = prop.scoring
         pb = prop.price_breakdown
-        date_str = prop.date_checked or datetime.now().strftime("%d/%m/%Y")
+        # The row's own date, never the day of the search. Since kommo_agent stopped
+        # stamping every card with today (W10), a blank here is a stored row whose date
+        # could not be read -- and "today" would claim a check nobody made.
+        date_str = prop.date_checked or "Not recorded at the source"
 
         missing_str = ", ".join(pb.missing_inclusions) if pb.missing_inclusions else "None (Full Turnkey)"
 
