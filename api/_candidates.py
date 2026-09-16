@@ -26,13 +26,14 @@ summary. Every descriptive field the client report prints is passed as an explic
 blank rather than left to the default. A blank is visibly a blank.
 """
 
+import hashlib
 import json
 import os
 import re
 import sqlite3
 import sys
 from collections import namedtuple
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -94,7 +95,30 @@ SNAPSHOT_FIELDS = [
     #
     # A short hash of the URL groups the rows identically and discloses nothing.
     "source_doc",
+    # WHAT THE ROW'S OWN TEXT SAYS ABOUT ITS PRICE (build_web PRICE_EVIDENCE_FIELDS). The
+    # deployed snapshot carries no source_text, so "does this price list print this price,
+    # and is it the whole price?" is answered at build time. The exceptions-only admission
+    # of unstated rows into Needs confirming reads all three -- see admission_refusal.
+    "price_kind", "text_price_max", "price_in_text",
+    # AN EMAILED LIST'S OWN IDENTITY AND AGE, for 'digital email' rows only (null on
+    # every other row). date_checked on an emailed row is the last night the message sat
+    # in the 7-day inbox sweep, not the list's date: the Shape Homes list dated 13 Aug
+    # reads "checked 20/08". email_first_seen is the first night it was read, which is
+    # what the 45-day confirm limit ages an email from; email_list is a short hash of the
+    # subject with dates and Fwd: removed ("shape home stock list"), so a newer list from
+    # the same sender can be recognised without publishing the subject line.
+    "email_list", "email_first_seen",
 ]
+
+# Build-time cells a purpose-built snapshot DATABASE may predate. The SQLite reader
+# computes them from the columns they derive from, exactly as build_web does, instead of
+# failing the read over a column the snapshot could not have had.
+_COMPUTED_SNAPSHOT_FIELDS = ("price_kind", "text_price_max", "price_in_text",
+                             "email_list", "email_first_seen")
+# What those computations read. Selected when the table has them, then dropped before a
+# row is returned: source_text on a row changes what suburb_quality resolves, and the
+# JSON reader's rows never carry it.
+_COMPUTE_INPUTS = ("source_text", "source_url", "first_seen")
 
 # The field rows are grouped by when asking "what do this document's other rows say?".
 _DOC_KEY = "source_doc"
@@ -266,14 +290,52 @@ def _price_unverified(row):
     _verified, seen, _raw = _fresh(row)
     return bool(seen and seen < PROXIMA_PRICE_FIX_DATE)
 
-# Same headroom the live sources apply before handing a package to scoring
-# (sources/e_agent.py:524, sources/builder_portals.py:204).
-BUDGET_HEADROOM = 50_000.0
+# NO HEADROOM. This was $50,000, copied from the live sources (sources/e_agent.py:524,
+# sources/builder_portals.py:204), and it bought nothing: scoring_engine hard-rejects
+# anything advertised above budget_max, so every row in the band took a scoring slot to
+# come back as a red "exceeds max budget" card. Colin's QLD <= $750k search scored 16 and
+# spent 8 of them that way ($752,400 to $799,995). A client who says $750,000 has said it;
+# "what would $50k more buy" is a relaxation the explain panel prices honestly, not a
+# silent widening.
+BUDGET_HEADROOM = 0.0
+# Rows priced within this much OVER the budget are still counted (counts['just_over']),
+# so the headroom removed above stays visible as a number. Informational, never a gate.
+JUST_OVER_BAND = 50_000.0
 
 # A stored row was verified by a live scrape on its date_checked. That verification
 # goes stale: past this many days the row is passed through as unverified, which the
 # pipeline turns into "Pending Confirmation" and keeps out of the final list.
 FRESH_DAYS = int(os.environ.get("SPB_SNAPSHOT_FRESH_DAYS", "14"))
+
+# HOW OLD A ROW MAY BE AND STILL BE SHOWN TO CONFIRM. Between FRESH_DAYS and this, an
+# unverified row carries confirm=['stale'] and may appear in "Needs confirming" when no
+# sold-stock guard hides it (confirm_guard). Older, it is hidden as over_confirm_limit.
+# 45, not 30: the only real target, Shape Homes' Dawn lots, crosses 30 days on 19 Sep, and
+# with the guards on, the extra days added nothing wrong to Colin's search. FRESH_DAYS is
+# NOT widened: at 30 or 45 days the VIC On-Hold Windermere rows become "Available" QLD.
+CONFIRM_MAX_DAYS = int(os.environ.get("SPB_CONFIRM_MAX_DAYS", "45"))
+
+# THE DAY IS BRISBANE'S. date_checked is written in AEST by the nightly runner (checked_at
+# 11:41 on a run that started 01:07Z), and Vercel's clock is UTC, so between midnight and
+# 10am AEST a search aged every row one day younger than it is. Queensland keeps no
+# daylight saving, and neither does the runner's date.
+AEST = timezone(timedelta(hours=10))
+
+
+def _utc_now():
+    """The clock, in one place a test can stop."""
+    return datetime.now(timezone.utc)
+
+
+def _now_aest(utc_now=None):
+    """Now on the AEST wall clock, naive, so it subtracts from a parsed date_checked.
+
+    A naive `utc_now` is taken to be UTC, as datetime.utcnow() returns it.
+    """
+    now = utc_now or _utc_now()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return now.astimezone(AEST).replace(tzinfo=None)
 
 # Upper bound on rows handed to the pipeline, so one enormous state cannot blow the
 # function's time limit. Truncation is reported, never silent.
@@ -380,9 +442,17 @@ def _read_sqlite(path):
     conn = sqlite3.connect(uri, uri=True)
     try:
         conn.row_factory = sqlite3.Row
-        cols = ", ".join(SNAPSHOT_FIELDS)
+        have = {r[1] for r in conn.execute("PRAGMA table_info(buildings)")}
+        # Price evidence and the emailed list's identity are build-time cells. A snapshot
+        # database written before they existed still reads; they are computed below from
+        # the columns build_web computes them from.
+        computed = [f for f in _COMPUTED_SNAPSHOT_FIELDS if f not in have]
+        cols = [f for f in SNAPSHOT_FIELDS if f not in computed]
+        inputs = ([f for f in _COMPUTE_INPUTS if f in have and f not in cols]
+                  if computed else [])
         try:
-            rows = conn.execute("SELECT %s FROM buildings" % cols).fetchall()
+            rows = conn.execute(
+                "SELECT %s FROM buildings" % ", ".join(cols + inputs)).fetchall()
         except sqlite3.OperationalError as exc:
             # The harvest database is NOT a snapshot: source_doc, source_link_*, rea_* and
             # suburb_source are written by build_web, so this read fails on it. Say so,
@@ -392,9 +462,106 @@ def _read_sqlite(path):
                 "build_web.build(out, with_assets=False) on a scratch copy and read its "
                 "stock.json; join database-only fields with join_db_fields()."
                 % (exc, path)) from exc
-        return [dict(r) for r in rows]
+        out = [dict(r) for r in rows]
     finally:
         conn.close()
+    for row in out:
+        if computed:
+            cells = snapshot_build_cells(row)
+            row.update({f: cells[f] for f in computed})
+        for f in inputs:
+            row.pop(f, None)
+    return out
+
+
+def _is_email(row):
+    return str(row.get("source_channel") or "").strip().lower() == EMAIL_CHANNEL
+
+
+def snapshot_build_cells(row):
+    """{price_kind, text_price_max, price_in_text, email_list, email_first_seen} for a row
+    that still has its database columns (source_text, source_url, first_seen).
+
+    build_web publishes these on every stock.json row and the SQLite reader computes them
+    for a snapshot database that predates them -- one function, so the two readers cannot
+    disagree about a row. Never raises: a row whose evidence cannot be computed gets
+    nulls, which the admission rule reads as "no evidence" and refuses.
+    """
+    cells = dict.fromkeys(("price_kind", "text_price_max", "price_in_text"))
+    try:
+        import price_kind
+        evidence = price_kind.price_evidence(row)
+        cells.update({f: evidence[f] for f in cells})
+    except Exception:                                                   # noqa: BLE001
+        pass
+    cells.update(snapshot_email_cells(row))
+    return cells
+
+
+def snapshot_email_cells(row):
+    """{email_list, email_first_seen} from a row's source_url and first_seen columns.
+
+    Both null unless the row came by email (source_channel 'digital email'): no other
+    channel's guard or card reads them, and a null cell costs the snapshot least.
+    """
+    if not _is_email(row):
+        return {"email_list": None, "email_first_seen": None}
+    return {"email_list": email_list_key(row.get("source_url")) or None,
+            "email_first_seen": str(row.get("first_seen") or "").strip() or None}
+
+
+# --------------------------------------------------------------------- emailed lists
+
+# The subject of an emailed list, minus what changes from one issue to the next.
+_SUBJECT_PREFIX = re.compile(r"^\s*email\s*:\s*", re.I)
+# Forwards only. "RE:" stays in the stem: a reply about an old list is not a new list.
+_SUBJECT_FORWARD = re.compile(r"^\s*(?:fwd?|fw)\s*:\s*", re.I)
+_MONTH = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|"
+          r"aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)")
+_SUBJECT_DATES = (
+    re.compile(r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b"),               # 13.08.2026
+    re.compile(r"\b\d{4}[./-]\d{1,2}[./-]\d{1,2}\b"),                 # 2026-08-13
+    re.compile(r"\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?" + _MONTH
+               + r"\b(?:,?\s+\d{2,4}\b)?", re.I),                     # 28th of July 2026
+    re.compile(r"\b" + _MONTH + r"\s+\d{1,2}(?:st|nd|rd|th)?\b(?:,?\s+\d{2,4}\b)?",
+               re.I),                                                 # August 13, 2026
+    re.compile(r"\b" + _MONTH + r"\s+\d{4}\b", re.I),                 # August 2026
+    re.compile(r"\b\d{6,8}\b"),                                       # 13082026
+)
+_NON_ALNUM = re.compile(r"[^a-z0-9]+")
+# "Stock Lists" one week and "Stock List" the next.
+_PLURAL = re.compile(r"(?<=[a-z]{3})s\b")
+_MIN_STEM = 6
+
+
+def email_list_stem(label):
+    """The part of an emailed list's subject that stays the same from issue to issue.
+
+        "email:Fwd: Shape Homes - Stock List 13.08.2026"  ->  "shape home stock list"
+        "Hattan Update - 31 August 2026"                  ->  "hattan update"
+
+    '' for a link (a document, not an email) or a subject with nothing left to match.
+    """
+    text = str(label or "").strip()
+    if not text or text.lower().startswith(("http://", "https://")):
+        return ""
+    text = _SUBJECT_PREFIX.sub("", text)
+    while True:
+        shorter = _SUBJECT_FORWARD.sub("", text)
+        if shorter == text:
+            break
+        text = shorter
+    for pattern in _SUBJECT_DATES:
+        text = pattern.sub(" ", text)
+    stem = " ".join(_NON_ALNUM.sub(" ", text.lower()).split())
+    stem = _PLURAL.sub("", stem)
+    return stem if len(stem) >= _MIN_STEM else ""
+
+
+def email_list_key(label):
+    """A short hash of email_list_stem, or ''. Published instead of the subject."""
+    stem = email_list_stem(label)
+    return hashlib.sha256(stem.encode("utf-8")).hexdigest()[:16] if stem else ""
 
 
 # ------------------------------------------------------------------------ conversion
@@ -611,16 +778,40 @@ def _fresh(row, today=None):
     while it is fresh and allowed to lapse afterwards, at which point the pipeline's
     own three-state rule keeps the row out of the final list as Pending Confirmation.
     An unparseable or absent capture date is never treated as verified.
+
+    THE SHAPE STAYS. _price_unverified reads `seen` and the same-listing collapse ranks
+    on it; the age a caller wants comes from _age_days. `today` defaults to the AEST
+    wall clock (see AEST), not the server's.
     """
     raw = str(row.get("date_checked") or "").strip()
-    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+    seen = _parse_day(raw)
+    if seen is None:
+        return False, None, raw
+    age = ((today or _now_aest()) - seen).days
+    return (0 <= age <= FRESH_DAYS), seen, raw
+
+
+_DAY_FORMATS = ("%d/%m/%Y", "%Y-%m-%d")
+# A snapshot has a few hundred distinct dates across twenty thousand rows, and preparing
+# the guards parses every row's; strptime is the expensive part.
+_DAY_CACHE = {}
+
+
+def _parse_day(value):
+    """The date a dd/mm/YYYY or ISO value names (first ten characters), or None."""
+    raw = str(value or "").strip()
+    if raw in _DAY_CACHE:
+        return _DAY_CACHE[raw]
+    seen = None
+    for fmt in _DAY_FORMATS:
         try:
             seen = datetime.strptime(raw[:10], fmt)
+            break
         except ValueError:
             continue
-        age = ((today or datetime.now()) - seen).days
-        return (0 <= age <= FRESH_DAYS), seen, raw
-    return False, None, raw
+    if len(_DAY_CACHE) < 20_000:
+        _DAY_CACHE[raw] = seen
+    return seen
 
 
 def _collapse_same_listing(entries):
@@ -944,7 +1135,12 @@ class PreparedRows:
     """
 
     __slots__ = ("row_count", "estate_suburb", "page_suburb", "state_of", "containment",
-                 "unambiguous_estate", "states_availability")
+                 "unambiguous_estate", "states_availability",
+                 # The sold-stock guards' evidence (confirm_guard), over EVERY row --
+                 # superseded ones and other states included, because the capture that
+                 # says a lot is On Hold is often exactly the row a search would skip.
+                 "captures", "doc_reads", "builder_reads", "email_lists",
+                 "doc_statements")
 
     def __init__(self, **fields):
         for name in self.__slots__:
@@ -988,16 +1184,25 @@ def prepare_rows(rows):
     # WHICH DOCUMENTS SAY ANYTHING ABOUT AVAILABILITY AT ALL. See the filter in _gate.
     # Built once, outside the row loop: the estate-containment lookup was written inside
     # one and took ten minutes a request before it was hoisted.
+    #
+    # SUPERSEDED ROWS STILL COUNT, and must. Counting live rows only would call 17
+    # documents silent and promote their 53 blank live rows to "available by the sheet" --
+    # 40 of them fresh, straight into the shortlist and to Clare: 34 'Gardner Rd Stage 3'
+    # lots, 3 Gallery Group lots, Hattan and Hermitage rows. Their superseded captures said
+    # On Hold or Sold. A list that marks only what has gone is an exceptions-only list, and
+    # its blank rows are for a consultant to confirm (the admit pass), never a
+    # recommendation by default.
     states_availability = set()
     for _r in rows:
         _a = str(_r.get("availability_status") or "").strip().lower()
         if _a in IS_AVAILABLE or _a in NOT_AVAILABLE:
             states_availability.add(str(_r.get(_DOC_KEY) or ""))
     states_availability.discard("")
+    guards = _guard_indexes(rows)
     return PreparedRows(row_count=len(rows), estate_suburb=estate_suburb,
                         page_suburb=page_suburb, state_of=state_of, containment=containment,
                         unambiguous_estate=unambiguous_estate,
-                        states_availability=states_availability)
+                        states_availability=states_availability, **guards)
 
 
 # One entry: a warm instance serves one deployed snapshot, and a stale entry must never
@@ -1040,6 +1245,323 @@ def _checked_prepared(rows, prepared):
                          "prepare_rows on the snapshot being searched"
                          % (prepared.row_count, len(rows)))
     return prepared
+
+
+# ------------------------------------------------------------- confirming, and not
+#
+# A row the search cannot verify -- last read more than FRESH_DAYS ago, or on a list that
+# never said it was for sale -- is not thereby worth a consultant's phone call. Some of
+# them are simply sold, and the catalogue says so somewhere else. Measured on the 17 Sep
+# copy: the three "Windermere Mambourin" lots filed QLD "Available" on 21 Aug are the same
+# builder, estate and lot 27102 the 16 Sep read files VIC and On Hold. confirm_guard names
+# that evidence; a guarded row is hidden and counted, never shown to confirm.
+
+# The channels that re-list a document's whole stock every time they read it, so a row the
+# latest read left out is evidence of a sale. An emailed list is sent once and never
+# re-listed; a missing row there proves nothing.
+RELISTING_CHANNEL_PREFIXES = ("e-agent", "proxima", "direct builder portal", "direct portal")
+EMAIL_CHANNEL = "digital email"
+# How recently a document must have been read for its silence about a row to count.
+REREAD_WITHIN_DAYS = 3
+# A PARTIAL READ IS NOT A RE-READ. The latest read must be at least this share of the
+# largest read of that document in its last FULL_READ_RUNS reads. Shared with the
+# withdrawal repair (repair_rows, W19) through latest_read_is_full.
+FULL_READ_SHARE = 0.60
+FULL_READ_RUNS = 7
+# Two captures of one lot are the same listing only when their prices agree this closely.
+NEWER_CAPTURE_PRICE_TOLERANCE = 0.02
+# The largest amount a row's text prints may exceed its stored price by this much before
+# the stored price is read as one component of a bigger total (a duplex half).
+TEXT_PRICE_TOLERANCE = 0.02
+# A price that is not the price of a home and land a buyer can purchase as listed.
+NOT_ADMITTABLE_PRICE_KINDS = ("build_only", "land_only", "commercial")
+
+
+def _norm(value):
+    return " ".join(_NON_ALNUM.sub(" ", str(value or "").lower()).split())
+
+
+def _channel(row):
+    return str(row.get("source_channel") or "").strip().lower()
+
+
+def _is_relisting(channel):
+    return channel.startswith(RELISTING_CHANNEL_PREFIXES)
+
+
+def capture_key(row):
+    """(who, estate, lot) naming one lot across captures, or None without a lot number.
+
+    who is the builder when the row names one, else its document: a blank builder is not
+    a builder, and keying "" would make every nameless lot 624 in the country one lot.
+    The estate is part of the key for the same reason -- (builder, lot) alone guarded 505
+    of 925 stale Available rows where (builder-or-document, estate, lot) guards 292; the
+    213 difference were other estates' lots with the same number, e.g. a VIC lot 624
+    "guarded" by NSW 'The CARLING' lot 624. The STATE is deliberately not in the key: the
+    Windermere lots are filed QLD on one capture and VIC on the next.
+    """
+    lot = _norm(row.get("lot_number"))
+    if not lot:
+        return None
+    builder = _norm(row.get("builder_name"))
+    if builder:
+        who = "builder:" + builder
+    else:
+        doc = str(row.get(_DOC_KEY) or "").strip()
+        if not doc:
+            return None
+        who = "doc:" + doc
+    return (who, _norm(row.get("estate_name")), lot)
+
+
+def latest_read_is_full(reads_by_day, share=FULL_READ_SHARE, runs=FULL_READ_RUNS):
+    """Whether a document's latest read took in most of what it usually does.
+
+    reads_by_day is {day: rows read that day} for one document. True when the newest
+    day's count is at least `share` of the largest count among its newest `runs` days.
+    A snapshot cannot see a night's true read count -- a row re-read the next night
+    carries the later date -- so from stock.json this is rows LAST read each day. The
+    shape it exists to catch survives that: 80 rows read yesterday and 20 tonight is 20
+    against 60 left behind, a partial read.
+    """
+    if not reads_by_day:
+        return False
+    days = sorted(reads_by_day, reverse=True)[:max(1, runs)]
+    largest = max(reads_by_day[d] for d in days)
+    return reads_by_day[days[0]] >= share * largest
+
+
+def _guard_indexes(rows):
+    """The PreparedRows fields confirm_guard reads. See PreparedRows.__slots__."""
+    captures = {}          # capture_key -> [(day, availability, price)]
+    reads = {}             # source_doc -> {day: rows}
+    builder_reads = {}     # (relisting channel, builder) -> newest day
+    email_lists = {}       # email_list -> {source_doc: newest day}
+    doc_statements = {}    # source_doc -> [live rows stated available, rows marked gone]
+    for row in rows:
+        avail = str(row.get("availability_status") or "").strip().lower()
+        doc = str(row.get(_DOC_KEY) or "").strip()
+        if doc:
+            stated = doc_statements.setdefault(doc, [0, 0])
+            if avail in IS_AVAILABLE and not row.get("superseded_by"):
+                stated[0] += 1
+            # Superseded captures included: that is how an exceptions-only list whose
+            # marked lots have since dropped off is still known to be one.
+            if avail in NOT_AVAILABLE:
+                stated[1] += 1
+        seen = _parse_day(row.get("date_checked"))
+        if seen is None:
+            continue
+        key = capture_key(row)
+        if key is not None:
+            captures.setdefault(key, []).append((seen, avail, _num(row.get("price"))))
+        if doc:
+            days = reads.setdefault(doc, {})
+            days[seen] = days.get(seen, 0) + 1
+        channel = _channel(row)
+        if _is_relisting(channel):
+            builder = _norm(row.get("builder_name"))
+            if builder and seen > builder_reads.get((channel, builder), datetime.min):
+                builder_reads[(channel, builder)] = seen
+        elif channel == EMAIL_CHANNEL and doc:
+            listed = str(row.get("email_list") or "").strip()
+            if listed:
+                docs = email_lists.setdefault(listed, {})
+                if seen > docs.get(doc, datetime.min):
+                    docs[doc] = seen
+    doc_reads = {doc: (max(days), latest_read_is_full(days)) for doc, days in reads.items()}
+    return {"captures": captures, "doc_reads": doc_reads, "builder_reads": builder_reads,
+            "email_lists": email_lists, "doc_statements": doc_statements}
+
+
+def _confirm_age_days(row, today):
+    """How old a row is for the CONFIRM_MAX_DAYS limit, or None without a readable date.
+
+    An emailed row ages from email_first_seen when the snapshot has it: its date_checked
+    is the last night the message was still inside the inbox sweep, up to a week after the
+    list was sent (Dawn: list 13 Aug, first read 17 Aug, "checked" 20 Aug).
+    """
+    ages = []
+    seen = _parse_day(row.get("date_checked"))
+    if seen is not None:
+        ages.append((today - seen).days)
+    if _is_email(row):
+        first = _parse_day(row.get("email_first_seen"))
+        if first is not None:
+            ages.append((today - first).days)
+    return max(ages) if ages else None
+
+
+def _newer_capture(row, prepared, seen):
+    """'newer_capture_disagrees', 'newer_capture_exists' or None, from capture_key twins
+    read on a strictly later day."""
+    key = capture_key(row)
+    if key is None or seen is None:
+        return None
+    price = _num(row.get("price"))
+    exists = False
+    for when, avail, other_price in prepared.captures.get(key, ()):
+        if when <= seen:
+            continue
+        # Any later capture marked gone, at any price: a lot re-priced and then put on
+        # hold is still on hold.
+        if avail in NOT_AVAILABLE:
+            return "newer_capture_disagrees"
+        if (price and other_price
+                and abs(other_price - price) <= price * NEWER_CAPTURE_PRICE_TOLERANCE):
+            exists = True
+    return "newer_capture_exists" if exists else None
+
+
+def confirm_verdict(row, prepared, today=None):
+    """(reason or None, notes) for a row that cannot be verified.
+
+    reason is why the row must stay HIDDEN rather than be shown to confirm, first match:
+
+      newer_capture_disagrees      a later capture of the same lot says it is gone
+      newer_capture_exists         a later capture of the same lot at the same price
+                                   (within 2%) exists, so this row is its old copy
+      document_reread_without_row  relisting channel; the row's document was read after
+                                   the row, within REREAD_WITHIN_DAYS, and that read was
+                                   a full one (latest_read_is_full)
+      builder_documents_reread     relisting channel, named builder; the builder's other
+                                   documents in the channel were read within
+                                   REREAD_WITHIN_DAYS and this row's were not
+      newer_list_from_sender       emailed; a different email with the same subject stem
+                                   was read after the row
+      over_confirm_limit           older than CONFIRM_MAX_DAYS (an email by first read)
+      no_capture_date              no readable date_checked at all
+
+    notes are things to confirm that hide nothing: 'document_partially_read' when the
+    document was re-read after the row but only partly, which is not evidence the row
+    was dropped.
+    """
+    today = today or _now_aest()
+    notes = []
+    seen = _parse_day(row.get("date_checked"))
+    if seen is None:
+        return "no_capture_date", notes
+    newer = _newer_capture(row, prepared, seen)
+    if newer:
+        return newer, notes
+    channel = _channel(row)
+    doc = str(row.get(_DOC_KEY) or "").strip()
+    if _is_relisting(channel):
+        read = prepared.doc_reads.get(doc) if doc else None
+        doc_recent = bool(read and (today - read[0]).days <= REREAD_WITHIN_DAYS)
+        if doc_recent and read[0] > seen:
+            if read[1]:
+                return "document_reread_without_row", notes
+            notes.append("document_partially_read")
+        builder = _norm(row.get("builder_name"))
+        if builder and not doc_recent:
+            newest = prepared.builder_reads.get((channel, builder))
+            if newest is not None and (today - newest).days <= REREAD_WITHIN_DAYS:
+                return "builder_documents_reread", notes
+    elif channel == EMAIL_CHANNEL:
+        listed = str(row.get("email_list") or "").strip()
+        for other_doc, newest in (prepared.email_lists.get(listed) or {}).items():
+            if other_doc != doc and newest > seen:
+                return "newer_list_from_sender", notes
+    age = _confirm_age_days(row, today)
+    if age is not None and age > CONFIRM_MAX_DAYS:
+        return "over_confirm_limit", notes
+    return None, notes
+
+
+def confirm_guard(row, prepared, today=None):
+    """None when this unverified row may be shown to confirm, else why it stays hidden.
+
+    See confirm_verdict for the reasons. `prepared` is prepare_rows over the whole
+    snapshot the row belongs to.
+    """
+    return confirm_verdict(row, prepared, today)[0]
+
+
+def _truthy(value):
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes")
+    return bool(value)
+
+
+# A BLANK STATUS CELL IS NOT A BLANK LINE. The status column is filled by a vocabulary
+# (NOT_AVAILABLE, repair_rows' sold words) that does not know every phrase a price list
+# uses. Measured on the 17 Sep copy: the NSW 'Building B' apartment list (E-Agent) marks
+# 7 lots "Sold", which the parser read, and 10 more "Under contract" / "Under contact",
+# which it did not -- so those 10 are blank on a list that marks lots gone, and 6 of them
+# passed every other admission rule and would have been offered to confirm while their
+# own line says they are under contract. Read on the text the snapshot carries
+# (lot_address, often the whole flattened line; title_status) and on source_text when a
+# row still has it. "Under construction" is a build stage, not a sale, and must not match.
+_TEXT_UNAVAILABLE = re.compile(
+    r"\b(?:sold|on\s*hold|under\s*offer|under\s*(?:contract|contrac|contra|contact)|"
+    r"reserved|withdrawn|deposit\s*taken|settled|contract\s*pending|not\s+available|"
+    r"unavailable|no\s+longer\s+available|off\s*market)\b", re.I)
+# "it is not on hold exclusively or at this stage sold" (repair_rows._NEGATED): a sentence
+# saying the lot is NOT gone.
+_TEXT_UNAVAILABLE_NEGATED = re.compile(
+    r"\b(?:not|isn'?t|nor|never)\s+(?:\w+\s+){0,2}?"
+    r"(?:sold|on\s*hold|under\s*offer|under\s*contract|reserved|withdrawn)\b", re.I)
+_TEXT_STATUS_COLUMNS = ("lot_address", "title_status", "source_text")
+
+
+def text_marks_unavailable(row):
+    """True when the row's own text says the lot has gone, whatever its status cell says."""
+    for field in _TEXT_STATUS_COLUMNS:
+        text = str(row.get(field) or "")
+        if _TEXT_UNAVAILABLE.search(text) and not _TEXT_UNAVAILABLE_NEGATED.search(text):
+            return True
+    return False
+
+
+def admission_refusal(row, prepared, today=None):
+    """(reason or None, notes): may this UNSTATED row be admitted to confirm?
+
+    EXCEPTIONS-ONLY LISTS ONLY. Some price lists mark the lots that have gone and leave the
+    rest blank -- Silkwood's Google Sheet is 245 blank and 5 On Hold. A blank there may be
+    for sale; a blank on a list that says "Available" beside its other lots is a real gap.
+    Until Colin decides whether such blanks count as available (plan DECISIONS), they are
+    shown only to confirm, and only when every one of these holds:
+
+      no_document                  the row names a document
+      document_states_available    ...which has no live row stated available
+      document_marks_no_exceptions ...and marks at least one row gone (a superseded capture
+                                   counts: the Gallery list's 11 On Hold rows dropped off)
+      text_marks_unavailable       the row's own text does not say it has gone ("Under
+                                   contract" in a cell the status vocabulary missed)
+      no_price_evidence            the snapshot carries price evidence for the row
+      price_not_in_text            the stored price is printed on the row's own line
+      larger_total_in_text         nothing larger than price + 2% is printed on it (the
+                                   South Ripley $725,000 is half of $1,505,615)
+      build_only / land_only / commercial  the price is for a home and land
+      ...then every confirm_verdict reason, including the 45-day limit.
+    """
+    doc = str(row.get(_DOC_KEY) or "").strip()
+    if not doc:
+        return "no_document", []
+    live_available, marked_gone = prepared.doc_statements.get(doc, (0, 0))
+    if live_available:
+        return "document_states_available", []
+    if not marked_gone:
+        return "document_marks_no_exceptions", []
+    if text_marks_unavailable(row):
+        return "text_marks_unavailable", []
+    if all(row.get(f) is None for f in ("price_kind", "text_price_max", "price_in_text")):
+        return "no_price_evidence", []
+    if not _truthy(row.get("price_in_text")):
+        return "price_not_in_text", []
+    price = _num(row.get("price")) or 0.0
+    printed = _num(row.get("text_price_max"))
+    if printed is None or printed > price * (1 + TEXT_PRICE_TOLERANCE):
+        return "larger_total_in_text", []
+    kind = str(row.get("price_kind") or "").strip().lower()
+    if kind in NOT_ADMITTABLE_PRICE_KINDS:
+        return kind, []
+    return confirm_verdict(row, prepared, today)
+
+
+def _is_admitted(package):
+    return "availability_unstated" in ((package or {}).get("confirm") or ())
 
 
 class _BriefContext:
@@ -1134,10 +1656,11 @@ def _age_days(row, today=None):
     _price_unverified and by the same-listing collapse's ranking, and changing its shape
     breaks both. Reuses its parser so one place understands the two date formats.
     """
+    today = today or _now_aest()
     _verified, seen, _raw = _fresh(row, today)
     if seen is None:
         return None
-    return ((today or datetime.now()) - seen).days
+    return (today - seen).days
 
 
 def _gate(ctx, row, prepared, today):
@@ -1148,9 +1671,14 @@ def _gate(ctx, row, prepared, today):
       package  the candidate package when code is PASSED, else None;
       tags     counters the row increments WITHOUT being stopped (state_borrowed,
                estate_only_place, available_by_the_sheet, storey_unknown_and_binding,
-               stale_unverified), in the order the loop always incremented them;
+               stale_unverified, stale_over_limit, newer_capture_demoted), in the order
+               the loop always incremented them;
       detail   what the deciding gate saw -- the only per-row record of a rejection;
       seen_at  the parsed capture date, which the same-listing collapse ranks on.
+
+    Under admit=('availability_unstated',) an unstated row goes on through every later
+    gate and is admitted only if admission_refusal allows it; a refused row stops as
+    availability_unstated with detail['not_admitted'] naming why.
 
     THE ONE PATH. build_packages and explain_row both call this, so the answer to "why
     was this listing not shown" can never come from a second copy of the rules that has
@@ -1288,7 +1816,7 @@ def _gate(ctx, row, prepared, today):
         detail["availability_status"] = str(row.get("availability_status") or "")
         return GateResult("not_available", None, tags, detail)
     by_the_sheet = False
-    admitted = []
+    admitting = False
     if avail not in IS_AVAILABLE:
         # A SHEET WITH NO STATUS COLUMN IS ITSELF THE AVAILABILITY STATEMENT.
         #
@@ -1320,11 +1848,11 @@ def _gate(ctx, row, prepared, today):
             detail["document_states_availability"] = bool(doc)
             if "availability_unstated" not in ctx.admit:
                 return GateResult("availability_unstated", None, tags, detail)
-            # ADMITTED, NOT APPROVED. The caller asked to see these rows so a
-            # consultant can confirm them; they go on through every later gate, and
-            # leave marked confirm=['availability_unstated'] and never verified.
-            admitted.append("availability_unstated")
-            detail["admitted"] = list(admitted)
+            # ASKED FOR, NOT YET ADMITTED, AND NEVER APPROVED. The caller wants rows a
+            # consultant could confirm. Whether this is one (admission_refusal) is decided
+            # once it has passed every later gate, so the refusals counted are refusals
+            # of rows that match the brief -- not of the over-budget majority.
+            admitting = True
 
     price = _num(row.get("price"))
     if not price or price <= 0:
@@ -1333,6 +1861,10 @@ def _gate(ctx, row, prepared, today):
     if ctx.ceiling is not None and price > ctx.ceiling:
         detail["price"] = price
         detail["ceiling"] = ctx.ceiling
+        if ctx.budget_max and price <= ctx.budget_max + JUST_OVER_BAND:
+            # Within $50k of the budget: still out, but counted, so a thin search can
+            # say how much stock the client's own figure is costing them.
+            detail["just_over"] = True
         return GateResult("over_budget", None, tags, detail)
     # A PRICE RANGE, NOT JUST A CEILING. Colin and Coleen search a bracket -- "three
     # to four hundred" -- and with only a maximum the cheap end of the state filled
@@ -1413,6 +1945,22 @@ def _gate(ctx, row, prepared, today):
     # report can say "not stated" instead of implying a figure.
     detail["unstated"] = unstated
 
+    today = today or _now_aest()
+    admitted = []
+    guard, notes = None, []
+    if admitting:
+        # EXCEPTIONS-ONLY LISTS, PRICES THE LINE ITSELF PRINTS, NO SOLD-STOCK EVIDENCE.
+        # Colin's QLD <= $750k search has six in-range unstated rows and admits none of
+        # them: two Build Only prices, a garbled merged line printing 45000000, a Wacol lot
+        # its own sheet was re-read without on 16 Sep, and two duplex halves of $1.3m-$1.5m
+        # totals on a list that states "Available" beside its other lots.
+        refusal, notes = admission_refusal(row, prepared, today)
+        if refusal:
+            detail["not_admitted"] = refusal
+            return GateResult("availability_unstated", None, tags, detail)
+        admitted.append("availability_unstated")
+        detail["admitted"] = list(admitted)
+
     storeys = _storeys(row)
     if storeys is None and ctx.storey_is_binding:
         # Counted, but no longer dropped. This exclusion existed because
@@ -1425,10 +1973,35 @@ def _gate(ctx, row, prepared, today):
         tags.append("storey_unknown_and_binding")
 
     verified, seen_at, seen_on = _fresh(row, today)
+    # _age_days, without parsing the date a second time for every package.
+    age_days = (today - seen_at).days if seen_at is not None else None
+    # WHAT A CONSULTANT WOULD HAVE TO CONFIRM, and whether the catalogue already says the
+    # answer is no. The main path is unchanged by any of this except the last branch: a
+    # stale row is still sent unverified and becomes Pending, and confirm/confirm_guard
+    # only say whether "Needs confirming" may show it.
+    confirm = list(admitted)
     if not verified:
         tags.append("stale_unverified")
-    # _age_days, without parsing the date a second time for every package.
-    age_days = ((today or datetime.now()) - seen_at).days if seen_at is not None else None
+        confirm.append("stale")
+        if not admitted:              # an admitted row's verdict was taken on admission
+            guard, notes = confirm_verdict(row, prepared, today)
+        confirm_age = _confirm_age_days(row, today)
+        if confirm_age is not None and confirm_age > CONFIRM_MAX_DAYS:
+            tags.append("stale_over_limit")
+    elif not admitted and _newer_capture(row, prepared, seen_at) == "newer_capture_disagrees":
+        # DEFENCE IN DEPTH, ON THE MAIN SHORTLIST TOO. A fresh "Available" row whose own
+        # lot was read again LATER as On Hold or Sold is not verified by being fresh: Avia
+        # lot 57, The Hills Collection, read Available on 03/09 and On Hold on 16/09. The
+        # supersede pass should retire these where they are written; until it catches
+        # every shape, the search does not recommend them.
+        verified = False
+        confirm.append("newer_capture")
+        guard = "newer_capture_disagrees"
+        tags.append("newer_capture_demoted")
+    confirm.extend(n for n in notes if n not in confirm)
+    email = _is_email(row)
+    email_first_seen = str(row.get("email_first_seen") or "").strip() if email else ""
+    first_seen_on = _parse_day(email_first_seen) if email_first_seen else None
 
     builder = str(row.get("builder_name") or "").strip()
     # A project-scope row's name is a DEVELOPMENT, not a builder — E-Agent lists
@@ -1552,15 +2125,28 @@ def _gate(ctx, row, prepared, today):
         # no readable date), so "checked 27 days ago" is computed once, here, from the
         # same today the freshness rule used.
         "age_days": age_days,
+        # AN EMAILED LIST'S OWN AGE, beside date_checked rather than instead of it. On an
+        # emailed row date_checked is when the inbox sweep last re-read the message, so a
+        # card should say "email last read <date_checked>" and can say the list was first
+        # read <email_first_seen>, <list_age_days> days ago. Blank / None on every row
+        # that did not arrive by email.
+        "email_first_seen": email_first_seen,
+        "list_age_days": (today - first_seen_on).days if first_seen_on is not None else None,
     }
-    if admitted:
-        # What a consultant must confirm before this can be sent. Present only on rows
-        # a caller asked to admit, so a default search's packages are unchanged.
-        package["confirm"] = list(admitted)
+    if confirm:
+        # What a consultant must confirm before this can be sent: 'stale' (not read within
+        # FRESH_DAYS), 'availability_unstated' (admitted from an exceptions-only list),
+        # 'newer_capture' (demoted, see above), 'document_partially_read' (a note). Absent
+        # on a verified row. confirm_guard is None when "Needs confirming" may show the
+        # row, else the confirm_verdict reason it stays hidden.
+        package["confirm"] = confirm
+        package["confirm_guard"] = guard
     detail["verified"] = package["verified"]
     detail["date_checked"] = seen_on or ""
     detail["age_days"] = age_days
     detail["availability_by_the_sheet"] = by_the_sheet
+    detail["confirm"] = confirm
+    detail["confirm_guard"] = guard
     return GateResult(PASSED, package, tags, detail, seen_at)
 
 
@@ -1574,7 +2160,7 @@ def _pass(brief_dict, rows, today=None, prepared=None, admit=(), only_admitted=F
     """
     # One today for the whole pass. It used to be read per row inside _fresh, so a search
     # running across midnight aged its first and last rows against different days.
-    today = today or datetime.now()
+    today = today or _now_aest()
     prepared = _checked_prepared(rows, prepared)
     ctx = _BriefContext(brief_dict, admit)
     if bool(ctx.admit) != bool(only_admitted):
@@ -1597,9 +2183,15 @@ def _pass(brief_dict, rows, today=None, prepared=None, admit=(), only_admitted=F
         "suburb_not_a_locality": 0, "superseded": 0, "availability_unstated": 0,
         "price_unverified": 0, "other_product_type": 0, "no_incentive": 0,
         "available_by_the_sheet": 0,
+        # Informational, never gates (W11): over-budget rows within JUST_OVER_BAND of the
+        # budget; unverified packages older than CONFIRM_MAX_DAYS; fresh packages demoted
+        # because a later capture of their lot says it is gone.
+        "just_over": 0, "stale_over_limit": 0, "newer_capture_demoted": 0,
     }
     missing_field_counts = {}
     unstated_but_scored = {}
+    confirm_guarded = {}      # confirm_guard reason -> packages hidden from confirming
+    not_admitted = {}         # admission_refusal reason -> unstated rows refused
     # THE SAME FIRST-FAIL TALLY, FOR THE ROWS THE CLIENT COULD ACTUALLY BUY.
     #
     # Availability is checked before price, so "632 whose availability the source never
@@ -1632,19 +2224,29 @@ def _pass(brief_dict, rows, today=None, prepared=None, admit=(), only_admitted=F
                 unstated_but_scored[label] = unstated_but_scored.get(label, 0) + 1
             entries.append((seen_at, package))
             entry_rows.append(row)
-            entry_admitted.append("confirm" in package)
+            # ADMITTED, not merely carrying confirm: stale rows carry confirm=['stale'] and
+            # belong to the confirmed search's pool, as they always have.
+            entry_admitted.append(_is_admitted(package))
+            reason = package.get("confirm_guard")
+            if reason:
+                confirm_guarded[reason] = confirm_guarded.get(reason, 0) + 1
         else:
             counts[code] += 1
             if code == "incomplete_facts":
                 for label in detail["missing"]:
                     missing_field_counts[label] = missing_field_counts.get(label, 0) + 1
+            elif code == "over_budget" and detail.get("just_over"):
+                counts["just_over"] += 1
+            elif code == "availability_unstated" and "not_admitted" in detail:
+                reason = detail["not_admitted"]
+                not_admitted[reason] = not_admitted.get(reason, 0) + 1
             if code in _OUT_OF_SCOPE:
                 continue
         if ctx.in_range(_num(row.get("price"))):
             if code != PASSED:
                 bucket = code
-            elif "confirm" in package:
-                bucket = "admitted:" + "+".join(package["confirm"])
+            elif _is_admitted(package):
+                bucket = "admitted:availability_unstated"
             else:
                 bucket = IN_RANGE_PASSED
             in_range[bucket] = in_range.get(bucket, 0) + 1
@@ -1728,8 +2330,10 @@ def _pass(brief_dict, rows, today=None, prepared=None, admit=(), only_admitted=F
     counts["missing_fields"] = missing_field_counts
     counts["unstated_but_scored"] = unstated_but_scored
     counts["counts_in_range"] = in_range
+    counts["confirm_guarded"] = confirm_guarded
     if ctx.admit:
         counts["admitted"] = admitted_counts
+        counts["unstated_not_admitted"] = not_admitted
     return packages, counts, outcome, results
 
 
@@ -1740,17 +2344,22 @@ def build_packages(brief_dict, rows, today=None, prepared=None, admit=(),
     `brief_dict` is the raw brief the browser posted; only budget/state/storeys are
     read here. Everything else stays the pipeline's job.
 
-    today          the day rows are aged against (default: now).
+    today          the day rows are aged against (default: now on the AEST clock).
     prepared       prepare_rows(rows), to skip the brief-independent work.
-    admit          gates to see past, from ADMITTABLE_GATES. An admitted row goes on
-                   through every later gate and leaves with confirm=[gate] and
-                   verified=False; counts['admitted'][gate] says how many passed through.
+    admit          gates to see past, from ADMITTABLE_GATES. An unstated row goes on
+                   through every later gate and is admitted only when admission_refusal
+                   allows it (exceptions-only list, price printed and whole, no sold-stock
+                   guard, within CONFIRM_MAX_DAYS); it leaves with confirm including the
+                   gate and verified=False. counts['admitted'][gate] counts the admitted,
+                   counts['unstated_not_admitted'][reason] the refused.
     only_admitted  return only admitted rows, in a pool (collapse and cap) of their own.
                    Required with admit, and only with admit: a confirmed search and its
                    admitted rows are two passes, never one shared pool.
 
     counts['counts_in_range'] repeats the first-fail tally for in-state rows priced
-    inside the brief's own range. Every package carries age_days.
+    inside the brief's own range. Every package carries age_days, email_first_seen and
+    list_age_days; an unverified one also carries confirm and confirm_guard.
+    counts['just_over'] counts over-budget rows within JUST_OVER_BAND of the budget.
     """
     packages, counts, _outcome, _results = _pass(
         brief_dict, rows, today=today, prepared=prepared, admit=admit,
@@ -1794,7 +2403,7 @@ def explain_row(brief_dict, row, rows, prepared=None, today=None, admit=()):
     `row` is a snapshot row (stock.json shape). A row joined to database-only fields
     (join_db_fields) works too: those ride under 'db' and no gate reads them.
     """
-    today = today or datetime.now()
+    today = today or _now_aest()
     prepared = _checked_prepared(rows, prepared)
     ctx = _BriefContext(brief_dict, admit)
     result = _gate(ctx, row, prepared, today)
@@ -1803,7 +2412,7 @@ def explain_row(brief_dict, row, rows, prepared=None, today=None, admit=()):
     target = _row_in(row, rows)
     if target is None:
         return _verdict(result, None)
-    admitted = "confirm" in result.package
+    admitted = _is_admitted(result.package)
     # The pool the row really lands in: the confirmed search for a confirmed row, the
     # separate admitted pass for an admitted one -- the two passes a search runs.
     _packages, _counts, outcome, _results = _pass(
@@ -1819,7 +2428,7 @@ def explain_rows(brief_dict, rows, prepared=None, today=None, admit=()):
     -- because that is how a search runs them, and a confirmed row's fate (scored,
     collapsed, truncated) must be reported from the pool it is really in.
     """
-    today = today or datetime.now()
+    today = today or _now_aest()
     prepared = _checked_prepared(rows, prepared)
     _packages, _counts, confirmed, results = _pass(
         brief_dict, rows, today=today, prepared=prepared, keep_results=not admit)
@@ -1832,7 +2441,7 @@ def explain_rows(brief_dict, rows, prepared=None, today=None, admit=()):
     for row, result in results:
         fate = None
         if result.code == PASSED:
-            fate = (admitted if "confirm" in result.package else confirmed).get(id(row))
+            fate = (admitted if _is_admitted(result.package) else confirmed).get(id(row))
         out.append((row, _verdict(result, fate)))
     return out
 

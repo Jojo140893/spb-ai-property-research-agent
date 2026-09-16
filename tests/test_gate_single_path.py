@@ -83,16 +83,26 @@ def full_prepared(full_rows):
     return C.prepare_rows(full_rows)
 
 
+# On every package from W04/W11 on; confirm and confirm_guard only on unverified ones.
+ALWAYS_ADDED = {"age_days", "email_first_seen", "list_age_days"}
+
+
 def _assert_matches_golden(packages, counts, golden, keep_packages_up_to=60):
-    """Legacy output identical, and W04's additions the only difference."""
+    """Legacy output identical, and the W04/W11 additions the only difference."""
     legacy = set(golden["packages"][0]) if golden.get("packages") else None
     for p in packages:
+        added = set(p) & set(gen.NEW_PACKAGE_KEYS)
         if legacy is not None:
-            assert set(p) - legacy == {"age_days"}, set(p) - legacy
-        assert set(p) & set(gen.NEW_PACKAGE_KEYS) == {"age_days"}, (
-            "a default search must add age_days and admit nothing")
-    extra_counts = [k for k in counts if k in gen.NEW_COUNT_KEYS]
-    assert extra_counts == ["counts_in_range"], extra_counts
+            assert set(p) - legacy == added, set(p) - legacy
+        # A default search admits nothing: confirm appears exactly on the packages it
+        # could not verify (stale, or demoted by a later capture), never as admitted.
+        unverified = p["verified"] is False
+        assert added == ALWAYS_ADDED | ({"confirm", "confirm_guard"} if unverified else set())
+        assert "availability_unstated" not in p.get("confirm", ()), (
+            "a default search must admit nothing")
+    extra_counts = {k for k in counts if k in gen.NEW_COUNT_KEYS}
+    assert extra_counts == {"counts_in_range", "just_over", "stale_over_limit",
+                            "newer_capture_demoted", "confirm_guarded"}, extra_counts
     got = gen.golden_record(packages, counts, keep_packages_up_to)
     assert got["counts"] == golden["counts"], "counts (values or key order) moved"
     assert got["content_hashes"] == golden["content_hashes"], "package set or order moved"
@@ -240,16 +250,27 @@ def test_admit_returns_exactly_the_unstated_rows_that_pass_every_later_gate(
         if row["content_hash"] in unstated_hashes and v["gate"] in C.POOL_OUTCOMES:
             later[row["content_hash"]] = v["package"]
     passing = set(later)
-    assert passing, "the brief must admit something for this test to mean anything"
+    assert passing, "the brief must reach a later gate for this test to mean anything"
+    # W11: of those, only the rows the exceptions-only rule allows are admitted. Asked of
+    # admission_refusal row by row, outside any pass.
+    by_hash = {u["content_hash"]: u for u in unstated}
+    refused = {h: C.admission_refusal(by_hash[h], subset_prepared, TODAY)[0]
+               for h in passing}
+    eligible = {h for h, why in refused.items() if why is None}
 
     packages, counts, outcome, _results = C._pass(
         brief, subset_rows, today=TODAY, prepared=subset_prepared,
         admit=("availability_unstated",), only_admitted=True)
     pool = {r["content_hash"] for r in subset_rows
             if outcome.get(id(r)) in C.POOL_OUTCOMES}
-    assert pool == passing
-    assert counts["admitted"] == {"availability_unstated": len(unstated)}
-    assert counts["availability_unstated"] == 0
+    assert pool == eligible
+    assert counts["admitted"] == {"availability_unstated": len(eligible)}
+    # A refused row that clears every later gate stops where the default search stops it,
+    # named; one a later gate stops is counted there, exactly as without admit.
+    assert counts["availability_unstated"] == len(passing) - len(eligible)
+    assert sum(counts["unstated_not_admitted"].values()) == len(passing) - len(eligible)
+    assert counts["unstated_not_admitted"] == dict(
+        Counter(why for why in refused.values() if why is not None))
 
     got, got_counts = C.build_packages(brief, subset_rows, today=TODAY,
                                        prepared=subset_prepared,
@@ -257,11 +278,18 @@ def test_admit_returns_exactly_the_unstated_rows_that_pass_every_later_gate(
     assert got == packages and got_counts == counts
     assert {p["content_hash"] for p in got} == {
         r["content_hash"] for r in subset_rows if outcome.get(id(r)) == "scored"}
+    if name == "qld_750k":
+        # Colin's search: every in-range unstated row is refused (two Build Only prices,
+        # duplex halves, a garbled line, the Wacol lot its sheet was re-read without).
+        assert not got
+    else:
+        assert got, "Max blank / $750k preferred admits exceptions-only stock"
     for p in got:
-        assert p["confirm"] == ["availability_unstated"]
+        assert "availability_unstated" in p["confirm"]
+        assert p["confirm_guard"] is None
         assert p["verified"] is False
         twin = later[p["content_hash"]]
-        strip = ("confirm", "verified")
+        strip = ("confirm", "confirm_guard", "verified")
         assert {k: v for k, v in p.items() if k not in strip} == \
             {k: v for k, v in twin.items() if k not in strip}
 
@@ -300,11 +328,14 @@ def test_explain_with_admit_reports_each_row_from_the_pool_it_is_really_in(
             assert verdict == plain, (row["content_hash"], plain["gate"], verdict["gate"])
             continue
         if verdict["package"] is None:
-            continue                                # admitted, then stopped by a later gate
-        assert verdict["package"]["confirm"] == ["availability_unstated"]
+            continue                     # stopped by a later gate, or refused admission
+        assert "availability_unstated" in verdict["package"]["confirm"]
         assert verdict["gate"] == admitted_fate[id(row)]
         seen_admitted[verdict["gate"]] += 1
-    assert seen_admitted["scored"] > 0
+    if name == "qld_750k":
+        assert not seen_admitted, "Colin's six in-range unstated rows are all refused"
+    else:
+        assert seen_admitted["scored"] > 0
     # One row at a time says the same, for every kind of verdict the pass produced.
     first = {}
     for row, verdict in with_admit:

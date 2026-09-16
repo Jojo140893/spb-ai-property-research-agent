@@ -126,6 +126,14 @@ BUILDING_DERIVED_FIELDS = ["source_link_url", "source_link_opens", "source_link_
 # Null in all three means the computation failed for that row (logged, run DEGRADED).
 PRICE_EVIDENCE_FIELDS = ["price_kind", "text_price_max", "price_in_text"]
 BUILDING_DERIVED_FIELDS += PRICE_EVIDENCE_FIELDS
+# AN EMAILED LIST'S IDENTITY AND FIRST READ, on 'digital email' rows only (null elsewhere),
+# from api/_candidates.snapshot_email_cells. An emailed row's date_checked is the last
+# night its message was still inside the 7-day inbox sweep -- Shape Homes' list dated
+# 13 Aug reads "checked 20/08" -- so the search ages it for the 45-day confirm limit from
+# first_seen, and recognises a newer list from the same sender by a hash of the subject
+# with its dates removed. The subject itself is not published.
+EMAIL_LIST_FIELDS = ["email_list", "email_first_seen"]
+BUILDING_DERIVED_FIELDS += EMAIL_LIST_FIELDS
 
 # benchmarks.json -- market comparables from realestate.com.au, which are NOT stock.
 # Its own payload, not a section of stock.json, for three reasons: stock.json is already
@@ -275,6 +283,19 @@ def _price_evidence_cells(row, failures: list) -> dict:
     except Exception as exc:                                            # noqa: BLE001
         failures.append((row.get("content_hash") or "", f"{type(exc).__name__}: {exc}"))
         return dict.fromkeys(PRICE_EVIDENCE_FIELDS)
+
+
+def _email_list_cells(row, failures: list) -> dict:
+    """The EMAIL_LIST_FIELDS cells for one row. Never raises, for the same reason as
+    _price_evidence_cells: nulls, which the search reads as "no emailed-list evidence"
+    (no newer-list guard, and the age limit falls back to date_checked)."""
+    try:
+        from api._candidates import snapshot_email_cells
+        cells = snapshot_email_cells(row)
+        return {f: cells[f] for f in EMAIL_LIST_FIELDS}
+    except Exception as exc:                                            # noqa: BLE001
+        failures.append((row.get("content_hash") or "", f"{type(exc).__name__}: {exc}"))
+        return dict.fromkeys(EMAIL_LIST_FIELDS)
 
 
 # Read by .github/workflows/daily-harvest.yml ("Fail the run if a data step died quietly")
@@ -586,8 +607,11 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     # fetching the deployed stock.json and counting labels naming a row or page: 0 of
     # 5,859 before this line, which is precisely the silent-loss the comment above
     # describes happening a second time.
+    # first_seen is read for the same reason: it becomes email_first_seen on emailed rows
+    # (EMAIL_LIST_FIELDS) and is dropped from every row inside the loop.
     _read_fields = BUILDING_FIELDS + ["source_text", "source_url", "stocklist_file",
-                                      "source_sheet", "source_row", "source_page"]
+                                      "source_sheet", "source_row", "source_page",
+                                      "first_seen"]
     rows = conn.execute(
         f"SELECT {', '.join(_read_fields)} FROM buildings "
         "ORDER BY builder_name, price").fetchall()
@@ -777,6 +801,9 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         # Price evidence reads source_text and lot_address, so it is taken BEFORE the text
         # is popped just below. Per row and guarded: see _price_evidence_cells.
         b.update(_price_evidence_cells(b, _evidence_failures))
+        # Also before source_url is popped: the emailed list's key is its subject's stem.
+        b.update(_email_list_cells(b, _evidence_failures))
+        b.pop("first_seen", None)
         # AFTER the link is built, not before: primary_source_link reads source_url and
         # stocklist_file to construct it, and popping them first cost 6,242 rows their
         # source link while leaving the feature apparently intact.
