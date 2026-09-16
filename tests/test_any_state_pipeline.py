@@ -81,6 +81,47 @@ def test_a_named_state_is_still_the_record_label(agent, subset_rows):
     assert " - QLD/General - " in result["research_record_id"]
 
 
+# The research record id is written in two places: kommo_agent when there are packages,
+# and api/research.py's zero-packages branch, which returns before the pipeline (and the
+# brief parser) ever runs. A blank-name or Any-state test that finds packages only ever
+# reaches the first, where the parser already says 'Unnamed Client' -- so it could never
+# fail. These briefs are chosen to find NOTHING on the fixture, and the test proves it.
+@pytest.mark.parametrize("brief,starts,label", [
+    (gen._brief(client_name="", budget_max=100000, preferred_spending_cap=100000),
+     "Unnamed Client - ", " - QLD/General - "),
+    (gen._brief(client_name="", state="", budget_max=40000, preferred_spending_cap=40000),
+     "Unnamed Client - ", " - Any state/General - "),
+])
+def test_the_zero_packages_record_id_names_the_client_and_the_state(
+        brief, starts, label, monkeypatch):
+    import _bootstrap
+    import _candidates
+    import research
+    monkeypatch.setenv("SPB_SNAPSHOT_JSON", str(gen.FIXTURE))
+    packages, _counts = _candidates.build_packages(dict(brief), gen.load_rows(gen.FIXTURE))
+    assert packages == [], "the premise: this brief must find no packages"
+
+    def not_called(*_a, **_k):
+        raise AssertionError("the pipeline ran, so this is not the zero-packages branch")
+    monkeypatch.setattr(_bootstrap.get_agent(), "run_property_research", not_called)
+
+    out = research.run_research({"client_brief": dict(brief)})
+    assert out["shortlist_count"] == 0
+    assert out["research_record_id"].startswith(starts), out["research_record_id"]
+    assert label in out["research_record_id"], out["research_record_id"]
+    assert out["kommo_payload"]["research_record_id"] == out["research_record_id"]
+
+
+def test_the_pipeline_record_id_for_a_blank_name_and_any_state(monkeypatch):
+    """The same brief shape WITH packages goes through kommo_agent instead."""
+    import research
+    monkeypatch.setenv("SPB_SNAPSHOT_JSON", str(gen.FIXTURE))
+    out = research.run_research({"client_brief": gen._brief(client_name="", state="")})
+    assert out["shortlist_count"] > 0
+    assert out["research_record_id"].startswith("Unnamed Client - Any state/General - "), (
+        out["research_record_id"])
+
+
 def test_a_lot_is_measured_from_the_named_suburb_in_its_own_state(agent):
     """Hand-built, no fixture: Tarneit VIC is about 9 km from Werribee VIC."""
     brief = gen._brief(state="", primary_suburbs=["Werribee"], search_radius_km=20)

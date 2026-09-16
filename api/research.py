@@ -371,9 +371,12 @@ def run_research(payload):
         # budget of 1e400 or a list arrives here raw. Both crashed the request with a
         # 500 on the exact path a caller hits when their search found nothing.
         budget = coerce_number(brief_dict.get('budget_max'), 0) or 0
+        # The same record id kommo_agent writes when there are packages: a blank name is
+        # 'Unnamed Client' (a get() default never fires on a key sent as ''), and a blank
+        # state is 'Any state', never QLD.
         record_id = "%s - %s/%s - $%s - %s" % (
-            brief_dict.get('client_name', 'Unnamed Client'),
-            str(brief_dict.get('state') or 'QLD').upper(), suburb,
+            brief_dict.get('client_name') or 'Unnamed Client',
+            str(brief_dict.get('state') or '').strip().upper() or 'Any state', suburb,
             format(budget, ',.0f'), datetime.now().strftime('%Y-%m-%d'))
         return {
             'status': 'success',

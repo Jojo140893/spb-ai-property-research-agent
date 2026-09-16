@@ -89,12 +89,19 @@ def scratch_config():
     # ignore_cleanup_errors: on Windows the audit DB's handle outlives the run.
     with tempfile.TemporaryDirectory(prefix="spb_w10_golden_",
                                      ignore_cleanup_errors=True) as tmp:
-        config.DATABASE_PATH = Path(tmp) / "audit.db"
-        config.OUTPUT_DIR = Path(tmp)
+        ours = (Path(tmp) / "audit.db", Path(tmp))
+        config.DATABASE_PATH, config.OUTPUT_DIR = ours
         try:
             yield
         finally:
-            config.DATABASE_PATH, config.OUTPUT_DIR = saved
+            # Only what is still ours. If api/_bootstrap.get_config() redirected these
+            # meanwhile (a test called run_research), putting the old values back would
+            # undo that for the rest of the process -- and a later search would write
+            # its client report into the repo's output/.
+            if config.DATABASE_PATH == ours[0]:
+                config.DATABASE_PATH = saved[0]
+            if config.OUTPUT_DIR == ours[1]:
+                config.OUTPUT_DIR = saved[1]
 
 
 def fresh_agent(rows):
