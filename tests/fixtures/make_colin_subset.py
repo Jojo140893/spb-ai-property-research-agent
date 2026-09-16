@@ -3,6 +3,7 @@
     python tests/fixtures/make_colin_subset.py subset --db <read-only 17 Sep DB> --work <scratch dir>
         [--snapshot <stock.json already built from that DB>]
     python tests/fixtures/make_colin_subset.py golden --snapshot <full 17 Sep stock.json>
+    python tests/fixtures/make_colin_subset.py enrich --snapshot <stock.json built by today's build_web>
 
 WHY A SUBSET. Colin searched "QLD under $750k" on 15 Sep and got two wrong answers. The
 offline replay of that search against a snapshot built from the 17 Sep database matched
@@ -50,8 +51,19 @@ SEED_PRICE_MAX = 850_000
 
 # Fields build_packages adds from W04 on. The goldens were saved BEFORE that change, so
 # they are compared with these removed and the test asserts they are the ONLY additions.
-NEW_PACKAGE_KEYS = ("age_days", "confirm")
-NEW_COUNT_KEYS = ("counts_in_range", "admitted")
+# W11 added the confirm guard, the emailed list's own age and the informational counts.
+W04_PACKAGE_KEYS = ("age_days", "confirm")
+W11_PACKAGE_KEYS = ("confirm_guard", "email_first_seen", "list_age_days")
+NEW_PACKAGE_KEYS = W04_PACKAGE_KEYS + W11_PACKAGE_KEYS
+W04_COUNT_KEYS = ("counts_in_range", "admitted")
+W11_COUNT_KEYS = ("just_over", "stale_over_limit", "newer_capture_demoted",
+                  "confirm_guarded", "unstated_not_admitted")
+NEW_COUNT_KEYS = W04_COUNT_KEYS + W11_COUNT_KEYS
+
+# Cells build_web derives at build time that the fixture did not carry when it was cut
+# (W07 price evidence, W11 emailed-list identity). `enrich` adds them to the SAME rows.
+BUILD_TIME_KEYS = ("price_kind", "text_price_max", "price_in_text",
+                   "email_list", "email_first_seen")
 
 # Link-bearing fields. Never committed.
 _LINK_FIELDS = ("listing_url", "floorplan_url", "brochure_url", "source_url",
@@ -360,7 +372,76 @@ def cmd_subset(args):
     print("wrote %s: %d rows of %d" % (target, len(subset), len(rows)))
 
 
+def cmd_enrich(args):
+    """Add BUILD_TIME_KEYS to the committed fixture's rows, from a snapshot built from the
+    same database by a build_web that writes them. The row set, order and every
+    fingerprint field must come out unchanged -- so the goldens keyed on the fixture's
+    fingerprint stay valid -- or nothing is written."""
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    keys = fixture["keys"]
+    rows = [dict(zip(keys, r)) for r in fixture["rows"]]
+    before = fingerprint(rows)
+    with open(args.snapshot, encoding="utf-8") as f:
+        payload = json.load(f)
+    missing = [k for k in BUILD_TIME_KEYS if k not in payload["keys"]]
+    if missing:
+        raise SystemExit("the snapshot has no %s; build it with the current build_web"
+                         % missing)
+    built = {}
+    for r in payload["rows"]:
+        row = dict(zip(payload["keys"], r))
+        built.setdefault(row.get("content_hash"), []).append(row)
+    for row in rows:
+        twins = built.get(row.get("content_hash")) or []
+        if len(twins) != 1:
+            raise SystemExit("fixture row %s is not exactly once in the snapshot"
+                             % row.get("content_hash"))
+        source = strip_links(twins[0])          # compared as the fixture was cut
+        for f in FINGERPRINT_FIELDS:
+            if row.get(f) != source.get(f):
+                raise SystemExit("fixture row %s differs from the snapshot on %s; this "
+                                 "snapshot is not the one the fixture was cut from"
+                                 % (row.get("content_hash"), f))
+        for k in BUILD_TIME_KEYS:
+            row[k] = scrub_urls(source.get(k))
+    if fingerprint(rows) != before:
+        raise SystemExit("enriching moved the fingerprint; not written")
+    out_keys = keys + [k for k in BUILD_TIME_KEYS if k not in keys]
+    fixture["keys"] = out_keys
+    fixture["rows"] = [[r.get(k) for k in out_keys] for r in rows]
+    fixture["build_time_keys"] = (
+        "%s added by `make_colin_subset.py enrich` from a snapshot of the same 17 Sep "
+        "database built by the W11 build_web; rows and fingerprint unchanged"
+        % list(BUILD_TIME_KEYS))
+    blob = json.dumps(fixture, ensure_ascii=False, separators=(",", ":"))
+    for bad in ("://", "www.", "dropbox", "rlkey"):
+        assert bad not in blob.lower(), "the fixture still carries %r" % bad
+    FIXTURE.write_text(blob, encoding="utf-8")
+    print("enriched %s: %d rows, keys %s" % (FIXTURE, len(rows), list(BUILD_TIME_KEYS)))
+
+
 # ------------------------------------------------------------------------------ golden
+
+# Why the goldens are what they are. A regeneration that is not one of these is a
+# behaviour change nobody documented, and must add its own entry with its proof.
+GOLDEN_HISTORY = (
+    "W04: saved with default arguments before the _gate split, today 16/09/2026.",
+    "W11: regenerated for exactly two documented changes. Proof: the W11 code run with "
+    "BUDGET_HEADROOM patched back to 50,000 and the newer-capture check switched off "
+    "reproduced every pre-W11 golden (counts, content_hashes and packages_digest) for all "
+    "13 briefs on both the subset and the full 17 Sep snapshot. (1) BUDGET_HEADROOM "
+    "50,000 -> 0: packages priced in (budget, budget + $50k] now stop at over_budget and "
+    "are counted in counts['just_over'] -- qld_750k -8 (just_over 8), qld_760k -9, "
+    "qld_770k -16, qld_600k_800k -20, werribee -21, nsw_750k -177 -- and where the 600-row "
+    "cap binds the freed slots re-spread (vic_900k_4bed: truncated -68, 214 in-budget "
+    "packages swapped by the cap). Rows those packages used to carry past later gates move "
+    "their counts too (stale_unverified, incomplete_facts, same_listing_collapsed, "
+    "storey_unknown_and_binding, no_suburb). (2) Critique 28: a fresh package whose lot a "
+    "later capture marks gone is no longer verified -- v2:46bc9cca (Avia lot 57, variant_E, "
+    "both fixtures) and v2:b0dfaf90 (variant_C, variant_D, werribee; full snapshot). The "
+    "live-only availability change the plan listed (W11.2) was not made (critique 1).",
+)
+
 
 def cmd_golden(args):
     _candidates = _api()
@@ -368,13 +449,15 @@ def cmd_golden(args):
     full_rows = load_rows(args.snapshot) if args.snapshot else None
     record = {
         "note": ("build_packages(brief, rows, today=16/09/2026) with default arguments, "
-                 "saved BEFORE W04 split the loop into _gate. 'subset' briefs run on "
+                 "first saved BEFORE W04 split the loop into _gate and regenerated only "
+                 "for the changes listed in 'history'. 'subset' briefs run on "
                  "colin_17sep_subset.json and are checked everywhere. 'full' outputs need "
                  "the 17 Sep snapshot (matched by full_snapshot_fingerprint) and are "
                  "checked only where SPB_SNAPSHOT_JSON points at it; they are stored as "
                  "content_hashes plus a digest because the packages carry links. Packages "
                  "are compared with %s removed and URLs scrubbed; counts with %s removed."
                  % (list(NEW_PACKAGE_KEYS), list(NEW_COUNT_KEYS))),
+        "history": list(GOLDEN_HISTORY),
         "today": TODAY_TEXT,
         "subset_fingerprint": fingerprint(subset_rows),
         "full_snapshot_fingerprint": fingerprint(full_rows) if full_rows else None,
@@ -410,8 +493,11 @@ def main(argv=None):
     s.add_argument("--out", help="write the fixture here instead of tests/fixtures/")
     g = sub.add_parser("golden")
     g.add_argument("--snapshot", help="the full 17 Sep stock.json (for local-only goldens)")
+    e = sub.add_parser("enrich")
+    e.add_argument("--snapshot", required=True,
+                   help="a stock.json built from the 17 Sep database by the current build_web")
     args = ap.parse_args(argv)
-    {"subset": cmd_subset, "golden": cmd_golden}[args.cmd](args)
+    {"subset": cmd_subset, "golden": cmd_golden, "enrich": cmd_enrich}[args.cmd](args)
 
 
 if __name__ == "__main__":
