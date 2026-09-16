@@ -31,6 +31,7 @@ import os
 import re
 import sqlite3
 import sys
+from collections import namedtuple
 from datetime import datetime
 from pathlib import Path
 
@@ -380,7 +381,17 @@ def _read_sqlite(path):
     try:
         conn.row_factory = sqlite3.Row
         cols = ", ".join(SNAPSHOT_FIELDS)
-        rows = conn.execute("SELECT %s FROM buildings" % cols).fetchall()
+        try:
+            rows = conn.execute("SELECT %s FROM buildings" % cols).fetchall()
+        except sqlite3.OperationalError as exc:
+            # The harvest database is NOT a snapshot: source_doc, source_link_*, rea_* and
+            # suburb_source are written by build_web, so this read fails on it. Say so,
+            # instead of leaving "no such column" for the next tool author to decode.
+            raise sqlite3.OperationalError(
+                "%s -- %s is not a snapshot database. Build one with "
+                "build_web.build(out, with_assets=False) on a scratch copy and read its "
+                "stock.json; join database-only fields with join_db_fields()."
+                % (exc, path)) from exc
         return [dict(r) for r in rows]
     finally:
         conn.close()
@@ -627,9 +638,19 @@ def _collapse_same_listing(entries):
 
     `entries` is [(seen_date_or_None, package)]. Returns (packages, merged_count).
     """
+    kept = _collapse_kept(entries)
+    return [entries[i][1] for i in kept], len(entries) - len(kept)
+
+
+def _collapse_kept(entries):
+    """Indexes into `entries` of the packages _collapse_same_listing keeps, in its order.
+
+    Indexes rather than packages so a caller can also say WHICH rows were merged away --
+    explain_row needs that to tell a consultant their lot was folded into its twin.
+    """
     groups = {}
     order = []
-    for seen, pkg in entries:
+    for index, (seen, pkg) in enumerate(entries):
         key = (pkg["builder_name"].lower(), pkg["lot_address"].lower(),
                pkg["suburb"].lower(), pkg["advertised_package_price"],
                pkg["bedrooms"], pkg["bathrooms"], pkg["car_spaces"],
@@ -638,12 +659,11 @@ def _collapse_same_listing(entries):
                 1 if pkg["house_design"] else 0,
                 1 if pkg["source_url_or_ref"].startswith("http") else 0)
         if key not in groups:
-            groups[key] = (rank, pkg)
+            groups[key] = (rank, index)
             order.append(key)
         elif rank > groups[key][0]:
-            groups[key] = (rank, pkg)
-    kept = [groups[k][1] for k in order]
-    return kept, len(entries) - len(kept)
+            groups[key] = (rank, index)
+    return [groups[k][1] for k in order]
 
 
 # A group must have more than one located row before it can name the rest. See the note
@@ -909,24 +929,30 @@ def _state_by_estate_containment(row, candidates):
     return next(iter(found)) if len(found) == 1 else ""
 
 
-def build_packages(brief_dict, rows, today=None):
-    """(packages, coverage) — coverage is a plain dict of counts, all reported.
+class PreparedRows:
+    """The brief-independent half of build_packages, computed once per snapshot.
 
-    `brief_dict` is the raw brief the browser posted; only budget/state/storeys are
-    read here. Everything else stays the pipeline's job.
+    Every map below reads the whole catalogue and none of them reads the brief, yet they
+    were rebuilt on every request -- about 0.35 s of the 0.53-0.70 s build_packages took
+    on the live snapshot. That was merely slow while a search ran build_packages once.
+    Explaining a thin search re-runs it for every relaxation it prices, and a
+    needs-confirming pass runs it again, so the cost has to be paid once.
+
+    Built by prepare_rows(rows) and valid ONLY for those rows: row_count is checked on
+    every use, so a prepared set from another snapshot fails loudly instead of quietly
+    borrowing states and suburbs from a catalogue that is no longer deployed.
     """
-    state = str(brief_dict.get("state") or "").strip().upper()
-    # What the client is buying, as a SET — Colin, 17 Aug: "if I choose townhouse and
-    # house both as a property type and then let's search". A single value could not
-    # express the brief he actually had. Accepts a list or one string so an older caller
-    # (server.py, a saved brief) keeps working.
-    _raw_product = brief_dict.get("product_type")
-    if isinstance(_raw_product, (list, tuple, set)):
-        want_product = {str(p).strip().lower() for p in _raw_product if str(p).strip()}
-    else:
-        _one = str(_raw_product or "").strip().lower()
-        want_product = {_one} if _one else set()
-    want_incentive = bool(brief_dict.get("requires_incentive"))
+
+    __slots__ = ("row_count", "estate_suburb", "page_suburb", "state_of", "containment",
+                 "unambiguous_estate", "states_availability")
+
+    def __init__(self, **fields):
+        for name in self.__slots__:
+            setattr(self, name, fields[name])
+
+
+def prepare_rows(rows):
+    """PreparedRows for this snapshot. Pure: the same rows always give the same maps."""
     # A suburb the SAME ESTATE states on its other rows. 3,292 live rows record no suburb
     # at all and are therefore unlocatable — dropped before scoring, so a third of the
     # apartment stock can never be recommended. The suburb is inside the source PDF the
@@ -939,12 +965,12 @@ def build_packages(brief_dict, rows, today=None):
     # within one state, because a fifth of Australian locality names exist in more than
     # one. It recovers ~222 rows of the 3,292 — 7%. The rest need the extractor to read
     # the suburb out of the file, which is harvest-side work, not a filter fix.
-    _estate_suburb = _sibling_suburb_map(rows, "estate_name")
+    estate_suburb = _sibling_suburb_map(rows, "estate_name")
     # SECOND, and only where the estate has nothing to say. A source page is a weaker
     # claim than an estate — one page can list several suburbs — so it is checked after,
     # and the same 80% agreement rule applies. It is worth having: 496 live rows have no
     # estate name at all but sit on a page whose other rows agree on one suburb.
-    _page_suburb = _sibling_suburb_map(rows, _DOC_KEY)
+    page_suburb = _sibling_suburb_map(rows, _DOC_KEY)
     # THE STATE, BORROWED, BEFORE ANY OF THE ABOVE CAN BE ASKED.
     #
     # Both maps above are keyed by state, and every suburb rule in suburb_quality
@@ -955,25 +981,612 @@ def build_packages(brief_dict, rows, today=None):
     #
     # 95%, not 80%. A state is a stronger claim than a suburb — one estate sits in one
     # state, and a page mixing two is a page whose state cannot be borrowed at all.
-    _state_of = _sibling_state_map(rows)
-    _containment = _containment_candidates(_state_of)
-    # LAST RESORT, for rows the two maps above cannot key at all — see the call site.
-    _unambiguous_estate = _unambiguous_estate_map(rows)
-    budget_max = _num(brief_dict.get("budget_max")) or 0.0
-    ceiling = budget_max + BUDGET_HEADROOM if budget_max else None
-    floor = _num(brief_dict.get("budget_min")) or 0.0
-    # storeys_max < 2 is the only brief that a missing storey figure could slip past,
-    # because any real house-and-land storey value (1 or 2) satisfies a max of 2.
-    storeys_max = _int(brief_dict.get("storeys_max"))
-    storey_is_binding = storeys_max is not None and storeys_max < 2
-    # Only demand a fact the client's brief actually depends on. This gate used to
-    # require all four of REQUIRED_FACTS from every row regardless of the brief, and
-    # house size is recorded on 18% of stock — so 675 of VIC's 2,690 listings were
-    # discarded for a missing house size even when the brief set NO house-size minimum.
-    # Together with the other gates that left every VIC brief, at every budget and every
-    # radius, returning exactly zero results. Same reasoning as storey_is_binding.
-    binding_facts = {field for field, _ in REQUIRED_FACTS
-                     if (_num(brief_dict.get(BRIEF_MINIMUM_FOR[field])) or 0) > 0}
+    state_of = _sibling_state_map(rows)
+    containment = _containment_candidates(state_of)
+    # LAST RESORT, for rows the two maps above cannot key at all — see _gate.
+    unambiguous_estate = _unambiguous_estate_map(rows)
+    # WHICH DOCUMENTS SAY ANYTHING ABOUT AVAILABILITY AT ALL. See the filter in _gate.
+    # Built once, outside the row loop: the estate-containment lookup was written inside
+    # one and took ten minutes a request before it was hoisted.
+    states_availability = set()
+    for _r in rows:
+        _a = str(_r.get("availability_status") or "").strip().lower()
+        if _a in IS_AVAILABLE or _a in NOT_AVAILABLE:
+            states_availability.add(str(_r.get(_DOC_KEY) or ""))
+    states_availability.discard("")
+    return PreparedRows(row_count=len(rows), estate_suburb=estate_suburb,
+                        page_suburb=page_suburb, state_of=state_of, containment=containment,
+                        unambiguous_estate=unambiguous_estate,
+                        states_availability=states_availability)
+
+
+# One entry: a warm instance serves one deployed snapshot, and a stale entry must never
+# outlive the file it was built from.
+_PREPARED_CACHE = {}
+
+
+def prepared_for_snapshot(rows, source_path):
+    """prepare_rows(rows), cached per warm instance on the snapshot's path + mtime.
+
+    `rows` must be what load_snapshot() just read from `source_path`. The key also carries
+    the file size, and a hit is used only when its row count matches, so a snapshot
+    rewritten in place is rebuilt rather than served from the old maps.
+
+    NOT FOR ROWS CHANGED IN MEMORY. The key is the file, so rows patched after loading (a
+    test that supersedes a lot or moves a state without rewriting the file) would be served
+    the maps of the unpatched file: states borrowed and suburbs voted from data that is no
+    longer the data searched. Call prepare_rows(patched_rows) for those.
+    """
+    try:
+        st = os.stat(str(source_path))
+        key = (os.path.abspath(str(source_path)), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return prepare_rows(rows)
+    hit = _PREPARED_CACHE.get(key)
+    if hit is not None and hit.row_count == len(rows):
+        return hit
+    prepared = prepare_rows(rows)
+    _PREPARED_CACHE.clear()
+    _PREPARED_CACHE[key] = prepared
+    return prepared
+
+
+def _checked_prepared(rows, prepared):
+    """prepared, built now when absent, refused when it came from other rows."""
+    if prepared is None:
+        return prepare_rows(rows)
+    if prepared.row_count != len(rows):
+        raise ValueError("prepared rows were built from %d rows, not these %d; call "
+                         "prepare_rows on the snapshot being searched"
+                         % (prepared.row_count, len(rows)))
+    return prepared
+
+
+class _BriefContext:
+    """What build_packages reads from a brief, parsed once per brief rather than per row."""
+
+    __slots__ = ("state", "want_product", "want_incentive", "budget_max", "ceiling",
+                 "floor", "storeys_max", "storey_is_binding", "binding_facts", "admit")
+
+    def __init__(self, brief_dict, admit=()):
+        self.state = str(brief_dict.get("state") or "").strip().upper()
+        # What the client is buying, as a SET — Colin, 17 Aug: "if I choose townhouse and
+        # house both as a property type and then let's search". A single value could not
+        # express the brief he actually had. Accepts a list or one string so an older
+        # caller (server.py, a saved brief) keeps working.
+        _raw_product = brief_dict.get("product_type")
+        if isinstance(_raw_product, (list, tuple, set)):
+            self.want_product = {str(p).strip().lower() for p in _raw_product
+                                 if str(p).strip()}
+        else:
+            _one = str(_raw_product or "").strip().lower()
+            self.want_product = {_one} if _one else set()
+        self.want_incentive = bool(brief_dict.get("requires_incentive"))
+        self.budget_max = _num(brief_dict.get("budget_max")) or 0.0
+        self.ceiling = self.budget_max + BUDGET_HEADROOM if self.budget_max else None
+        self.floor = _num(brief_dict.get("budget_min")) or 0.0
+        # storeys_max < 2 is the only brief that a missing storey figure could slip past,
+        # because any real house-and-land storey value (1 or 2) satisfies a max of 2.
+        self.storeys_max = _int(brief_dict.get("storeys_max"))
+        self.storey_is_binding = self.storeys_max is not None and self.storeys_max < 2
+        # Only demand a fact the client's brief actually depends on. This gate used to
+        # require all four of REQUIRED_FACTS from every row regardless of the brief, and
+        # house size is recorded on 18% of stock — so 675 of VIC's 2,690 listings were
+        # discarded for a missing house size even when the brief set NO house-size
+        # minimum. Together with the other gates that left every VIC brief, at every
+        # budget and every radius, returning exactly zero results. Same reasoning as
+        # storey_is_binding.
+        self.binding_facts = {field for field, _ in REQUIRED_FACTS
+                              if (_num(brief_dict.get(BRIEF_MINIMUM_FOR[field])) or 0) > 0}
+        unknown = set(admit or ()) - set(ADMITTABLE_GATES)
+        if unknown:
+            raise ValueError("cannot admit past %s; admittable: %s"
+                             % (sorted(unknown), list(ADMITTABLE_GATES)))
+        self.admit = frozenset(admit or ())
+
+    def in_range(self, price):
+        """Priced inside the brief's own range: no headroom, both ends inclusive."""
+        if not price or price <= 0:
+            return False
+        if self.floor and price < self.floor:
+            return False
+        return not self.budget_max or price <= self.budget_max
+
+
+# Every gate a row can stop at, in the order _gate asks. A row that passes all of them
+# becomes a package (PASSED); what happens to it after that -- merged with the same lot
+# from another channel, cut by the candidate cap, or scored -- is decided over the whole
+# pool, so explain_row reports it from the same pass build_packages makes.
+GATE_ORDER = (
+    "superseded", "state_unknown", "other_state", "other_product_type", "no_incentive",
+    "price_unverified", "not_available", "availability_unstated", "no_price",
+    "over_budget", "under_minimum", "no_suburb", "suburb_not_a_locality",
+    "incomplete_facts",
+)
+PASSED = "package"
+POOL_OUTCOMES = ("same_listing_collapsed", "truncated", "scored")
+
+# Gates that decide scope rather than suitability. Rows stopped here are not "in the
+# requested state", so they are left out of the in-range tally.
+_OUT_OF_SCOPE = frozenset(("superseded", "state_unknown", "other_state"))
+
+# The in-range tally's name for a row that passed every gate before scoring. It includes
+# stale rows (sent on as unverified) and rows available by the sheet: the name answers
+# "was it stopped before scoring", not "is it confirmed available".
+IN_RANGE_PASSED = "available"
+
+# Gates a caller may ask to see past. Only availability_unstated: a row whose source did
+# not say whether it is for sale can be shown to a consultant to confirm. A SOLD row
+# cannot, and a price that cannot be trusted cannot be confirmed by phoning anyone.
+ADMITTABLE_GATES = ("availability_unstated",)
+
+
+# (code, package, tags, detail, seen_at) for one row -- see _gate. A plain namedtuple
+# holding the lists _gate built, uncopied: it is made once per row of every search.
+GateResult = namedtuple("GateResult", ("code", "package", "tags", "detail", "seen_at"),
+                        defaults=(None,))
+
+
+def _age_days(row, today=None):
+    """Whole days since the row's date_checked, or None when it has no readable date.
+
+    Separate from _fresh on purpose: _fresh's (verified, seen, raw) is read by
+    _price_unverified and by the same-listing collapse's ranking, and changing its shape
+    breaks both. Reuses its parser so one place understands the two date formats.
+    """
+    _verified, seen, _raw = _fresh(row, today)
+    if seen is None:
+        return None
+    return ((today or datetime.now()) - seen).days
+
+
+def _gate(ctx, row, prepared, today):
+    """Every gate build_packages applies to one row, in the order it has always applied
+    them. Returns GateResult(code, package or None, tags, detail, seen_at):
+
+      code     the first gate that stopped the row (GATE_ORDER), or PASSED;
+      package  the candidate package when code is PASSED, else None;
+      tags     counters the row increments WITHOUT being stopped (state_borrowed,
+               estate_only_place, available_by_the_sheet, storey_unknown_and_binding,
+               stale_unverified), in the order the loop always incremented them;
+      detail   what the deciding gate saw -- the only per-row record of a rejection;
+      seen_at  the parsed capture date, which the same-listing collapse ranks on.
+
+    THE ONE PATH. build_packages and explain_row both call this, so the answer to "why
+    was this listing not shown" can never come from a second copy of the rules that has
+    drifted from the first.
+    """
+    tags = []
+    detail = {}
+    # An older capture of a lot we also hold fresher. The dashboard has hidden these
+    # by default since they were identified, but the recommendation engine was still
+    # scoring all 979 of them — so the one place where a stale price actually reaches
+    # a client, the shortlist, was the one place that ignored the flag.
+    if row.get("superseded_by"):
+        return GateResult("superseded", None, tags,
+                          {"superseded_by": row.get("superseded_by")})
+    row_state = str(row.get("state") or "").strip().upper()
+    if not row_state:
+        # BORROW THE STATE BEFORE DROPPING THE ROW FOR NOT HAVING ONE.
+        #
+        # This borrow was written 70 lines further down, next to the suburb borrows,
+        # where it could never run: every row it targets had already been dropped
+        # here. "CC-0114, Bald Hills" and "CC-0108, One Mile" name real Queensland
+        # suburbs and were invisible to every search purely because their own row
+        # does not say QLD, while every other row on the same price list does.
+        #
+        # It has to be here, before the drop, and before the suburb rules further
+        # down — all of which are keyed by state and none of which can run without
+        # one.
+        # None is the containment pass — an estate spelled longer here than where its
+        # state is known. Last, because every named field above is an exact claim.
+        for _field in ("estate_name", "source_doc", "source_url", "builder_name", None):
+            _borrowed = (
+                _state_by_estate_containment(row, prepared.containment) if _field is None
+                else prepared.state_of.get(
+                    (_field, str(row.get(_field) or "").strip().lower())))
+            if _borrowed:
+                # A BORROWED STATE MUST NOT COST THE ROW ITS OWN SUBURB.
+                #
+                # This borrow exists for rows that have nothing; it must not take
+                # from rows that have something. The eight West End Commercial
+                # tenancies store the suburb "West End" and no state, which resolves
+                # on its own as unchecked-but-usable. One of the eight also carries
+                # NSW -- wrongly; there is no West End in New South Wales -- and that
+                # single row was enough to map the whole document to NSW, after which
+                # "West End" failed the locality check and seven rows that had an
+                # answer had none. A state is only worth borrowing if the row is no
+                # worse for it.
+                _before = suburb_quality.resolve(dict(row, suburb_source=""))[1]
+                _after = suburb_quality.resolve(
+                    {**row, "state": _borrowed, "suburb_source": ""})[1]
+                if (suburb_quality.is_searchable(_before)
+                        and not suburb_quality.is_searchable(_after)):
+                    continue                  # try the next field, or borrow nothing
+                # AND DROP THE GRADE THE ROW ARRIVED WITH. suburb_source was decided
+                # at build time under the facts of that moment — for these rows,
+                # "no state recorded, so the value cannot be checked". resolve()
+                # honours a carried reason, and would keep honouring that one after
+                # the state it complains about has just been supplied, so the borrow
+                # would buy nothing. Cleared, the row is graded again from scratch.
+                row = {**row, "state": _borrowed, "suburb_source": ""}
+                row_state = _borrowed
+                tags.append("state_borrowed")
+                detail["state_borrowed_from"] = _field or "estate containment"
+                break
+    # AN ESTATE THAT SITS IN EXACTLY ONE PLACE, for the rows the maps above cannot
+    # key. Both suburb maps need (estate, STATE), so a row whose state is missing or
+    # wrong is unreachable by either -- and 42 rows are in that position with nothing
+    # else left. Hattan's ten "Penrose Place" lots say NSW where the estate's other
+    # ten say VIC and name Officer; their state_source is 'suburb', so the state was
+    # derived from the suburb column, and that column holds the estate name. Runs
+    # only where the row's own state is absent or rests on that refused value.
+    if _estate_is_the_only_evidence(row):
+        _sub, _why = suburb_quality.resolve(row)
+        if not suburb_quality.is_searchable(_why):
+            _only = prepared.unambiguous_estate.get(
+                (str(row.get("builder_name") or "").strip().lower(),
+                 str(row.get("estate_name") or "").strip().lower()))
+            if _only and _only[0]:
+                row = {**row, "state": _only[0], "suburb": _only[1],
+                       "suburb_source": ""}
+                row_state = _only[0]
+                tags.append("estate_only_place")
+                detail["estate_only_place"] = [_only[0], _only[1]]
+    if not row_state:
+        return GateResult("state_unknown", None, tags, detail)
+    detail["state"] = row_state
+    if ctx.state and row_state != ctx.state:
+        return GateResult("other_state", None, tags, detail)
+
+    # A row that STATES a different product is rejected; a row that states none is
+    # not. That asymmetry is the same rule the bedroom, bathroom and house-size gates
+    # already follow, and it exists because inventing a requirement is the more
+    # expensive error here: 1,826 of 5,879 live rows record no product_type at all,
+    # so rejecting the unstated ones would discard a third of the catalogue to
+    # enforce a preference their source never contradicted.
+    #
+    # It still does the job Colin needed on 5 Aug — "Land" is stated on the 145 rows
+    # that are vacant blocks, so a house brief no longer ranks one of them first.
+    if ctx.want_product:
+        row_product = product_type_of(row).lower()
+        # AN UNKNOWN TYPE NO LONGER PASSES. It used to, deliberately: 1,853 of 6,127
+        # rows stated no type, and rejecting them discarded a third of the catalogue to
+        # enforce a preference their source never contradicted.
+        #
+        # Inference has since settled all but ~2%, and the old rule is now the bug
+        # rather than the guard: measured 17 Aug, Apartment / Townhouse / Villa / Land
+        # each returned the SAME 19 rows, every one type-unknown and none of them the
+        # requested type. That is Colin's complaint word for word — "it's still giving
+        # us the same options regardless of what you write" — surviving inside the fix
+        # meant to end it. A filter that cannot exclude is not a filter.
+        if not row_product or row_product not in ctx.want_product:
+            detail["product_type"] = row_product
+            return GateResult("other_product_type", None, tags, detail)
+
+    # UNLIKE every other filter here, an unstated value is EXCLUDED — and the
+    # asymmetry is deliberate. "Show me packages with a rebate" is a request for rows
+    # that positively carry one; a row whose source never mentioned an incentive is
+    # not a maybe, it is a no. Including the silent ones would return the whole
+    # catalogue and answer nothing.
+    #
+    # Only 80 of 5,879 live rows carry one, so this narrows hard on purpose. That is
+    # the point — Colin was hunting value-driven packages for the Farirais and had no
+    # way to find them.
+    if ctx.want_incentive:
+        has_inc = ((_num(row.get("incentive_amount")) or 0) > 0
+                   or str(row.get("incentive_text") or "").strip())
+        if not has_inc:
+            return GateResult("no_incentive", None, tags, detail)
+
+    if _price_unverified(row):
+        detail["source_channel"] = str(row.get("source_channel") or "")
+        detail["date_checked"] = str(row.get("date_checked") or "")
+        return GateResult("price_unverified", None, tags, detail)
+    avail = str(row.get("availability_status") or "").strip().lower()
+    if avail in NOT_AVAILABLE:
+        detail["availability_status"] = str(row.get("availability_status") or "")
+        return GateResult("not_available", None, tags, detail)
+    by_the_sheet = False
+    admitted = []
+    if avail not in IS_AVAILABLE:
+        # A SHEET WITH NO STATUS COLUMN IS ITSELF THE AVAILABILITY STATEMENT.
+        #
+        # Blank means two different things and this told them apart the wrong way.
+        # The Irving Domain price list — Box Hill, 6 apartments at $450k-$499k —
+        # prints Residence, Bedrooms, Bathrooms, Internal, External, Total, Car,
+        # Price, Carpark, OC. There is no status column anywhere on it, because the
+        # vendor lists what is for sale and deletes a unit when it sells. Being on
+        # the list IS the signal. Coleen searched Box Hill under $500k on 26 Aug and
+        # got nothing while all six sat in the catalogue, priced and current.
+        #
+        # So the question is not "is this cell blank" but "does this document ever
+        # state availability". If it does and THIS row is blank, the cell is a real
+        # gap and the row stays out — 569 rows, unchanged. If the document is silent
+        # throughout, the sheet is the list — 1,068 rows, recoverable. A row with no
+        # document key cannot be told apart either way and stays out (57).
+        #
+        # Counted separately and flagged on the entry rather than quietly folded in
+        # with the stated ones, because a consultant putting this in front of a buyer
+        # should know the source never said the word.
+        doc = str(row.get(_DOC_KEY) or "")
+        if doc and doc not in prepared.states_availability:
+            by_the_sheet = True
+            tags.append("available_by_the_sheet")
+        else:
+            # Unstated on a document that states it elsewhere, or unattributable.
+            # See IS_AVAILABLE for why "unstated" is not "available".
+            detail["availability_status"] = str(row.get("availability_status") or "")
+            detail["document_states_availability"] = bool(doc)
+            if "availability_unstated" not in ctx.admit:
+                return GateResult("availability_unstated", None, tags, detail)
+            # ADMITTED, NOT APPROVED. The caller asked to see these rows so a
+            # consultant can confirm them; they go on through every later gate, and
+            # leave marked confirm=['availability_unstated'] and never verified.
+            admitted.append("availability_unstated")
+            detail["admitted"] = list(admitted)
+
+    price = _num(row.get("price"))
+    if not price or price <= 0:
+        detail["price"] = row.get("price")
+        return GateResult("no_price", None, tags, detail)
+    if ctx.ceiling is not None and price > ctx.ceiling:
+        detail["price"] = price
+        detail["ceiling"] = ctx.ceiling
+        return GateResult("over_budget", None, tags, detail)
+    # A PRICE RANGE, NOT JUST A CEILING. Colin and Coleen search a bracket -- "three
+    # to four hundred" -- and with only a maximum the cheap end of the state filled
+    # the answer every time. A minimum is a real exclusion, unlike the preferred
+    # price, which only ranks; the floor is exact, with no headroom, because a
+    # consultant who types a minimum has ruled that price out rather than nearly
+    # ruled it out.
+    if ctx.floor and price < ctx.floor:
+        detail["price"] = price
+        detail["floor"] = ctx.floor
+        return GateResult("under_minimum", None, tags, detail)
+
+    # ONE ANSWER ABOUT WHAT COUNTS AS A PLACE, shared with the published snapshot.
+    #
+    # This gate used to be three steps written out here — display_suburb, then
+    # clean_locality, then a bare-else that dropped the row — while build_web.py ran
+    # only the first of them. So a row could be excluded from every search as "not a
+    # recognised locality" and still be published to the dashboard with that same
+    # value printed as its suburb. suburb_quality.resolve is now the single answer
+    # both paths call, for the reason clean_locality was centralised in the first
+    # place: two copies of this judgement drift, and did.
+    #
+    # PRESENT is not the same as REAL. Those rows were not merely stored, they were
+    # RECOMMENDED: a QLD search returned "Lot 507, 2026 in 2026, QLD" and "Lot 507,
+    # offer in offer, QLD" as four of its five results. A listing whose location
+    # cannot be confirmed must not reach a client, and cannot be geocoded,
+    # distance-filtered or benchmarked either.
+    suburb, suburb_why = suburb_quality.resolve(row)
+    if not suburb_quality.is_located(suburb_why):
+        state_key = str(row.get("state") or "").strip().upper()
+        for group_map, field in ((prepared.estate_suburb, "estate_name"),
+                                 (prepared.page_suburb, _DOC_KEY)):
+            borrowed = group_map.get(
+                (str(row.get(field) or "").strip().lower(), state_key))
+            if borrowed:
+                row = {**row, "suburb": borrowed}
+                suburb, suburb_why = suburb_quality.resolve(row)
+                if suburb_quality.is_located(suburb_why):
+                    break
+    # SEARCHABLE, not LOCATED. A listing whose suburb we inferred from its own text
+    # is real stock at a real price, and dropping it here is exactly what made Coleen
+    # report properties as missing that the app had. It comes through, carrying
+    # suburb_source so the caveat travels with it.
+    #
+    # is_located is still the gate everywhere the position has to be TRUE — distance
+    # filtering, benchmarking and comparables all ask that question separately and
+    # still refuse these rows. A wrong suburb costs a noisier search; a wrong
+    # comparable costs a client a wrong valuation.
+    if not suburb_quality.is_searchable(suburb_why):
+        # SHOWN is not LOCATED. A value can be a real locality name and still be
+        # unusable here: with no state recorded there is nothing to check it against,
+        # geo.locate needs both halves, and a fifth of Australian locality names
+        # exist in more than one state. Those rows stay visible in the Building Stock
+        # table with the caveat; they must not be scored, distance-filtered or
+        # benchmarked.
+        detail["suburb"] = str(row.get("suburb") or "")
+        detail["suburb_source"] = suburb_why
+        if suburb_why == suburb_quality.BLANK_ABSENT:
+            # Without a locality the row cannot be geocoded, so no distance and no
+            # benchmark can be established for it.
+            return GateResult("no_suburb", None, tags, detail)
+        return GateResult("suburb_not_a_locality", None, tags, detail)
+
+    facts = {}
+    blocking, unstated = [], []
+    for field, label in REQUIRED_FACTS:
+        value = _int(row.get(field)) if field != "house_sqm" else _num(row.get(field))
+        facts[field] = value
+        if value is not None:
+            continue
+        (blocking if field in ctx.binding_facts else unstated).append(label)
+    if blocking:
+        # The client set a minimum for this and the listing does not say — it cannot
+        # be judged against their requirement, so it is excluded and named.
+        detail["missing"] = blocking
+        return GateResult("incomplete_facts", None, tags, detail)
+    # Nothing in the brief turns on these. Scored, with the gap on the record so the
+    # report can say "not stated" instead of implying a figure.
+    detail["unstated"] = unstated
+
+    storeys = _storeys(row)
+    if storeys is None and ctx.storey_is_binding:
+        # Counted, but no longer dropped. This exclusion existed because
+        # CandidateProperty.storeys was a plain int that defaulted to 1, so an
+        # unrecorded storey silently satisfied a "single storey only" brief. storeys is
+        # Optional now and the scorer flags None instead of assuming it, so the row can
+        # be scored honestly — and it has to be, because storey is stated on 149 of
+        # 4,192 rows and dropping the rest made a single-storey brief return NOTHING:
+        # all 33 lots that met every other requirement were thrown away here.
+        tags.append("storey_unknown_and_binding")
+
+    verified, seen_at, seen_on = _fresh(row, today)
+    if not verified:
+        tags.append("stale_unverified")
+    # _age_days, without parsing the date a second time for every package.
+    age_days = ((today or datetime.now()) - seen_at).days if seen_at is not None else None
+
+    builder = str(row.get("builder_name") or "").strip()
+    # A project-scope row's name is a DEVELOPMENT, not a builder — E-Agent lists
+    # apartments and townhouses by development, and for those rows the name came off a
+    # price-list file name or a project card, never from a builder. Passing it through
+    # as the builder made the scorer hand "Waler Heights" a builder_confidence_rating
+    # of MEDIUM and printed "Builder: Waler Heights" on a client card. Of the 75 rows
+    # in the database that are scoreable at all, 43 are project-scope, so this was the
+    # majority of the shortlist, not an edge case.
+    scope = str(row.get("attribution_scope") or "").strip().lower()
+    development = builder if scope == "project" else ""
+    if scope == "project":
+        builder = ""
+    if not builder:
+        # NOT a guess and NOT an empty string: BuilderRegistry.search_builder_by_name
+        # does `query in registry_name`, so an empty query matches the FIRST builder
+        # in the directory and would attribute the lot to them.
+        builder = "Builder not identified in source"
+
+    listing_ref = (str(row.get("listing_url") or "").strip()
+                   or str(row.get("brochure_url") or "").strip())
+    package = {
+        # Carried so a consultant's selection can outlive the search that produced it
+        # — see the note on SNAPSHOT_FIELDS. Never rendered; it is an identity, not a
+        # fact about the property.
+        "content_hash": str(row.get("content_hash") or "").strip(),
+        # True when this row is on a price list that never states availability, so
+        # its being listed is the only evidence it is still for sale. The row is
+        # recommended — see the filter above for why — but a consultant should know
+        # the source did not say the word before quoting it to a buyer.
+        "availability_by_the_sheet": by_the_sheet,
+        # The rebate, as the source stated it. Coleen's target one-pager has a "Rebate"
+        # and an "Effective Price" column ($728,500 package - $10,000 rebate =
+        # $718,500), and neither could be filled because these two never left the
+        # snapshot reader — the pipeline used incentives only to FILTER
+        # (want_incentive), never to report. Effective price is derived at render time
+        # rather than stored, so it cannot drift from the two numbers behind it.
+        "incentive_amount": _num(row.get("incentive_amount")) or 0.0,
+        "incentive_text": str(row.get("incentive_text") or "").strip(),
+        "builder_name": builder,
+        # The label a client reads. Prefer the street address recovered from the
+        # row's own text (stocklist_reparse), because on 47% of stock lot_address is
+        # the entire flattened spreadsheet row and stripping the prices out of it
+        # still leaves a jumble. Falls back to the cleaned lot_address where no
+        # street was stated. Never invents and never empties.
+        "lot_address": (_display_address(row) or "(no address in source row)"),
+        # THE LOT AS THE SOURCE STATED IT, beside the address rather than inside it. On
+        # thousands of rows the address a client reads is only a street address -
+        # "5532 Verday Blvd, Jubilee" - and Clare's availability check
+        # (vapi-kommo-hook, lib/tools/stock-match.js) may only confirm a lot it can see,
+        # so without this a caller asking about lot 5532 could never be matched. The raw
+        # value, stripped: a stock code stays a stock code, a blank stays blank, and it
+        # is never read out of the address, because a street number is not a lot.
+        "lot_number": str(row.get("lot_number") or "").strip(),
+        "suburb": suburb,
+        # HOW WE KNOW IT. Carried so the grade cannot die at this boundary: without
+        # it api/research.py rebuilds a bare {suburb, state, ...} dict for the
+        # comparables gate, suburb_quality.resolve() on that dict has only a locality
+        # name to go on and returns STATED, and the gate meant to keep GUESSED
+        # locations out of a client's comparables can never reject anything.
+        "suburb_source": suburb_why,
+        "state": row_state,
+        # The development keeps its name here, where it is true, instead of standing in
+        # for a builder. Falls back to the estate for builder-scope rows.
+        "developer_name": development or str(row.get("estate_name") or "").strip(),
+        "house_design": str(row.get("product_type") or "").strip(),
+        "estate_context": str(row.get("estate_name") or "").strip(),
+        "bedrooms": facts["bedrooms"],
+        "bathrooms": facts["bathrooms"],
+        "car_spaces": facts["car_spaces"],
+        # None, not 0 and not the pipeline's 1. A max-storeys filter must not be
+        # satisfied by a number nobody recorded — but 0 satisfied it silently just as 1
+        # would have, so the "confirm the storey count" flag never appeared on the card.
+        # CandidateProperty.storeys is Optional now and the scorer names the gap.
+        "storeys": storeys,
+        # 0 costs land points; the pipeline's 400 m² default would invent them.
+        "land_size_sqm": _num(row.get("land_sqm")) or 0.0,
+        "house_size_sqm": facts["house_sqm"],
+        "advertised_package_price": price,
+        "land_price": _num(row.get("land_price")) or 0.0,
+        "build_price": _num(row.get("build_price")) or 0.0,
+        "title_status": str(row.get("title_status") or "").strip() or "Not stated in source",
+        "expected_title_date": "",          # never invented ("Expected Q4 2026")
+        "estimated_rent_weekly_min": 0.0,   # no rent is captured for stored stock
+        "estimated_rent_weekly_max": 0.0,
+        "amenities_summary": "No amenity assessment captured for this listing.",
+        "source_channel": "%s - database snapshot" % (
+            str(row.get("source_channel") or "stored stock").strip()),
+        "source_url_or_ref": listing_ref or ("stored stock, captured %s" % (seen_on or "date unknown")),
+        # Where a consultant can go to see this listing at its source, labelled with
+        # what the link actually opens. See provenance.py.
+        # The RESOLVED suburb, not the stored one. This builds the string a
+        # consultant pastes into the builder's own search box, and off the raw
+        # column it produced "122 Crescent" and "132 Paramatta" -- a street number
+        # against a street name. A term that returns an error is worse than no term,
+        # which is the complaint this function exists to answer.
+        "source_link": _source_link(row, suburb),
+        # The day this listing was last actually seen at its source, exactly as the row
+        # recorded it -- never the day of the search. The card turns this into a
+        # staleness warning, which is the only thing that would have made Proxima's
+        # expired sign-in visible: its rows sat three days old while every other channel
+        # refreshed nightly, and nothing on screen looked wrong.
+        "date_checked": seen_on or "",
+        # An admitted row is never verified, however fresh: its source did not say the
+        # lot is for sale, and "verified" is what lets a row into the final list.
+        "verified": verified and not admitted,
+        "consultant_approved": False,
+        "risks": [],
+        # The benchmark already computed over the whole table by
+        # benchmark_buildings.py. Passed through so the client card can fall back
+        # to it: BenchmarkEngine needs a CoreLogic/REA export Colin has not
+        # supplied, so without this EVERY card reads "Unbenchmarked - Pending
+        # Market Data" in red even though 957 listings do have a defensible
+        # comparison against stock we hold.
+        "stored_benchmark_median": _num(row.get("benchmark_median")),
+        "stored_benchmark_variance_pct": _num(row.get("benchmark_variance_pct")),
+        "stored_benchmark_classification": str(
+            row.get("benchmark_classification") or "").strip(),
+        "stored_benchmark_basis": str(row.get("benchmark_basis") or "").strip(),
+        # Whole days since date_checked on the day of the search (None when the row has
+        # no readable date), so "checked 27 days ago" is computed once, here, from the
+        # same today the freshness rule used.
+        "age_days": age_days,
+    }
+    if admitted:
+        # What a consultant must confirm before this can be sent. Present only on rows
+        # a caller asked to admit, so a default search's packages are unchanged.
+        package["confirm"] = list(admitted)
+    detail["verified"] = package["verified"]
+    detail["date_checked"] = seen_on or ""
+    detail["age_days"] = age_days
+    detail["availability_by_the_sheet"] = by_the_sheet
+    return GateResult(PASSED, package, tags, detail, seen_at)
+
+
+def _pass(brief_dict, rows, today=None, prepared=None, admit=(), only_admitted=False,
+          keep_results=False):
+    """The whole of build_packages: (packages, counts, outcome, results).
+
+    outcome maps id(row) -> what became of a row that passed every gate
+    ("same_listing_collapsed", "truncated", "scored", or "not_admitted" when
+    only_admitted left it out). results is [(row, GateResult)] when keep_results.
+    """
+    # One today for the whole pass. It used to be read per row inside _fresh, so a search
+    # running across midnight aged its first and last rows against different days.
+    today = today or datetime.now()
+    prepared = _checked_prepared(rows, prepared)
+    ctx = _BriefContext(brief_dict, admit)
+    if bool(ctx.admit) != bool(only_admitted):
+        # NEVER ONE POOL. Admitted rows sharing the confirmed search's collapse and 600-row
+        # cap push confirmed stock out of it: measured on the 17 Sep subset, Max blank /
+        # $750k preferred, 181 rows the real search scores were cut as truncated and one
+        # was merged into an unconfirmed twin. The plan's answer is a separate pass, so a
+        # shared pool is refused rather than offered. And only_admitted with nothing
+        # admitted would return an empty pool that reads as "nothing to confirm".
+        raise ValueError("admit and only_admitted go together: admitted rows get a pool "
+                         "of their own (admit=%r, only_admitted=%r)"
+                         % (tuple(admit or ()), only_admitted))
 
     counts = {
         "snapshot_rows": len(rows), "other_state": 0, "state_unknown": 0,
@@ -985,401 +1598,77 @@ def build_packages(brief_dict, rows, today=None):
         "price_unverified": 0, "other_product_type": 0, "no_incentive": 0,
         "available_by_the_sheet": 0,
     }
-    # WHICH DOCUMENTS SAY ANYTHING ABOUT AVAILABILITY AT ALL. See the filter below.
-    # Built once, outside the row loop: the estate-containment lookup was written inside
-    # one and took ten minutes a request before it was hoisted.
-    _states_availability = set()
-    for _r in rows:
-        _a = str(_r.get("availability_status") or "").strip().lower()
-        if _a in IS_AVAILABLE or _a in NOT_AVAILABLE:
-            _states_availability.add(str(_r.get(_DOC_KEY) or ""))
-    _states_availability.discard("")
     missing_field_counts = {}
     unstated_but_scored = {}
-    entries = []
+    # THE SAME FIRST-FAIL TALLY, FOR THE ROWS THE CLIENT COULD ACTUALLY BUY.
+    #
+    # Availability is checked before price, so "632 whose availability the source never
+    # stated" in a QLD <= $750k search is almost entirely stock over the budget: 6 of
+    # those 632 are in range. Only rows in the requested state whose price sits inside
+    # budget_min..budget_max (no headroom) are tallied, under the gate that stopped them
+    # or IN_RANGE_PASSED. The gate order is untouched; this only counts.
+    in_range = {}
+    admitted_counts = {code: 0 for code in ADMITTABLE_GATES if code in ctx.admit}
+    entries = []          # (seen_at, package), in row order, as the collapse expects
+    entry_rows = []       # the original row object behind each entry
+    entry_admitted = []
+    results = [] if keep_results else None
 
+    # Unpacked, and each lookup guarded by the only case that needs it: this runs once per
+    # row of the snapshot on every search.
+    admitting = bool(ctx.admit)
     for row in rows:
-        # An older capture of a lot we also hold fresher. The dashboard has hidden these
-        # by default since they were identified, but the recommendation engine was still
-        # scoring all 979 of them — so the one place where a stale price actually reaches
-        # a client, the shortlist, was the one place that ignored the flag.
-        if row.get("superseded_by"):
-            counts["superseded"] += 1
-            continue
-        row_state = str(row.get("state") or "").strip().upper()
-        if not row_state:
-            # BORROW THE STATE BEFORE DROPPING THE ROW FOR NOT HAVING ONE.
-            #
-            # This borrow was written 70 lines further down, next to the suburb borrows,
-            # where it could never run: every row it targets had already been dropped
-            # here. "CC-0114, Bald Hills" and "CC-0108, One Mile" name real Queensland
-            # suburbs and were invisible to every search purely because their own row
-            # does not say QLD, while every other row on the same price list does.
-            #
-            # It has to be here, before the drop, and before the suburb rules further
-            # down — all of which are keyed by state and none of which can run without
-            # one.
-            # None is the containment pass — an estate spelled longer here than where its
-            # state is known. Last, because every named field above is an exact claim.
-            for _field in ("estate_name", "source_doc", "source_url", "builder_name",
-                           None):
-                _borrowed = (
-                    _state_by_estate_containment(row, _containment) if _field is None
-                    else _state_of.get(
-                        (_field, str(row.get(_field) or "").strip().lower())))
-                if _borrowed:
-                    # A BORROWED STATE MUST NOT COST THE ROW ITS OWN SUBURB.
-                    #
-                    # This borrow exists for rows that have nothing; it must not take
-                    # from rows that have something. The eight West End Commercial
-                    # tenancies store the suburb "West End" and no state, which resolves
-                    # on its own as unchecked-but-usable. One of the eight also carries
-                    # NSW -- wrongly; there is no West End in New South Wales -- and that
-                    # single row was enough to map the whole document to NSW, after which
-                    # "West End" failed the locality check and seven rows that had an
-                    # answer had none. A state is only worth borrowing if the row is no
-                    # worse for it.
-                    _before = suburb_quality.resolve(dict(row, suburb_source=""))[1]
-                    _after = suburb_quality.resolve(
-                        {**row, "state": _borrowed, "suburb_source": ""})[1]
-                    if (suburb_quality.is_searchable(_before)
-                            and not suburb_quality.is_searchable(_after)):
-                        continue                  # try the next field, or borrow nothing
-                    # AND DROP THE GRADE THE ROW ARRIVED WITH. suburb_source was decided
-                    # at build time under the facts of that moment — for these rows,
-                    # "no state recorded, so the value cannot be checked". resolve()
-                    # honours a carried reason, and would keep honouring that one after
-                    # the state it complains about has just been supplied, so the borrow
-                    # would buy nothing. Cleared, the row is graded again from scratch.
-                    row = {**row, "state": _borrowed, "suburb_source": ""}
-                    row_state = _borrowed
-                    counts["state_borrowed"] = counts.get("state_borrowed", 0) + 1
-                    break
-        # AN ESTATE THAT SITS IN EXACTLY ONE PLACE, for the rows the maps above cannot
-        # key. Both suburb maps need (estate, STATE), so a row whose state is missing or
-        # wrong is unreachable by either -- and 42 rows are in that position with nothing
-        # else left. Hattan's ten "Penrose Place" lots say NSW where the estate's other
-        # ten say VIC and name Officer; their state_source is 'suburb', so the state was
-        # derived from the suburb column, and that column holds the estate name. Runs
-        # only where the row's own state is absent or rests on that refused value.
-        if _estate_is_the_only_evidence(row):
-            _sub, _why = suburb_quality.resolve(row)
-            if not suburb_quality.is_searchable(_why):
-                _only = _unambiguous_estate.get(
-                    (str(row.get("builder_name") or "").strip().lower(),
-                     str(row.get("estate_name") or "").strip().lower()))
-                if _only and _only[0]:
-                    row = {**row, "state": _only[0], "suburb": _only[1],
-                           "suburb_source": ""}
-                    row_state = _only[0]
-                    counts["estate_only_place"] = counts.get("estate_only_place", 0) + 1
-        if not row_state:
-            counts["state_unknown"] += 1
-            continue
-        if state and row_state != state:
-            counts["other_state"] += 1
-            continue
-
-        # A row that STATES a different product is rejected; a row that states none is
-        # not. That asymmetry is the same rule the bedroom, bathroom and house-size gates
-        # already follow, and it exists because inventing a requirement is the more
-        # expensive error here: 1,826 of 5,879 live rows record no product_type at all,
-        # so rejecting the unstated ones would discard a third of the catalogue to
-        # enforce a preference their source never contradicted.
-        #
-        # It still does the job Colin needed on 5 Aug — "Land" is stated on the 145 rows
-        # that are vacant blocks, so a house brief no longer ranks one of them first.
-        if want_product:
-            row_product = product_type_of(row).lower()
-            # AN UNKNOWN TYPE NO LONGER PASSES. It used to, deliberately: 1,853 of 6,127
-            # rows stated no type, and rejecting them discarded a third of the catalogue to
-            # enforce a preference their source never contradicted.
-            #
-            # Inference has since settled all but ~2%, and the old rule is now the bug
-            # rather than the guard: measured 17 Aug, Apartment / Townhouse / Villa / Land
-            # each returned the SAME 19 rows, every one type-unknown and none of them the
-            # requested type. That is Colin's complaint word for word — "it's still giving
-            # us the same options regardless of what you write" — surviving inside the fix
-            # meant to end it. A filter that cannot exclude is not a filter.
-            if not row_product or row_product not in want_product:
-                counts["other_product_type"] += 1
+        result = _gate(ctx, row, prepared, today)
+        code, package, tags, detail, seen_at = result
+        if keep_results:
+            results.append((row, result))
+        for tag in tags:
+            counts[tag] = counts.get(tag, 0) + 1
+        if admitting:
+            for admitted in detail.get("admitted") or ():
+                admitted_counts[admitted] += 1
+        if code == PASSED:
+            for label in detail["unstated"]:
+                unstated_but_scored[label] = unstated_but_scored.get(label, 0) + 1
+            entries.append((seen_at, package))
+            entry_rows.append(row)
+            entry_admitted.append("confirm" in package)
+        else:
+            counts[code] += 1
+            if code == "incomplete_facts":
+                for label in detail["missing"]:
+                    missing_field_counts[label] = missing_field_counts.get(label, 0) + 1
+            if code in _OUT_OF_SCOPE:
                 continue
-
-        # UNLIKE every other filter here, an unstated value is EXCLUDED — and the
-        # asymmetry is deliberate. "Show me packages with a rebate" is a request for rows
-        # that positively carry one; a row whose source never mentioned an incentive is
-        # not a maybe, it is a no. Including the silent ones would return the whole
-        # catalogue and answer nothing.
-        #
-        # Only 80 of 5,879 live rows carry one, so this narrows hard on purpose. That is
-        # the point — Colin was hunting value-driven packages for the Farirais and had no
-        # way to find them.
-        if want_incentive:
-            has_inc = ((_num(row.get("incentive_amount")) or 0) > 0
-                       or str(row.get("incentive_text") or "").strip())
-            if not has_inc:
-                counts["no_incentive"] += 1
-                continue
-
-        if _price_unverified(row):
-            counts["price_unverified"] += 1
-            continue
-        avail = str(row.get("availability_status") or "").strip().lower()
-        if avail in NOT_AVAILABLE:
-            counts["not_available"] += 1
-            continue
-        by_the_sheet = False
-        if avail not in IS_AVAILABLE:
-            # A SHEET WITH NO STATUS COLUMN IS ITSELF THE AVAILABILITY STATEMENT.
-            #
-            # Blank means two different things and this told them apart the wrong way.
-            # The Irving Domain price list — Box Hill, 6 apartments at $450k-$499k —
-            # prints Residence, Bedrooms, Bathrooms, Internal, External, Total, Car,
-            # Price, Carpark, OC. There is no status column anywhere on it, because the
-            # vendor lists what is for sale and deletes a unit when it sells. Being on
-            # the list IS the signal. Coleen searched Box Hill under $500k on 26 Aug and
-            # got nothing while all six sat in the catalogue, priced and current.
-            #
-            # So the question is not "is this cell blank" but "does this document ever
-            # state availability". If it does and THIS row is blank, the cell is a real
-            # gap and the row stays out — 569 rows, unchanged. If the document is silent
-            # throughout, the sheet is the list — 1,068 rows, recoverable. A row with no
-            # document key cannot be told apart either way and stays out (57).
-            #
-            # Counted separately and flagged on the entry rather than quietly folded in
-            # with the stated ones, because a consultant putting this in front of a buyer
-            # should know the source never said the word.
-            doc = str(row.get(_DOC_KEY) or "")
-            if doc and doc not in _states_availability:
-                by_the_sheet = True
-                counts["available_by_the_sheet"] += 1
+        if ctx.in_range(_num(row.get("price"))):
+            if code != PASSED:
+                bucket = code
+            elif "confirm" in package:
+                bucket = "admitted:" + "+".join(package["confirm"])
             else:
-                # Unstated on a document that states it elsewhere, or unattributable.
-                # See IS_AVAILABLE for why "unstated" is not "available".
-                counts["availability_unstated"] += 1
-                continue
+                bucket = IN_RANGE_PASSED
+            in_range[bucket] = in_range.get(bucket, 0) + 1
 
-        price = _num(row.get("price"))
-        if not price or price <= 0:
-            counts["no_price"] += 1
-            continue
-        if ceiling is not None and price > ceiling:
-            counts["over_budget"] += 1
-            continue
-        # A PRICE RANGE, NOT JUST A CEILING. Colin and Coleen search a bracket -- "three
-        # to four hundred" -- and with only a maximum the cheap end of the state filled
-        # the answer every time. A minimum is a real exclusion, unlike the preferred
-        # price, which only ranks; the floor is exact, with no headroom, because a
-        # consultant who types a minimum has ruled that price out rather than nearly
-        # ruled it out.
-        if floor and price < floor:
-            counts["under_minimum"] += 1
-            continue
+    outcome = {}
+    if only_admitted:
+        # The admitted rows get their OWN pool. Sharing the confirmed search's 600-row cap
+        # cost 143 of 379 confirmed VIC <= $900k results when it was measured.
+        left_out = [row for row, adm in zip(entry_rows, entry_admitted) if not adm]
+        for row in left_out:
+            outcome[id(row)] = "not_admitted"
+        counts["not_admitted"] = len(left_out)
+        keep = [i for i, adm in enumerate(entry_admitted) if adm]
+        entries = [entries[i] for i in keep]
+        entry_rows = [entry_rows[i] for i in keep]
 
-        # ONE ANSWER ABOUT WHAT COUNTS AS A PLACE, shared with the published snapshot.
-        #
-        # This gate used to be three steps written out here — display_suburb, then
-        # clean_locality, then a bare-else that dropped the row — while build_web.py ran
-        # only the first of them. So a row could be excluded from every search as "not a
-        # recognised locality" and still be published to the dashboard with that same
-        # value printed as its suburb. suburb_quality.resolve is now the single answer
-        # both paths call, for the reason clean_locality was centralised in the first
-        # place: two copies of this judgement drift, and did.
-        #
-        # PRESENT is not the same as REAL. Those rows were not merely stored, they were
-        # RECOMMENDED: a QLD search returned "Lot 507, 2026 in 2026, QLD" and "Lot 507,
-        # offer in offer, QLD" as four of its five results. A listing whose location
-        # cannot be confirmed must not reach a client, and cannot be geocoded,
-        # distance-filtered or benchmarked either.
-        suburb, suburb_why = suburb_quality.resolve(row)
-        if not suburb_quality.is_located(suburb_why):
-            state_key = str(row.get("state") or "").strip().upper()
-            for group_map, field in ((_estate_suburb, "estate_name"),
-                                     (_page_suburb, _DOC_KEY)):
-                borrowed = group_map.get(
-                    (str(row.get(field) or "").strip().lower(), state_key))
-                if borrowed:
-                    row = {**row, "suburb": borrowed}
-                    suburb, suburb_why = suburb_quality.resolve(row)
-                    if suburb_quality.is_located(suburb_why):
-                        break
-        # SEARCHABLE, not LOCATED. A listing whose suburb we inferred from its own text
-        # is real stock at a real price, and dropping it here is exactly what made Coleen
-        # report properties as missing that the app had. It comes through, carrying
-        # suburb_source so the caveat travels with it.
-        #
-        # is_located is still the gate everywhere the position has to be TRUE — distance
-        # filtering, benchmarking and comparables all ask that question separately and
-        # still refuse these rows. A wrong suburb costs a noisier search; a wrong
-        # comparable costs a client a wrong valuation.
-        if not suburb_quality.is_searchable(suburb_why):
-            # SHOWN is not LOCATED. A value can be a real locality name and still be
-            # unusable here: with no state recorded there is nothing to check it against,
-            # geo.locate needs both halves, and a fifth of Australian locality names
-            # exist in more than one state. Those rows stay visible in the Building Stock
-            # table with the caveat; they must not be scored, distance-filtered or
-            # benchmarked.
-            if suburb_why == suburb_quality.BLANK_ABSENT:
-                # Without a locality the row cannot be geocoded, so no distance and no
-                # benchmark can be established for it.
-                counts["no_suburb"] += 1
-            else:
-                counts["suburb_not_a_locality"] += 1
-            continue
-
-        facts = {}
-        blocking, unstated = [], []
-        for field, label in REQUIRED_FACTS:
-            value = _int(row.get(field)) if field != "house_sqm" else _num(row.get(field))
-            facts[field] = value
-            if value is not None:
-                continue
-            (blocking if field in binding_facts else unstated).append(label)
-        if blocking:
-            # The client set a minimum for this and the listing does not say — it cannot
-            # be judged against their requirement, so it is excluded and named.
-            counts["incomplete_facts"] += 1
-            for label in blocking:
-                missing_field_counts[label] = missing_field_counts.get(label, 0) + 1
-            continue
-        for label in unstated:
-            # Nothing in the brief turns on this one. Scored, with the gap on the record
-            # so the report can say "not stated" instead of implying a figure.
-            unstated_but_scored[label] = unstated_but_scored.get(label, 0) + 1
-
-        storeys = _storeys(row)
-        if storeys is None and storey_is_binding:
-            # Counted, but no longer dropped. This exclusion existed because
-            # CandidateProperty.storeys was a plain int that defaulted to 1, so an
-            # unrecorded storey silently satisfied a "single storey only" brief. storeys is
-            # Optional now and the scorer flags None instead of assuming it, so the row can
-            # be scored honestly — and it has to be, because storey is stated on 149 of
-            # 4,192 rows and dropping the rest made a single-storey brief return NOTHING:
-            # all 33 lots that met every other requirement were thrown away here.
-            counts["storey_unknown_and_binding"] += 1
-
-        verified, seen_at, seen_on = _fresh(row, today)
-        if not verified:
-            counts["stale_unverified"] += 1
-
-        builder = str(row.get("builder_name") or "").strip()
-        # A project-scope row's name is a DEVELOPMENT, not a builder — E-Agent lists
-        # apartments and townhouses by development, and for those rows the name came off a
-        # price-list file name or a project card, never from a builder. Passing it through
-        # as the builder made the scorer hand "Waler Heights" a builder_confidence_rating
-        # of MEDIUM and printed "Builder: Waler Heights" on a client card. Of the 75 rows
-        # in the database that are scoreable at all, 43 are project-scope, so this was the
-        # majority of the shortlist, not an edge case.
-        scope = str(row.get("attribution_scope") or "").strip().lower()
-        development = builder if scope == "project" else ""
-        if scope == "project":
-            builder = ""
-        if not builder:
-            # NOT a guess and NOT an empty string: BuilderRegistry.search_builder_by_name
-            # does `query in registry_name`, so an empty query matches the FIRST builder
-            # in the directory and would attribute the lot to them.
-            builder = "Builder not identified in source"
-
-        listing_ref = (str(row.get("listing_url") or "").strip()
-                       or str(row.get("brochure_url") or "").strip())
-        entries.append((seen_at, {
-            # Carried so a consultant's selection can outlive the search that produced it
-            # — see the note on SNAPSHOT_FIELDS. Never rendered; it is an identity, not a
-            # fact about the property.
-            "content_hash": str(row.get("content_hash") or "").strip(),
-            # True when this row is on a price list that never states availability, so
-            # its being listed is the only evidence it is still for sale. The row is
-            # recommended — see the filter above for why — but a consultant should know
-            # the source did not say the word before quoting it to a buyer.
-            "availability_by_the_sheet": by_the_sheet,
-            # The rebate, as the source stated it. Coleen's target one-pager has a "Rebate"
-            # and an "Effective Price" column ($728,500 package - $10,000 rebate =
-            # $718,500), and neither could be filled because these two never left the
-            # snapshot reader — the pipeline used incentives only to FILTER
-            # (want_incentive), never to report. Effective price is derived at render time
-            # rather than stored, so it cannot drift from the two numbers behind it.
-            "incentive_amount": _num(row.get("incentive_amount")) or 0.0,
-            "incentive_text": str(row.get("incentive_text") or "").strip(),
-            "builder_name": builder,
-            # The label a client reads. Prefer the street address recovered from the
-            # row's own text (stocklist_reparse), because on 47% of stock lot_address is
-            # the entire flattened spreadsheet row and stripping the prices out of it
-            # still leaves a jumble. Falls back to the cleaned lot_address where no
-            # street was stated. Never invents and never empties.
-            "lot_address": (_display_address(row) or "(no address in source row)"),
-            # THE LOT AS THE SOURCE STATED IT, beside the address rather than inside it. On
-            # thousands of rows the address a client reads is only a street address -
-            # "5532 Verday Blvd, Jubilee" - and Clare's availability check
-            # (vapi-kommo-hook, lib/tools/stock-match.js) may only confirm a lot it can see,
-            # so without this a caller asking about lot 5532 could never be matched. The raw
-            # value, stripped: a stock code stays a stock code, a blank stays blank, and it
-            # is never read out of the address, because a street number is not a lot.
-            "lot_number": str(row.get("lot_number") or "").strip(),
-            "suburb": suburb,
-            # HOW WE KNOW IT. Carried so the grade cannot die at this boundary: without
-            # it api/research.py rebuilds a bare {suburb, state, ...} dict for the
-            # comparables gate, suburb_quality.resolve() on that dict has only a locality
-            # name to go on and returns STATED, and the gate meant to keep GUESSED
-            # locations out of a client's comparables can never reject anything.
-            "suburb_source": suburb_why,
-            "state": row_state,
-            # The development keeps its name here, where it is true, instead of standing in
-            # for a builder. Falls back to the estate for builder-scope rows.
-            "developer_name": development or str(row.get("estate_name") or "").strip(),
-            "house_design": str(row.get("product_type") or "").strip(),
-            "estate_context": str(row.get("estate_name") or "").strip(),
-            "bedrooms": facts["bedrooms"],
-            "bathrooms": facts["bathrooms"],
-            "car_spaces": facts["car_spaces"],
-            # None, not 0 and not the pipeline's 1. A max-storeys filter must not be
-            # satisfied by a number nobody recorded — but 0 satisfied it silently just as 1
-            # would have, so the "confirm the storey count" flag never appeared on the card.
-            # CandidateProperty.storeys is Optional now and the scorer names the gap.
-            "storeys": storeys,
-            # 0 costs land points; the pipeline's 400 m² default would invent them.
-            "land_size_sqm": _num(row.get("land_sqm")) or 0.0,
-            "house_size_sqm": facts["house_sqm"],
-            "advertised_package_price": price,
-            "land_price": _num(row.get("land_price")) or 0.0,
-            "build_price": _num(row.get("build_price")) or 0.0,
-            "title_status": str(row.get("title_status") or "").strip() or "Not stated in source",
-            "expected_title_date": "",          # never invented ("Expected Q4 2026")
-            "estimated_rent_weekly_min": 0.0,   # no rent is captured for stored stock
-            "estimated_rent_weekly_max": 0.0,
-            "amenities_summary": "No amenity assessment captured for this listing.",
-            "source_channel": "%s - database snapshot" % (
-                str(row.get("source_channel") or "stored stock").strip()),
-            "source_url_or_ref": listing_ref or ("stored stock, captured %s" % (seen_on or "date unknown")),
-            # Where a consultant can go to see this listing at its source, labelled with
-            # what the link actually opens. See provenance.py.
-            # The RESOLVED suburb, not the stored one. This builds the string a
-            # consultant pastes into the builder's own search box, and off the raw
-            # column it produced "122 Crescent" and "132 Paramatta" -- a street number
-            # against a street name. A term that returns an error is worse than no term,
-            # which is the complaint this function exists to answer.
-            "source_link": _source_link(row, suburb),
-            # The day this listing was last actually seen at its source. The card turns
-            # this into a staleness warning, which is the only thing that would have made
-            # Proxima's expired sign-in visible: its rows sat three days old while every
-            # other channel refreshed nightly, and nothing on screen looked wrong.
-            "date_checked": seen_on or "",
-            "verified": verified,
-            "consultant_approved": False,
-            "risks": [],
-            # The benchmark already computed over the whole table by
-            # benchmark_buildings.py. Passed through so the client card can fall back
-            # to it: BenchmarkEngine needs a CoreLogic/REA export Colin has not
-            # supplied, so without this EVERY card reads "Unbenchmarked - Pending
-            # Market Data" in red even though 957 listings do have a defensible
-            # comparison against stock we hold.
-            "stored_benchmark_median": _num(row.get("benchmark_median")),
-            "stored_benchmark_variance_pct": _num(row.get("benchmark_variance_pct")),
-            "stored_benchmark_classification": str(
-                row.get("benchmark_classification") or "").strip(),
-            "stored_benchmark_basis": str(row.get("benchmark_basis") or "").strip(),
-        }))
-
-    packages, counts["same_listing_collapsed"] = _collapse_same_listing(entries)
+    kept = _collapse_kept(entries)
+    counts["same_listing_collapsed"] = len(entries) - len(kept)
+    kept_set = set(kept)
+    for i, row in enumerate(entry_rows):
+        if i not in kept_set:
+            outcome[id(row)] = "same_listing_collapsed"
+    packages = [entries[i][1] for i in kept]
+    row_of_package = {id(entries[i][1]): entry_rows[i] for i in kept}
     packages.sort(key=lambda p: p["advertised_package_price"])
     if len(packages) > MAX_CANDIDATES:
         # THE CAP USED TO CUT THE BRIEF'S OWN STOCK BEFORE THE BRIEF WAS APPLIED.
@@ -1409,7 +1698,7 @@ def build_packages(brief_dict, rows, today=None):
             asked = [p for p in packages if str(p.get("suburb") or "").strip().lower() in wanted]
             rest = [p for p in packages if str(p.get("suburb") or "").strip().lower() not in wanted]
             packages = asked + rest
-        elif binding_facts:
+        elif ctx.binding_facts:
             # AND WHEN NO SUBURB WAS NAMED, THE SAME IDEA APPLIED TO THE REST OF THE BRIEF.
             #
             # The block above rescued a search that names its suburbs. A state-wide search
@@ -1426,15 +1715,167 @@ def build_packages(brief_dict, rows, today=None):
             # thing to give up: scoring_engine will hard-reject it on arrival. So the
             # budget is spent on rows that satisfy the stated minimums first. The sort is
             # STABLE, so price-ascending order survives inside each group.
-            packages.sort(key=lambda p: -_meets_binding(p, brief_dict, binding_facts))
-            packages = _spread_across_the_budget(packages, brief_dict, binding_facts)
+            packages.sort(key=lambda p: -_meets_binding(p, brief_dict, ctx.binding_facts))
+            packages = _spread_across_the_budget(packages, brief_dict, ctx.binding_facts)
         counts["truncated"] = len(packages) - MAX_CANDIDATES
+        for p in packages[MAX_CANDIDATES:]:
+            outcome[id(row_of_package[id(p)])] = "truncated"
         packages = packages[:MAX_CANDIDATES]
         packages.sort(key=lambda p: p["advertised_package_price"])
+    for p in packages:
+        outcome[id(row_of_package[id(p)])] = "scored"
     counts["scored"] = len(packages)
     counts["missing_fields"] = missing_field_counts
     counts["unstated_but_scored"] = unstated_but_scored
+    counts["counts_in_range"] = in_range
+    if ctx.admit:
+        counts["admitted"] = admitted_counts
+    return packages, counts, outcome, results
+
+
+def build_packages(brief_dict, rows, today=None, prepared=None, admit=(),
+                   only_admitted=False):
+    """(packages, coverage) — coverage is a plain dict of counts, all reported.
+
+    `brief_dict` is the raw brief the browser posted; only budget/state/storeys are
+    read here. Everything else stays the pipeline's job.
+
+    today          the day rows are aged against (default: now).
+    prepared       prepare_rows(rows), to skip the brief-independent work.
+    admit          gates to see past, from ADMITTABLE_GATES. An admitted row goes on
+                   through every later gate and leaves with confirm=[gate] and
+                   verified=False; counts['admitted'][gate] says how many passed through.
+    only_admitted  return only admitted rows, in a pool (collapse and cap) of their own.
+                   Required with admit, and only with admit: a confirmed search and its
+                   admitted rows are two passes, never one shared pool.
+
+    counts['counts_in_range'] repeats the first-fail tally for in-state rows priced
+    inside the brief's own range. Every package carries age_days.
+    """
+    packages, counts, _outcome, _results = _pass(
+        brief_dict, rows, today=today, prepared=prepared, admit=admit,
+        only_admitted=only_admitted)
     return packages, counts
+
+
+def _row_in(row, rows):
+    """The object in `rows` that IS this row: itself, or its unique content_hash twin
+    (a row carried through a join is a copy)."""
+    for r in rows:
+        if r is row:
+            return r
+    h = str(row.get("content_hash") or "").strip()
+    if not h:
+        return None
+    matches = [r for r in rows if str(r.get("content_hash") or "").strip() == h]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _verdict(result, outcome_of_row):
+    detail = dict(result.detail)
+    detail["tags"] = list(result.tags)
+    gate = result.code
+    if gate == PASSED:
+        gate = outcome_of_row or "passes_every_gate"
+        if outcome_of_row is None:
+            detail["note"] = ("the row is not in the rows searched, so the same-listing "
+                              "merge and the candidate cap were not applied to it")
+    return {"gate": gate, "detail": detail, "package": result.package}
+
+
+def explain_row(brief_dict, row, rows, prepared=None, today=None, admit=()):
+    """{gate, detail, package}: what build_packages did with ONE row, and why.
+
+    gate is the first gate in GATE_ORDER that stopped the row, or -- for a row that
+    passed them all -- what happened to its package in the pool: "scored",
+    "same_listing_collapsed" or "truncated". Computed by the same _gate build_packages
+    runs, so the explanation and the search cannot disagree.
+
+    `row` is a snapshot row (stock.json shape). A row joined to database-only fields
+    (join_db_fields) works too: those ride under 'db' and no gate reads them.
+    """
+    today = today or datetime.now()
+    prepared = _checked_prepared(rows, prepared)
+    ctx = _BriefContext(brief_dict, admit)
+    result = _gate(ctx, row, prepared, today)
+    if result.code != PASSED:
+        return _verdict(result, None)
+    target = _row_in(row, rows)
+    if target is None:
+        return _verdict(result, None)
+    admitted = "confirm" in result.package
+    # The pool the row really lands in: the confirmed search for a confirmed row, the
+    # separate admitted pass for an admitted one -- the two passes a search runs.
+    _packages, _counts, outcome, _results = _pass(
+        brief_dict, rows, today=today, prepared=prepared,
+        admit=admit if admitted else (), only_admitted=admitted)
+    return _verdict(result, outcome.get(id(target)))
+
+
+def explain_rows(brief_dict, rows, prepared=None, today=None, admit=()):
+    """explain_row for every row. [(row, verdict)] in row order.
+
+    One pass without admit. With admit, two -- the confirmed search and the admitted pass
+    -- because that is how a search runs them, and a confirmed row's fate (scored,
+    collapsed, truncated) must be reported from the pool it is really in.
+    """
+    today = today or datetime.now()
+    prepared = _checked_prepared(rows, prepared)
+    _packages, _counts, confirmed, results = _pass(
+        brief_dict, rows, today=today, prepared=prepared, keep_results=not admit)
+    admitted = {}
+    if admit:
+        _packages, _counts, admitted, results = _pass(
+            brief_dict, rows, today=today, prepared=prepared, admit=admit,
+            only_admitted=True, keep_results=True)
+    out = []
+    for row, result in results:
+        fate = None
+        if result.code == PASSED:
+            fate = (admitted if "confirm" in result.package else confirmed).get(id(row))
+        out.append((row, _verdict(result, fate)))
+    return out
+
+
+# Database columns worth having beside a snapshot row that the snapshot does not carry.
+DB_ONLY_FIELDS = ("id", "source_text", "checked_at", "first_seen")
+
+
+def join_db_fields(rows, db_path, fields=DB_ONLY_FIELDS):
+    """Snapshot rows, each with the database's own columns for it under row['db'].
+
+    WHY NOT READ THE DATABASE DIRECTLY. SNAPSHOT_FIELDS includes columns build_web
+    derives at build time (source_doc, source_link_*, rea_*, suburb_source), so
+    _read_sqlite on the raw database fails with "no such column: suburb_source", and the
+    rows a search sees are the SNAPSHOT's -- states borrowed, suburbs resolved -- not the
+    table's. A tool that explains a listing must explain the row the search saw. So it
+    loads the snapshot (stock.json, or build_web.build on a scratch copy) and joins the
+    few database-only facts it needs by content_hash.
+
+    NAMESPACED, NOT MERGED. suburb_quality.resolve reads source_text when a row carries
+    it, so a flat merge could move a suburb and make explain_row disagree with the
+    search. Under 'db', no gate can see them.
+
+    The database is opened read-only. Rows with no database match get db = None.
+    """
+    fields = tuple(fields)
+    uri = "file:%s?mode=ro" % Path(db_path).as_posix()
+    conn = sqlite3.connect(uri, uri=True)
+    try:
+        have = {r[1] for r in conn.execute("PRAGMA table_info(buildings)")}
+        missing = [f for f in fields if f not in have]
+        if missing:
+            raise ValueError("buildings has no column(s) %s" % ", ".join(missing))
+        wanted = {str(r.get("content_hash") or "").strip() for r in rows}
+        wanted.discard("")
+        found = {}
+        cols = ", ".join(("content_hash",) + fields)
+        for rec in conn.execute("SELECT %s FROM buildings" % cols):
+            if rec[0] in wanted:
+                found[rec[0]] = dict(zip(fields, rec[1:]))
+    finally:
+        conn.close()
+    return [dict(r, db=found.get(str(r.get("content_hash") or "").strip())) for r in rows]
 
 
 def _spread_across_the_budget(packages, brief_dict, binding_facts):
