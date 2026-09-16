@@ -209,7 +209,8 @@ MUTANTS = {
         "<details class=\"search-help\"${few ? ' open' : ''}>", "<details class=\"search-help\" open>",
         "folds it away as 'How this search was counted'"),
     "the headline lists gates with no in-range number": (
-        ".filter(g => g.n !== null && g.n > 0);", ".filter(g => true);",
+        "n: wholeCount(g.in_price_range) }))\n            .filter(g => g.n !== null && g.n > 0);",
+        "n: wholeCount(g.in_price_range) }))\n            .filter(g => true);",
         "and not a gate with no in-range number"),
     "a change that adds nothing still gets a button": (
         "if (!(r.adds > 0)) { noChange.push(r.label); return; }",
@@ -249,10 +250,10 @@ MUTANTS = {
         "|| !Number.isFinite(n) || n <= 0", "|| !Number.isFinite(n) || n < 0",
         "every box takes the patch"),
     "applyBriefPatch leaves the property type boxes alone": (
-        "c.checked = wanted.has(c.value);", "void wanted;",
+        ".forEach(c => writes.push([c, 'checked', wanted.has(c.value)]));", ".forEach(c => void c);",
         "the product type boxes and the rebate box follow the patch"),
     "applyBriefPatch writes a state the select cannot show": (
-        "if (![...stateBox.options].some(o => o.value === code)) return false;",
+        "if (el.options && ![...el.options].some(o => o.value === text)) return false;",
         "if (false) return false;",
         "a state the select cannot show is refused"),
     "applyBriefPatch accepts a field the form does not have": (
@@ -351,11 +352,12 @@ MUTANTS = {
         "for (const n of notes) parts.push(", "for (const n of []) parts.push(",
         "the panel shows location notes and brief adjustments the notes above did not"),
     "applyBriefPatch writes suburbs the search cannot read back": (
-        "el.value = textList(value).join(', ');", "el.value = textList(value).join('; ');",
+        "writes.push([el, 'value', textList(value).join(', ')]);",
+        "writes.push([el, 'value', textList(value).join('; ')]);",
         "the search that follows sends what the patch said"),
     "'Any state' is written as the words": (
-        "el.value = /^any state$/i.test(want) ? '' : want.toUpperCase();",
-        "el.value = want.toUpperCase();",
+        "text = /^any state$/i.test(want) ? '' : want.toUpperCase();",
+        "text = want.toUpperCase();",
         "'Any state' clears the State select"),
     "an empty patch is accepted": (
         "&& Object.keys(patch).length > 0", "",
@@ -413,6 +415,53 @@ MUTANTS = {
     "an amber card's builder is not escaped": (
         "${esc(text(x.builder_name) || NOT_STATED)}", "${text(x.builder_name) || NOT_STATED}",
         "every needs-confirming field renders as text"),
+
+    # --- W14, completed: a patch the form's own validation would refuse (correction 15)
+    "applyBriefPatch never asks whether the box would take the figure": (
+        "if (!boxHolds(el, text)) return false;", "",
+        "a radius past the box's max is refused"),
+    "the box check ignores max": (
+        "if (hi !== null && Number.isFinite(Number(hi)) && n > Number(hi)) return false;", "",
+        "a radius past the box's max is refused"),
+    "the box check ignores step": (
+        "return Math.abs(q - Math.round(q)) < 1e-9;", "return true;",
+        "a fractional minimum a whole-number box would refuse is refused"),
+    "the box check reads step=\"any\" as whole numbers": (
+        "if (step !== null && step.toLowerCase() === 'any') return true;", "",
+        "a price in any whole or part dollar still fits the price boxes"),
+    "a patch writes the property types before the rest is checked": (
+        ".forEach(c => writes.push([c, 'checked', wanted.has(c.value)]));",
+        ".forEach(c => { c.checked = wanted.has(c.value); });",
+        "nothing else in the patch is written first"),
+    # --- the funnel after the checks
+    "the funnel never says what became of the listings that passed": (
+        "if (passed !== null && passed > 0) {", "if (false) {",
+        "and what became of the ones that passed every check"),
+    "a pool or scorer line is read by its (empty) in-range count": (
+        ".map(g => ({ code: g.code.trim(), n: wholeCount(g.count) }))",
+        ".map(g => ({ code: g.code.trim(), n: wholeCount(g.in_price_range) }))",
+        "and what became of the ones that passed every check"),
+    "a gate that counted nothing is listed": (
+        "n: wholeCount(g.count) }))\n            .filter(g => g.n !== null && g.n > 0);",
+        "n: wholeCount(g.count) }))\n            .filter(g => g.n !== null);",
+        "nor one that counted nothing"),
+    # --- a re-run that failed, and hidden reasons
+    "a failed re-run reads as not counted in time": (
+        "if (r.failed) { failed.push(r.label); return; }", "",
+        "a change whose re-run failed says so"),
+    "an entry's first_seen is never read": (
+        "const first = emailFirst || (emailed ? String(x.first_seen ?? '').trim() : '');",
+        "const first = emailFirst;",
+        "an emailed entry that calls it first_seen still shows the list's own age"),
+    "any row with a first_seen reads as emailed": (
+        "|| !!emailFirst;", "|| !!emailFirst || !!String(x.first_seen ?? '').trim();",
+        "a first_seen on a row that did not come by email is not read as a list's age"),
+    "hidden reasons with one meaning are not summed": (
+        "because.set(why, (because.get(why) || 0) + n);", "because.set(why, n);",
+        "reasons that mean the same are summed into one line"),
+    "a hidden reason that counted nothing is said": (
+        "if (n === null || n <= 0) continue;", "if (n === null) continue;",
+        "reasons that mean the same are summed into one line"),
 }
 
 

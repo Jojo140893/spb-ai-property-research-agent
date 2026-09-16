@@ -237,6 +237,7 @@
     .search-help .sh-body{padding:0 0.9rem 0.75rem}
     .search-help .sh-line{margin-top:0.25rem}
     .search-help .sh-gate{margin-left:0.9rem;color:var(--text-muted)}
+    .search-help .sh-sub{margin-left:1.8rem}
     .search-help .sh-note{margin-top:0.35rem;padding:0.3rem 0.55rem;border-left:3px solid #f59e0b;
                  background:#fffbeb;color:#78350f;border-radius:4px}
     .search-help .sh-grey{margin-top:0.45rem;color:var(--text-muted);font-size:0.8rem}
@@ -3986,53 +3987,85 @@ python state_sync.py push</pre>
         && Object.keys(patch).length > 0
         && Object.keys(patch).every(k => Object.prototype.hasOwnProperty.call(BRIEF_PATCH_BOX, k));
 
+    /* Would the browser's own validation accept `text` in this number box? Inside its min
+       and max, and on its step -- 1 when the markup names none, as in a browser, counted
+       from min (or 0). A relaxation click never goes through the form's submit, so nothing
+       else would notice a value the box refuses; but the NEXT Execute would, and it would
+       post nothing (Part C review, correction 15). Read from the element, so it follows the
+       markup. '' is always accepted: blank is "any" on every box a patch writes. */
+    const boxHolds = (el, text) => {
+        if (text === '') return true;
+        const n = Number(text);
+        if (!Number.isFinite(n)) return false;
+        const attr = k => {
+            const v = el ? el[k] : undefined;
+            return (v === undefined || v === null || String(v).trim() === '') ? null : String(v).trim();
+        };
+        const lo = attr('min'), hi = attr('max'), step = attr('step');
+        if (lo !== null && Number.isFinite(Number(lo)) && n < Number(lo)) return false;
+        if (hi !== null && Number.isFinite(Number(hi)) && n > Number(hi)) return false;
+        if (step !== null && step.toLowerCase() === 'any') return true;
+        const size = step !== null && Number(step) > 0 ? Number(step) : 1;
+        const base = lo !== null && Number.isFinite(Number(lo)) ? Number(lo) : 0;
+        const q = (n - base) / size;
+        return Math.abs(q - Math.round(q)) < 1e-9;
+    };
+
     /* Writes a relaxation's brief_patch into the form, so the search that runs next is the
        one that was counted AND the consultant can see what changed. Blank means "any" on
        every minimum box, so a 0 is written as blank rather than as a 0 somebody has to
-       read. Returns false, writing nothing, for a patch the form cannot express. */
+       read. Returns false, writing nothing, for a patch the form cannot express: a field
+       it has no box for, a state the select does not offer, or a figure a box's own
+       validation would refuse. Every value is worked out first and written only once all
+       of them fit, so a refused patch never leaves the form half changed. */
     function applyBriefPatch(patch) {
         if (!patchFits(patch)) return false;
         const box = id => document.getElementById(id);
-        const stateBox = box('stateSelect');
-        if ('state' in patch && stateBox && stateBox.options) {
-            const want = String(patch.state ?? '').trim();
-            const code = /^any state$/i.test(want) ? '' : want.toUpperCase();
-            if (![...stateBox.options].some(o => o.value === code)) return false;
-        }
         const amount = v => {
             const n = Number(v);
             return (v === null || v === undefined || v === '' || !Number.isFinite(n) || n <= 0
                     || n >= RESEARCH_NO_CEILING) ? '' : String(n);
         };
+        const writes = [];               // [element, property, value]
         for (const [key, value] of Object.entries(patch)) {
-            const el = box(BRIEF_PATCH_BOX[key]);
             if (key === 'product_type') {
                 const wanted = new Set(textList(value));
-                document.querySelectorAll('#productType input').forEach(c => { c.checked = wanted.has(c.value); });
+                document.querySelectorAll('#productType input')
+                    .forEach(c => writes.push([c, 'checked', wanted.has(c.value)]));
                 continue;
             }
-            if (!el) continue;
+            const el = box(BRIEF_PATCH_BOX[key]);
+            if (!el) return false;
+            let text;
             if (key === 'requires_incentive') {
-                el.checked = value === true;
+                writes.push([el, 'checked', value === true]);
+                continue;
             } else if (key === 'state') {
                 const want = String(value ?? '').trim();
-                el.value = /^any state$/i.test(want) ? '' : want.toUpperCase();
+                text = /^any state$/i.test(want) ? '' : want.toUpperCase();
+                if (el.options && ![...el.options].some(o => o.value === text)) return false;
+                writes.push([el, 'value', text]);
+                continue;
             } else if (key === 'primary_suburbs') {
-                el.value = textList(value).join(', ');
+                writes.push([el, 'value', textList(value).join(', ')]);
+                continue;
             } else if (key === 'search_radius_km') {
-                el.value = amount(value) || '0';
+                text = amount(value) || '0';
             } else if (key === 'preferred_spending_cap') {
                 // A blank Preferred Price already means "the maximum". Filling it in with the
                 // new maximum would pin it there when the maximum is next changed by hand.
                 if (String(el.value || '').trim() === '' && Number(value) === Number(patch.budget_max)) continue;
-                el.value = amount(value);
+                text = amount(value);
             } else if (key === 'storeys_max') {
                 const n = Number(value);
-                el.value = Number.isFinite(n) && n >= 1 && n < 3 ? String(n) : '';
+                text = Number.isFinite(n) && n >= 1 && n < 3 ? String(n) : '';
             } else {
-                el.value = amount(value);
+                text = amount(value);
             }
+            if (!boxHolds(el, text)) return false;
+            writes.push([el, 'value', text]);
         }
+        for (const [el, prop, v] of writes) el[prop] = v;
         // The price echo describes the boxes; they just changed without an input event.
         paintBudgetEcho();
         return true;
@@ -4079,6 +4112,7 @@ python state_sync.py push</pre>
                 const said = r.label;
                 return {
                     key, reveal, patch, fits: patchFits(patch), count, adds, capped: r.capped === true,
+                    failed: status === 'error',
                     exact: count !== null && (status === 'exact' || (!status && !reveal)),
                     label: (typeof said === 'string' || typeof said === 'number') && String(said).trim()
                         ? String(said).trim() : relaxationLabel(key, patch),
@@ -4088,8 +4122,7 @@ python state_sync.py push</pre>
 
     // [one, several]: "1 has a price we couldn't verify", "6 are on lists that ...".
     const GATE_LABEL = {
-        available: ['passed every check and was scored', 'passed every check and were scored'],
-        scored: ['passed every check and was scored', 'passed every check and were scored'],
+        scored: ['was scored against the brief', 'were scored against the brief'],
         not_available: ['is marked Sold, On Hold or otherwise not available',
                         'are marked Sold, On Hold or otherwise not available'],
         availability_unstated: ["is on a list that doesn't say whether it's available",
@@ -4109,8 +4142,9 @@ python state_sync.py push</pre>
         duplicates_merged: ['repeats another listing', 'repeat another listing'],
         truncated: ['was past the most the search can score at once',
                     'were past the most the search can score at once'],
-        pending_confirmation: ["wasn't checked at the source in the last 14 days",
-                               "weren't checked at the source in the last 14 days"],
+        // Stale, or demoted by a newer capture: either way it is not sendable until confirmed.
+        pending_confirmation: ['needs confirming with the builder first',
+                               'need confirming with the builder first'],
         stale: ["wasn't checked at the source in the last 14 days",
                 "weren't checked at the source in the last 14 days"],
         newer_capture_disagrees: ['has a newer capture that says otherwise',
@@ -4126,6 +4160,9 @@ python state_sync.py push</pre>
         house_size_below_min: ['has a smaller house than the minimum', 'have a smaller house than the minimum'],
         land_size_below_min: ['has less land than the minimum', 'have less land than the minimum'],
     };
+    // funnel.gates stages that come after the checks: merging repeats and the cap ('pool'),
+    // then the scorer and the confirm step ('scoring'). Anything else is a check.
+    const AFTER_THE_CHECKS = new Set(['pool', 'scoring']);
     const gateLabel = (code, n) => {
         const said = GATE_LABEL[code];
         if (said) return said[n === 1 ? 0 : 1];
@@ -4157,9 +4194,22 @@ python state_sync.py push</pre>
         const range = lo && hi ? `between ${echoMoney(lo)} and ${echoMoney(hi)}`
             : hi ? `at or under ${echoMoney(hi)}` : lo ? `at ${echoMoney(lo)} or more` : 'at any price';
         const total = wholeCount(funnel.in_price_range_total);
-        const gates = (Array.isArray(funnel.gates) ? funnel.gates : [])
-            .filter(g => g && typeof g === 'object' && typeof g.code === 'string' && g.code.trim())
+        const allGates = (Array.isArray(funnel.gates) ? funnel.gates : [])
+            .filter(g => g && typeof g === 'object' && typeof g.code === 'string' && g.code.trim());
+        // Stopped by a check before scoring: only the gates with an in-range count. A gate
+        // the server counts only across every price (over budget, no price) says nothing
+        // about this brief's range, so it is left out rather than shown as a big number.
+        const gates = allGates.filter(g => !AFTER_THE_CHECKS.has(String(g.stage ?? '').trim()))
             .map(g => ({ code: g.code.trim(), n: wholeCount(g.in_price_range) }))
+            .filter(g => g.n !== null && g.n > 0);
+        // What became of the listings that passed them. Every one of these was already inside
+        // the price range -- the price checks come first -- so the plain count is the in-range
+        // count. A listing the scorer rejects can carry more than one reason.
+        const inRange = (funnel.in_price_range && typeof funnel.in_price_range === 'object')
+            ? funnel.in_price_range : {};
+        const passed = wholeCount(inRange.available);
+        const after = allGates.filter(g => AFTER_THE_CHECKS.has(String(g.stage ?? '').trim()))
+            .map(g => ({ code: g.code.trim(), n: wholeCount(g.count) }))
             .filter(g => g.n !== null && g.n > 0);
         if (total !== null || gates.length) {
             parts.push(`<div class="sh-line">${esc(total !== null
@@ -4168,6 +4218,13 @@ python state_sync.py push</pre>
             parts.push(`<div class="sh-gate">${esc(`${found} made the shortlist`)}</div>`);
             for (const g of gates) {
                 parts.push(`<div class="sh-gate">${esc(`${g.n} ${gateLabel(g.code, g.n)}`)}</div>`);
+            }
+            if (passed !== null && passed > 0) {
+                parts.push(`<div class="sh-gate">${esc(`${passed} passed every check before scoring`
+                    + (after.length ? '; of those:' : ''))}</div>`);
+            }
+            for (const g of (passed !== null && passed > 0) ? after : []) {
+                parts.push(`<div class="sh-gate sh-sub">${esc(`${g.n} ${gateLabel(g.code, g.n)}`)}</div>`);
             }
         }
 
@@ -4183,7 +4240,7 @@ python state_sync.py push</pre>
         for (const n of notes) parts.push(`<div class="sh-note">${esc(n)}</div>`);
 
         // The offers: a button only for a counted change that finds more.
-        const offers = [], noChange = [], notCounted = [], byHand = [];
+        const offers = [], noChange = [], notCounted = [], failed = [], byHand = [];
         const waiting = wholeCount(d.needs_confirming_count);
         const amber = Array.isArray(d.needs_confirming) ? d.needs_confirming.length : 0;
         relaxationsOf(d).forEach((r, i) => {
@@ -4195,6 +4252,7 @@ python state_sync.py push</pre>
                 }
                 return;
             }
+            if (r.failed) { failed.push(r.label); return; }
             if (!r.exact) { notCounted.push(r.label); return; }
             if (!(r.adds > 0)) { noChange.push(r.label); return; }
             const text = `${r.label} → ${r.count}${r.capped ? '+' : ''} match${r.count === 1 ? '' : 'es'} (+${r.adds})`;
@@ -4205,6 +4263,7 @@ python state_sync.py push</pre>
         if (byHand.length) parts.push(`<div class="sh-grey">${esc(`Change the brief above to try: ${byHand.join('; ')}`)}</div>`);
         if (noChange.length) parts.push(`<div class="sh-grey">${esc(`No change: ${noChange.join(', ')}`)}</div>`);
         if (notCounted.length) parts.push(`<div class="sh-grey">${esc(`Not counted in time: ${notCounted.join(', ')}`)}</div>`);
+        if (failed.length) parts.push(`<div class="sh-grey">${esc(`Could not be counted: ${failed.join(', ')}`)}</div>`);
 
         const err = help.error;
         if (err !== undefined && err !== null && err !== '' && err !== false) {
@@ -4231,12 +4290,16 @@ python state_sync.py push</pre>
     /* The row's own date, never the day of the search. An EMAILED list's date_checked is
        the last night the inbox sweep re-read the message -- the Shape Homes list dated
        13 Aug reads "checked 20/08" -- so it says "email last read", and the list's own age
-       beside it when the snapshot has it (Part C review, correction 27). Plain text. */
+       beside it when the snapshot has it (Part C review, correction 27). The first read is
+       email_first_seen on a package; the needs_confirming entry may call it first_seen,
+       which is read only on an emailed row (every row in the database has a first_seen,
+       and on anything but an email it is not a list's age). Plain text. */
     function confirmDateText(x) {
         const date = String(x.date_checked ?? '').trim();
         const days = date ? daysSince(x.age_days, date) : null;
-        const first = String(x.email_first_seen ?? '').trim();
-        const emailed = /^digital email\b/i.test(String(x.source_channel ?? '').trim()) || !!first;
+        const emailFirst = String(x.email_first_seen ?? '').trim();
+        const emailed = /^digital email$/i.test(String(x.source_channel ?? '').trim()) || !!emailFirst;
+        const first = emailFirst || (emailed ? String(x.first_seen ?? '').trim() : '');
         if (emailed) {
             let text = date ? `Email last read ${date}${days !== null ? `, ${daysAgo(days)}` : ''}`
                             : 'Email last read: no date recorded';
@@ -4261,6 +4324,19 @@ python state_sync.py push</pre>
         document_reread_without_row: 'their list was read again without them',
         newer_list_from_sender: 'the builder has sent a newer list',
         over_confirm_limit: 'they are more than 45 days old',
+        builder_documents_reread: "the builder's other lists were read again without them",
+        no_capture_date: 'they have no capture date',
+        untraceable: "they could not be traced back to their listing",
+        no_document: "their list could not be identified",
+        document_states_available: "their list marks other lots Available, so a blank is not a yes",
+        document_marks_no_exceptions: 'their list marks nothing as gone',
+        text_marks_unavailable: "their own line says they've gone",
+        no_price_evidence: "their price could not be checked against the list",
+        price_not_in_text: "their price could not be checked against the list",
+        larger_total_in_text: 'their list prints a larger total than their price',
+        build_only: 'their price is for the build only',
+        land_only: 'their price is for the land only',
+        commercial: 'they are commercial listings',
     };
 
     /* One needs-confirming listing. NOT renderShortlistCard, on purpose: no compare tick (a
@@ -4302,10 +4378,15 @@ python state_sync.py push</pre>
             : `${total} more listings match but need confirming before you send them`;
         const hiddenBy = (d.needs_confirming_hidden && typeof d.needs_confirming_hidden === 'object')
             ? Object.entries(d.needs_confirming_hidden) : [];
-        const hidden = hiddenBy
-            .map(([reason, n]) => [reason, wholeCount(n)])
-            .filter(([, n]) => n !== null && n > 0)
-            .map(([reason, n]) => `${n} because ${HIDDEN_WHY[reason] || String(reason).replace(/_/g, ' ')}`);
+        // Summed by what they say, so two codes with one meaning read as one line.
+        const because = new Map();
+        for (const [reason, count] of hiddenBy) {
+            const n = wholeCount(count);
+            if (n === null || n <= 0) continue;
+            const why = HIDDEN_WHY[reason] || String(reason).replace(/_/g, ' ');
+            because.set(why, (because.get(why) || 0) + n);
+        }
+        const hidden = [...because].map(([why, n]) => `${n} because ${why}`);
         return `<details class="nc-group"><summary>${esc(head)}</summary>
             <div class="nc-intro">Not in the shortlist: each was last seen more than 14 days ago, or
                 its list doesn't say whether it's available. They can't be compared or put in a
@@ -4434,8 +4515,9 @@ python state_sync.py push</pre>
             const data = await res.json();
             if (data.status === 'success') {
                 resultsDiv.innerHTML = '';
-                // "· M to confirm" only when the server sent needs_confirming rows: they are
-                // NOT qualified and are not in the Filtered count's shortlist side either.
+                // "· M to confirm" only when the server sent needs_confirming rows. They are
+                // not Qualified; the Filtered count still includes them (it is every in-state
+                // listing that did not make the shortlist), so M is a part of F, not added to it.
                 const toConfirm = needsConfirmingCount(data);
                 document.getElementById('shortlistBadge').textContent = `${data.shortlist_count} Qualified`
                     + (toConfirm ? ` · ${toConfirm} to confirm` : '') + ` (${data.rejected_count} Filtered)`;

@@ -185,6 +185,13 @@ function sandbox() {
     els.set(id, makeEl(id, ["budgetEcho", "resultsContent", "actionBar", "shortlistBadge"].includes(id)
       ? "div" : "input"));
   }
+  // Each box's min / max / step exactly as the markup gives them ('' when absent, as a
+  // browser reports them), so applyBriefPatch's "would the box refuse this?" rule is checked
+  // against the real form rather than a copy of it.
+  for (const id of FORM_IDS) {
+    const tag = inputTag(id);
+    if (tag) for (const k of ["min", "max", "step"]) els.get(id)[k] = attrOf(tag, k) ?? "";
+  }
   els.get("stateSelect").options = STATE_OPTIONS;
   const productBoxes = PRODUCT_TYPES.map(v => Object.assign(makeEl("", "input"), { value: v }));
   const formEl = makeEl("propertyForm", "form");
@@ -633,23 +640,34 @@ const RELAX = {
                shortlist_count: 12, adds: 10, count_status: "exact", capped: false },
   radius: { kind: "radius_20", label: "Within 20 km", brief_patch: { search_radius_km: 20 },
             shortlist_count: null, count_status: "not_computed", capped: false },
+  // W13's spelling (id + kind "rerun") for a re-run that raised.
+  failed: { id: "radius_50", kind: "rerun", label: "Within 50 km", brief_patch: { search_radius_km: 50 },
+            shortlist_count: null, adds: null, count_status: "error", capped: null, error: "ValueError" },
 };
 const searchHelp = (over = {}) => ({
   version: 1,
   brief_as_searched: { state: "QLD", budget_min: 0, budget_max: 750000 },
+  // The shape api/research.py _funnel sends: every check in gate order with its in-range
+  // tally (null on the price checks themselves), then the pool and the scorer, whose rows
+  // were all inside the range already. Colin's numbers: 23 in range; 11 passed every check,
+  // 3 of them repeats of another capture, 6 waiting to be confirmed, 2 shortlisted.
   funnel: {
     snapshot_rows: 19800, out_of_scope: { superseded: 7646, other_state: 9659, state_unknown: 437 },
     gates: [
-      { code: "not_available", count: 178, in_price_range: 5 },
-      { code: "availability_unstated", count: 632, in_price_range: 6 },
-      { code: "price_unverified", count: 1, in_price_range: 1 },
-      { code: "over_budget", count: 1228, in_price_range: null },
-      { code: "pending_confirmation", count: 6, in_price_range: 3 },
-      { code: "bedrooms_below_min", count: 4 },
+      { code: "other_product_type", stage: "before_scoring", count: 0, in_price_range: 0 },
+      { code: "price_unverified", stage: "before_scoring", count: 1, in_price_range: 1 },
+      { code: "not_available", stage: "before_scoring", count: 178, in_price_range: 5 },
+      { code: "availability_unstated", stage: "before_scoring", count: 632, in_price_range: 6 },
+      { code: "no_price", stage: "before_scoring", count: 40, in_price_range: null },
+      { code: "over_budget", stage: "before_scoring", count: 1228, in_price_range: null },
+      { code: "same_listing_collapsed", stage: "pool", count: 3, in_price_range: null },
+      { code: "bedrooms_below_min", stage: "scoring", count: 0, in_price_range: null },
+      { code: "pending_confirmation", stage: "scoring", count: 6, in_price_range: null },
     ],
-    in_price_range_total: 17, in_state_rows: 1440, scored: 8, shortlisted: 2, capped: false,
+    in_price_range: { available: 11, availability_unstated: 6, not_available: 5, price_unverified: 1 },
+    in_price_range_total: 23, in_state_rows: 1440, scored: 8, shortlisted: 2, capped: false,
   },
-  relaxations: [RELAX.reveal, RELAX.plus50k, RELAX.plus10pct, RELAX.radius],
+  relaxations: [RELAX.reveal, RELAX.plus50k, RELAX.plus10pct, RELAX.radius, RELAX.failed],
   location_notes: [], brief_adjustments: [], timing_ms: 1840,
   ...over,
 });
@@ -690,15 +708,22 @@ console.log("\n--- 'Why only N matched': the counts, and a button per change tha
   check("the panel is open and headed 'Why only 2 matched'",
     /<details class="search-help" open><summary>Why only 2 matched<\/summary>/.test(out), out.slice(0, 300));
   check("the panel headline is the funnel's in-range count",
-    out.includes(e("In QLD, 17 listings are priced at or under $750,000.")), out.slice(0, 600));
+    out.includes(e("In QLD, 23 listings are priced at or under $750,000.")), out.slice(0, 600));
   check("... then where they went: the shortlist, and each gate with an in-range count",
     out.includes(e("2 made the shortlist"))
     && out.includes(e("5 are marked Sold, On Hold or otherwise not available"))
     && out.includes(e("6 are on lists that don't say whether they're available"))
-    && out.includes(e("1 has a price we couldn't verify"))
-    && out.includes(e("3 weren't checked at the source in the last 14 days")), out.slice(0, 900));
-  check("... and not a gate with no in-range number (over budget, scorer codes)",
-    !out.includes(e("are over the maximum price")) && !out.includes("fewer bedrooms"));
+    && out.includes(e("1 has a price we couldn't verify")), out.slice(0, 900));
+  check("... and what became of the ones that passed every check",
+    out.includes(`<div class="sh-gate">${e("11 passed every check before scoring; of those:")}</div>`)
+    && out.includes(`<div class="sh-gate sh-sub">${e("3 repeat another listing")}</div>`)
+    && out.includes(`<div class="sh-gate sh-sub">${e("6 need confirming with the builder first")}</div>`)
+    && out.indexOf(e("11 passed every check")) < out.indexOf(e("3 repeat another listing")),
+    (out.match(/<div class="sh-gate[^"]*">[^<]*<\/div>/g) || []).join(" | "));
+  check("... and not a gate with no in-range number, nor one that counted nothing",
+    !out.includes(e("are over the maximum price")) && !out.includes(e("have no price"))
+    && !out.includes("fewer bedrooms") && !out.includes("different property type"),
+    (out.match(/<div class="sh-gate[^"]*">[^<]*<\/div>/g) || []).join(" | "));
   check("the budget button carries its true count: 'Budget up to $825,000 → 12 matches (+10)'",
     /<button type="button" class="relax-btn" data-relax="2">Budget up to \$825,000 → 12 matches \(\+10\)<\/button>/.test(out),
     (out.match(/<button[^>]*relax-btn[\s\S]*?<\/button>/g) || []).join(" | "));
@@ -706,6 +731,9 @@ console.log("\n--- 'Why only N matched': the counts, and a button per change tha
     out.includes("No change: Budget up to $800,000") && !/relax-btn[^>]*>Budget up to \$800,000/.test(out));
   check("a change not counted in time gets no button",
     out.includes("Not counted in time: Within 20 km") && !/relax-btn[^>]*>Within 20 km/.test(out));
+  check("a change whose re-run failed says so, and gets no button",
+    out.includes("Could not be counted: Within 50 km") && !out.includes("Not counted in time: Within 20 km, Within 50 km")
+    && !/relax-btn[^>]*>Within 50 km/.test(out), (out.match(/class="sh-grey">[^<]*/g) || []).join(" | "));
   check("the reveal offer shows how many need confirming",
     /class="relax-btn relax-reveal" data-relax="0">Show the 3 that need confirming<\/button>/.test(out));
   check("the panel comes before the first card",
@@ -893,6 +921,36 @@ console.log("\n--- applyBriefPatch writes every field a relaxation can change --
     s.api.applyBriefPatch({}) === false && s.api.applyBriefPatch(null) === false && s.api.applyBriefPatch([1]) === false);
 }
 {
+  // Correction 15: Node has no browser validation, so what a box would refuse is read off its
+  // markup. A click never submits the form, so a figure the box refuses would search fine --
+  // and then leave the form unable to run the next Execute, which posts nothing.
+  const radius = inputTag("searchRadius");
+  check("the radius box takes the widest radius a relaxation offers (50 km, whole km)",
+    radius && Number(attrOf(radius, "max")) >= 50 && [null, "1", "any"].includes(attrOf(radius, "step")), radius);
+  const s = sandbox();
+  const before = () => JSON.stringify({ max: s.el("budgetMax").value, radius: s.el("searchRadius").value,
+    bed: s.el("bedrooms").value, storeys: s.el("storeys").value,
+    types: s.productBoxes.filter(x => x.checked).map(x => x.value) });
+  s.el("budgetMax").value = "750000";
+  s.el("searchRadius").value = "10";
+  s.el("bedrooms").value = "4";
+  s.productBoxes.find(x => x.value === "Villa").checked = true;
+  const start = before();
+  check("W13's radius offers fit the box: 20 and 50 km are written",
+    s.api.applyBriefPatch({ search_radius_km: 50 }) === true && s.el("searchRadius").value === "50"
+    && s.api.applyBriefPatch({ search_radius_km: 20 }) === true && s.el("searchRadius").value === "20");
+  s.el("searchRadius").value = "10";
+  check("a radius past the box's max is refused, and nothing else in the patch is written first",
+    s.api.applyBriefPatch({ product_type: ["Townhouse"], budget_max: 825000, search_radius_km: 150 }) === false
+    && before() === start, before());
+  check("a fractional minimum a whole-number box would refuse is refused",
+    s.api.applyBriefPatch({ budget_max: 825000, bedrooms_min: 2.5 }) === false && before() === start, before());
+  check("... as is a fractional radius",
+    s.api.applyBriefPatch({ search_radius_km: 12.5 }) === false && before() === start, before());
+  check("a price in any whole or part dollar still fits the price boxes (step=\"any\")",
+    s.api.applyBriefPatch({ budget_max: 802500.5 }) === true && s.el("budgetMax").value === "802500.5");
+}
+{
   // The boxes change without an input event, so the price echo is repainted by the patch
   // itself -- not only by a search that may or may not follow.
   const s = sandbox();
@@ -974,6 +1032,24 @@ console.log("\n--- Needs confirming: amber, closed, dated, and never in the shor
     /^Email last read 20\/08\/2026, \d+ days ago · list first read 17\/08\/2026, \d+ days ago$/.test(computed), JSON.stringify(computed));
   check("no date at all says so", s.api.confirmDateText(dawn(4, { date_checked: "", source_channel: "Proxima", email_first_seen: null }))
     === "Last checked: no date recorded");
+  // The needs_confirming entry may carry the first read as first_seen instead.
+  const entrySpelling = s.api.confirmDateText(dawn(5, { email_first_seen: undefined, first_seen: "17/08/2026" }));
+  check("an emailed entry that calls it first_seen still shows the list's own age",
+    entrySpelling === "Email last read 20/08/2026, 27 days ago · list first read 17/08/2026, 30 days ago",
+    JSON.stringify(entrySpelling));
+  const notEmail = s.api.confirmDateText(dawn(6, { source_channel: "E-Agent", email_first_seen: null,
+    first_seen: "01/07/2026", list_age_days: 77, date_checked: "03/09/2026", age_days: 13 }));
+  check("... but a first_seen on a row that did not come by email is not read as a list's age",
+    notEmail === "Last checked 03/09/2026 — 13 days ago", JSON.stringify(notEmail));
+}
+{
+  const s = sandbox();
+  const out = s.api.renderNeedsConfirming(explained({ needs_confirming_hidden: {
+    no_price_evidence: 2, price_not_in_text: 1, over_confirm_limit: 4, zero_reason: 0 } }));
+  check("reasons that mean the same are summed into one line, and a zero is not said",
+    out.includes(s.api.esc("Also left out: 3 because their price could not be checked against the list; "
+      + "4 because they are more than 45 days old.")) && !out.includes("zero"),
+    (out.match(/class="nc-hidden">[^<]*/) || [""])[0]);
 }
 {
   // Capped at 50 by the server, with the exact count beside it.
