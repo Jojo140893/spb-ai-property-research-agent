@@ -96,6 +96,22 @@ def test_every_gate_has_a_fixture():
     assert [g[0] for g in GATES] == list(REJECTION_CODES)
 
 
+def test_every_reason_the_scorer_can_append_has_a_code_beside_it():
+    """The per-gate fixtures only cover the gates that exist today. A gate added later
+    with a reason and no code would pass all of them and break the one-code-per-reason
+    rule silently, so the source itself is checked: in evaluate_property every
+    rejection_reasons.append is followed by exactly one rejection_codes.append before the
+    next reason, and the codes appended are exactly REJECTION_CODES, in order."""
+    import inspect
+    import re
+    src = inspect.getsource(ScoringEngine.evaluate_property)
+    events = re.findall(r'rejection_(reasons|codes)\.append\((?:"([a-z_]+)")?', src)
+    assert events, "evaluate_property no longer appends rejection reasons"
+    kinds = [kind for kind, _code in events]
+    assert kinds == ["reasons", "codes"] * (len(kinds) // 2) and len(kinds) % 2 == 0, kinds
+    assert tuple(code for kind, code in events if kind == "codes") == REJECTION_CODES
+
+
 @pytest.mark.parametrize("code,brief_over,prop_over,price", GATES, ids=[g[0] for g in GATES])
 def test_one_gate_gives_exactly_its_code(code, brief_over, prop_over, price):
     prop = _prop(**prop_over) if price is None else _prop(price, **prop_over)

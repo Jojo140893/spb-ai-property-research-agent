@@ -174,6 +174,12 @@ _AMOUNT = r"(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?"
 _MONEY = re.compile(r"\$\s?" + _AMOUNT + r"(?:([kKmM])(?![A-Za-z0-9\u00b2]))?")
 # "45000000.00%": a merged cell reads as a percentage and is still a number on the line.
 _PERCENT = re.compile(r"(?<![\w.,$])" + _AMOUNT + r"\s?%")
+# A THOUSANDS-GROUPED amount counts even when letters touch it. An OCR'd price list reads
+# its "$" as "S" -- id 17691 prints "Price $ 3,425,000.00S $ 2,085,000.00$ S 1,180,000.00$"
+# and is stored at $2,085,000 -- and refusing "3,425,000.00S" as glued to a letter hid the
+# larger price this evidence exists to find. The letter rule below is for share ids and
+# codes, and those never carry thousands separators.
+_GROUPED = re.compile(r"(?<![\d.,])(\d{1,3}(?:,\d{3})+)(\.\d+)?(?![\d,]|\.\d)")
 # A number standing on its own. Not glued to letters, so a hex share id such as
 # "651a087190a4" is not six digits of price.
 _BARE = re.compile(r"(?<![\w.,$])" + _AMOUNT + r"(?![\w%]|[.,]\d)")
@@ -230,7 +236,8 @@ def price_evidence(row: Dict[str, Any]) -> Dict[str, Any]:
 
     price_kind      derive(row)'s kind: build_only, land_only, package, unknown ...
     text_price_max  the largest amount the text prints -- money of any size, bare numbers
-                    of six digits or more, and percentages -- after links, dd/mm/yyyy
+                    of six digits or more (a thousands-grouped one even with letters
+                    touching it), and percentages -- after links, dd/mm/yyyy
                     dates, phone numbers and PR codes are removed. None when it prints
                     none. Larger than the stored price means the stored price is probably
                     one component of a bigger total.
@@ -245,7 +252,10 @@ def price_evidence(row: Dict[str, Any]) -> Dict[str, Any]:
     percent = [_amount(m.group(1), m.group(2)) for m in _PERCENT.finditer(text)]
     text = _PERCENT.sub(" ", text)
     bare = [(_amount(m.group(1), m.group(2)), len(m.group(1).replace(",", "")))
-            for m in _BARE.finditer(text)]
+            for m in _GROUPED.finditer(text)]
+    text = _GROUPED.sub(" ", text)
+    bare += [(_amount(m.group(1), m.group(2)), len(m.group(1).replace(",", "")))
+             for m in _BARE.finditer(text)]
 
     largest = money + percent + [v for v, digits in bare if digits >= _BARE_PRICE_DIGITS]
     price = _num(row, "price")

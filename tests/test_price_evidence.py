@@ -126,6 +126,22 @@ def test_wacol_prints_its_own_price_and_nothing_larger():
     assert ev["text_price_max"] == 595000, ev
 
 
+def test_an_ocr_line_whose_dollar_signs_read_as_s_still_shows_its_larger_price():
+    """id 17691 (QLD, stored $2,085,000, no status): the scan reads each "$" as "S", so
+    the larger price is glued to a letter. Refusing it as "glued" left text_price_max
+    equal to the stored price, and the row looked like a whole price that it is not.
+    A thousands separator is what tells a price from a share id; letters do not."""
+    row = {"price": 2085000.0, "product_type": "Apartment",
+           "source_text": "Price $ 事 3,425,000.00S $ 2,085,000.00$ S 1,180,000.00$",
+           "lot_address": "Price $ 事 3,425,000.00S $ 2,085,000.00$ S 1,180,000.00$"}
+    ev = price_evidence(row)
+    assert ev["text_price_max"] == 3425000, ev
+    assert ev["price_in_text"] is True
+    # ...and a hex share id still is not a price, grouped or not.
+    assert price_evidence({"price": 500000.0, "source_text": "$500,000 651a087190a4"})[
+        "text_price_max"] == 500000
+
+
 # ------------------------------------------------------------------ what is stripped
 
 def test_a_price_glued_to_a_link_is_kept_and_links_without_a_scheme_are_dropped():
@@ -277,6 +293,29 @@ def test_failures_mark_the_run_degraded_without_exiting(tmp_path, capsys):
     assert "price evidence failed on 2 row(s)" in text
     assert "v2:bad" in text
     assert "ERROR" in capsys.readouterr().out
+
+
+def test_run_daily_keeps_the_build_web_line_when_another_step_also_failed(tmp_path, monkeypatch):
+    """build_web appends to the marker during the run; run_daily used to write_text the
+    marker from its own list at the end, which erased that line on any night another
+    optional step failed too, and its DEGRADED email never named it."""
+    import inspect
+    import run_daily
+    marker = tmp_path / "_run_degraded"
+    monkeypatch.setattr(run_daily, "_DEGRADED_MARKER", marker)
+    monkeypatch.setattr(run_daily, "_DEGRADED", ["5/7  Benchmark each listing"])
+    assert run_daily._lines_already_in_degraded_marker() == []
+    marker.write_text("7/7  Build the deployed snapshot: price evidence failed on 2 row(s)\n"
+                      "5/7  Benchmark each listing\n", encoding="utf-8")
+    assert run_daily._lines_already_in_degraded_marker() == [
+        "7/7  Build the deployed snapshot: price evidence failed on 2 row(s)"]
+    # The chain lives in _chain(), called from main(). Read from the file rather than
+    # inspect.getsource, which stops early inside these functions.
+    src = Path(inspect.getsourcefile(run_daily)).read_text(encoding="utf-8")
+    main = src[src.index("def _chain("):]
+    fold = main.index("_DEGRADED.extend(_lines_already_in_degraded_marker())")
+    assert fold < main.index("if _DEGRADED:") < main.index("_DEGRADED_MARKER.write_text(")
+    assert main.index("_DEGRADED_MARKER.unlink(") < fold, "the marker must be cleared first"
 
 
 def test_evidence_is_taken_before_the_text_is_dropped():
