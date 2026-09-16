@@ -129,6 +129,23 @@ def _run(label: str, args: list, optional: bool = False) -> bool:
     return ok or optional
 
 
+def _lines_already_in_degraded_marker() -> list:
+    """Lines a step wrote into _DEGRADED_MARKER during this run, not already listed.
+
+    main() deletes the marker before the first step, so whatever is in it at the end was
+    written tonight (build_web.py writes one when price evidence failed on some rows).
+    """
+    try:
+        lines = _DEGRADED_MARKER.read_text(encoding="utf-8").splitlines()
+    except (OSError, ValueError):
+        return []
+    out = []
+    for line in (l.strip() for l in lines):
+        if line and line not in _DEGRADED and line not in out:
+            out.append(line)
+    return out
+
+
 def _session_report() -> None:
     """Say which human-only logins have gone stale, before the harvest silently yields 0."""
     sessions = APP / ".sessions"
@@ -422,6 +439,11 @@ def _chain(args) -> int:
                "Last 40 lines of the log:\n\n" + _log_tail())
         return 1
     print("  Data refreshed.")
+    # A STEP CAN MARK THE RUN DEGRADED ITSELF. build_web.py appends a line to the marker
+    # when it published rows without their price evidence -- it has to exit 0, or
+    # deploy.ps1 refuses to publish. Folded in here, or the write_text below would
+    # overwrite that line on a night another step also failed, and no email would name it.
+    _DEGRADED.extend(_lines_already_in_degraded_marker())
     if _DEGRADED:
         # The run finished, so nobody would otherwise look — which is precisely when a
         # degraded step goes unnoticed for days.

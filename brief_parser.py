@@ -100,7 +100,13 @@ class ClientBriefParser:
             deposit_amount=_f(raw_data, 'deposit_amount', 0.0),
             finance_status=raw_data.get('finance_status') or 'Pre-approved',
             buyer_type=buyer_type,
-            state=str(raw_data.get('state') or 'QLD').upper(),
+            # A BLANK STATE MEANS ANY STATE, not Queensland. The form's State select
+            # defaults to "Any state" and sends ''; this defaulted it to 'QLD', so a
+            # national search (510 results, 1 of them in QLD) was recorded as
+            # "QLD/General", builder coverage counted QLD builders only, and both client
+            # reports printed QLD. build_packages already searched every state, so the
+            # label was the only thing that changed, and it was wrong.
+            state=str(raw_data.get('state') or '').strip().upper(),
             primary_suburbs=suburbs,
             # NO MINIMUM UNLESS THE CLIENT STATES ONE — the same rule already applied
             # to land and house size below, and for the same reason.

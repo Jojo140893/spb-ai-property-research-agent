@@ -117,3 +117,151 @@ def is_comparable(a: str, b: str) -> bool:
     thereby covering the same thing.
     """
     return a == b and a in BENCHMARKABLE
+
+
+# --- price evidence -----------------------------------------------------------------
+#
+# WHAT THE ROW'S OWN TEXT SAYS ABOUT ITS PRICE, reduced to three facts the published
+# snapshot can carry. The deployed search never sees source_text (build_web reads it and
+# drops it: it is the whole flattened spreadsheet row), so any rule that needs to ask
+# "does this list actually print this price, and is it the whole price?" has to be
+# answered at build time or not at all.
+#
+# The rows that made it necessary, all reachable by Colin's QLD search under $750k and all
+# wrong to show a buyer as the package price they are stored at:
+#   South Ripley duplex (id 330)  "$725,000 Offers Over 780615 1505615"   total $1.51m
+#   Redbank Plains duplex (329)   "$595,000 $732,285 732285 1327285"      total $1.33m
+#   Heathwood (15897)             "Build Only $390,639"                   no land
+#   Caboolture (19812)            "... $262 45000000.00% $382,201.00"     garbled merge
+# and the rows it must NOT refuse: Dawn, Walloon lots 1228/1229/1231 ($721,900) and
+# Silkwood Wacol ($595,000), whose text prints exactly the stored price and nothing larger.
+
+# Stripped before any number is read. A link's path and a share id are digits nobody
+# priced; a truncated "https:/" at the end of a lot_address is still a link.
+#
+# Matched per whitespace-separated TOKEN, never as one regex over the whole text: a
+# pattern shaped like \S*\.com/\S* backtracks quadratically over a long run with no
+# spaces, and build_web.py runs this on every row of a required nightly step, where a
+# hang is worse than an exception.
+_LINK_MARK = re.compile(r"https?:/|www\.", re.I)
+_DOMAIN_WITH_PATH = re.compile(
+    r"\W*[\w-]+(?:\.[\w-]+)*\.(?:com|net|org|gov|edu|au|io|co|ly|gl|me)(?:\.au)?/", re.I)
+# dd/mm/yyyy (and . or - separated), and ISO dates with an optional time.
+_EVIDENCE_DATE = re.compile(
+    r"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b"
+    r"|\b\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\b")
+# Australian phone numbers as people write them: run together, or grouped the usual way.
+# "0412345678" is otherwise a ten-digit number bigger than any price on the page.
+# The grouping is all-or-nothing on purpose. "1300000 250" is a $1.3m total next to a
+# 250 m2 lot, not "1300 000 250", and stripping it would hide exactly the larger total
+# this evidence exists to find.
+_EVIDENCE_PHONE = re.compile(
+    r"(?<![\w$.,+])(?:"
+    r"04\d{2}(?:\d{6}|[ -]\d{3}[ -]\d{3})"                       # 0412 345 678
+    r"|0[2378](?:\d{8}|[ -]\d{4}[ -]\d{4})"                      # 07 3123 4567
+    r"|\(0[2378]\)[ -]?\d{4}[ -]?\d{4}"                          # (07) 3123 4567
+    r"|\+61[ -]?(?:4\d{2}(?:\d{6}|[ -]\d{3}[ -]\d{3})"           # +61 412 345 678
+    r"|[2378](?:\d{8}|[ -]\d{4}[ -]\d{4}))"                      # +61 7 3123 4567
+    r"|1[38]00(?:\d{6}|[ -]\d{3}[ -]\d{3})"                      # 1300 123 456
+    r")(?![\w%]|[.,]\d)")
+# E-Agent product codes: "PR8638", "PR 45", "PR84444". A code is not an amount, and the
+# spaced form would otherwise read as a bare number.
+_EVIDENCE_CODE = re.compile(r"\bPR[ -]?\d+\b", re.I)
+
+_AMOUNT = r"(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?"
+# "$721,900", "$ 382,201.00", "$989K", "$1.51m" -- any size. The suffix must end the
+# word, so "$450 m2" and "$5m2" are not millions.
+_MONEY = re.compile(r"\$\s?" + _AMOUNT + r"(?:([kKmM])(?![A-Za-z0-9\u00b2]))?")
+# "45000000.00%": a merged cell reads as a percentage and is still a number on the line.
+_PERCENT = re.compile(r"(?<![\w.,$])" + _AMOUNT + r"\s?%")
+# A THOUSANDS-GROUPED amount counts even when letters touch it. An OCR'd price list reads
+# its "$" as "S" -- id 17691 prints "Price $ 3,425,000.00S $ 2,085,000.00$ S 1,180,000.00$"
+# and is stored at $2,085,000 -- and refusing "3,425,000.00S" as glued to a letter hid the
+# larger price this evidence exists to find. The letter rule below is for share ids and
+# codes, and those never carry thousands separators.
+_GROUPED = re.compile(r"(?<![\d.,])(\d{1,3}(?:,\d{3})+)(\.\d+)?(?![\d,]|\.\d)")
+# A number standing on its own. Not glued to letters, so a hex share id such as
+# "651a087190a4" is not six digits of price.
+_BARE = re.compile(r"(?<![\w.,$])" + _AMOUNT + r"(?![\w%]|[.,]\d)")
+
+# A bare number counts towards the text's largest price only from six digits up
+# ($100,000): below that it is a lot, a size, a postcode or a year.
+_BARE_PRICE_DIGITS = 6
+
+
+# The largest amount recorded. A garbled cell can hold a digit run hundreds long, which
+# float() turns into infinity -- and json.dumps writes that as `Infinity`, which is not
+# JSON: the browser's parse of the whole stock.json would fail. Clamped instead, still far
+# above any price, and exact as a JavaScript number (below 2**53).
+_MAX_AMOUNT = 10 ** 15
+
+
+def _amount(whole: str, frac: str, suffix: str = "") -> float:
+    value = float(whole.replace(",", "") + (frac or ""))
+    value *= {"k": 1_000.0, "m": 1_000_000.0}.get((suffix or "").lower(), 1.0)
+    return min(value, float(_MAX_AMOUNT))
+
+
+def _compact(value: float):
+    """721900 rather than 721900.0 -- the snapshot pays for every byte on every row."""
+    value = round(value, 2)
+    return int(value) if value == int(value) else value
+
+
+def _without_links(text: str) -> str:
+    kept = []
+    for token in text.split():
+        mark = _LINK_MARK.search(token)
+        if mark:
+            # "$721,900https://..." keeps the price glued in front of the link.
+            token = token[:mark.start()]
+        elif _DOMAIN_WITH_PATH.match(token):
+            token = ""
+        if token:
+            kept.append(token)
+    return " ".join(kept)
+
+
+def evidence_text(row: Dict[str, Any]) -> str:
+    """The row's text with links, dates, phone numbers and product codes removed."""
+    text = " ".join(str(row.get(k) or "") for k in ("source_text", "lot_address"))
+    text = _without_links(text)
+    for pattern in (_EVIDENCE_DATE, _EVIDENCE_PHONE, _EVIDENCE_CODE):
+        text = pattern.sub(" ", text)
+    return text
+
+
+def price_evidence(row: Dict[str, Any]) -> Dict[str, Any]:
+    """{'price_kind', 'text_price_max', 'price_in_text'} for one stored row.
+
+    price_kind      derive(row)'s kind: build_only, land_only, package, unknown ...
+    text_price_max  the largest amount the text prints -- money of any size, bare numbers
+                    of six digits or more (a thousands-grouped one even with letters
+                    touching it), and percentages -- after links, dd/mm/yyyy
+                    dates, phone numbers and PR codes are removed. None when it prints
+                    none. Larger than the stored price means the stored price is probably
+                    one component of a bigger total.
+    price_in_text   True when the stored price itself is printed in the text (as money or
+                    as a bare number), so the price was read off this line, not guessed.
+    """
+    text = evidence_text(row)
+    money = []
+    for m in _MONEY.finditer(text):
+        money.append(_amount(m.group(1), m.group(2), m.group(3)))
+    text = _MONEY.sub(" ", text)
+    percent = [_amount(m.group(1), m.group(2)) for m in _PERCENT.finditer(text)]
+    text = _PERCENT.sub(" ", text)
+    bare = [(_amount(m.group(1), m.group(2)), len(m.group(1).replace(",", "")))
+            for m in _GROUPED.finditer(text)]
+    text = _GROUPED.sub(" ", text)
+    bare += [(_amount(m.group(1), m.group(2)), len(m.group(1).replace(",", "")))
+             for m in _BARE.finditer(text)]
+
+    largest = money + percent + [v for v, digits in bare if digits >= _BARE_PRICE_DIGITS]
+    price = _num(row, "price")
+    printed = money + [v for v, _digits in bare]
+    return {
+        "price_kind": derive(row)[0],
+        "text_price_max": _compact(max(largest)) if largest else None,
+        "price_in_text": bool(price > 0 and any(abs(v - price) < 1.0 for v in printed)),
+    }

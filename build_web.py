@@ -112,6 +112,20 @@ BUILDING_DERIVED_FIELDS = ["source_link_url", "source_link_opens", "source_link_
                            # source_link_*, so index.html renders it with the same cell.
                            "rea_search_url", "rea_search_opens", "rea_search_label",
                            "rea_search_search"]
+# WHAT THE ROW'S OWN TEXT SAYS ABOUT ITS PRICE, for a deployed search that never sees the
+# text. source_text is read here and dropped (see build()), so "does this price list
+# print this price, and is it the whole price?" can only be answered at build time. Three
+# small cells from price_kind.price_evidence, computed while the text is still in hand:
+#   price_kind      build_only / land_only / package / dwelling / commercial / unknown
+#   text_price_max  the largest amount the text prints (a $725,000 duplex line that also
+#                   prints its 1505615 total), or null when it prints none
+#   price_in_text   whether the stored price itself is printed on the line
+# On EVERY row, not only the unstated-availability rows that use them today, so the
+# snapshot and the SQLite reader (which computes the same three with the same function)
+# never disagree about a row. Measured on the 17 Sep copy: ~3% on stock.json.
+# Null in all three means the computation failed for that row (logged, run DEGRADED).
+PRICE_EVIDENCE_FIELDS = ["price_kind", "text_price_max", "price_in_text"]
+BUILDING_DERIVED_FIELDS += PRICE_EVIDENCE_FIELDS
 
 # benchmarks.json -- market comparables from realestate.com.au, which are NOT stock.
 # Its own payload, not a section of stock.json, for three reasons: stock.json is already
@@ -243,6 +257,49 @@ def _redact_contacts(text) -> str:
     out = _EMAIL.sub("[email withheld]", str(text or ""))
     out = _PHONE.sub("[phone withheld]", out)
     return re.sub(r"\s{2,}", " ", out).strip()
+
+
+def _price_evidence_cells(row, failures: list) -> dict:
+    """The PRICE_EVIDENCE_FIELDS cells for one row. Never raises.
+
+    build_web.py is a REQUIRED nightly step: an exception here aborts the chain and the
+    dashboard keeps yesterday's snapshot, withholding a whole day of fresh stock over one
+    odd line of vendor text. So a row whose evidence cannot be computed publishes nulls
+    -- which the search reads as "no evidence", the same as a row the rule does not
+    admit -- and the failure is recorded for the caller to report.
+    """
+    try:
+        import price_kind
+        evidence = price_kind.price_evidence(row)
+        return {f: evidence[f] for f in PRICE_EVIDENCE_FIELDS}
+    except Exception as exc:                                            # noqa: BLE001
+        failures.append((row.get("content_hash") or "", f"{type(exc).__name__}: {exc}"))
+        return dict.fromkeys(PRICE_EVIDENCE_FIELDS)
+
+
+# Read by .github/workflows/daily-harvest.yml ("Fail the run if a data step died quietly")
+# after publishing. run_daily.py clears it before the run.
+_DEGRADED_MARKER = Path(__file__).with_name("_run_degraded")
+
+
+def _report_price_evidence_failures(failures, marker: Path = None) -> None:
+    """Say so, loudly, and mark the run DEGRADED -- but publish.
+
+    Exit status stays 0: deploy.ps1 refuses to publish on any non-zero exit from this
+    script, and the rows that did compute are worth publishing.
+    """
+    if not failures:
+        return
+    marker = marker or _DEGRADED_MARKER
+    first = "; ".join(f"{h or '(no hash)'} {err}" for h, err in failures[:3])
+    line = (f"7/7  Build the deployed snapshot: price evidence failed on "
+            f"{len(failures)} row(s), published without it ({first})")
+    print(f"    ERROR {line}")
+    try:
+        with marker.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except Exception as exc:                                            # noqa: BLE001
+        print(f"  (could not write the degraded marker: {exc})")
 
 
 def _FOLDER_CAPABILITY(url: str) -> bool:
@@ -590,6 +647,7 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
                     _located_says[(_f, _k)][_s.strip().lower()] += 1
 
     _texts = {}           # id(row) -> its source_text, stashed before it is popped
+    _evidence_failures = []
     for b in buildings:
         # IS THIS A PLACE? 3,854 published rows answered no and were shown as suburbs
         # anyway — '2026', 'offer', 'GARAGE', 'Logan City Council', 'Rooms Rooms m2 m2
@@ -716,6 +774,9 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         # that actually helps, and index.html renders it as text when there is no URL.
         if link and _FOLDER_CAPABILITY(str(link.get("url") or "")):
             link = {**link, "url": ""}
+        # Price evidence reads source_text and lot_address, so it is taken BEFORE the text
+        # is popped just below. Per row and guarded: see _price_evidence_cells.
+        b.update(_price_evidence_cells(b, _evidence_failures))
         # AFTER the link is built, not before: primary_source_link reads source_url and
         # stocklist_file to construct it, and popping them first cost 6,242 rows their
         # source link while leaving the feature apparently intact.
@@ -1149,6 +1210,9 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         "rea_suburbs": len(_suburb_rows),
         "benchmarks": len(_bench_rows),
         "with_suburb": sum(1 for b in buildings if (b.get("suburb") or "").strip()),
+        # (content_hash, error) per row whose price evidence could not be computed. Those
+        # rows published nulls; __main__ reports them and marks the run DEGRADED.
+        "price_evidence_failures": _evidence_failures,
     }
     # Which sources are still producing stock — the Settings tab, and the banner that
     # would have shown E-Agent had signed out three nights before anyone noticed. Before
@@ -2138,6 +2202,7 @@ if __name__ == "__main__":
     if m.get("relabelled"):
         print(f"    {m['relabelled']} row(s) re-labelled to one name per builder "
               f"(the database keeps its spellings — see _display_name_canonicaliser)")
+    _report_price_evidence_failures(m.get("price_evidence_failures"))
     _cov = m.get("suburb_coverage") or {}
     _assert_suburb_coverage(_cov)
     if _cov:
