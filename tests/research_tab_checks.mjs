@@ -111,7 +111,20 @@ check("the minimum re-run never goes through form.requestSubmit (validation swal
   !/requestSubmit/.test(block));
 
 const EXPORTS = ["runResearchAgent", "budgetEchoText", "paintBudgetEcho", "searchedLineText",
-  "adjustmentText", "locationNoteText", "searchNotesHtml", "capturedRow"];
+  "adjustmentText", "locationNoteText", "searchNotesHtml", "capturedRow",
+  "renderSearchHelp", "relaxationsOf", "applyBriefPatch", "renderNeedsConfirming",
+  "needsConfirmingCard", "confirmDateText"];
+
+// The State select's options, read from the form's markup: applyBriefPatch refuses a state
+// the select cannot show, so the stub must offer exactly what the page offers.
+const STATE_OPTIONS = [...((form.match(/<select id="stateSelect">([\s\S]*?)<\/select>/) || [, ""])[1])
+  .matchAll(/<option\b[^>]*\bvalue="([^"]*)"/g)].map(m => ({ value: m[1] }));
+const PRODUCT_TYPES = [...((form.match(/<div id="productType"[^>]*>([\s\S]*?)<\/div>/) || [, ""])[1])
+  .matchAll(/<input type="checkbox" value="([^"]*)"/g)].map(m => m[1].replace(/&amp;/g, "&"));
+check("the State select's options are read from the form", STATE_OPTIONS.some(o => o.value === "QLD")
+  && STATE_OPTIONS.some(o => o.value === ""), JSON.stringify(STATE_OPTIONS));
+check("the Property Type boxes are read from the form", PRODUCT_TYPES.includes("House & Land")
+  && PRODUCT_TYPES.includes("Townhouse"), JSON.stringify(PRODUCT_TYPES));
 
 // A tiny element: enough DOM for runResearchAgent to render into and for the checks to
 // read back what it wrote. innerHTML replaces children, as it does in a browser.
@@ -172,10 +185,21 @@ function sandbox() {
     els.set(id, makeEl(id, ["budgetEcho", "resultsContent", "actionBar", "shortlistBadge"].includes(id)
       ? "div" : "input"));
   }
+  els.get("stateSelect").options = STATE_OPTIONS;
+  const productBoxes = PRODUCT_TYPES.map(v => Object.assign(makeEl("", "input"), { value: v }));
   const formEl = makeEl("propertyForm", "form");
   formEl.requestSubmit = () => { calls.requestSubmit++; };
   formEl.dispatchEvent = () => { calls.dispatchEvent++; return true; };
   els.set("propertyForm", formEl);
+  // An element the page created and gave an id ("show more"), found where it was appended.
+  const inTree = (node, id) => {
+    for (const c of node.children) {
+      if (c.id === id) return c;
+      const deeper = inTree(c, id);
+      if (deeper) return deeper;
+    }
+    return null;
+  };
   let responder = async () => { throw new Error("no fetch responder set"); };
   const ctx = vm.createContext({
     URL, URLSearchParams, console, setTimeout, clearTimeout,
@@ -185,11 +209,14 @@ function sandbox() {
       // Anything the renderers write by id (the report buttons, "show more") exists on
       // demand, as it would once their markup was parsed.
       getElementById: id => {
+        const appended = inTree(els.get("resultsContent"), id);
+        if (appended) return appended;
         if (!els.has(id)) els.set(id, makeEl(id));
         return els.get(id);
       },
       createElement: tag => makeEl("", tag),
-      querySelectorAll: () => [],
+      querySelectorAll: sel => sel === "#productType input" ? productBoxes
+        : sel === "#productType input:checked" ? productBoxes.filter(b => b.checked) : [],
       addEventListener: () => {},
     },
     // The page's globals this tab reads and writes, declared elsewhere in the script.
@@ -207,7 +234,7 @@ function sandbox() {
   const api = vm.runInContext(
     escMatch[0] + "\n" + notStatedMatch[0] + "\n" + block + "\n;({" + exportsSrc + ", esc })",
     ctx, { filename: "index.html#research-tab" });
-  return { api, ctx, calls, el: id => els.get(id), respond: fn => { responder = fn; } };
+  return { api, ctx, calls, productBoxes, el: id => els.get(id), respond: fn => { responder = fn; } };
 }
 
 const reply = (status, body) => ({
@@ -225,7 +252,7 @@ const fn = (api, name) => (typeof api[name] === "function" ? api[name] : null);
 const TAGS = new Set(["div", "span", "a", "strong", "br", "details", "summary", "p", "button", "em",
   "label", "input", "code"]);
 const ATTRS = new Set(["class", "id", "href", "target", "rel", "title", "style", "type", "disabled",
-  "hidden", "checked", "data-hash", "data-idx", "data-term", "data-field"]);
+  "hidden", "checked", "data-hash", "data-idx", "data-term", "data-field", "open", "data-relax"]);
 function markupProblems(out) {
   const problems = [];
   const text = String(out).replace(/<!--[\s\S]*?-->/g, "");
@@ -540,6 +567,474 @@ console.log("\n--- 'search without this minimum' re-runs with a blank client nam
   check("... and not through the form's submit",
     s.calls.requestSubmit === 0 && s.calls.dispatchEvent === 0,
     `requestSubmit ${s.calls.requestSubmit}, dispatchEvent ${s.calls.dispatchEvent}`);
+  const secondBody = s.calls.fetch[1] ? JSON.parse(s.calls.fetch[1].opts.body) : {};
+  check("... and, being a relaxation someone clicked, asks for the explanation",
+    secondBody.explain === true, JSON.stringify(Object.keys(secondBody)));
+}
+
+// ------------------------------------------------------------------ explain: who asks for it
+console.log("\n--- only a search someone asked for sends explain:true ---");
+{
+  // Outside the slice, so read from the page: the form's submit and the page-load run are the
+  // only places a search starts. Comments are stripped so a mention in prose is not a call.
+  const outside = (html.slice(0, b) + html.slice(e))
+    .replace(/<!--[\s\S]*?-->/g, "").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const starts = [...outside.matchAll(/runResearchAgent\(([^)]*)\)/g)].map(m => m[1].trim());
+  const submit = outside.match(
+    /getElementById\('propertyForm'\)\.addEventListener\('submit', function\(e\) \{\s*e\.preventDefault\(\);\s*runResearchAgent\(([^)]*)\);\s*\}\);/);
+  check("a form submit asks for explain", !!submit && /^\{\s*explain:\s*true\s*\}$/.test(submit[1]),
+    submit ? submit[1] : "the submit listener was not found");
+  const onLoad = outside.match(/loadBuilderDirectory\(\);\s*runResearchAgent\(([^)]*)\);/);
+  check("the page-load search does not ask for explain", !!onLoad && onLoad[1].trim() === "",
+    onLoad ? onLoad[1] : "the page-load run was not found");
+  check("outside the tab a search starts only there (submit explained, page load not)",
+    starts.length === 2 && starts.filter(a => /explain:\s*true/.test(a)).length === 1 && starts.includes(""),
+    JSON.stringify(starts));
+}
+{
+  const s = sandbox();
+  s.respond(async () => reply(200, success()));
+  await s.api.runResearchAgent();
+  await settle();
+  const plain = JSON.parse(s.calls.fetch[0].opts.body);
+  check("a search without explain sends only client_brief",
+    JSON.stringify(Object.keys(plain)) === '["client_brief"]', JSON.stringify(Object.keys(plain)));
+  await s.api.runResearchAgent({ explain: true });
+  await settle();
+  const asked = JSON.parse(s.calls.fetch[1].opts.body);
+  check("a search asked to explain sends {client_brief, explain:true}",
+    JSON.stringify(Object.keys(asked)) === '["client_brief","explain"]' && asked.explain === true,
+    JSON.stringify(asked).slice(0, 120));
+  await s.api.runResearchAgent({ explain: "yes" });
+  await settle();
+  const loose = JSON.parse(s.calls.fetch[2].opts.body);
+  check("only explain === true counts", !("explain" in loose), JSON.stringify(Object.keys(loose)));
+}
+
+// ------------------------------------------------------------------ fixtures: an explained search
+// Colin's QLD <= $750k on the subset fixture, today 16/09/2026: two confirmed, the three
+// Shape Homes Dawn lots from the emailed list waiting to be confirmed.
+const dawn = (lot, over = {}) => ({
+  content_hash: `v2:dawn${lot}`, lot_address: `Lot ${lot}, Dawn, Walloon`, lot_number: String(lot),
+  suburb: "Walloon", state: "QLD", builder_name: "Builder not identified in source", estate_context: "Dawn",
+  advertised_package_price: lot === 1231 ? 725900 : 721900, bedrooms: 4, bathrooms: 2, car_spaces: null,
+  land_size_sqm: 0, house_size_sqm: null, score: 84, advisories: "", source_link: null, confirm: ["stale"],
+  availability_as_stated: "Available", date_checked: "20/08/2026", age_days: 27, fresh_days: 14,
+  source_channel: "digital email", email_first_seen: "17/08/2026", list_age_days: 30,
+  ...over,
+});
+const RELAX = {
+  reveal: { kind: "include_needs_confirming", label: "Show 3 matches that need confirming", count: 3 },
+  plus50k: { kind: "budget_plus_50k", label: "Budget up to $800,000",
+             brief_patch: { budget_max: 800000, preferred_spending_cap: 800000 },
+             shortlist_count: 2, adds: 0, count_status: "exact", capped: false },
+  plus10pct: { kind: "budget_plus_10pct", label: "Budget up to $825,000",
+               brief_patch: { budget_max: 825000, preferred_spending_cap: 825000 },
+               shortlist_count: 12, adds: 10, count_status: "exact", capped: false },
+  radius: { kind: "radius_20", label: "Within 20 km", brief_patch: { search_radius_km: 20 },
+            shortlist_count: null, count_status: "not_computed", capped: false },
+};
+const searchHelp = (over = {}) => ({
+  version: 1,
+  brief_as_searched: { state: "QLD", budget_min: 0, budget_max: 750000 },
+  funnel: {
+    snapshot_rows: 19800, out_of_scope: { superseded: 7646, other_state: 9659, state_unknown: 437 },
+    gates: [
+      { code: "not_available", count: 178, in_price_range: 5 },
+      { code: "availability_unstated", count: 632, in_price_range: 6 },
+      { code: "price_unverified", count: 1, in_price_range: 1 },
+      { code: "over_budget", count: 1228, in_price_range: null },
+      { code: "pending_confirmation", count: 6, in_price_range: 3 },
+      { code: "bedrooms_below_min", count: 4 },
+    ],
+    in_price_range_total: 17, in_state_rows: 1440, scored: 8, shortlisted: 2, capped: false,
+  },
+  relaxations: [RELAX.reveal, RELAX.plus50k, RELAX.plus10pct, RELAX.radius],
+  location_notes: [], brief_adjustments: [], timing_ms: 1840,
+  ...over,
+});
+const explained = (over = {}) => success({
+  shortlist: [prop({ content_hash: "v2:one" }), prop({ content_hash: "v2:two", lot_address: "Lot 2" })],
+  shortlist_count: 2, rejected_count: 1438,
+  brief_used: { state: "QLD", budget_min: 0, budget_max: 750000, primary_suburbs: [] },
+  search_help: searchHelp(),
+  needs_confirming: [dawn(1228), dawn(1229), dawn(1231)], needs_confirming_count: 3,
+  needs_confirming_hidden: { newer_capture_disagrees: 3 },
+  ...over,
+});
+async function renderExplained(body, setup) {
+  const s = sandbox();
+  if (setup) setup(s);
+  s.respond(async () => reply(200, body));
+  await s.api.runResearchAgent({ explain: true });
+  await settle();
+  return { ...s, out: dump(s.el("resultsContent")) };
+}
+const child = (s, cls) => {
+  const walk = node => {
+    for (const c of node.children) {
+      if (String(c.innerHTML).includes(`class="${cls}`)) return c;
+      const deeper = walk(c);
+      if (deeper) return deeper;
+    }
+    return null;
+  };
+  return walk(s.el("resultsContent"));
+};
+
+// ------------------------------------------------------------------ Why only N matched
+console.log("\n--- 'Why only N matched': the counts, and a button per change that finds more ---");
+{
+  const { api, out } = await renderExplained(explained());
+  const e = t => api.esc(t);
+  check("the panel is open and headed 'Why only 2 matched'",
+    /<details class="search-help" open><summary>Why only 2 matched<\/summary>/.test(out), out.slice(0, 300));
+  check("the panel headline is the funnel's in-range count",
+    out.includes(e("In QLD, 17 listings are priced at or under $750,000.")), out.slice(0, 600));
+  check("... then where they went: the shortlist, and each gate with an in-range count",
+    out.includes(e("2 made the shortlist"))
+    && out.includes(e("5 are marked Sold, On Hold or otherwise not available"))
+    && out.includes(e("6 are on lists that don't say whether they're available"))
+    && out.includes(e("1 has a price we couldn't verify"))
+    && out.includes(e("3 weren't checked at the source in the last 14 days")), out.slice(0, 900));
+  check("... and not a gate with no in-range number (over budget, scorer codes)",
+    !out.includes(e("are over the maximum price")) && !out.includes("fewer bedrooms"));
+  check("the budget button carries its true count: 'Budget up to $825,000 → 12 matches (+10)'",
+    /<button type="button" class="relax-btn" data-relax="2">Budget up to \$825,000 → 12 matches \(\+10\)<\/button>/.test(out),
+    (out.match(/<button[^>]*relax-btn[\s\S]*?<\/button>/g) || []).join(" | "));
+  check("a change that adds nothing is one grey 'No change:' line, not a button",
+    out.includes("No change: Budget up to $800,000") && !/relax-btn[^>]*>Budget up to \$800,000/.test(out));
+  check("a change not counted in time gets no button",
+    out.includes("Not counted in time: Within 20 km") && !/relax-btn[^>]*>Within 20 km/.test(out));
+  check("the reveal offer shows how many need confirming",
+    /class="relax-btn relax-reveal" data-relax="0">Show the 3 that need confirming<\/button>/.test(out));
+  check("the panel comes before the first card",
+    out.indexOf("search-help") >= 0 && out.indexOf("prop-card") > out.indexOf("search-help"));
+}
+{
+  const nothing = await renderExplained(explained({ shortlist: [], shortlist_count: 0,
+    search_help: searchHelp({ relaxations: [RELAX.reveal, { ...RELAX.plus10pct, shortlist_count: 12, adds: 12 }] }) }));
+  check("with no results it reads 'Why nothing matched'",
+    /<details class="search-help" open><summary>Why nothing matched<\/summary>/.test(nothing.out));
+  const many = Array.from({ length: 6 }, (_, i) => prop({ content_hash: `v2:m${i}` }));
+  const full = await renderExplained(explained({ shortlist: many, shortlist_count: 6, search_help: searchHelp({ relaxations: [] }) }));
+  check("a shortlist of 5 or more folds it away as 'How this search was counted'",
+    /<details class="search-help"><summary>How this search was counted<\/summary>/.test(full.out), full.out.slice(0, 300));
+  const plain = await render(success());
+  check("no search_help (the page-load run): no panel", !plain.out.includes("search-help"));
+}
+{
+  // A relaxation keyed by id with a separate kind, counted as 'count' (the explain design's
+  // first spelling), with no adds: adds is the count less this search's own shortlist.
+  const { out } = await renderExplained(explained({ search_help: searchHelp({ relaxations: [
+    { id: "budget_plus_10", kind: "rerun", label: "Budget up to $825,000 (+10%)",
+      brief_patch: { budget_max: 825000 }, count: 12, count_status: "exact" },
+    { id: "whole_state", kind: "rerun", brief_patch: { primary_suburbs: [] }, shortlist_count: 40,
+      count_status: "exact", capped: true },
+  ] }) }));
+  check("an id-keyed relaxation with no adds works out +10 from its count",
+    out.includes("Budget up to $825,000 (+10%) → 12 matches (+10)"), out.slice(0, 1200));
+  check("a relaxation with no label is named from its kind, and a capped count reads 40+",
+    out.includes("The whole state, not just these suburbs → 40+ matches (+38)"), out.slice(0, 1200));
+}
+{
+  // A change this form cannot express is never a button: its click would run a different
+  // search from the one that was counted.
+  const { out } = await renderExplained(explained({ search_help: searchHelp({ relaxations: [
+    { kind: "drop_garage_type", label: "Any garage", brief_patch: { garage_type: "" },
+      shortlist_count: 5, adds: 3, count_status: "exact" },
+  ] }) }));
+  check("a patch naming a field the form does not have gets no button, only the count in text",
+    !/relax-btn[^>]*>Any garage/.test(out) && out.includes("Change the brief above to try: Any garage → 5 matches (+3)"),
+    out.slice(0, 1200));
+}
+{
+  const note = { said: "Queensland", used: [], method: "state", note: "a state, not a suburb, so it was not searched as a suburb" };
+  const once = await renderExplained(explained({ location_resolution: [note],
+    search_help: searchHelp({ location_notes: [note] }) }));
+  const text = "&quot;Queensland&quot; — a state, not a suburb";
+  check("a location note already shown above the results is not repeated in the panel",
+    once.out.split(text).length - 1 === 1, `${once.out.split(text).length - 1} times`);
+  const only = await renderExplained(explained({ location_resolution: [],
+    search_help: searchHelp({ location_notes: [note],
+      brief_adjustments: [{ field: "budget_max", from: 750, to: 750000, why: "read as thousands" }] }) }));
+  check("the panel shows location notes and brief adjustments the notes above did not",
+    only.out.includes(`class="sh-note">${text}`) && only.out.includes("Maximum price: $750 → $750,000 (read as thousands)"),
+    only.out.slice(0, 900));
+}
+{
+  const { out } = await renderExplained(explained({ search_help: searchHelp({
+    funnel: { in_price_range_total: 3, gates: [{ code: payload("gatecode"), in_price_range: 2 }] },
+    relaxations: [
+      { kind: "budget_plus_10pct", label: payload("relax_label"), brief_patch: { budget_max: 825000 },
+        shortlist_count: 12, adds: 10, count_status: "exact" },
+      { kind: "budget_plus_50k", label: payload("nochange_label"), brief_patch: { budget_max: 800000 },
+        shortlist_count: 2, adds: 0, count_status: "exact" },
+      { kind: "radius_20", label: payload("uncounted_label"), brief_patch: { search_radius_km: 20 },
+        count_status: "not_computed" },
+    ],
+    location_notes: [{ said: payload("sh_said"), used: [], method: "unresolved", note: payload("sh_note") }],
+    brief_adjustments: [{ field: payload("sh_field"), note: payload("sh_adj") }],
+    error: payload("sh_error"),
+  }), brief_used: { state: payload("sh_state"), budget_max: 750000 } }));
+  const problems = markupProblems(out);
+  check("everything in search_help renders as text (labels, gates, notes, error, state)",
+    // An unknown gate code is shown with its underscores as spaces, so its payload is too.
+    problems.length === 0 && out.includes(shown("gatecode").replace(/_/g, " "))
+    && ["relax_label", "nochange_label", "uncounted_label", "sh_said",
+      "sh_note", "sh_field", "sh_adj", "sh_error", "sh_state"].every(k => out.includes(shown(k))),
+    problems.slice(0, 3).join(" | ") || ["relax_label", "nochange_label", "uncounted_label", "sh_said",
+      "sh_note", "sh_field", "sh_adj", "sh_error", "sh_state"].filter(k => !out.includes(shown(k))).join(", ")
+      || "gatecode");
+}
+
+// ------------------------------------------------------------------ a relaxation click
+console.log("\n--- a relaxation click writes the change into the form and searches straight away ---");
+{
+  const s = sandbox();
+  s.el("clientName").value = "";
+  s.el("budgetMax").value = "750000";
+  s.respond(async () => reply(200, explained()));
+  await s.api.runResearchAgent({ explain: true });
+  await settle();
+  const helpBox = child(s, "search-help");
+  const button = helpBox ? helpBox.querySelectorAll(".relax-btn").find(x => x.dataset.relax === "2") : null;
+  check("the +10% button is wired", !!(button && typeof button.onclick === "function"));
+  // A spy in front of the real function: what it was asked, and what the form held then.
+  const real = s.ctx.runResearchAgent;
+  const spied = [];
+  s.ctx.runResearchAgent = (opts) => {
+    spied.push({ opts, budgetMax: s.el("budgetMax").value, clientName: s.el("clientName").value });
+    return real(opts);
+  };
+  if (button && typeof button.onclick === "function") button.onclick();
+  await settle();
+  check("clicking it with a blank client name calls runResearchAgent once, with budget_max 825000 in the form",
+    spied.length === 1 && spied[0].budgetMax === "825000" && spied[0].clientName === "",
+    JSON.stringify(spied));
+  check("... asking for the explanation", spied.length === 1 && spied[0].opts && spied[0].opts.explain === true);
+  const body = s.calls.fetch[1] ? JSON.parse(s.calls.fetch[1].opts.body) : {};
+  check("... which posts budget_max 825000 with explain:true",
+    s.calls.fetch.length === 2 && body.client_brief && body.client_brief.budget_max === 825000 && body.explain === true,
+    `${s.calls.fetch.length} POST(s) ${JSON.stringify(body).slice(0, 200)}`);
+  check("... the preferred price, left blank, follows the new maximum without being pinned in the box",
+    s.el("budgetPref").value === "" && body.client_brief && body.client_brief.preferred_spending_cap === 825000,
+    JSON.stringify({ box: s.el("budgetPref").value, sent: body.client_brief && body.client_brief.preferred_spending_cap }));
+  check("... and never through the form's submit",
+    s.calls.requestSubmit === 0 && s.calls.dispatchEvent === 0,
+    `requestSubmit ${s.calls.requestSubmit}, dispatchEvent ${s.calls.dispatchEvent}`);
+}
+{
+  const s = sandbox();
+  s.respond(async () => reply(200, explained()));
+  await s.api.runResearchAgent({ explain: true });
+  await settle();
+  const helpBox = child(s, "search-help");
+  const reveal = helpBox ? helpBox.querySelectorAll(".relax-btn").find(x => x.dataset.relax === "0") : null;
+  const ncBox = child(s, "nc-group");
+  const group = ncBox ? ncBox.querySelector(".nc-group") : null;
+  check("the needs-confirming group starts closed", !!group && group.open !== true);
+  if (reveal && typeof reveal.onclick === "function") reveal.onclick();
+  await settle();
+  check("the reveal button opens the needs-confirming group and searches nothing",
+    !!group && group.open === true && s.calls.fetch.length === 1, `open ${group && group.open}, ${s.calls.fetch.length} POST(s)`);
+}
+
+// ------------------------------------------------------------------ applyBriefPatch
+console.log("\n--- applyBriefPatch writes every field a relaxation can change ---");
+{
+  const s = sandbox();
+  for (const [id, v] of Object.entries({ budgetMin: "", budgetMax: "750000", budgetPref: "740000",
+    stateSelect: "QLD", suburbs: "Ripley", searchRadius: "0", bedrooms: "4", bathrooms: "", carSpaces: "2",
+    storeys: "1", landSize: "", houseSize: "180" })) s.el(id).value = v;
+  s.el("requiresIncentive").checked = true;
+  s.productBoxes.find(x => x.value === "House & Land").checked = true;
+  const ok = s.api.applyBriefPatch({
+    budget_min: 300000, budget_max: 9007199254740991, preferred_spending_cap: 700000, state: "VIC",
+    primary_suburbs: ["Tarneit", "Werribee"], search_radius_km: 20, bedrooms_min: 0, bathrooms_min: 2,
+    car_spaces_min: 0, storeys_max: null, house_size_min_sqm: 0, land_size_min_sqm: 350,
+    product_type: ["Townhouse"], requires_incentive: false,
+  });
+  const got = Object.fromEntries(["budgetMin", "budgetMax", "budgetPref", "stateSelect", "suburbs",
+    "searchRadius", "bedrooms", "bathrooms", "carSpaces", "storeys", "landSize", "houseSize"].map(id => [id, s.el(id).value]));
+  const want = { budgetMin: "300000", budgetMax: "", budgetPref: "700000", stateSelect: "VIC",
+    suburbs: "Tarneit, Werribee", searchRadius: "20", bedrooms: "", bathrooms: "2", carSpaces: "",
+    storeys: "", landSize: "350", houseSize: "" };
+  check("every box takes the patch (a 0 minimum and no ceiling read as blank)",
+    ok === true && JSON.stringify(got) === JSON.stringify(want), JSON.stringify(got));
+  check("the product type boxes and the rebate box follow the patch",
+    s.productBoxes.filter(x => x.checked).map(x => x.value).join() === "Townhouse"
+    && s.el("requiresIncentive").checked === false,
+    JSON.stringify(s.productBoxes.filter(x => x.checked).map(x => x.value)));
+  s.respond(async () => reply(200, success()));
+  await s.api.runResearchAgent({ explain: true });
+  await settle();
+  const sent = JSON.parse(s.calls.fetch[0].opts.body).client_brief;
+  check("the search that follows sends what the patch said",
+    sent.budget_min === 300000 && sent.budget_max === Number.MAX_SAFE_INTEGER && sent.preferred_spending_cap === 700000
+    && sent.state === "VIC" && sent.primary_suburbs.join() === "Tarneit,Werribee" && sent.search_radius_km === 20
+    && sent.bedrooms_min === 0 && sent.bathrooms_min === 2 && sent.car_spaces_min === 0 && sent.storeys_max === 3
+    && sent.land_size_min_sqm === 350 && sent.house_size_min_sqm === 0 && sent.product_type.join() === "Townhouse"
+    && sent.requires_incentive === false, JSON.stringify(sent));
+}
+{
+  const s = sandbox();
+  s.el("stateSelect").value = "QLD";
+  check("'Any state' clears the State select", s.api.applyBriefPatch({ state: "Any state" }) === true
+    && s.el("stateSelect").value === "", JSON.stringify(s.el("stateSelect").value));
+  s.el("stateSelect").value = "QLD";
+  s.el("budgetMax").value = "750000";
+  check("a state the select cannot show is refused, and nothing is written",
+    s.api.applyBriefPatch({ state: "TAS", budget_max: 825000 }) === false
+    && s.el("stateSelect").value === "QLD" && s.el("budgetMax").value === "750000");
+  check("a field the form does not have is refused, and nothing is written",
+    s.api.applyBriefPatch({ budget_max: 825000, garage_type: "double" }) === false && s.el("budgetMax").value === "750000");
+  check("an empty or missing patch is refused",
+    s.api.applyBriefPatch({}) === false && s.api.applyBriefPatch(null) === false && s.api.applyBriefPatch([1]) === false);
+}
+{
+  // The boxes change without an input event, so the price echo is repainted by the patch
+  // itself -- not only by a search that may or may not follow.
+  const s = sandbox();
+  s.el("budgetMax").value = "750000";
+  s.api.applyBriefPatch({ budget_max: 825000 });
+  check("a patch repaints the price echo", s.el("budgetEcho").textContent === "Max = $825,000"
+    && s.el("budgetEcho").hidden === false, JSON.stringify(s.el("budgetEcho").textContent));
+}
+
+// ------------------------------------------------------------------ Needs confirming
+console.log("\n--- Needs confirming: amber, closed, dated, and never in the shortlist ---");
+{
+  const s = sandbox();
+  s.respond(async () => reply(200, explained()));
+  await s.api.runResearchAgent({ explain: true });
+  await settle();
+  const out = dump(s.el("resultsContent"));
+  const e = t => s.api.esc(t);
+  const groupTag = (out.match(/<details\b[^>]*class="nc-group"[^>]*>/) || [""])[0];
+  check("the group is a <details class=\"nc-group\"> with no open attribute",
+    groupTag === '<details class="nc-group">', groupTag || "no .nc-group rendered");
+  const group = out.slice(out.indexOf('<details class="nc-group"'), out.indexOf("</details>", out.indexOf('<details class="nc-group"')));
+  check("its summary counts them", group.includes("<summary>3 more listings match but need confirming before you send them</summary>"),
+    group.slice(0, 200));
+  check("it has no .cmp-box and no benchmark button", group.length > 0 && !group.includes("cmp-box") && !group.includes("bench-btn"));
+  const outsideGroup = out.replace(group, "");
+  check("needs-confirming rows appear nowhere but the group (one compare tick and card per shortlist row)",
+    (out.match(/class="cmp-box"/g) || []).length === 2 && (out.match(/class="prop-card/g) || []).length === 2
+    && (out.match(/class="bench-btn"/g) || []).length === 2 && !outsideGroup.includes("Dawn, Walloon"),
+    `${(out.match(/class="cmp-box"/g) || []).length} ticks, ${(out.match(/class="prop-card/g) || []).length} cards`);
+  check("it has one card per entry", (group.match(/class="nc-card"/g) || []).length === 3);
+  check("LAST_SHORTLIST holds only the shortlist",
+    s.ctx.LAST_SHORTLIST.length === 2 && s.ctx.LAST_SHORTLIST.every(p => !String(p.content_hash).startsWith("v2:dawn")),
+    JSON.stringify(s.ctx.LAST_SHORTLIST.map(p => p.content_hash)));
+  check("nothing was selected for comparison, and COMPARISONS is the server's",
+    s.ctx.SELECTED.size === 0 && JSON.stringify(s.ctx.COMPARISONS) === "{}");
+  check("a card carries its own date: '20/08/2026' and '27 days'", group.includes("20/08/2026") && group.includes("27 days"));
+  check("an emailed list says 'email last read', with the list's own age beside it",
+    group.includes(e("Email last read 20/08/2026, 27 days ago · list first read 17/08/2026, 30 days ago")),
+    (group.match(/class="nc-date">[^<]*/) || [""])[0]);
+  check("... the stated status, and what to do before sending",
+    group.includes("Stated: Available") && group.includes("Confirm price and availability with the builder before sending"));
+  check("... why it needs confirming", group.includes(e("Needs confirming: not checked at the source in the last 14 days")));
+  check("... the address, place, builder, price and bed / bath / car",
+    group.includes("Lot 1228, Dawn, Walloon") && group.includes("Walloon, QLD") && group.includes("Builder not identified in source")
+    && group.includes("$721,900") && group.includes("$725,900") && group.includes("4 Bed | 2 Bath | Car: not stated"),
+    group.slice(0, 900));
+  check("what the guard left out is said", group.includes(e("Also left out: 3 because a newer capture of the same lot says otherwise.")));
+  check("the badge reads '2 Qualified · 3 to confirm (1438 Filtered)'",
+    s.el("shortlistBadge").textContent === "2 Qualified · 3 to confirm (1438 Filtered)", s.el("shortlistBadge").textContent);
+  const last = out.lastIndexOf('class="prop-card');
+  check("the group comes after the last shortlist card", last >= 0 && out.indexOf('class="nc-group"') > last);
+}
+{
+  const { out } = await render(success());
+  const s = sandbox();
+  s.respond(async () => reply(200, success()));
+  await s.api.runResearchAgent();
+  await settle();
+  check("no needs_confirming: no group, and the badge is unchanged ('1 Qualified (4 Filtered)')",
+    !out.includes("nc-group") && s.el("shortlistBadge").textContent === "1 Qualified (4 Filtered)",
+    s.el("shortlistBadge").textContent);
+}
+{
+  const s = sandbox();
+  const a = dawn(1, { source_channel: "E-Agent", email_first_seen: null, list_age_days: null, date_checked: "03/09/2026",
+                      age_days: 13, availability_as_stated: null, confirm: ["availability_unstated"] });
+  const text = s.api.confirmDateText(a);
+  check("a list that did not come by email reads 'Last checked <date> — N days ago'",
+    text === "Last checked 03/09/2026 — 13 days ago", JSON.stringify(text));
+  const card = s.api.needsConfirmingCard(a);
+  check("... and an unstated one says the source doesn't say", card.includes("Source doesn't say whether it's available")
+    && !card.includes("Stated:"));
+  const channelOnly = s.api.confirmDateText(dawn(2, { email_first_seen: "", list_age_days: null }));
+  check("an emailed row with no list date still says 'email last read'",
+    channelOnly === "Email last read 20/08/2026, 27 days ago", JSON.stringify(channelOnly));
+  const computed = s.api.confirmDateText(dawn(3, { age_days: null, list_age_days: null }));
+  check("without age_days the age is worked out from the row's own dates",
+    /^Email last read 20\/08\/2026, \d+ days ago · list first read 17\/08\/2026, \d+ days ago$/.test(computed), JSON.stringify(computed));
+  check("no date at all says so", s.api.confirmDateText(dawn(4, { date_checked: "", source_channel: "Proxima", email_first_seen: null }))
+    === "Last checked: no date recorded");
+}
+{
+  // Capped at 50 by the server, with the exact count beside it.
+  const { out, el } = await renderExplained(explained({ needs_confirming: [dawn(1228), dawn(1229)], needs_confirming_count: 60 }));
+  check("a capped list says how many of the total it shows", out.includes("Showing the 2 best matches of 60."));
+  check("... and the badge counts the total", el("shortlistBadge").textContent === "2 Qualified · 60 to confirm (1438 Filtered)",
+    el("shortlistBadge").textContent);
+}
+{
+  const hostile = dawn(1228, {
+    lot_address: "<script>window.__xss.push(1)</script>", suburb: payload("nc_suburb"), state: payload("nc_state"),
+    builder_name: payload("nc_builder"), availability_as_stated: payload("nc_stated"), date_checked: payload("nc_date"),
+    email_first_seen: payload("nc_first"), advertised_package_price: payload("nc_price"), bedrooms: payload("nc_bed"),
+    bathrooms: payload("nc_bath"), car_spaces: payload("nc_car"),
+    source_link: { url: "https://builder.example.com/list.pdf?a=1&b=2", label: payload("nc_link"), opens: "document" },
+  });
+  const { out } = await renderExplained(explained({ needs_confirming: [hostile],
+    needs_confirming_hidden: { [payload("nchidden")]: 2 } }));
+  const group = out.slice(out.indexOf('<details class="nc-group"'));
+  const problems = markupProblems(group);
+  check("'<script>' in a needs-confirming address is escaped",
+    group.includes("&lt;script&gt;window.__xss.push(1)&lt;/script&gt;") && !/<script/i.test(group));
+  check("every needs-confirming field renders as text",
+    // An unknown hidden reason is shown with its underscores as spaces, so its payload is too.
+    problems.length === 0 && group.includes(shown("nchidden").replace(/_/g, " "))
+    && ["nc_suburb", "nc_state", "nc_builder", "nc_stated", "nc_date", "nc_first", "nc_bed",
+      "nc_bath", "nc_car", "nc_link"].every(k => group.includes(shown(k))),
+    problems.slice(0, 3).join(" | ") || ["nc_suburb", "nc_state", "nc_builder", "nc_stated", "nc_date", "nc_first",
+      "nc_bed", "nc_bath", "nc_car", "nc_link"].filter(k => !group.includes(shown(k))).join(", ") || "nchidden");
+}
+{
+  // esc() keeps a URL inside href="", but a javascript: URL still runs when clicked.
+  const bad = { url: " javascript:window.__xss.push(1)", label: "Price list", opens: "price list" };
+  const { out } = await renderExplained(explained({
+    shortlist: [prop({ source_link: bad })], shortlist_count: 1,
+    needs_confirming: [dawn(1228, { source_link: bad }), dawn(1229, { source_link: { ...bad, url: "data:text/html,x" } })],
+  }));
+  check("a source link that is not http(s) is never a link, on a card or a needs-confirming card",
+    !/href="\s*(javascript|data):/i.test(out) && !out.includes("javascript:"), (out.match(/href="[^"]*"/g) || []).join(" "));
+  const good = await renderExplained(explained({
+    needs_confirming: [dawn(1228, { source_link: { url: "https://builder.example.com/list.pdf", label: "Price list", opens: "price list" } })],
+  }));
+  check("... while an https link still shows, saying what it opens",
+    good.out.includes('href="https://builder.example.com/list.pdf"') && good.out.includes("opens the price list it came from"));
+}
+{
+  // Painted in pages of 25: a later page must land with the cards, above the amber group.
+  const many = Array.from({ length: 30 }, (_, i) => prop({ content_hash: `v2:p${i}`, lot_address: `Card ${i}` }));
+  const s = sandbox();
+  s.respond(async () => reply(200, explained({ shortlist: many, shortlist_count: 30 })));
+  await s.api.runResearchAgent({ explain: true });
+  await settle();
+  const more = s.ctx.document.getElementById("shortlistMore");
+  check("'Show more' is offered for the last 5", more && typeof more.onclick === "function" && /Show 5 more/.test(more.textContent),
+    more ? more.textContent : "no button");
+  if (more && typeof more.onclick === "function") more.onclick();
+  const out = dump(s.el("resultsContent"));
+  check("after 'Show more' every card is still above the needs-confirming group",
+    (out.match(/class="prop-card/g) || []).length === 30
+    && out.lastIndexOf('class="prop-card') < out.indexOf('class="nc-group"')
+    && out.includes("Card 29"), `${(out.match(/class="prop-card/g) || []).length} cards`);
 }
 
 // ------------------------------------------------------------------ the card's own date (guard)
