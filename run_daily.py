@@ -43,6 +43,16 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 _PARTIAL = []          # steps that partly succeeded (exit 2)
+# A step that FINISHED ON ITS FALLBACK PATH: a new pass raised, the step logged it and
+# wrote today's behaviour instead. The chain carries on; the run is marked DEGRADED.
+#
+# 70 (sysexits EX_SOFTWARE, "internal software error") because no crash produces it.
+# Not 2: CI answers 2 with "a channel returned nothing, refresh the portal login". Not 3:
+# a Windows process whose C runtime aborts -- a "Fatal Python error" -- exits 3, and
+# run_daily.cmd runs this chain on Windows, so a REQUIRED step that crashed would read as
+# finished and the chain would publish over it. Steps must use this exact value
+# (supersede_duplicates.DEGRADED_EXIT; tests/test_supersede.py pins the two together).
+DEGRADED_EXIT = 70
 APP = Path(__file__).resolve().parent
 # Written when a channel read nothing, so CI can fail the run AFTER it has published.
 # A file rather than an exit code: the publish step is gated on the run succeeding, and
@@ -81,15 +91,14 @@ def _run(label: str, args: list, optional: bool = False) -> bool:
         # 2 means PARTIAL — some channels failed, others read normally. The chain
         # continues so the channels that DID refresh reach the dashboard; the failure is
         # still reported and still ends the run non-zero.
-        ok = proc.returncode in (0, 2, 3)
-        if proc.returncode == 3:
-            # 3 means FINISHED ON ITS FALLBACK PATH: a step's new pass raised, the step
-            # logged it, kept today's behaviour and wrote that. The chain must continue
-            # (it is often a REQUIRED step, and aborting would withhold the whole night's
-            # refresh over one pass), but the run is marked DEGRADED so CI goes red after
-            # publishing. Not 2: CI answers 2 with "a channel returned nothing, refresh
-            # the portal login", which is the wrong remedy. First user:
-            # supersede_duplicates.py's status pass (DEGRADED_EXIT).
+        ok = proc.returncode in (0, 2, DEGRADED_EXIT)
+        if proc.returncode == DEGRADED_EXIT:
+            # FINISHED ON ITS FALLBACK PATH: a step's new pass raised, the step logged it,
+            # kept today's behaviour and wrote that. The chain must continue (it is often
+            # a REQUIRED step, and aborting would withhold the whole night's refresh over
+            # one pass), but the run is marked DEGRADED so CI goes red after publishing.
+            # See DEGRADED_EXIT for why it is this number. First user:
+            # supersede_duplicates.py's status pass.
             _DEGRADED.append(label + " (a new pass failed; fell back to the previous rule)")
         if proc.returncode == 2:
             _PARTIAL.append(label)

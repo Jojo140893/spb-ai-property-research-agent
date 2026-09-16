@@ -390,6 +390,38 @@ def test_two_lines_of_one_read_are_two_lots_not_a_status_change():
     assert base == {} and status == {17000: 18203}, (base, status)
 
 
+def test_lines_of_one_read_stamped_seconds_apart_are_still_one_read():
+    """checked_at is stamped per ROW, to the second (database.record_building), so one read
+    is not one timestamp: on the 17 Sep copy 46 of 336 document reads wrote their lines
+    across 2-6 different seconds (up to 16 s apart), while two reads of one document on
+    the same day were never less than 41 minutes apart. The Merbein pair is re-read, and
+    re-stamped, every night; the night its two lines land a second apart must not retire
+    either lot, in either order. A second read 41 minutes later is a different read, and
+    its newer status still wins."""
+    doc = "https://pdf.example.test/e-agent-pooled"
+    merbein = "Merbein,Victoria,3505 $691,000.00 463 m² 179 m² 4 2 2 $700.00 November 2026 {}"
+    for hold_at, avail_at in (("2026-09-03T11:32:01", "2026-09-03T11:32:02"),
+                              ("2026-09-03T11:32:02", "2026-09-03T11:32:01"),
+                              ("2026-09-03T11:31:50", "2026-09-03T11:32:06")):
+        rows = [
+            _capture(18203, merbein.format("Hold"), "On Hold", "03/09/2026", hold_at,
+                     doc=doc, price=691_000.0, state="VIC", suburb=None),
+            _capture(18204, merbein.format("Available"), "Available", "03/09/2026", avail_at,
+                     doc=doc, price=691_000.0, state="VIC", suburb=None),
+        ]
+        _base, status = _retirements(rows)
+        assert status == {}, (hold_at, avail_at, status)
+
+    two_reads = [
+        _capture(18204, merbein.format("Available"), "Available", "03/09/2026",
+                 "2026-09-03T11:32:01", doc=doc, price=691_000.0, state="VIC", suburb=None),
+        _capture(18203, merbein.format("Hold"), "On Hold", "03/09/2026",
+                 "2026-09-03T12:13:17", doc=doc, price=691_000.0, state="VIC", suburb=None),
+    ]
+    _base, status = _retirements(two_reads)
+    assert status == {18204: 18203}, status
+
+
 def test_same_text_on_different_documents_is_not_merged():
     """Scope is ONE document. The same line on two price lists is two claims nobody has
     checked are one listing (per channel the simulation retired 167 rows, not 121)."""
@@ -508,6 +540,56 @@ def test_the_review_label_never_carries_the_link():
         .startswith("email 'Fwd: Shape Homes - Stock List 13.08.2026'")
 
 
+def test_a_subject_line_with_an_emoji_or_a_link_cannot_sink_the_status_pass(
+        tmp_path, monkeypatch):
+    """The QLD review list names each document, and emailed lists are named by their
+    subject. The 17 Sep copy holds a subject that is not even latin-1. Printed to a cp1252
+    pipe (a Windows run with its output redirected), that label raised inside the status
+    pass's try block, and the night's status retirements were dropped as a failed pass.
+    A subject carrying a link must not put the link in the log either."""
+    import io
+    import sqlite3
+    import sys
+    import config
+    import supersede_duplicates as sd
+    from database import ResearchDatabase
+
+    doc = "email:Fwd: \U0001f3e0 Howard stock – see https://drive.example.test/f/SECRET9"
+    label = sd.document_label({"source_url": doc})
+    assert label.isascii() and "Howard stock" in label, label
+    assert "SECRET9" not in label and "://" not in label, label
+
+    db = tmp_path / "subject.db"
+    ResearchDatabase(db)
+    rows = [
+        _capture(18491, _HOWARD.format("Available"), "Available", "15/09/2026",
+                 "2026-09-15T11:40:07", doc=doc, channel="digital email"),
+        _capture(15953, _HOWARD.format("ON HOLD"), "On Hold", "16/09/2026",
+                 "2026-09-16T11:41:43", doc=doc, channel="digital email"),
+    ]
+    cols = ("id", "source_channel", "lot_address", "suburb", "state", "price", "source_url",
+            "stocklist_file", "date_checked", "last_seen", "checked_at",
+            "availability_status", "source_text", "content_hash")
+    conn = sqlite3.connect(str(db))
+    conn.executemany(f"INSERT INTO buildings ({', '.join(cols)}) VALUES "
+                     f"({', '.join('?' for _ in cols)})",
+                     [tuple(r.get(c) for c in cols) for r in rows])
+    conn.commit()
+    conn.close()
+
+    pipe = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+    monkeypatch.delenv("SPB_STATUS_PASS", raising=False)
+    monkeypatch.setattr(config, "DATABASE_PATH", db)
+    monkeypatch.setattr(sys, "stdout", pipe)
+    code = sd.main([])
+    monkeypatch.undo()
+    pipe.flush()
+    out = pipe.buffer.getvalue().decode("cp1252")
+    assert code == 0, out
+    assert _marks(db) == {18491: "v2:hash15953", 15953: None}, out
+    assert "SECRET9" not in out and "://" not in out, out
+
+
 def test_the_status_pass_switch_reads_off_words_only():
     import supersede_duplicates as sd
     for on in ({}, {"SPB_STATUS_PASS": ""}, {"SPB_STATUS_PASS": "1"},
@@ -601,7 +683,7 @@ def test_a_failing_status_pass_falls_back_and_marks_the_run_degraded(
     monkeypatch.delenv("SPB_STATUS_PASS", raising=False)
     monkeypatch.setattr(config, "DATABASE_PATH", db)
     monkeypatch.setattr(sd, "find_status_superseded", boom)
-    assert sd.main([]) == sd.DEGRADED_EXIT == 3
+    assert sd.main([]) == sd.DEGRADED_EXIT
     assert _marks(db) == {1: "v2:hash2", 2: None, 18491: None, 15953: None}
     out = capsys.readouterr().out
     assert "ERROR: the status pass failed" in out and "Traceback" in out, out
@@ -609,12 +691,15 @@ def test_a_failing_status_pass_falls_back_and_marks_the_run_degraded(
 
 
 def test_run_daily_publishes_a_degraded_step_and_records_it(tmp_path, monkeypatch):
-    """Exit 3 from a step: the chain continues (supersede is REQUIRED, so a non-ok here
-    would abort the night) and the label lands in _DEGRADED, which writes the marker CI
-    fails on after publishing. Not 2, which CI reports as a dead harvest channel."""
+    """DEGRADED_EXIT from a step: the chain continues (supersede is REQUIRED, so a non-ok
+    here would abort the night) and the label lands in _DEGRADED, which writes the marker
+    CI fails on after publishing. Not 2, which CI reports as a dead harvest channel."""
     import run_daily
+    import supersede_duplicates as sd
 
-    (tmp_path / "degraded_step.py").write_text("import sys\nsys.exit(3)\n", encoding="utf-8")
+    assert run_daily.DEGRADED_EXIT == sd.DEGRADED_EXIT, "the step and the runner must agree"
+    (tmp_path / "degraded_step.py").write_text(
+        f"import sys\nsys.exit({sd.DEGRADED_EXIT})\n", encoding="utf-8")
     monkeypatch.setattr(run_daily, "APP", tmp_path)
     run_daily._DEGRADED.clear()
     run_daily._PARTIAL.clear()
@@ -627,6 +712,29 @@ def test_run_daily_publishes_a_degraded_step_and_records_it(tmp_path, monkeypatc
     finally:
         run_daily._DEGRADED.clear()
         run_daily._PARTIAL.clear()
+
+
+def test_a_crashed_required_step_is_never_read_as_degraded(tmp_path, monkeypatch):
+    """The degraded code must be one no crash produces. 3 is not: it is what a Windows
+    process returns when the C runtime aborts, which is how a "Fatal Python error" in a
+    native module ends, and run_daily.cmd runs this chain on Windows. Had 3 meant
+    "finished on the fallback", a REQUIRED step that crashed that way would read as ok,
+    and the chain would carry on to export, build and publish over it."""
+    import run_daily
+
+    monkeypatch.setattr(run_daily, "APP", tmp_path)
+    for code in (1, 3):
+        (tmp_path / "crashed_step.py").write_text(f"import sys\nsys.exit({code})\n",
+                                                  encoding="utf-8")
+        run_daily._DEGRADED.clear()
+        run_daily._PARTIAL.clear()
+        try:
+            assert run_daily._run("2/7  Enrich: state, suburb, builder",
+                                  ["crashed_step.py"], False) is False, code
+            assert run_daily._DEGRADED == [] and run_daily._PARTIAL == [], code
+        finally:
+            run_daily._DEGRADED.clear()
+            run_daily._PARTIAL.clear()
 
 
 def run_all():
@@ -650,6 +758,7 @@ def run_all():
         ("status pass moves no winner", test_the_status_pass_never_moves_an_existing_winner),
         ("a read tie keeps the lower id", test_a_tie_on_the_latest_read_keeps_the_lower_id),
         ("one read, two lines", test_two_lines_of_one_read_are_two_lots_not_a_status_change),
+        ("one read across seconds", test_lines_of_one_read_stamped_seconds_apart_are_still_one_read),
         ("other document not merged", test_same_text_on_different_documents_is_not_merged),
         ("Available kept over EOI", test_an_available_capture_is_never_retired_for_a_read_that_states_nothing),
         ("a later stated status wins", test_a_later_stated_status_still_retires_the_available_capture),

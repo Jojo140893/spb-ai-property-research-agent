@@ -53,7 +53,7 @@ find_status_superseded. It is a FOURTH, ADDITIVE pass and it is switchable:
                          exactly. Unset, empty or anything else: ON.
 
 If the fourth pass raises, the run keeps the three existing passes' marks, prints the
-traceback with an ERROR line, and exits DEGRADED_EXIT (3). run_daily treats 3 as
+traceback with an ERROR line, and exits DEGRADED_EXIT (70). run_daily treats 70 as
 "finished, publish, but mark the run DEGRADED", so the nightly still publishes and the
 CI job goes red afterwards instead of the dashboard silently keeping yesterday's data.
 
@@ -86,13 +86,16 @@ STATUS_PASS_ENV = "SPB_STATUS_PASS"
 _OFF_WORDS = {"0", "off", "false", "no"}
 
 # The exit code for "the three passes ran and were written, the fourth pass failed and
-# was dropped". run_daily._run treats it as success-but-degraded. 2 is taken: it means a
-# harvest CHANNEL read nothing, and CI tells whoever reads that to refresh a portal login.
-DEGRADED_EXIT = 3
+# was dropped". run_daily._run treats it as success-but-degraded; it must equal
+# run_daily.DEGRADED_EXIT (a test pins them). 2 is taken: it means a harvest CHANNEL read
+# nothing, and CI tells whoever reads that to refresh a portal login. 3 is unsafe: it is
+# what a Windows process exits with when the C runtime aborts, so a crash would read as a
+# fallback. 70 is sysexits' EX_SOFTWARE, which no crash produces.
+DEGRADED_EXIT = 70
 
 STATUS_PASS_REASON = "status changed on the same line"
 KEPT_AVAILABLE_OVER_UNSTATED = "Available, and every later read states no availability (e.g. EOI)"
-KEPT_SAME_READ = "read in the same instant as the survivor: another line of that read"
+KEPT_SAME_READ = "written by the survivor's own read of the document: another line of that read"
 
 
 def _norm(v):
@@ -435,18 +438,42 @@ def _read_rank(row):
     except (TypeError, ValueError):
         rid = 0
     return (_parsed_date(row.get("date_checked")) or datetime.min,
-            str(row.get("checked_at") or ""),
+            _read_time(row) or datetime.min,
             _parsed_date(row.get("last_seen")) or datetime.min,
             -rid)
 
 
+# How far apart two lines of ONE read of one document can be stamped. checked_at is
+# written per ROW, to the second (database.record_building: datetime.now()), not once per
+# read. Measured on the 17 Sep copy: one read of a document spans at most 16 s (46 of 336
+# reads wrote their lines across 2-6 different seconds), and two reads of one document on
+# the same day were never less than 41 minutes (2,456 s) apart. Ten minutes sits well
+# clear of both.
+SAME_READ_WINDOW_S = 600
+
+
+def _read_time(row):
+    """checked_at as a naive datetime, or None. The first 19 characters only, so an
+    offset or fraction a future writer adds can neither fail to parse nor raise when
+    compared with a naive stamp."""
+    s = str(row.get("checked_at") or "").strip()[:19].replace(" ", "T")
+    try:
+        return datetime.strptime(s, "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return None
+
+
 def _same_read(a, b):
-    """Two captures written by ONE read of the document: checked_at is stamped per read
-    (all 72 rows of the Merbein PDF share 2026-09-03T11:32:01), so equal non-blank
-    checked_at on one document means both lines were on the page at the same moment.
+    """Two captures written by ONE read of the document: both checked_at stamps present
+    and no more than SAME_READ_WINDOW_S apart.
+
+    NOT an identical second. The stamp is per row, so one read is a run of seconds, and
+    the Merbein pair below is re-stamped every night it is re-read: requiring equality
+    would keep both lots the night they land in one second and hide one of them the night
+    they land a second apart -- whichever was written first, the Available one included.
 
     Then they are two lines, not one line whose status changed, and neither may retire
-    the other. Both such ties on the 17 Sep copy are provably two lots:
+    the other. Both such pairs on the 17 Sep copy are provably two lots:
       - Creation Homes "8 LAND ONLY CNR 290.5 ... $858,500": 16177 Available is sheet
         row 92 and 16180 SOLD is row 95, and the same pair was read on 22/08 (9840/11720)
         and earlier (2594/2597). The lot number is in a column the line does not carry.
@@ -454,9 +481,14 @@ def _same_read(a, b):
         4/2/2 463 m2 lots at $691,000.
     Retiring by rank would hide one of each pair; retiring the Available one would hide
     a real lot, which is the harm the Volos exception below also exists to stop.
+
+    A capture with no checked_at (stored before the column existed) is never "the same
+    read": a tie between two of those falls to _read_rank's lower id.
     """
-    ca, cb = str(a.get("checked_at") or "").strip(), str(b.get("checked_at") or "").strip()
-    return bool(ca) and ca == cb
+    ta, tb = _read_time(a), _read_time(b)
+    if ta is None or tb is None:
+        return False
+    return abs((ta - tb).total_seconds()) <= SAME_READ_WINDOW_S
 
 
 def _carries_rule_marker(row):
@@ -543,12 +575,18 @@ def document_label(row):
         return "(no document)"
     tag = hashlib.sha1(doc.encode("utf-8")).hexdigest()[:8]
     if doc.lower().startswith("email:"):
-        where = "email '" + doc[6:].strip()[:70] + "'"
+        # A subject line can carry a link too ("Fwd: stock list https://...").
+        where = "email '" + _URL_RX.sub("<link>", doc[6:]).strip()[:70] + "'"
     elif "://" in doc:
         where = urlsplit(doc).hostname or "link"
     else:
-        where = "file " + os.path.basename(doc.replace("\\", "/"))[:60]
-    return f"{where} [doc {tag}]"
+        where = "file " + os.path.basename(_URL_RX.sub("<link>", doc).replace("\\", "/"))[:60]
+    # PLAIN ASCII. The report is printed inside the status pass's try block, so a subject
+    # carrying a character cp1252 lacks (an emoji; one subject on the 17 Sep copy), printed
+    # to a cp1252 pipe (a Windows run with its output redirected), would raise
+    # UnicodeEncodeError there and throw away every status retirement of the night as a
+    # "failed pass". The [doc] tag still identifies the document.
+    return f"{where} [doc {tag}]".encode("ascii", "replace").decode("ascii")
 
 
 def _status_word(row):
