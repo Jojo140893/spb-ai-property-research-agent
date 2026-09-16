@@ -29,6 +29,7 @@ import json
 import os
 import re
 import sys
+import time
 import traceback
 from http.server import BaseHTTPRequestHandler
 
@@ -683,6 +684,489 @@ def _log_search(response, counts):
         print("research log line unavailable: %s" % type(exc).__name__, file=sys.stderr)
 
 
+# ------------------------------------------------------------------------------ explain
+#
+# WHY ONLY N MATCHED, AND WHAT ELSE A CONSULTANT COULD SEND. Part C, 16 Sep: Colin searched
+# "QLD under $750k" and saw two cards and a badge. Nothing said that the catalogue holds 17
+# listings it can place in that range, that three Shape Homes lots in Walloon match but were
+# last read 27 days ago, or that $825,000 would find 12. Everything below answers that, for
+# the Research tab only.
+#
+# OPT-IN, AND ONLY BY A LITERAL `"explain": true`. Clare's hook (vapi-kommo-hook
+# lib/deps.js) posts {client_brief} alone and reads json.shortlist; the Hot Leads re-run
+# posts the same. Neither may ever see a needs-confirming row -- the hook would count it as
+# stock -- so without the flag the response is byte-for-byte what it was, and a truthy
+# "true" or 1 is not the flag.
+#
+# ADDITIVE ONLY. shortlist, shortlist_count, rejected_count, rejected_log, kommo_payload,
+# comparisons and client_report_html are computed before any of this runs and are never
+# written by it: _with_explain adds new keys and refuses to replace an existing one.
+
+EXPLAIN_KEYS = ("search_help", "needs_confirming", "needs_confirming_count",
+                "needs_confirming_hidden")
+SEARCH_HELP_VERSION = 1
+# Relaxations are priced only for a thin search: a shortlist this long already has options.
+EXPLAIN_BELOW = int(os.environ.get("SPB_EXPLAIN_BELOW", "5"))
+# Every relaxation is a real re-run of the search. Past this many milliseconds of explain
+# work, the rest are reported not_computed rather than making the consultant wait.
+EXPLAIN_BUDGET_MS = int(os.environ.get("SPB_EXPLAIN_BUDGET_MS", "4000"))
+# The amber group lists at most this many; needs_confirming_count stays exact.
+MAX_NEEDS_CONFIRMING = int(os.environ.get("SPB_MAX_NEEDS_CONFIRMING", "50"))
+ADMIT_UNSTATED = ("availability_unstated",)
+NO_BUILDER = "Builder not identified in source"
+# location_resolution methods worth a note: the ones where what was searched is not simply
+# what was typed.
+LOCATION_NOTE_METHODS = ("groq", "fuzzy", "unresolved", "state")
+# Gates whose rows are, by definition, priced outside the brief's range.
+_OUT_OF_RANGE_GATES = ("no_price", "over_budget", "under_minimum")
+_POOL_COUNTS = ("same_listing_collapsed", "duplicates_merged", "truncated")
+# The minimums a relaxation may drop, with what a consultant calls them.
+_MINIMUMS = (("bedrooms_min", "bedrooms"), ("bathrooms_min", "bathrooms"),
+             ("car_spaces_min", "car spaces"), ("house_size_min_sqm", "house size"),
+             ("land_size_min_sqm", "land size"))
+
+
+def _elapsed_ms(started):
+    return int(round((time.monotonic() - started) * 1000))
+
+
+def _out_of_time(started):
+    """True once the explain work started at `started` has used EXPLAIN_BUDGET_MS."""
+    return _elapsed_ms(started) >= EXPLAIN_BUDGET_MS
+
+
+def _money(amount):
+    return "$" + format(_tidy_number(amount), ",")
+
+
+def _funnel(response, counts, result):
+    """Where every row of the snapshot went, gate by gate, with the in-range tally beside
+    each gate: "632 availability unstated" is mostly over-budget stock, and "6 of them in
+    your price range" is the number a consultant can act on."""
+    in_range = dict(counts.get("counts_in_range") or {})
+    gates = []
+    for code in _candidates.GATE_ORDER:
+        if code in OUT_OF_SCOPE_COUNTS:
+            continue
+        gates.append({"code": code, "stage": "before_scoring",
+                      "count": counts.get(code, 0),
+                      "in_price_range": (None if code in _OUT_OF_RANGE_GATES
+                                         else in_range.get(code, 0))})
+    for code in _POOL_COUNTS:
+        if counts.get(code):
+            gates.append({"code": code, "stage": "pool", "count": counts[code],
+                          "in_price_range": None})
+    scorer = {}
+    rejected_by_scorer = 0
+    pending = 0
+    for entry in (result or {}).get("rejected_log") or []:
+        if entry.get("kind") == "rejection":
+            rejected_by_scorer += 1
+            for code in entry.get("codes") or ():
+                scorer[code] = scorer.get(code, 0) + 1
+    for code, n in scorer.items():
+        gates.append({"code": code, "stage": "scoring", "count": n, "in_price_range": None})
+    if result:
+        pending = len(result.get("pending_confirmation") or ())
+        gates.append({"code": "pending_confirmation", "stage": "scoring", "count": pending,
+                      "in_price_range": None})
+    return {
+        "snapshot_rows": counts.get("snapshot_rows", 0),
+        "out_of_scope": {code: counts.get(code, 0) for code in OUT_OF_SCOPE_COUNTS},
+        "in_state_rows": response.get("in_state_rows"),
+        "gates": gates,
+        # counts_in_range as build_packages tallied it: 'available' is "passed every gate
+        # before scoring", stale and by-the-sheet rows included.
+        "in_price_range": in_range,
+        "in_price_range_total": sum(v for v in in_range.values() if isinstance(v, int)),
+        "just_over": counts.get("just_over", 0),
+        "scored": counts.get("scored", 0),
+        "rejected_by_scorer": rejected_by_scorer,
+        "pending_confirmation": pending,
+        "shortlisted": response.get("shortlist_count", 0),
+        "capped": bool(counts.get("truncated")),
+    }
+
+
+def _live_rows_by_hash(rows):
+    out = {}
+    for row in rows:
+        h = str(row.get("content_hash") or "").strip()
+        if h and not row.get("superseded_by"):
+            out[h] = row
+    return out
+
+
+def _listing_key(lot_address, house_design, price):
+    """DedupeEngine's key: the same lot, design and price is one listing."""
+    try:
+        price = float(price or 0)
+    except (TypeError, ValueError):
+        price = 0.0
+    return "%s||%s||%s" % (str(lot_address or "").strip().lower(),
+                           str(house_design or "").strip().lower(), price)
+
+
+def _candidate_key(cand):
+    return _listing_key(cand.lot_address, cand.house_design,
+                        cand.price_breakdown.advertised_package_price)
+
+
+def _needs_confirming_entry(cand, pkg, row):
+    """One amber card: the candidate as scored, with the ROW'S OWN dates.
+
+    date_checked and age_days come from the package, which took them from the snapshot row
+    -- never from the day of the search. For a 'digital email' row date_checked is the last
+    night the inbox sweep re-read the message, not the list's date (critique #27), so the
+    entry also carries source_channel, first_seen (the emailed list's first read) and
+    list_age_days, and the card can say "email last read" instead of "last checked".
+    """
+    row = row or {}
+    stated = str(row.get("availability_status") or "").strip()
+    first_seen = str(pkg.get("email_first_seen") or "").strip()
+    return {
+        "content_hash": str(cand.content_hash or ""),
+        "lot_address": cand.lot_address,
+        "lot_number": getattr(cand, "lot_number", "") or "",
+        "suburb": cand.suburb,
+        "state": cand.state,
+        "builder_name": (cand.builder_name or "").strip() or NO_BUILDER,
+        "estate_context": getattr(cand, "estate_context", "") or "",
+        "house_design": cand.house_design,
+        "advertised_package_price": cand.price_breakdown.advertised_package_price,
+        "bedrooms": cand.bedrooms,
+        "bathrooms": cand.bathrooms,
+        "car_spaces": cand.car_spaces,
+        "storeys": cand.storeys,
+        "land_size_sqm": cand.land_size_sqm,
+        "house_size_sqm": cand.house_size_sqm,
+        "score": cand.scoring.total_score if cand.scoring else 0,
+        "advisories": cand.scoring.advisories if cand.scoring else "",
+        "source_link": getattr(cand, "source_link", None),
+        # What a consultant has to confirm: 'stale', 'availability_unstated',
+        # 'document_partially_read' (see _candidates._gate).
+        "confirm": list(pkg.get("confirm") or ()),
+        # The availability exactly as the source row stated it; None when it stated none.
+        "availability_as_stated": stated or None,
+        "availability_by_the_sheet": bool(pkg.get("availability_by_the_sheet")),
+        "date_checked": str(pkg.get("date_checked") or ""),
+        "age_days": pkg.get("age_days"),
+        "fresh_days": _candidates.FRESH_DAYS,
+        "source_channel": str(row.get("source_channel") or "").strip(),
+        "first_seen": first_seen or None,
+        "list_age_days": pkg.get("list_age_days"),
+    }
+
+
+def _score_packages(agent, brief_dict, packages):
+    """(processed, rejected) for packages, deduped the way the search dedupes them. Writes
+    nothing: score_candidates keeps no audit and builds no report."""
+    from sources.dedupe import DedupeEngine
+    packages = DedupeEngine.deduplicate(packages)
+    if not packages:
+        return [], []
+    return agent.score_candidates(brief_dict, packages)
+
+
+def _refused_matches(agent, brief_dict, rows, prepared):
+    """({reason: n}, capped) for unstated rows admission refused that would have MATCHED.
+
+    build_packages counts refusals before scoring, so a Werribee search would count every
+    refused row in Victoria -- including the suburbs the scorer rejects afterwards. So each
+    unstated row is searched once more as though its source had said "Available" (same
+    snapshot, same prepared maps; nothing else about it changes), the stand-ins are scored
+    against the same brief, and only the ones that survive are counted, under the reason
+    admission_refusal gives for the real row. capped is True when the candidate cap cut
+    that pass, so the counts may be short.
+    """
+    stating = prepared.states_availability
+    real_row = {}
+    patched = []
+    for row in rows:
+        avail = str(row.get("availability_status") or "").strip().lower()
+        doc = str(row.get("source_doc") or "")
+        h = str(row.get("content_hash") or "").strip()
+        if (h and not row.get("superseded_by")
+                and avail not in _candidates.IS_AVAILABLE
+                and avail not in _candidates.NOT_AVAILABLE
+                and (not doc or doc in stating)):
+            real_row[h] = row
+            patched.append(dict(row, availability_status="Available"))
+        else:
+            patched.append(row)
+    if not real_row:
+        return {}, False
+    packages, counts = _candidates.build_packages(brief_dict, patched, prepared=prepared)
+    stand_ins = [p for p in packages if str(p.get("content_hash") or "") in real_row]
+    processed, _rejected = _score_packages(agent, brief_dict, stand_ins)
+    hidden = {}
+    for cand in processed:
+        reason, _notes = _candidates.admission_refusal(real_row[cand.content_hash], prepared)
+        if reason:
+            hidden[reason] = hidden.get(reason, 0) + 1
+    return hidden, bool(counts.get("truncated"))
+
+
+def _needs_confirming(agent, brief_dict, rows, prepared, packages, result, shortlist):
+    """(entries, count, hidden, hidden_capped): matches a consultant may confirm and send.
+
+    Two sources, never the main pool:
+      (a) the pipeline's Pending Confirmation candidates -- stale or demoted rows that passed
+          every requirement -- kept when their package's confirm_guard is None;
+      (b) a SEPARATE admit pass over exceptions-only lists (build_packages with
+          admit=availability_unstated and only_admitted=True: its own collapse and its own
+          600 cap, so it cannot push a confirmed row out of the search), scored against the
+          same brief, survivors only.
+    Merged, with anything already on the shortlist (by content_hash or as the same lot,
+    design and price) dropped, sorted by score, listed up to MAX_NEEDS_CONFIRMING.
+
+    hidden is {reason: n} over matches that were NOT offered: (a) candidates a guard hides
+    (newer_capture_disagrees, over_confirm_limit, ...) and unstated rows refused admission
+    (document_reread_without_row, build_only, ...), both counted after scoring.
+    """
+    live = _live_rows_by_hash(rows)
+    taken_hashes = {str(getattr(p, "content_hash", "") or "") for p in shortlist} - {""}
+    taken_keys = {_candidate_key(p) for p in shortlist}
+    entries = []
+    hidden = {}
+
+    def offer(cand, pkg):
+        h = str(cand.content_hash or "")
+        key = _candidate_key(cand)
+        if (h and h in taken_hashes) or key in taken_keys:
+            return
+        taken_keys.add(key)
+        if h:
+            taken_hashes.add(h)
+        entries.append(_needs_confirming_entry(cand, pkg, live.get(h)))
+
+    by_hash = {str(p.get("content_hash") or ""): p for p in packages}
+    for cand in (result or {}).get("pending_confirmation") or ():
+        pkg = by_hash.get(str(cand.content_hash or ""))
+        if pkg is None or not pkg.get("confirm"):
+            hidden["untraceable"] = hidden.get("untraceable", 0) + 1
+            continue
+        guard = pkg.get("confirm_guard")
+        if guard:
+            hidden[guard] = hidden.get(guard, 0) + 1
+            continue
+        offer(cand, pkg)
+
+    admitted, admit_counts = _candidates.build_packages(
+        brief_dict, rows, prepared=prepared, admit=ADMIT_UNSTATED, only_admitted=True)
+    admitted_by_hash = {str(p.get("content_hash") or ""): p for p in admitted}
+    processed, _rejected = _score_packages(agent, brief_dict, admitted)
+    for cand in processed:
+        pkg = admitted_by_hash.get(str(cand.content_hash or ""))
+        if pkg is None:
+            continue
+        guard = pkg.get("confirm_guard")
+        if guard:                      # admission already applied every guard; belt only
+            hidden[guard] = hidden.get(guard, 0) + 1
+            continue
+        offer(cand, pkg)
+
+    hidden_capped = bool(admit_counts.get("truncated"))
+    if admit_counts.get("unstated_not_admitted"):
+        refused, capped = _refused_matches(agent, brief_dict, rows, prepared)
+        for reason, n in refused.items():
+            hidden[reason] = hidden.get(reason, 0) + n
+        hidden_capped = hidden_capped or capped
+
+    entries.sort(key=lambda e: (-(e["score"] or 0), e["advertised_package_price"] or 0,
+                                e["content_hash"]))
+    return entries[:max(0, MAX_NEEDS_CONFIRMING)], len(entries), hidden, hidden_capped
+
+
+def _relaxation_offers(brief_dict, counts, needs_confirming_count):
+    """The relaxations worth pricing for this brief, IN THE ORDER THEY ARE PRICED.
+
+    The order is the time budget's priority (critique #24): the reveal costs nothing, the
+    budget steps are what a consultant tries first (Colin's own retries were 750k / 760k /
+    770k), then location, then the minimums and filters. A slow search runs out of budget
+    on the least likely, never on the budget steps.
+    """
+    from brief_parser import coerce_number
+    offers = [{"id": "include_needs_confirming", "kind": "reveal",
+               "label": "Show %d listing(s) that match but need confirming"
+                        % (needs_confirming_count or 0),
+               "brief_patch": None}]
+
+    budget_max = coerce_number(brief_dict.get("budget_max"), 0) or 0
+    if 0 < budget_max < NO_CEILING:
+        preferred = coerce_number(brief_dict.get("preferred_spending_cap"), None)
+        # The form sends Max as the preferred price when Preferred is blank; a preferred
+        # price the consultant typed separately is theirs and stays put.
+        follows = preferred is None or preferred == budget_max
+        seen = set()
+        for rid, raised, how in (
+                ("budget_plus_50k", budget_max + 50000, "+$50,000"),
+                ("budget_plus_10pct", round(budget_max * 1.1 / 1000.0) * 1000, "+10%")):
+            raised = _tidy_number(raised)
+            if raised <= budget_max or raised >= NO_CEILING or raised in seen:
+                continue
+            seen.add(raised)
+            patch = {"budget_max": raised}
+            if follows:
+                patch["preferred_spending_cap"] = raised
+            offers.append({"id": rid, "kind": "rerun",
+                           "label": "Budget up to %s (%s)" % (_money(raised), how),
+                           "brief_patch": patch})
+
+    suburbs = [s for s in (brief_dict.get("primary_suburbs") or []) if str(s).strip()]
+    state = str(brief_dict.get("state") or "").strip().upper()
+    radius = coerce_number(brief_dict.get("search_radius_km"), 0) or 0
+    named = ((", ".join(suburbs[:3]) + " and %d more" % (len(suburbs) - 3))
+             if len(suburbs) > 3 else _joined(suburbs) if suburbs else "")
+    if suburbs and state:
+        # The state goes in the patch: it may have come from the resolver ("Tarneit" with
+        # Any state), and re-posted without it the search would be of every state.
+        offers.append({"id": "whole_state", "kind": "rerun",
+                       "label": "All of %s, not only %s" % (state, named),
+                       "brief_patch": {"state": state, "primary_suburbs": [],
+                                       "search_radius_km": 0}})
+    if suburbs:
+        for km in (20, 50):
+            if radius < km:
+                offers.append({"id": "radius_%d" % km, "kind": "rerun",
+                               "label": "Within %d km of %s" % (km, named),
+                               "brief_patch": {"search_radius_km": km}})
+
+    set_minimums = [(field, name) for field, name in _MINIMUMS
+                    if (coerce_number(brief_dict.get(field), 0) or 0) > 0]
+    for field, name in set_minimums:
+        offers.append({"id": "drop_" + field, "kind": "rerun",
+                       "label": "Any %s (no minimum of %s)"
+                                % (name, _whole(coerce_number(brief_dict.get(field), 0))),
+                       "brief_patch": {field: 0}})
+    if len(set_minimums) >= 2:
+        offers.append({"id": "drop_all_minimums", "kind": "rerun",
+                       "label": "No minimums at all",
+                       "brief_patch": {field: 0 for field, _name in set_minimums}})
+    if counts.get("other_product_type"):
+        offers.append({"id": "drop_product_type", "kind": "rerun",
+                       "label": "Any property type", "brief_patch": {"product_type": []}})
+    if counts.get("no_incentive"):
+        offers.append({"id": "drop_incentive", "kind": "rerun",
+                       "label": "With or without an incentive",
+                       "brief_patch": {"requires_incentive": False}})
+    if counts.get("under_minimum"):
+        offers.append({"id": "drop_price_floor", "kind": "rerun",
+                       "label": "No minimum price", "brief_patch": {"budget_min": 0}})
+    return offers
+
+
+def _shortlist_count_for(agent, brief_dict, rows, prepared):
+    """(shortlist_count, capped) for a brief: the search's own path, end to end --
+    build_packages, dedupe, score_candidates, the verified-or-approved final pool and
+    SPB_SHORTLIST_MAX -- without the audit write, reports or Kommo payload."""
+    from schema import VerificationStatus
+    packages, counts = _candidates.build_packages(brief_dict, rows, prepared=prepared)
+    processed, _rejected = _score_packages(agent, brief_dict, packages)
+    final = [c for c in processed
+             if c.verification_status == VerificationStatus.VERIFIED or c.consultant_approved]
+    cap = int(os.environ.get("SPB_SHORTLIST_MAX", "0") or 0)
+    return (min(len(final), cap) if cap > 0 else len(final)), bool(counts.get("truncated"))
+
+
+def _relaxations(agent, brief_dict, rows, prepared, counts, base_count,
+                 needs_confirming_count, started):
+    """Every relaxation with a TRUE count: each is the whole search re-run with its
+    brief_patch applied to the brief as searched. Posting that patch back over the form
+    returns exactly shortlist_count (count_status 'exact'). Past EXPLAIN_BUDGET_MS the rest
+    are 'not_computed'; one that fails is 'error' and costs nothing else."""
+    out = []
+    for offer in _relaxation_offers(brief_dict, counts, needs_confirming_count):
+        if offer["kind"] == "reveal":
+            known = needs_confirming_count is not None
+            out.append(dict(offer, count=needs_confirming_count,
+                            adds=needs_confirming_count,
+                            count_status="exact" if known else "not_computed"))
+            continue
+        if _out_of_time(started):
+            out.append(dict(offer, shortlist_count=None, adds=None,
+                            count_status="not_computed", capped=None))
+            continue
+        began = time.monotonic()
+        try:
+            n, capped = _shortlist_count_for(
+                agent, dict(brief_dict, **offer["brief_patch"]), rows, prepared)
+        except Exception as exc:                                      # noqa: BLE001
+            print("relaxation %s failed: %s" % (offer["id"], type(exc).__name__),
+                  file=sys.stderr)
+            out.append(dict(offer, shortlist_count=None, adds=None, count_status="error",
+                            capped=None, error=type(exc).__name__))
+            continue
+        out.append(dict(offer, shortlist_count=n, adds=n - base_count,
+                        count_status="exact", capped=capped, ms=_elapsed_ms(began)))
+    return out
+
+
+def _with_explain(response, brief_dict, rows, prepared, counts, packages, result):
+    """Add search_help, needs_confirming, needs_confirming_count and needs_confirming_hidden
+    to a finished response. Never raises, and never replaces a key already in it."""
+    started = time.monotonic()
+    errors = []
+    help_ = {"version": SEARCH_HELP_VERSION,
+             "brief_as_searched": response.get("brief_used"),
+             "brief_adjustments": response.get("brief_adjustments") or [],
+             "location_notes": [dict(e) for e in response.get("location_resolution") or []
+                                 if isinstance(e, dict)
+                                 and e.get("method") in LOCATION_NOTE_METHODS]}
+    extra = {"search_help": help_, "needs_confirming": [], "needs_confirming_count": None,
+             "needs_confirming_hidden": {}}
+    try:
+        agent = _bootstrap.get_agent()
+    except Exception as exc:                                          # noqa: BLE001
+        agent = None
+        errors.append("agent: %s" % type(exc).__name__)
+    try:
+        help_["funnel"] = _funnel(response, counts, result)
+    except Exception as exc:                                          # noqa: BLE001
+        traceback.print_exc(file=sys.stderr)
+        errors.append("funnel: %s" % type(exc).__name__)
+    if agent is not None:
+        try:
+            listed, total, hidden, hidden_capped = _needs_confirming(
+                agent, brief_dict, rows, prepared, packages, result,
+                (result or {}).get("shortlist") or [])
+            extra.update(needs_confirming=listed, needs_confirming_count=total,
+                         needs_confirming_hidden=hidden)
+            help_["needs_confirming"] = {"count": total, "listed": len(listed),
+                                         "list_cap": MAX_NEEDS_CONFIRMING,
+                                         "hidden": dict(hidden),
+                                         "hidden_may_be_short": hidden_capped,
+                                         "ms": _elapsed_ms(started)}
+        except Exception as exc:                                      # noqa: BLE001
+            traceback.print_exc(file=sys.stderr)
+            errors.append("needs_confirming: %s" % type(exc).__name__)
+        base = response.get("shortlist_count") or 0
+        help_["explain_below"] = EXPLAIN_BELOW
+        help_["budget_ms"] = EXPLAIN_BUDGET_MS
+        if base < EXPLAIN_BELOW:
+            try:
+                help_["relaxations"] = _relaxations(
+                    agent, brief_dict, rows, prepared, counts, base,
+                    extra["needs_confirming_count"], started)
+            except Exception as exc:                                  # noqa: BLE001
+                traceback.print_exc(file=sys.stderr)
+                help_["relaxations"] = []
+                errors.append("relaxations: %s" % type(exc).__name__)
+        else:
+            help_["relaxations"] = []
+            help_["relaxations_note"] = ("not priced: the search already shortlisted %d "
+                                         "(SPB_EXPLAIN_BELOW is %d)" % (base, EXPLAIN_BELOW))
+    else:
+        help_["relaxations"] = []
+    if errors:
+        help_["error"] = "; ".join(errors)
+    help_["timing_ms"] = _elapsed_ms(started)
+    for key, value in extra.items():
+        if key not in response:
+            response[key] = value
+    return response
+
+
 def run_research(payload):
     """The whole endpoint as a plain function, so it is testable without a socket."""
     # Anything can arrive over HTTP. A payload that is not an object, or a client_brief
@@ -694,6 +1178,8 @@ def run_research(payload):
     if not isinstance(brief_dict, dict):
         raise BadRequest("'client_brief' must be a JSON object, got %s"
                          % type(brief_dict).__name__)
+    # The literal JSON true and nothing else -- see EXPLAIN_KEYS.
+    explain = payload.get('explain') is True
     brief_dict, adjustments = _normalised_brief(brief_dict)
 
     agent = _bootstrap.get_agent()
@@ -780,7 +1266,11 @@ def run_research(payload):
     except Exception:                                  # pragma: no cover - import guard
         _expanded = {}
 
-    packages, counts = _candidates.build_packages(brief_dict, rows)
+    # The brief-independent maps, built once per warm instance rather than once per call:
+    # the explain pass below runs build_packages again for needs-confirming and for every
+    # relaxation it prices. Pure, so the search itself is unchanged by it.
+    prepared = _candidates.prepared_for_snapshot(rows, snapshot_path)
+    packages, counts = _candidates.build_packages(brief_dict, rows, prepared=prepared)
 
     # The local run dedupes captured packages before scoring (kommo_agent.py:79). Stored
     # stock holds price-only variant siblings of the same lot, so without this the same
@@ -877,6 +1367,8 @@ def run_research(payload):
             'kommo_payload': _empty_kommo_payload(brief_dict, record_id, coverage),
         }
         _log_search(response, counts)
+        if explain:
+            _explained(response, brief_dict, rows, prepared, counts, packages, None)
         return response
 
     result = agent.run_property_research(brief_dict, packages)
@@ -998,7 +1490,22 @@ def run_research(payload):
         'kommo_payload': result['kommo_payload'],
     }
     _log_search(response, counts)
+    if explain:
+        _explained(response, brief_dict, rows, prepared, counts, packages, result)
     return response
+
+
+def _explained(response, *args):
+    """_with_explain, and if even that raises, the search's own response with the error
+    named -- the results a consultant asked for are never lost to an explanation."""
+    try:
+        return _with_explain(response, *args)
+    except Exception as exc:                                          # noqa: BLE001
+        traceback.print_exc(file=sys.stderr)
+        if "search_help" not in response:
+            response["search_help"] = {"version": SEARCH_HELP_VERSION,
+                                       "error": "explain: %s" % type(exc).__name__}
+        return response
 
 
 class handler(BaseHTTPRequestHandler):
