@@ -266,17 +266,53 @@ def test_admit_returns_exactly_the_unstated_rows_that_pass_every_later_gate(
             {k: v for k, v in twin.items() if k not in strip}
 
 
-def test_admit_without_only_admitted_shares_the_pool_and_keeps_confirmed_rows(
-        subset_rows, subset_prepared):
-    brief = _brief("qld_750k")
-    plain, _ = C.build_packages(brief, subset_rows, today=TODAY, prepared=subset_prepared)
-    both, counts = C.build_packages(brief, subset_rows, today=TODAY,
-                                    prepared=subset_prepared,
-                                    admit=("availability_unstated",))
-    confirmed = [p for p in both if "confirm" not in p]
-    assert [p["content_hash"] for p in confirmed] == [p["content_hash"] for p in plain]
-    assert any(p.get("confirm") for p in both)
-    assert "not_admitted" not in counts
+def test_admitted_rows_never_share_the_confirmed_pool(subset_rows, subset_prepared):
+    """Plan section 1: a separate admit pass with its own cap. Sharing the pool cut
+    confirmed stock the real search scores, so it is refused, not offered."""
+    brief = _brief("variant_E_max_blank_pref_750k")
+    with pytest.raises(ValueError, match="pool of their own"):
+        C.build_packages(brief, subset_rows, today=TODAY, prepared=subset_prepared,
+                         admit=("availability_unstated",))
+    # only_admitted with nothing admitted would be an empty pool that reads as
+    # "nothing needs confirming".
+    with pytest.raises(ValueError, match="pool of their own"):
+        C.build_packages(brief, subset_rows, today=TODAY, prepared=subset_prepared,
+                         only_admitted=True)
+
+
+@pytest.mark.parametrize("name", ["variant_E_max_blank_pref_750k", "qld_750k"])
+def test_explain_with_admit_reports_each_row_from_the_pool_it_is_really_in(
+        name, subset_rows, subset_prepared):
+    """A confirmed row's fate comes from the confirmed search, an admitted row's from the
+    admitted pass. At Max blank / $750k preferred a shared pool reported 181 rows the
+    search scores as truncated."""
+    brief = _brief(name)
+    admit = ("availability_unstated",)
+    default = C.explain_rows(brief, subset_rows, prepared=subset_prepared, today=TODAY)
+    with_admit = C.explain_rows(brief, subset_rows, prepared=subset_prepared, today=TODAY,
+                                admit=admit)
+    _p, _c, admitted_fate, _r = C._pass(brief, subset_rows, today=TODAY,
+                                        prepared=subset_prepared, admit=admit,
+                                        only_admitted=True)
+    seen_admitted = Counter()
+    for (row, plain), (_same, verdict) in zip(default, with_admit):
+        if plain["gate"] != "availability_unstated":
+            assert verdict == plain, (row["content_hash"], plain["gate"], verdict["gate"])
+            continue
+        if verdict["package"] is None:
+            continue                                # admitted, then stopped by a later gate
+        assert verdict["package"]["confirm"] == ["availability_unstated"]
+        assert verdict["gate"] == admitted_fate[id(row)]
+        seen_admitted[verdict["gate"]] += 1
+    assert seen_admitted["scored"] > 0
+    # One row at a time says the same, for every kind of verdict the pass produced.
+    first = {}
+    for row, verdict in with_admit:
+        first.setdefault((verdict["gate"], "confirm" in (verdict["package"] or {})),
+                         (row, verdict))
+    for (_gate, _adm), (row, verdict) in first.items():
+        assert C.explain_row(brief, row, subset_rows, prepared=subset_prepared,
+                             today=TODAY, admit=admit) == verdict
 
 
 def test_only_the_unstated_gate_can_be_admitted(subset_rows, subset_prepared):
@@ -338,6 +374,13 @@ def test_prepared_rows_from_another_snapshot_are_refused(subset_rows, subset_pre
     with pytest.raises(ValueError):
         C.build_packages(_brief("qld_750k"), subset_rows[:100], today=TODAY,
                          prepared=subset_prepared)
+    # explain_row too, before it gates the row against another catalogue's maps.
+    with pytest.raises(ValueError):
+        C.explain_row(_brief("qld_750k"), subset_rows[0], subset_rows[:100], today=TODAY,
+                      prepared=subset_prepared)
+    with pytest.raises(ValueError):
+        C.explain_rows(_brief("qld_750k"), subset_rows[:100], today=TODAY,
+                       prepared=subset_prepared)
 
 
 # ------------------------------------------------- snapshot rows joined to database-only
@@ -361,7 +404,7 @@ def _raw_database(path, rows):
 
 
 def test_explain_row_works_from_snapshot_rows_joined_to_database_fields(
-        tmp_path, subset_rows, subset_prepared):
+        tmp_path, monkeypatch, subset_rows, subset_prepared):
     """Critique correction 19: _read_sqlite cannot read the harvest database, so tools
     load the snapshot and join what only the database has, by content_hash."""
     brief = _brief("qld_750k")
@@ -376,7 +419,20 @@ def test_explain_row_works_from_snapshot_rows_joined_to_database_fields(
     with pytest.raises(sqlite3.OperationalError, match="not a snapshot database"):
         C._read_sqlite(db)
 
+    # READ-ONLY BY THE OPEN MODE, not by the absence of a write: a SELECT leaves the file
+    # untouched in any mode, so the mtime check alone could never catch a writable open.
+    opened = []
+    real_connect = sqlite3.connect
+
+    def spy(database, *args, **kwargs):
+        opened.append((str(database), kwargs.get("uri")))
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(C.sqlite3, "connect", spy)
     joined = C.join_db_fields(subset_rows, db)
+    monkeypatch.setattr(C.sqlite3, "connect", real_connect)
+    assert len(opened) == 1 and opened[0][1] is True, opened
+    assert re.search(r"[?&]mode=ro(&|$)", opened[0][0]), opened
     assert db.stat().st_mtime_ns == before, "the database must be opened read-only"
     dawn = [r for r in joined if r["content_hash"].startswith("v2:aec54350")]
     assert len(dawn) == 1 and dawn[0]["db"]["first_seen"] == "17/08/2026"

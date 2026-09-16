@@ -1011,6 +1011,11 @@ def prepared_for_snapshot(rows, source_path):
     `rows` must be what load_snapshot() just read from `source_path`. The key also carries
     the file size, and a hit is used only when its row count matches, so a snapshot
     rewritten in place is rebuilt rather than served from the old maps.
+
+    NOT FOR ROWS CHANGED IN MEMORY. The key is the file, so rows patched after loading (a
+    test that supersedes a lot or moves a state without rewriting the file) would be served
+    the maps of the unpatched file: states borrowed and suburbs voted from data that is no
+    longer the data searched. Call prepare_rows(patched_rows) for those.
     """
     try:
         st = os.stat(str(source_path))
@@ -1023,6 +1028,17 @@ def prepared_for_snapshot(rows, source_path):
     prepared = prepare_rows(rows)
     _PREPARED_CACHE.clear()
     _PREPARED_CACHE[key] = prepared
+    return prepared
+
+
+def _checked_prepared(rows, prepared):
+    """prepared, built now when absent, refused when it came from other rows."""
+    if prepared is None:
+        return prepare_rows(rows)
+    if prepared.row_count != len(rows):
+        raise ValueError("prepared rows were built from %d rows, not these %d; call "
+                         "prepare_rows on the snapshot being searched"
+                         % (prepared.row_count, len(rows)))
     return prepared
 
 
@@ -1559,13 +1575,18 @@ def _pass(brief_dict, rows, today=None, prepared=None, admit=(), only_admitted=F
     # One today for the whole pass. It used to be read per row inside _fresh, so a search
     # running across midnight aged its first and last rows against different days.
     today = today or datetime.now()
-    if prepared is None:
-        prepared = prepare_rows(rows)
-    elif prepared.row_count != len(rows):
-        raise ValueError("prepared rows were built from %d rows, not these %d; call "
-                         "prepare_rows on the snapshot being searched"
-                         % (prepared.row_count, len(rows)))
+    prepared = _checked_prepared(rows, prepared)
     ctx = _BriefContext(brief_dict, admit)
+    if bool(ctx.admit) != bool(only_admitted):
+        # NEVER ONE POOL. Admitted rows sharing the confirmed search's collapse and 600-row
+        # cap push confirmed stock out of it: measured on the 17 Sep subset, Max blank /
+        # $750k preferred, 181 rows the real search scores were cut as truncated and one
+        # was merged into an unconfirmed twin. The plan's answer is a separate pass, so a
+        # shared pool is refused rather than offered. And only_admitted with nothing
+        # admitted would return an empty pool that reads as "nothing to confirm".
+        raise ValueError("admit and only_admitted go together: admitted rows get a pool "
+                         "of their own (admit=%r, only_admitted=%r)"
+                         % (tuple(admit or ()), only_admitted))
 
     counts = {
         "snapshot_rows": len(rows), "other_state": 0, "state_unknown": 0,
@@ -1725,6 +1746,8 @@ def build_packages(brief_dict, rows, today=None, prepared=None, admit=(),
                    through every later gate and leaves with confirm=[gate] and
                    verified=False; counts['admitted'][gate] says how many passed through.
     only_admitted  return only admitted rows, in a pool (collapse and cap) of their own.
+                   Required with admit, and only with admit: a confirmed search and its
+                   admitted rows are two passes, never one shared pool.
 
     counts['counts_in_range'] repeats the first-fail tally for in-state rows priced
     inside the brief's own range. Every package carries age_days.
@@ -1772,8 +1795,7 @@ def explain_row(brief_dict, row, rows, prepared=None, today=None, admit=()):
     (join_db_fields) works too: those ride under 'db' and no gate reads them.
     """
     today = today or datetime.now()
-    if prepared is None:
-        prepared = prepare_rows(rows)
+    prepared = _checked_prepared(rows, prepared)
     ctx = _BriefContext(brief_dict, admit)
     result = _gate(ctx, row, prepared, today)
     if result.code != PASSED:
@@ -1781,18 +1803,38 @@ def explain_row(brief_dict, row, rows, prepared=None, today=None, admit=()):
     target = _row_in(row, rows)
     if target is None:
         return _verdict(result, None)
+    admitted = "confirm" in result.package
+    # The pool the row really lands in: the confirmed search for a confirmed row, the
+    # separate admitted pass for an admitted one -- the two passes a search runs.
     _packages, _counts, outcome, _results = _pass(
-        brief_dict, rows, today=today, prepared=prepared, admit=admit)
+        brief_dict, rows, today=today, prepared=prepared,
+        admit=admit if admitted else (), only_admitted=admitted)
     return _verdict(result, outcome.get(id(target)))
 
 
 def explain_rows(brief_dict, rows, prepared=None, today=None, admit=()):
-    """explain_row for every row, from a single pass. [(row, verdict)] in row order."""
-    _packages, _counts, outcome, results = _pass(
-        brief_dict, rows, today=today, prepared=prepared, admit=admit, keep_results=True)
-    return [(row, _verdict(result, outcome.get(id(row)) if result.code == PASSED
-                           else None))
-            for row, result in results]
+    """explain_row for every row. [(row, verdict)] in row order.
+
+    One pass without admit. With admit, two -- the confirmed search and the admitted pass
+    -- because that is how a search runs them, and a confirmed row's fate (scored,
+    collapsed, truncated) must be reported from the pool it is really in.
+    """
+    today = today or datetime.now()
+    prepared = _checked_prepared(rows, prepared)
+    _packages, _counts, confirmed, results = _pass(
+        brief_dict, rows, today=today, prepared=prepared, keep_results=not admit)
+    admitted = {}
+    if admit:
+        _packages, _counts, admitted, results = _pass(
+            brief_dict, rows, today=today, prepared=prepared, admit=admit,
+            only_admitted=True, keep_results=True)
+    out = []
+    for row, result in results:
+        fate = None
+        if result.code == PASSED:
+            fate = (admitted if "confirm" in result.package else confirmed).get(id(row))
+        out.append((row, _verdict(result, fate)))
+    return out
 
 
 # Database columns worth having beside a snapshot row that the snapshot does not carry.

@@ -305,6 +305,14 @@ def cmd_subset(args):
         os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
         sys.path.insert(0, str(APP))
         import build_web
+        import config
+        # build_web reads config.DATABASE_PATH, fixed when config is first imported. If
+        # anything imported it before the variable above was set, it would read the
+        # checkout's own database instead of the scratch copy -- refuse, never guess.
+        if Path(config.DATABASE_PATH).resolve() != db_copy.resolve():
+            raise SystemExit("config.DATABASE_PATH is %s, not the scratch copy %s; run "
+                             "this command in a fresh process" % (config.DATABASE_PATH,
+                                                                  db_copy))
         out = work / "site"
         build_web.build(out, with_assets=False)
         full = out / "stock.json"
