@@ -145,6 +145,8 @@ nothing.
 | Portal blocks the automated browser | Sign in via `portal_login.py` (it uses a real visible browser); the saved session carries the pass |
 | Listings look wrong/partial | Check `extraction_confidence`; optionally hand-map that portal in `sources/portal_config.py` and set `verified=True` |
 | Torsion is a SharePoint share link | If the stock list is a folder view, point `listings_url` at it in `portal_config.py` |
+| Lots vanished after supersede's "status changed on the same line" retirements | Set `SPB_STATUS_PASS=0` (e.g. in the daily-harvest workflow `env:`) and re-run: `supersede_duplicates.py` goes back to its three original passes. On by default. Review first with `python supersede_duplicates.py --dry-run` |
+| Run marked DEGRADED: "a new pass failed; fell back to the previous rule" | A step exited 70 (`DEGRADED_EXIT`): its new pass raised, it logged the traceback and wrote today's behaviour instead. Data still published; fix the traceback in the log |
 
 **Not harvested by design:** the 9 email-only builders (stock arrives by email)
 and Shape Homes (weekly Google Drive PDF).
