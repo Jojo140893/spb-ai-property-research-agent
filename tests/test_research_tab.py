@@ -134,7 +134,40 @@ MUTANTS = {
         "availability_by_the_sheet false shows no badge"),
     # --- the budget echo
     "a budget under 10,000 is not read as thousands": (
-        "return v < THOUSANDS_BELOW", "return false", "750 reads as $750,000 (thousands)"),
+        "return v >= 1 && v < THOUSANDS_BELOW", "return false", "750 reads as $750,000 (thousands)"),
+    # --- added in review, 17 Sep: each of these passed the checks before the check was added
+    "the thousands rule stops at 1,000": (
+        "return v >= 1 && v < THOUSANDS_BELOW", "return v >= 1 && v < 1000",
+        "9,999 is still thousands"),
+    "the thousands rule reaches below 1, unlike the server's": (
+        "return v >= 1 && v < THOUSANDS_BELOW", "return v < THOUSANDS_BELOW",
+        "below 1 is not thousands"),
+    "a search does not repaint the echo": (
+        "keep the echo in step with what is about to be sent.\n        paintBudgetEcho();",
+        "keep the echo in step with what is about to be sent.\n",
+        "a search repaints the echo from boxes changed without typing"),
+    "the Searched: line is not escaped": (
+        "<strong>Searched:</strong> ${esc(line)}", "<strong>Searched:</strong> ${line}",
+        "a brief_used carrying <img> renders as text"),
+    "a long suburb list is printed whole": (
+        "const subsShown = subs.slice(0, 12).join(', ')", "const subsShown = subs.join(', ')",
+        "cut to 12 and counted"),
+    "Client Name is required again, single-quoted": (
+        '<input type="text" id="clientName" placeholder="Client name">',
+        "<input type=\"text\" id=\"clientName\" placeholder=\"Client name\" required='required'>",
+        "#clientName is not required"),
+    "Client Name is required again, in capitals": (
+        '<input type="text" id="clientName" placeholder="Client name">',
+        '<input type="text" id="clientName" placeholder="Client name" REQUIRED>',
+        "#clientName is not required"),
+    "bathrooms invite a half, single-quoted": (
+        '<input type="number" id="bathrooms" placeholder="any">',
+        "<input type=\"number\" id=\"bathrooms\" placeholder=\"any\" step='0.5'>",
+        "#bathrooms stays whole numbers"),
+    "the maximum takes whole $10,000s, unquoted": (
+        'id="budgetMax" placeholder="no maximum" step="any"',
+        'id="budgetMax" placeholder="no maximum" step=10000',
+        "#budgetMax accepts any dollar amount"),
     "the echo is not wired to the boxes": (
         "if (el && el.addEventListener) el.addEventListener('input', paintBudgetEcho);",
         "if (false) el.addEventListener('input', paintBudgetEcho);",

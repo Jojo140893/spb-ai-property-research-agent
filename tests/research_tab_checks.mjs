@@ -39,16 +39,37 @@ const formMatch = html.match(/<form id="propertyForm">([\s\S]*?)<\/form>/);
 check("the brief form is found", !!formMatch);
 const form = formMatch ? formMatch[1].replace(/<!--[\s\S]*?-->/g, "") : "";
 const inputTag = id => (form.match(new RegExp(`<input\\b[^>]*\\bid="${id}"[^>]*>`)) || [""])[0];
+// An attribute as the browser reads it: any case, and a value double-quoted, single-quoted,
+// bare or absent. The FIRST occurrence wins, as it does in HTML. null when it is not there.
+// (A reader that only understood name="value" let `required='required'` and `REQUIRED`
+// straight past the checks below -- review, 17 Sep.)
 const attrOf = (tag, name) => {
-  const m = tag.match(new RegExp(`\\s${name}(?:="([^"]*)")?(?=[\\s>/])`));
-  return m ? (m[1] ?? "") : null;
+  // Tokenised, so a word inside another attribute's quoted value is never read as a name.
+  const body = String(tag || "").replace(/^<[a-zA-Z][\w-]*/, "").replace(/\/?>$/, "");
+  const re = /([^\s"'>\/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+  let m;
+  while ((m = re.exec(body))) {
+    if (m[1].toLowerCase() === name) return m[2] ?? m[3] ?? m[4] ?? "";
+  }
+  return null;
 };
+check("the attribute reader sees every spelling of an attribute",
+  attrOf("<input id=\"a\" required>", "required") === ""
+  && attrOf("<input id=\"a\" REQUIRED>", "required") === ""
+  && attrOf("<input id=\"a\" required='required'>", "required") === "required"
+  && attrOf("<input id=\"a\" required=\"\">", "required") === ""
+  && attrOf("<input id=\"a\" step=10000>", "step") === "10000"
+  && attrOf("<input id=\"a\" step='0.5'>", "step") === "0.5"
+  && attrOf("<input id=\"a\" step = \"any\">", "step") === "any"
+  && attrOf("<input id=\"a\" data-required=\"x\">", "required") === null
+  && attrOf("<input id=\"a\" placeholder=\"required\">", "required") === null
+  && attrOf("<input id=\"a\" placeholder=\"is required here\">", "required") === null);
 
 const clientName = inputTag("clientName");
 check("#clientName is on the form", !!clientName);
 check("#clientName is not required (a blank name blocked Execute)",
   clientName && attrOf(clientName, "required") === null, clientName);
-const requiredTags = (form.match(/<(input|select|textarea)\b[^>]*>/g) || [])
+const requiredTags = (form.match(/<(input|select|textarea)\b[^>]*>/gi) || [])
   .filter(t => attrOf(t, "required") !== null);
 check("no control on the brief form is required", requiredTags.length === 0, requiredTags.join(" "));
 
@@ -338,6 +359,32 @@ console.log("\n--- the price boxes say what will be searched ---");
   type("budgetMin", "");
   type("budgetMax", "");
   check("cleared again: hidden", echo.hidden === true && echo.textContent === "");
+  // The edges of the rule, which must match the server's normaliser (1 to 9,999 is thousands).
+  type("budgetMax", "9999");
+  check("9,999 is still thousands", echo.textContent.includes("$9,999,000") && /thousands/.test(echo.textContent),
+    JSON.stringify(echo.textContent));
+  type("budgetMax", "10000");
+  check("10,000 is dollars", echo.textContent.includes("= $10,000") && !/thousands/.test(echo.textContent),
+    JSON.stringify(echo.textContent));
+  type("budgetMax", "1");
+  check("1 is thousands", echo.textContent.includes("$1,000") && /thousands/.test(echo.textContent),
+    JSON.stringify(echo.textContent));
+  type("budgetMax", "0.5");
+  check("below 1 is not thousands (the server reads 1 to 9,999 only)", !/thousands/.test(echo.textContent),
+    JSON.stringify(echo.textContent));
+  type("budgetMax", "");
+}
+{
+  // Set the way a restored form, a hot-lead re-run or a one-click relaxation sets it: no
+  // input event. The echo must still describe what the search is about to send.
+  const s = sandbox();
+  s.el("budgetMax").value = "750";
+  s.respond(async () => reply(200, success()));
+  if (fn(s.api, "runResearchAgent")) await s.api.runResearchAgent();
+  await settle();
+  const echo = s.el("budgetEcho");
+  check("a search repaints the echo from boxes changed without typing",
+    echo.hidden === false && echo.textContent.includes("$750,000"), JSON.stringify(echo.textContent));
 }
 
 // ------------------------------------------------------------------ Searched line and notes
@@ -364,6 +411,23 @@ console.log("\n--- the results say what was searched, and what the search change
   check("Any state, a floor with no ceiling, a radius and minimums read plainly",
     out.includes("Any state · $300,000 and above · within 10 km of Tarneit · 4+ bed · House &amp; Land · with a rebate or discount"),
     out.slice(0, 400));
+}
+{
+  // Suburbs in brief_used are typed text, echoed back.
+  const { out } = await render(success({
+    brief_used: { state: payload("used_state"), budget_max: 750000, suburbs: [payload("used_suburb")],
+                  product_type: [payload("used_type")] },
+  }));
+  const problems = markupProblems(out);
+  check("a brief_used carrying <img> renders as text",
+    problems.length === 0 && ["used_state", "used_suburb", "used_type"].every(k => out.includes(shown(k))),
+    problems.slice(0, 3).join(" | ") || "a hostile brief_used value was not shown");
+}
+{
+  const many = Array.from({ length: 15 }, (_, i) => `Suburb${i + 1}`);
+  const { out } = await render(success({ brief_used: { state: "VIC", suburbs: many } }));
+  check("a long suburb list on the Searched: line is cut to 12 and counted",
+    out.includes("Suburb11, Suburb12 and 3 more") && !out.includes("Suburb13"), out.slice(0, 400));
 }
 {
   const { out } = await render(success({

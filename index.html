@@ -3732,15 +3732,16 @@ python state_sync.py push</pre>
      * on the form told him what the boxes had been read as. "Price Range" is two boxes
      * with placeholder text only, so a maximum typed into the minimum box searched
      * "$750,000 and above" -- the opposite search -- and 750 meant $750. No listing is
-     * priced under $10,000 (lowest $50,000 of 12,153), so a figure under 10,000 is read as
-     * thousands, the same rule the server applies (api/research.py _normalised_brief),
-     * and the echo says so. The form still sends what was typed; the server reports what
-     * it changed in brief_adjustments, shown above the results. */
+     * priced under $10,000 (lowest $50,000 of 12,153), so a figure from 1 to 9,999 is read
+     * as thousands -- the rule the server's brief normaliser applies (api/research.py
+     * _normalised_brief, Part C W12) -- and the echo says so. The form still sends what was
+     * typed; the server reports what it changed in brief_adjustments, shown above the
+     * results. Keep the two rules identical, or the echo promises a search that is not run. */
     const THOUSANDS_BELOW = 10000;
     const echoMoney = n => '$' + Math.round(Number(n)).toLocaleString('en-AU');
     const budgetRead = v => {
         if (!Number.isFinite(v) || v <= 0 || v >= Number.MAX_SAFE_INTEGER) return null;
-        return v < THOUSANDS_BELOW
+        return v >= 1 && v < THOUSANDS_BELOW
             ? { typed: v, dollars: Math.round(v * 1000), thousands: true }
             : { typed: v, dollars: Math.round(v), thousands: false };
     };
@@ -3822,8 +3823,11 @@ python state_sync.py push</pre>
                  : lo > 0 ? `${echoMoney(lo)} and above` : 'any price');
         const subs = textList(briefPick(b, 'suburbs', 'primary_suburbs'));
         const radius = num(briefPick(b, 'search_radius_km', 'radius_km', 'radius'));
+        // A region widened to its suburbs can name dozens; the region note lists them.
+        const subsShown = subs.slice(0, 12).join(', ')
+            + (subs.length > 12 ? ` and ${subs.length - 12} more` : '');
         parts.push(!subs.length ? 'all suburbs'
-                 : (radius > 0 ? `within ${radius} km of ` : '') + subs.join(', '));
+                 : (radius > 0 ? `within ${radius} km of ` : '') + subsShown);
         for (const [key, unit] of [['bedrooms_min', 'bed'], ['bathrooms_min', 'bath'],
                                    ['car_spaces_min', 'car']]) {
             const n = num(briefPick(b, key));
