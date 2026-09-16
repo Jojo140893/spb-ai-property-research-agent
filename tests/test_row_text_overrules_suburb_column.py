@@ -291,6 +291,73 @@ def test_a_suburb_the_column_states_and_the_page_confirms_is_not_second_guessed(
     assert _states(db)[19510] == ("VIC", "suburb + e-agent page")
 
 
+@pytest.mark.parametrize("stored", [("VIC", "suburb"), (None, None)])
+def test_a_line_quoting_its_own_estate_is_not_moved_to_the_estates_namesake(
+        tmp_path, monkeypatch, stored):
+    """The CORRECT copy of lot 618 as the Hattan e-mail carries it: suburb column Wollert,
+    estate Riverhills, address 'Lot 618, Riverhills', no page to vote with. own_state reads
+    nothing from it, so its VIC rests on the suburb column alone -- settled, or resolved
+    tonight. Riverhills QLD has real stock. The estate name is a name, not an address: the
+    row must stay in Victoria, or the fix for Colin's search files a VIC lot under QLD."""
+    line = ("Available Wollert Titled Townhouse 618 112 4.5 Ruthven Oakland D | Lot 618 | "
+            "Riverhills 14.07 Double Storey 2 2 1 $143,389 $409,895 $553,284")
+    rows = [_row(19530, builder_name="Hattan Homes", source_channel="digital email",
+                 suburb="Wollert", estate_name="Riverhills", lot_address="Lot 618, Riverhills",
+                 source_text=line, source_url="email:[Hattan weekly update]",
+                 state=stored[0], state_source=stored[1]),
+            _row(19700, builder_name="Other Builder", suburb="Riverhills", state="QLD",
+                 state_source="postcode", postcode="4074", lot_address="3 Example St, Riverhills")]
+    db = _make_db(tmp_path, rows)
+    assert _enrich(monkeypatch, db) == 0
+    assert _states(db)[19530] == ("VIC", "suburb")
+
+
+def test_a_row_resting_on_its_suburb_column_cannot_vouch_for_that_place(tmp_path, monkeypatch):
+    """One Hattan list, two rows. 8349 has 'Ceduna' (a house design, and an SA town) in its
+    suburb column and SA from that alone; its sibling has 'Clyde North' there and ends its
+    address '..., Ceduna'. 8349 is the claim under suspicion, so it must not be the stock
+    that makes Ceduna SA a real place -- or the sibling is moved to SA on the very night
+    8349 is moved out of it."""
+    def hattan_line(lot):
+        return (f"Available Clyde North Q3 2026 Townhouse Lot {lot} 186 6 Embla F | Ceduna 9.66 "
+                f"Single Storey 3 1 1 $317,129 $287,800 $604,929")
+    rows = [_row(8349, builder_name="Hattan Homes", source_channel="digital email",
+                 suburb="Ceduna", estate_name="Ceduna", state="SA", state_source="suburb",
+                 lot_address="Lot 3752, Ceduna", source_text=hattan_line(3752)),
+            _row(12390, builder_name="Hattan Homes", source_channel="digital email",
+                 suburb="Clyde North", state="VIC", state_source="suburb",
+                 lot_address="Lot 3755, Ceduna", source_text=hattan_line(3755)),
+            _row(12337, builder_name="Hattan Homes", source_channel="digital email",
+                 suburb="Clyde North", estate_name="Ceduna", state="VIC",
+                 state_source="listing text", lot_address="Lot 3754, Ceduna",
+                 source_text=hattan_line(3754))]
+    db = _make_db(tmp_path, rows)
+    assert _enrich(monkeypatch, db) == 0
+    states = _states(db)
+    assert states[8349] == ("VIC", TEXT_LOCALITY_SOURCE)
+    assert states[12390] == ("VIC", "suburb")
+
+
+def test_every_move_is_logged_with_the_line_that_justified_it(tmp_path, monkeypatch, capsys):
+    """A reviewer of the nightly log checks each move against the line itself, so the log
+    carries the stretch of text around the name -- and never a link."""
+    row = _riverhills_14905(source_text=_WOLLERT_LINE + " https://drive.example.test/x?id=1")
+    db = _make_db(tmp_path, [row, _wollert_vic_sibling()])
+    assert _enrich(monkeypatch, db) == 0
+    moved = [ln for ln in capsys.readouterr().out.splitlines() if "id 14905" in ln]
+    assert len(moved) == 1
+    assert "QLD -> VIC" in moved[0] and "Available Wollert Titled Townhouse 618" in moved[0]
+    assert "example.test" not in moved[0]
+
+
+@pytest.mark.parametrize("off", ["0", "off", "false"])
+def test_the_kill_switch_stops_the_check(tmp_path, monkeypatch, off):
+    monkeypatch.setenv("SPB_TEXT_LOCALITY_OVERRULE", off)
+    db = _make_db(tmp_path, [_riverhills_14905(), _wollert_vic_sibling()])
+    assert _enrich(monkeypatch, db) == 0
+    assert _states(db)[14905] == ("QLD", "suburb")
+
+
 def test_superseded_rows_are_left_alone(tmp_path, monkeypatch):
     db = _make_db(tmp_path, [_riverhills_14905(superseded_by="v2:someone-else"),
                              _wollert_vic_sibling()])

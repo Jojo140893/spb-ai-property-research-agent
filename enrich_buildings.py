@@ -40,15 +40,22 @@ moved, by today's rules with the check switched off:
     SPB_DATABASE_PATH=<db> python enrich_buildings.py --rollback-text-locality
 
 That undoes the writes for this run only; the check re-applies on the next run unless the
-change is reverted or SPB_TEXT_LOCALITY_OVERRULE=0 is set where the nightly runs. After a
-code revert the flag no longer exists, and the same rollback is the SQL below followed by
-a plain `python enrich_buildings.py`, which re-resolves the blanked rows:
+change is reverted or SPB_TEXT_LOCALITY_OVERRULE=0 is set where the nightly runs.
+
+Reverting the code alone undoes NOTHING: the moved rows carry a state_source the old code
+treats as settled, so it never looks at them again. After a revert the flag above no
+longer exists, and the rollback is this SQL followed by a plain `python enrich_buildings.py`,
+which re-resolves the blanked rows:
 
     UPDATE buildings SET state=NULL, state_source=NULL
      WHERE state_source='row text locality (over suburb column)';
 
 Re-resolved is not restored: a row in a stocklist whose own rows prove two states comes
 back blank rather than with the state the suburb match once gave it.
+
+The nightly's database lives in the Supabase bucket, so either rollback is run on the file
+`python state_sync.py pull` fetches (the pull takes the harvest lock, so it cannot race a
+nightly) and published with `python state_sync.py push`.
 """
 
 import argparse
@@ -159,7 +166,12 @@ def overrule_evidence(rows, geo):
     """What the catalogue itself says about places: (stocked, estates).
 
     stocked  {(locality lower-case, state)} for every live row whose suburb COLUMN is a
-             locality of its stored state.
+             locality of its stored state -- unless that state itself rests on nothing
+             but the suburb column. Such a row is the very claim under suspicion, so it
+             cannot vouch for its own place: 8349 ('Ceduna' in the column, SA from that
+             alone) would otherwise make Ceduna SA "stocked", and its correct VIC sibling
+             in the same Hattan list ("... Clyde North ... Lot 3755, Ceduna") would be
+             moved to South Australia on the same night 8349 is moved out of it.
     estates  {(builder lower-case, estate lower-case): {state: {row ids}}} over live rows.
     """
     stocked, estates = set(), {}
@@ -170,13 +182,33 @@ def overrule_evidence(rows, geo):
         if not STATE_RE.fullmatch(st or ""):
             continue
         sub = (r["suburb"] or "").strip()
-        if sub and geo.locate(sub, st):
+        if sub and geo.locate(sub, st) \
+                and not rests_on_a_suburb_match(r["state_source"], suburb_from_column=True):
             stocked.add((sub.lower(), st))
         estate = (r["estate_name"] or "").strip().lower()
         if estate:
             key = ((r["builder_name"] or "").strip().lower(), estate)
             estates.setdefault(key, {}).setdefault(st, set()).add(r["id"])
     return stocked, estates
+
+
+_URL_OR_EMAIL = re.compile(r"(?:https?://|www\.)\S+|\S+@\S+", re.I)
+
+
+def _excerpt(text, name, width=45):
+    """The stretch of the row's line around `name`, for the nightly log.
+
+    The name alone is not reviewable -- "text names 'Armstrong'" on a lot in Armstrong
+    Creek reads like a bug until the line is beside it. Links and e-mail addresses are
+    dropped: this goes to a CI log.
+    """
+    flat = " ".join(_URL_OR_EMAIL.sub(" ", str(text or "")).split())
+    words = [re.escape(w) for w in str(name or "").split()]
+    m = re.search(r"\b" + r"[^A-Za-z0-9]+".join(words) + r"\b", flat, re.I) if words else None
+    if not m:
+        return flat[:2 * width]
+    lo, hi = max(0, m.start() - width), min(len(flat), m.end() + width)
+    return ("..." if lo else "") + flat[lo:hi] + ("..." if hi < len(flat) else "")
 
 
 def overruled_state(r, suburb, state, geo, evidence):
@@ -193,9 +225,9 @@ def overruled_state(r, suburb, state, geo, evidence):
     """
     stocked, estates = evidence
     text = " ".join(str(r[k] or "") for k in ("source_text", "lot_address"))
-    hit = text_locality_elsewhere(text, state, geo, stocked)
+    hit = text_locality_elsewhere(text, state, geo, stocked, estate=r["estate_name"])
     if hit:
-        return hit[1], f"text names {hit[0]!r}"
+        return hit[1], f"text names {hit[0]!r}: {_excerpt(text, hit[0])!r}"
     estate = (r["estate_name"] or "").strip().lower()
     builder = (r["builder_name"] or "").strip().lower()
     if builder and estate and suburb and suburb.strip().lower() == estate:
@@ -214,7 +246,8 @@ def main(argv=None):
                          f"'{TEXT_LOCALITY_SOURCE}', with that check switched off")
     args = ap.parse_args([] if argv is None else argv)
     rollback = args.rollback_text_locality
-    overrule_on = (os.environ.get("SPB_TEXT_LOCALITY_OVERRULE", "1").strip() != "0"
+    overrule_on = (os.environ.get("SPB_TEXT_LOCALITY_OVERRULE", "1").strip().lower()
+                   not in ("0", "false", "off", "no")
                    and not rollback)
     # Problems in the NEW check only. It runs inside a required nightly step, so it must
     # never be what stops the run: on any error the row keeps the state today's rules give

@@ -383,8 +383,14 @@ _NOT_A_LOCALITY_AFTER = re.compile(
     r"custom|facade|\d+(?:\.\d+)?)$", re.IGNORECASE)
 
 
+def _estate_key(estate: Any) -> str:
+    """'Riverhills Estate' / ' riverhills ' -> 'riverhills'. '' when there is no name."""
+    words = [t.lower() for t in _TEXT_TOKEN.findall(str(estate or ""))]
+    return " ".join(w for w in words if w != "estate")
+
+
 def text_locality_elsewhere(row_text: Any, state: Any, geo: Any,
-                            stocked: Any) -> Optional[Tuple[str, str]]:
+                            stocked: Any, estate: Any = "") -> Optional[Tuple[str, str]]:
     """(locality, other_state) when the row's own text names a place in ANOTHER state.
 
     Only a claim strong enough to overrule a state that rests on a suburb match alone. A
@@ -393,6 +399,11 @@ def text_locality_elsewhere(row_text: Any, state: Any, geo: Any,
       * it is a locality in exactly one state, and that state is not `state`;
       * it is at least 5 characters, does not start with a month or "The ", and is not
         the tail of a "The ..." name or a bare street word ("The Grove" -> Grove TAS);
+      * it is not the row's own `estate` name. Estates are named after places anywhere in
+        the country, and a line quotes its estate: the CORRECT Hattan copy of lot 618 has
+        suburb Wollert, estate Riverhills and an address "Lot 618, Riverhills". Without
+        this, Riverhills QLD's stock pulls that VIC lot into Queensland -- Colin's bug,
+        backwards;
       * the word after it is not a street type, a number (a design size) or a region or
         estate word;
       * `stocked` holds (locality lower-case, that state): the catalogue has live rows
@@ -406,6 +417,7 @@ def text_locality_elsewhere(row_text: Any, state: Any, geo: Any,
         return None
     from geo import _STREET_TYPE
 
+    own_estate = _estate_key(estate)
     stored = normalise_state(state)
     toks = [t.rstrip("-'") for t in _TEXT_TOKEN.findall(str(row_text))]
     toks = [t for t in toks if t]
@@ -420,6 +432,8 @@ def text_locality_elsewhere(row_text: Any, state: Any, geo: Any,
             if i > 0 and toks[i - 1].lower() == "the":
                 continue
             if size == 1 and _STREET_TYPE.fullmatch(cand):
+                continue
+            if own_estate and cand.lower() == own_estate:
                 continue
             states = [s for s in geo.states_for_suburb(cand) if s in VALID_STATES]
             if len(states) != 1 or states[0] == stored:
