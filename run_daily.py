@@ -81,7 +81,16 @@ def _run(label: str, args: list, optional: bool = False) -> bool:
         # 2 means PARTIAL — some channels failed, others read normally. The chain
         # continues so the channels that DID refresh reach the dashboard; the failure is
         # still reported and still ends the run non-zero.
-        ok = proc.returncode in (0, 2)
+        ok = proc.returncode in (0, 2, 3)
+        if proc.returncode == 3:
+            # 3 means FINISHED ON ITS FALLBACK PATH: a step's new pass raised, the step
+            # logged it, kept today's behaviour and wrote that. The chain must continue
+            # (it is often a REQUIRED step, and aborting would withhold the whole night's
+            # refresh over one pass), but the run is marked DEGRADED so CI goes red after
+            # publishing. Not 2: CI answers 2 with "a channel returned nothing, refresh
+            # the portal login", which is the wrong remedy. First user:
+            # supersede_duplicates.py's status pass (DEGRADED_EXIT).
+            _DEGRADED.append(label + " (a new pass failed; fell back to the previous rule)")
         if proc.returncode == 2:
             _PARTIAL.append(label)
             # Also feed the EXISTING degraded channel, so the "finished but something
