@@ -213,6 +213,21 @@
                font:inherit;font-size:0.8rem}
     .gap-clear:hover{background:#fef3c7}
 
+    /* What the price boxes will actually search, said as it is typed (Part C, 16 Sep). */
+    .budget-echo{font-size:0.78rem;font-weight:600;color:var(--accent-blue);margin-top:0.25rem}
+    /* "Searched: ..." above the results, and a note for everything the search did to the
+       brief -- a budget read as thousands, a state typed as a suburb, a region widened. */
+    .search-notes{background:var(--surface-white,#fff);border:1px solid var(--border-strong,#cbd5e1);
+                  border-radius:8px;padding:0.65rem 0.9rem;margin:0 0 1rem;font-size:0.85rem;
+                  line-height:1.5;color:var(--text-body)}
+    .search-notes .search-note{margin-top:0.35rem;padding:0.3rem 0.55rem;border-left:3px solid #f59e0b;
+                  background:#fffbeb;color:#78350f;border-radius:4px}
+    /* A list with no status column: every row on it reads as available, which the list
+       itself never said. */
+    .sheet-badge{display:inline-block;margin-top:0.3rem;padding:0.1rem 0.45rem;font-size:0.75rem;
+                 font-weight:700;color:#92400e;background:#fef3c7;border:1px solid #fcd34d;
+                 border-radius:4px}
+
     /* The rejection log, folded. Thirty red cards below five results made a working
            page look like a failed one; the reasoning is still one click away. */
         .reject-log {
@@ -792,20 +807,31 @@
 
             <form id="propertyForm">
                 <div class="form-group">
-                    <label>Client Name</label>
-                    <input type="text" id="clientName" placeholder="Client name" required>
+                    <label>Client Name <span class="hint-opt">optional</span></label>
+                    <!-- NOT `required`. Part C, 16 Sep: with it, Execute on a blank name posted
+                         nothing, jumped to this box and left the PREVIOUS search's results on
+                         screen -- and it swallowed "search without this minimum" the same way.
+                         runResearchAgent already sends 'Unnamed Client' for a blank name. -->
+                    <input type="text" id="clientName" placeholder="Client name">
                 </div>
 
                 <div class="form-row">
                     <div class="form-group">
                         <label>Price Range ($)</label>
+                        <!-- step="any", not step="10000". Part C, 16 Sep: the browser refused
+                             every amount that was not a whole $10,000 -- $765,000, $749,990 --
+                             and refused "750" outright ("nearest valid values are 0 and
+                             10000"), so the search never ran. The echo below says what will
+                             be searched instead: 750 reads as $750,000, and a figure typed
+                             into the minimum box alone reads "and above". -->
                         <div style="display:flex; gap:0.5rem; align-items:center;">
-                            <input type="number" id="budgetMin" placeholder="no minimum" step="10000"
-                                   style="flex:1;">
+                            <input type="number" id="budgetMin" placeholder="no minimum" step="any"
+                                   aria-label="Minimum price" style="flex:1;">
                             <span style="color:var(--text-muted);">&ndash;</span>
-                            <input type="number" id="budgetMax" placeholder="no maximum" step="10000"
-                                   style="flex:1;">
+                            <input type="number" id="budgetMax" placeholder="no maximum" step="any"
+                                   aria-label="Maximum price" style="flex:1;">
                         </div>
+                        <div id="budgetEcho" class="budget-echo" aria-live="polite" hidden></div>
                         <div style="font-size:0.75rem; color:var(--text-muted); margin-top:0.25rem;">
                             Both exclude. Leave either blank for open-ended.
                         </div>
@@ -819,10 +845,10 @@
                          Maximum Budget is the limit; this ranks within it. -->
                     <div class="form-group">
                         <label>Preferred Price ($)</label>
-                        <input type="number" id="budgetPref" placeholder="optional" step="10000">
+                        <input type="number" id="budgetPref" placeholder="optional" step="any">
                         <div style="font-size:0.75rem; color:var(--text-muted); margin-top:0.25rem;">
                             Ranks packages at or under this higher. It does not exclude
-                            anything &mdash; Maximum Budget does that.
+                            anything &mdash; the maximum price does that.
                         </div>
                     </div>
                 </div>
@@ -932,6 +958,9 @@
                     </div>
                     <div class="form-group">
                         <label>Min Bathrooms</label>
+                        <!-- Whole numbers only, deliberately: the brief parser and the stock
+                             both store bathrooms as integers, so a 2.5 minimum would quietly
+                             search for 2 (Part C review, correction 16). -->
                         <input type="number" id="bathrooms" placeholder="any">
                     </div>
                 </div>
@@ -1916,8 +1945,10 @@ python state_sync.py push</pre>
         if (only && only.checked) renderStock();
     }
 
-    const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
-        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    // The apostrophe too (Part C, 16 Sep), so a value is safe inside a single-quoted
+    // attribute as well as a double-quoted one.
+    const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const money = v => (v === null || v === undefined || v === '' || Number(v) === 0)
         ? '' : '$' + Math.round(Number(v)).toLocaleString();
 
@@ -3425,6 +3456,13 @@ python state_sync.py push</pre>
         paintCompareBar();
     });
 
+    /* THE RESEARCH TAB'S RESULTS. Everything between RESEARCH-TAB-BEGIN and
+     * RESEARCH-TAB-END is sliced out and run under Node by tests/research_tab_checks.mjs
+     * (the same way as the Clare's Leads tab), so keep what it needs inside the markers.
+     * Every listing string here came from a builder's list, an email or a portal: nothing
+     * goes into HTML without esc().
+     */
+    // RESEARCH-TAB-BEGIN
     /* Colin, 5 Aug: "The idea is to avoid all that extra, because then I have to go back
        and start looking for it. If there's a URL that I can click..." He spent eight
        minutes of that call hunting one Rouse Hill lot.
@@ -3688,7 +3726,193 @@ python state_sync.py push</pre>
         return Number.isFinite(n) ? n : fallback;
     };
 
+    /* WHAT THE PRICE BOXES WILL SEARCH, said while it is typed.
+     *
+     * Part C, 16 Sep. Colin searched "QLD under $750k" and got nothing useful, and nothing
+     * on the form told him what the boxes had been read as. "Price Range" is two boxes
+     * with placeholder text only, so a maximum typed into the minimum box searched
+     * "$750,000 and above" -- the opposite search -- and 750 meant $750. No listing is
+     * priced under $10,000 (lowest $50,000 of 12,153), so a figure under 10,000 is read as
+     * thousands, the same rule the server applies (api/research.py _normalised_brief),
+     * and the echo says so. The form still sends what was typed; the server reports what
+     * it changed in brief_adjustments, shown above the results. */
+    const THOUSANDS_BELOW = 10000;
+    const echoMoney = n => '$' + Math.round(Number(n)).toLocaleString('en-AU');
+    const budgetRead = v => {
+        if (!Number.isFinite(v) || v <= 0 || v >= Number.MAX_SAFE_INTEGER) return null;
+        return v < THOUSANDS_BELOW
+            ? { typed: v, dollars: Math.round(v * 1000), thousands: true }
+            : { typed: v, dollars: Math.round(v), thousands: false };
+    };
+
+    function budgetEchoText(minTyped, maxTyped) {
+        const lo = budgetRead(minTyped), hi = budgetRead(maxTyped);
+        const say = (label, r) => r.thousands
+            ? `${label} ${r.typed} reads as ${echoMoney(r.dollars)} (thousands)`
+            : `${label} = ${echoMoney(r.dollars)}`;
+        const parts = [];
+        if (lo) parts.push(say('Min', lo));
+        if (hi) parts.push(say('Max', hi));
+        if (lo && !hi) parts.push(`showing ${echoMoney(lo.dollars)} and above`);
+        if (lo && hi && lo.dollars > hi.dollars) {
+            parts.push('the minimum is above the maximum, so the search swaps them');
+        }
+        return parts.join(' · ');
+    }
+
+    function paintBudgetEcho() {
+        const out = document.getElementById('budgetEcho');
+        if (!out) return;
+        const text = budgetEchoText(numField('budgetMin', NaN), numField('budgetMax', NaN));
+        out.textContent = text;
+        out.hidden = !text;
+    }
+
+    (function wireBudgetEcho() {
+        for (const id of ['budgetMin', 'budgetMax']) {
+            const el = document.getElementById(id);
+            if (el && el.addEventListener) el.addEventListener('input', paintBudgetEcho);
+        }
+        // A browser that restores the form on reload restores the figures too.
+        paintBudgetEcho();
+    })();
+
+    /* WHAT WAS ACTUALLY SEARCHED, and every change made to the brief on the way.
+     *
+     * Part C, 16 Sep: "Queensland" typed into Target Suburbs searched for a suburb called
+     * Queensland and returned 0, and the response already said "not a locality anywhere;
+     * searched as said" in location_resolution -- which this tab never showed. So the
+     * results open with one "Searched:" line from brief_used, then a note for each
+     * brief_adjustments entry (a budget read as thousands, a state typed as a suburb, a
+     * swapped range), each location reading that was not an exact or spoken match, and
+     * each region widened to its suburbs. All of it is escaped: suburbs are typed text. */
+    const RESEARCH_NO_CEILING = Number.MAX_SAFE_INTEGER;
+    const briefPick = (o, ...keys) => {
+        for (const k of keys) {
+            if (o && o[k] !== undefined && o[k] !== null && o[k] !== '') return o[k];
+        }
+        return undefined;
+    };
+    const textList = v => (Array.isArray(v) ? v : (v === undefined || v === null ? [] : [v]))
+        .map(x => (x !== null && typeof x === 'object') ? '' : String(x ?? '').trim())
+        .filter(Boolean);
+    const BRIEF_FIELD_LABEL = {
+        budget_min: 'Minimum price', budget_max: 'Maximum price',
+        preferred_spending_cap: 'Preferred price', primary_suburbs: 'Target suburbs',
+        state: 'State', search_radius_km: 'Search radius', bedrooms_min: 'Min bedrooms',
+        bathrooms_min: 'Min bathrooms', car_spaces_min: 'Min car spaces',
+        storeys_max: 'Max storeys', land_size_min_sqm: 'Min land size',
+        house_size_min_sqm: 'Min house size', client_name: 'Client name',
+    };
+    const MONEY_FIELD = new Set(['budget_min', 'budget_max', 'preferred_spending_cap']);
+
+    // Plain text; the caller escapes it. '' when the response carries no brief_used.
+    function searchedLineText(used) {
+        if (!used || typeof used !== 'object') return '';
+        // Minimums may arrive flat or grouped; either reads the same.
+        const b = Object.assign({}, used,
+            (used.minimums && typeof used.minimums === 'object') ? used.minimums : {});
+        const num = v => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+        const parts = [String(briefPick(b, 'state') || '').trim() || 'Any state'];
+        const lo = num(briefPick(b, 'budget_min'));
+        const top = num(briefPick(b, 'budget_max'));
+        const hi = top > 0 && top < RESEARCH_NO_CEILING ? top : 0;
+        parts.push(lo > 0 && hi ? `${echoMoney(lo)} to ${echoMoney(hi)}`
+                 : hi ? `up to ${echoMoney(hi)}`
+                 : lo > 0 ? `${echoMoney(lo)} and above` : 'any price');
+        const subs = textList(briefPick(b, 'suburbs', 'primary_suburbs'));
+        const radius = num(briefPick(b, 'search_radius_km', 'radius_km', 'radius'));
+        parts.push(!subs.length ? 'all suburbs'
+                 : (radius > 0 ? `within ${radius} km of ` : '') + subs.join(', '));
+        for (const [key, unit] of [['bedrooms_min', 'bed'], ['bathrooms_min', 'bath'],
+                                   ['car_spaces_min', 'car']]) {
+            const n = num(briefPick(b, key));
+            if (n > 0) parts.push(`${n}+ ${unit}`);
+        }
+        const storeys = num(briefPick(b, 'storeys_max'));
+        if (storeys > 0 && storeys < 3) parts.push(`at most ${storeys} storey${storeys === 1 ? '' : 's'}`);
+        const land = num(briefPick(b, 'land_size_min_sqm'));
+        if (land > 0) parts.push(`land ${land}m² or more`);
+        const house = num(briefPick(b, 'house_size_min_sqm'));
+        if (house > 0) parts.push(`house ${house}m² or more`);
+        const types = textList(briefPick(b, 'product_type'));
+        if (types.length) parts.push(types.join(' or '));
+        if (briefPick(b, 'requires_incentive') === true) parts.push('with a rebate or discount');
+        return parts.join(' · ');
+    }
+
+    // One brief_adjustments entry as a sentence: a string as it is, or {field, from, to,
+    // why} / {field, note}. Plain text; the caller escapes it.
+    function adjustmentText(a) {
+        if (a === null || a === undefined) return '';
+        if (typeof a !== 'object') return String(a).trim();
+        const field = String(a.field ?? '').trim();
+        // "budget_min/budget_max" names both ends of a swapped range.
+        const fields = field.split('/').map(f => f.trim()).filter(Boolean);
+        const label = fields.map(f => BRIEF_FIELD_LABEL[f] || f).join(' and ');
+        const money = fields.some(f => MONEY_FIELD.has(f));
+        const show = v => Array.isArray(v) ? (v.length ? v.map(show).join(', ') : 'nothing')
+            : (v === null || v === undefined || v === '') ? 'blank'
+            : (typeof v === 'number' && v >= RESEARCH_NO_CEILING) ? 'no maximum'
+            : (typeof v === 'number' && money) ? echoMoney(v)
+            : (typeof v === 'object') ? '' : String(v);
+        const said = briefPick(a, 'note', 'message', 'text');
+        if (said !== undefined && typeof said !== 'object') {
+            return (label ? label + ': ' : '') + String(said).trim();
+        }
+        const change = ('from' in a || 'to' in a) ? `${show(a.from)} → ${show(a.to)}` : '';
+        const why = briefPick(a, 'why', 'reason');
+        const head = [label, change].filter(Boolean).join(': ');
+        return head + (why !== undefined && typeof why !== 'object' ? ` (${String(why).trim()})` : '');
+    }
+
+    // A location_resolution entry worth a consultant's attention: anything but an exact
+    // locality or a respelling of one. Plain text; the caller escapes it.
+    function locationNoteText(x) {
+        if (!x || typeof x !== 'object') return '';
+        const method = String(x.method ?? '').trim();
+        if (method === 'exact' || method === 'spoken') return '';
+        const said = String(x.said ?? '').trim();
+        const used = textList(x.used).join(', ');
+        const note = String(x.note ?? '').trim();
+        if (!said && !note) return '';
+        let text = `"${said}"`;
+        if (used && used.toLowerCase() !== said.toLowerCase()) text += ` searched as ${used}`;
+        if (note) text += ` — ${note}`;
+        if (method === 'fuzzy') text += ' (matched by spelling: check it)';
+        return text;
+    }
+
+    function regionNoteTexts(expanded) {
+        if (!expanded || typeof expanded !== 'object' || Array.isArray(expanded)) return [];
+        return Object.entries(expanded).map(([region, added]) => {
+            const names = textList(added);
+            if (!names.length) return '';
+            const shown = names.slice(0, 12).join(', ')
+                + (names.length > 12 ? ` and ${names.length - 12} more` : '');
+            return `"${region}" is a region, so the search also covered ${shown}`;
+        }).filter(Boolean);
+    }
+
+    function searchNotesHtml(data) {
+        const d = (data && typeof data === 'object') ? data : {};
+        const line = searchedLineText(d.brief_used);
+        const notes = [
+            ...(Array.isArray(d.brief_adjustments) ? d.brief_adjustments : []).map(adjustmentText),
+            ...(Array.isArray(d.location_resolution) ? d.location_resolution : []).map(locationNoteText),
+            ...regionNoteTexts(d.region_expansion),
+        ].map(s => String(s || '').trim()).filter(Boolean);
+        if (!line && !notes.length) return '';
+        return '<div class="search-notes">'
+            + (line ? `<div class="search-searched"><strong>Searched:</strong> ${esc(line)}</div>` : '')
+            + notes.map(n => `<div class="search-note">${esc(n)}</div>`).join('')
+            + '</div>';
+    }
+
     async function runResearchAgent() {
+        // Programmatic re-runs (search without a minimum) change the boxes without an
+        // input event; keep the echo in step with what is about to be sent.
+        paintBudgetEcho();
         const brief = {
             client_name: document.getElementById('clientName').value || 'Unnamed Client',
             // A BLANK BUDGET MEANS NO CEILING, not a ceiling of zero. The form used to
@@ -3793,6 +4017,14 @@ python state_sync.py push</pre>
                 resultsDiv.innerHTML = '';
                 document.getElementById('shortlistBadge').textContent = `${data.shortlist_count} Qualified (${data.rejected_count} Filtered)`;
 
+                // "Searched: ..." and the notes, above everything else -- see searchNotesHtml.
+                const notesHtml = searchNotesHtml(data);
+                if (notesHtml) {
+                    const notesBox = document.createElement('div');
+                    notesBox.innerHTML = notesHtml;
+                    resultsDiv.appendChild(notesBox);
+                }
+
                 LAST_SHORTLIST = data.shortlist || [];
                 BENCH_CACHE = null;      // a fresh search re-reads the market, not a stale copy
 
@@ -3840,12 +4072,15 @@ python state_sync.py push</pre>
                                            ${prop.content_hash && SELECTED.has(prop.content_hash) ? 'checked' : ''}
                                            ${prop.content_hash ? '' : 'disabled title="This listing has no stable identifier, so it cannot be carried between searches."'}> compare
                                   </label>
-                                  Rank #${idx+1}: ${prop.lot_address}</div>
-                                <div class="prop-subtitle-text">${prop.suburb}, ${prop.state} | Builder: <strong>${prop.builder_name || NOT_STATED}</strong>${prop.house_design ? ` (${prop.house_design})` : ''}</div>
+                                  Rank #${idx+1}: ${esc(prop.lot_address)}</div>
+                                <div class="prop-subtitle-text">${esc(prop.suburb)}, ${esc(prop.state)} | Builder: <strong>${esc(prop.builder_name || NOT_STATED)}</strong>${prop.house_design ? ` (${esc(prop.house_design)})` : ''}</div>
+                                ${prop.availability_by_the_sheet === true
+                                    ? '<div class="sheet-badge">Confirm availability: this list has no status column</div>'
+                                    : ''}
                             </div>
                             <div class="score-badge">
-                                <div class="score-number">${prop.score} <span style="font-size:0.85rem; color:var(--text-muted);">/ 100</span></div>
-                                <span class="pill ${pillStyle}">${prop.recommendation}</span>
+                                <div class="score-number">${esc(prop.score)} <span style="font-size:0.85rem; color:var(--text-muted);">/ 100</span></div>
+                                <span class="pill ${pillStyle}">${esc(prop.recommendation)}</span>
                             </div>
                         </div>
 
@@ -3876,7 +4111,7 @@ python state_sync.py push</pre>
                                  a figure a consultant could accidentally quote as a price.
                                  "Full Turnkey Verified" stays — it states what IS confirmed
                                  rather than adding a cost. -->
-                            <strong>Turnkey Classification:</strong> ${prop.turnkey_status}
+                            <strong>Turnkey Classification:</strong> ${esc(prop.turnkey_status)}
                             ${prop.missing_inclusions.length > 0 ? '' : '<span style="color:var(--emerald-green); font-weight:600;">(Full Turnkey Verified)</span>'}
                         </div>
 
@@ -3884,11 +4119,11 @@ python state_sync.py push</pre>
                             <strong>${prop.benchmark && prop.benchmark.basis === 'internal'
                                 ? 'Price vs comparable stock' : 'Market Benchmark (SOP Step 7)'}:</strong>
                             ${prop.benchmark && prop.benchmark.benchmarked
-                                ? `<span style="font-weight:600; color:${prop.benchmark.variance_pct <= 5 ? 'var(--emerald-green)' : 'var(--amber-yellow)'};">${prop.benchmark.classification}</span>
-                                   &mdash; ${prop.benchmark.basis === 'internal' ? 'median of comparable listings' : 'avg market'} $${Number(prop.benchmark.avg_market_price).toLocaleString()} (${prop.benchmark.variance_pct > 0 ? '+' : ''}${prop.benchmark.variance_pct}%)`
-                                : `<span style="color:var(--amber-yellow); font-weight:600;">${prop.benchmark ? prop.benchmark.classification : 'Unbenchmarked'}</span>`}
+                                ? `<span style="font-weight:600; color:${prop.benchmark.variance_pct <= 5 ? 'var(--emerald-green)' : 'var(--amber-yellow)'};">${esc(prop.benchmark.classification)}</span>
+                                   &mdash; ${prop.benchmark.basis === 'internal' ? 'median of comparable listings' : 'avg market'} $${Number(prop.benchmark.avg_market_price).toLocaleString()} (${prop.benchmark.variance_pct > 0 ? '+' : ''}${esc(prop.benchmark.variance_pct)}%)`
+                                : `<span style="color:var(--amber-yellow); font-weight:600;">${esc(prop.benchmark ? prop.benchmark.classification : 'Unbenchmarked')}</span>`}
                             ${prop.benchmark && prop.benchmark.needs_manual_benchmark ? `<div style="color:${prop.benchmark.basis === 'internal' ? 'var(--text-muted, #64748b)' : 'var(--amber-yellow)'}; font-size:0.78rem; margin-top:0.2rem;">${esc(prop.benchmark.data_note || '')}</div>` : ''}
-                            ${prop.distance_km_from_target ? `<div style="font-size:0.8rem; margin-top:0.2rem;"><strong>Distance:</strong> ${prop.distance_km_from_target} km from target suburb</div>` : ''}
+                            ${prop.distance_km_from_target ? `<div style="font-size:0.8rem; margin-top:0.2rem;"><strong>Distance:</strong> ${esc(prop.distance_km_from_target)} km from target suburb</div>` : ''}
                             ${competitiveRow(prop.competitive)}
                             ${sourceLinkRow(prop.source_link)}
                             ${capturedRow(prop.date_checked)}
@@ -3936,7 +4171,7 @@ python state_sync.py push</pre>
                         </div>
 
                         <div style="font-size:0.85rem; margin-top:1rem; color:var(--text-body);">
-                            <strong>Executive Reasoning:</strong> ${prop.recommendation_reason}
+                            <strong>Executive Reasoning:</strong> ${esc(prop.recommendation_reason)}
                         </div>
                         ${(prop.advisories || '').trim() ? `
                         <div style="font-size:0.82rem; margin-top:0.5rem; color:var(--amber-yellow);">
@@ -4089,10 +4324,12 @@ python state_sync.py push</pre>
                         b.onclick = () => {
                             const el = document.getElementById(b.dataset.field);
                             if (el) el.value = '';
-                            const form = document.getElementById('propertyForm');
-                            if (form) form.requestSubmit ? form.requestSubmit()
-                                                         : form.dispatchEvent(
-                                                             new Event('submit', {cancelable: true}));
+                            // Straight to the search, not through the form's submit. Part C,
+                            // 16 Sep: submitting ran the browser's own validation first, so
+                            // with Client Name blank this cleared the minimum, posted nothing
+                            // and jumped to the top of the form. Validation of any kind must
+                            // never be able to swallow a re-run.
+                            runResearchAgent();
                         };
                     });
                 }
@@ -4189,6 +4426,7 @@ python state_sync.py push</pre>
                 <em>Execute Property Research &amp; Benchmarking</em> to try again.</div>`;
         }
     }
+    // RESEARCH-TAB-END
 
     /* The one-page comparison, laid out like the example Coleen sent on 14 Aug:
      * options as ROWS with Location / Land / House / Package / Rebate / Effective Price,
