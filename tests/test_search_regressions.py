@@ -171,6 +171,9 @@ def test_on_the_data_colin_searched_it_fails_naming_the_on_hold_lot(site):
     assert code == 1, out + err
     assert ("[FAIL] #1 qld_750k: sibling: shortlisted v2:43802e2d (id 18491) says 'Available' "
             "(15/09/2026), but v2:d9553ad6 (id 15953)") in out, out + err
+    for h, rid in (("v2:1c5ca48e", 14905), ("v2:43802e2d", 18491)):
+        assert "[FAIL] #1 qld_750k: %s (id %d) must never appear, and is in shortlist" % (
+            h, rid) in out, out
     warnings = [line for line in out.splitlines() if line.startswith("[WARN]")]
     assert any("v2:1c5ca48e (id 14905)" in w and "Wollert (VIC)" in w for w in warnings), out
     assert not any("v2:1c5ca48e" in line and "sibling" in line for line in out.splitlines())
@@ -429,6 +432,64 @@ def test_a_relaxation_whose_count_a_re_post_does_not_return_fails():
     _report, _out, posted = _run([dict(brief, self_check_nightly=False)], answers, rows,
                                  checks="full")
     assert len(posted) == 2
+
+
+def test_each_rule_a_brief_states_fails_when_the_response_breaks_it():
+    rows = [_row("v2:bad00000")]
+    card = _card(rows[0])
+    broken = _response(
+        [card], confirming=[card], shortlist_count=1, rejected_count=5,
+        research_record_id="Colin - QLD/General - $750,000",
+        brief_used={"state": "VIC", "budget_min": 0, "budget_max": 750000,
+                    "primary_suburbs": ["Red Bank Plains"]},
+        brief_adjustments=[{"field": "state", "code": "state_full_name"}],
+        location_resolution=[{"said": "Red Bank Plains", "method": "exact"}],
+        rejected_log=[{"reason": "Hard Rejection: Price $760,000 exceeds max budget"}],
+        search_help={"funnel": {"in_state_rows": 9},
+                     "relaxations": [{"id": "budget_plus_50k", "kind": "rerun",
+                                      "count_status": "exact", "shortlist_count": 1,
+                                      "brief_patch": {"budget_max": 800000}},
+                                     {"id": "radius_20", "kind": "rerun",
+                                      "count_status": "not_computed"}]})
+    brief = {"id": "b", "client_brief": {}, "expect": {
+        "never": "never_list", "funnel": True, "no_over_budget_rejections": True,
+        "min_shortlist": 2, "adjustment": {"field": "budget_max", "code": "no_budget_max"},
+        "brief_used": {"state": "QLD"}, "location_method": "state",
+        "record_id_startswith": "Unnamed Client", "record_id_contains": ["Any state"],
+        "record_id_excludes": ["QLD/"], "suburb_searched": "Redbank Plains",
+        "relaxation_exact_when_full": ["whole_state", "radius_20"]}}
+    spec = dict(SPEC, briefs=[brief])
+    report = SR.Report(io.StringIO())
+    SR.Run(spec, lambda body: (200, broken, 9.5), SR.Catalogue(rows), date(2026, 9, 16),
+           report, mode="live", checks="full").execute()
+    out = report.out.getvalue()
+    for expected in (
+            "v2:bad00000 must never appear, and is in shortlist: a row that must never appear",
+            "v2:bad00000 must never appear, and is in needs_confirming",
+            "shortlist_count + rejected_count = 6, but search_help.funnel.in_state_rows = 9",
+            "1 rejection(s) say 'exceeds max budget'",
+            "shortlist_count 1, expected at least 2",
+            "no brief_adjustments entry matches",
+            'brief_used {"state": "VIC"}, expected {"state": "QLD"}',
+            "location_resolution has no method 'state'",
+            "does not start 'Unnamed Client'",
+            "lacks 'Any state'",
+            "contains 'QLD/'",
+            "searched suburbs ['Red Bank Plains'], expected Redbank Plains",
+            "relaxation whole_state was not offered",
+            "relaxation radius_20 is not_computed, not exact",
+            "shortlisted v2:bad00000 is in QLD, not the VIC searched"):
+        assert expected in out, (expected, out)
+    # Live: the warm call over 8 s fails; replayed on this machine it only warns.
+    assert "[FAIL] b: the warm call took 9.5 s (limit 8 s)" not in out, "premise: not timed"
+    timed = dict(brief, timed=True, expect={})
+    for mode, line in (("live", "[FAIL] b: the warm call took 9.5 s (limit 8 s)"),
+                       ("snapshot", "[WARN] b: the warm call took 9.5 s (limit 8 s); timed "
+                                    "on this machine, not Vercel")):
+        report = SR.Report(io.StringIO())
+        SR.Run(dict(SPEC, briefs=[timed]), lambda body: (200, _response(), 9.5),
+               SR.Catalogue(rows), date(2026, 9, 16), report, mode=mode).execute()
+        assert line in report.out.getvalue(), report.out.getvalue()
 
 
 def test_equal_to_compares_the_shortlist_and_the_needs_confirming_hashes():
