@@ -1050,7 +1050,7 @@
             <div class="panel-card">
                 <div class="panel-header">
                     <span>Qualified Property Shortlist</span>
-                    <span id="shortlistBadge" class="pill pill-recommend">0 Qualified</span>
+                    <span id="shortlistBadge" class="pill pill-recommend" tabindex="-1">0 Qualified</span>
                 </div>
 
                 <div id="resultsContent">
@@ -3938,12 +3938,28 @@ python state_sync.py push</pre>
         }).filter(Boolean);
     }
 
+    /* A location_resolution 'state' entry that a brief adjustment on the suburbs already
+       says: "Queensland" typed as a suburb with QLD selected came back once as "Target
+       suburbs: Queensland → nothing (... the whole of QLD was searched)" and again as
+       '"Queensland" — a state, not a suburb' (release review). The adjustment says more,
+       so it stays and this goes. */
+    function locationNoteRepeats(x, adjustments) {
+        if (!x || typeof x !== 'object' || String(x.method ?? '').trim() !== 'state') return false;
+        const word = String(x.said ?? '').trim().toLowerCase();
+        if (!word) return false;
+        return (Array.isArray(adjustments) ? adjustments : []).some(a => a && typeof a === 'object'
+            && String(a.field ?? '').split('/').map(f => f.trim()).includes('primary_suburbs')
+            && (String(a.said ?? '').trim().toLowerCase() === word
+                || textList(a.from).some(f => String(f).trim().toLowerCase() === word)));
+    }
+
     function searchNotesHtml(data) {
         const d = (data && typeof data === 'object') ? data : {};
         const line = searchedLineText(d.brief_used);
         const notes = [
             ...(Array.isArray(d.brief_adjustments) ? d.brief_adjustments : []).map(adjustmentText),
-            ...(Array.isArray(d.location_resolution) ? d.location_resolution : []).map(locationNoteText),
+            ...(Array.isArray(d.location_resolution) ? d.location_resolution : [])
+                .filter(x => !locationNoteRepeats(x, d.brief_adjustments)).map(locationNoteText),
             ...regionNoteTexts(d.region_expansion),
         ].map(s => String(s || '').trim()).filter(Boolean);
         if (!line && !notes.length) return '';
@@ -4154,9 +4170,12 @@ python state_sync.py push</pre>
         duplicates_merged: ['repeats another listing', 'repeat another listing'],
         truncated: ['was past the most the search can score at once',
                     'were past the most the search can score at once'],
-        // Stale, or demoted by a newer capture: either way it is not sendable until confirmed.
-        pending_confirmation: ['needs confirming with the builder first',
-                               'need confirming with the builder first'],
+        // Stale, or demoted by a newer capture: not recommended. NOT "need confirming": the
+        // guards hide some of these from the amber group (over 45 days, a newer capture says
+        // gone), and QLD <= $750k read "4 need confirming" above "Show the 3 that need
+        // confirming" (release review). What is offered is said on its own line.
+        pending_confirmation: ["couldn't be verified, so it isn't recommended",
+                               "couldn't be verified, so they aren't recommended"],
         stale: ["wasn't checked at the source in the last 14 days",
                 "weren't checked at the source in the last 14 days"],
         newer_capture_disagrees: ['has a newer capture that says otherwise',
@@ -4203,7 +4222,9 @@ python state_sync.py push</pre>
         const help = d.search_help;
         if (!help || typeof help !== 'object' || Array.isArray(help)) return '';
         const found = wholeCount(d.shortlist_count) ?? (Array.isArray(d.shortlist) ? d.shortlist.length : 0);
-        const few = found < EXPLAIN_BELOW;
+        // The server's own threshold (SPB_EXPLAIN_BELOW, sent as explain_below): it prices
+        // relaxations below it, and a panel folded shut would hide the buttons it priced.
+        const few = found < (wholeCount(help.explain_below) ?? EXPLAIN_BELOW);
         const title = !few ? 'How this search was counted'
             : found === 0 ? 'Why nothing matched' : `Why only ${found} matched`;
         const parts = [];
@@ -4255,27 +4276,49 @@ python state_sync.py push</pre>
             }
         }
 
+        // What the amber group below actually offers, counted by the server after its guards
+        // -- never the raw Pending count above, which includes rows the guards hide.
+        const waiting = wholeCount(d.needs_confirming_count);
+        const amber = Array.isArray(d.needs_confirming) ? d.needs_confirming.length : 0;
+        const confirmShort = confirmCountShort(d);
+        if (amber > 0) {
+            const n = Math.max(waiting ?? 0, amber);
+            parts.push(`<div class="sh-gate">${esc(`${inThousands(n)}${confirmShort ? '+' : ''} listing`
+                + `${n === 1 ? ' that matches needs' : 's that match need'} confirming with the builder first (listed below)`)}</div>`);
+        } else {
+            // Nothing offered: say what was left out and why, here, because the amber group
+            // that would say it is not drawn (release review: Wacol $595k on QLD <= $600k).
+            const left = hiddenReasons(d);
+            if (left.length) {
+                parts.push(`<div class="sh-grey">${esc(`Nothing to confirm with a builder. Left out: ${left.join('; ')}.`)}</div>`);
+            }
+        }
+
         // Notes the search made about the brief, unless the notes above already say them.
+        const adjustments = Array.isArray(d.brief_adjustments) ? d.brief_adjustments
+            : (Array.isArray(help.brief_adjustments) ? help.brief_adjustments : []);
         const above = new Set([
             ...(Array.isArray(d.brief_adjustments) ? d.brief_adjustments : []).map(adjustmentText),
             ...(Array.isArray(d.location_resolution) ? d.location_resolution : []).map(locationNoteText),
         ].map(s => String(s || '').trim()).filter(Boolean));
         const notes = [...new Set([
             ...(Array.isArray(help.brief_adjustments) ? help.brief_adjustments : []).map(adjustmentText),
-            ...(Array.isArray(help.location_notes) ? help.location_notes : []).map(locationNoteText),
+            ...(Array.isArray(help.location_notes) ? help.location_notes : [])
+                .filter(x => !locationNoteRepeats(x, adjustments)).map(locationNoteText),
         ].map(s => String(s || '').trim()).filter(s => s && !above.has(s)))];
         for (const n of notes) parts.push(`<div class="sh-note">${esc(n)}</div>`);
 
         // The offers: a button only for a counted change that finds more.
         const offers = [], noChange = [], notCounted = [], failed = [], byHand = [];
-        const waiting = wholeCount(d.needs_confirming_count);
-        const amber = Array.isArray(d.needs_confirming) ? d.needs_confirming.length : 0;
         relaxationsOf(d).forEach((r, i) => {
             if (r.reveal) {
                 const n = waiting ?? r.count ?? amber;
                 if (amber > 0 && n > 0) {
+                    // "N+" when the server says the count may be short, as the badge and
+                    // the group heading do; "needs" for one.
+                    const plus = (r.capped || confirmShort) ? '+' : '';
                     offers.push(`<button type="button" class="relax-btn relax-reveal" data-relax="${i}">`
-                        + `${esc(`Show the ${n} that need confirming`)}</button>`);
+                        + `${esc(`Show the ${inThousands(n)}${plus} that need${n === 1 && !plus ? 's' : ''} confirming`)}</button>`);
                 }
                 return;
             }
@@ -4288,8 +4331,9 @@ python state_sync.py push</pre>
         });
         if (offers.length) {
             parts.push(`<div class="sh-offers">${offers.join('')}</div>`);
-            // Filled by a click that cannot run (see runResearchAgent). Plain text only.
-            parts.push('<div class="sh-said sh-grey"></div>');
+            // Filled by a click that cannot run (see runResearchAgent). Plain text only. A
+            // live region, so a screen reader says it: the click itself changes nothing else.
+            parts.push('<div class="sh-said sh-grey" role="status" aria-live="polite"></div>');
         }
         if (byHand.length) parts.push(`<div class="sh-grey">${esc(`Change the brief above to try: ${byHand.join('; ')}`)}</div>`);
         if (noChange.length) parts.push(`<div class="sh-grey">${esc(`No change: ${noChange.join(', ')}`)}</div>`);
@@ -4302,7 +4346,7 @@ python state_sync.py push</pre>
                 + (typeof err === 'string' ? ` (${err})` : '') + '. The results below are not affected.')}</div>`);
         }
         if (!parts.length) return '';
-        return `<details class="search-help"${few ? ' open' : ''}><summary>${esc(title)}</summary>`
+        return `<details class="search-help"${few ? ' open' : ''}><summary class="sh-summary">${esc(title)}</summary>`
             + `<div class="sh-body">${parts.join('')}</div></details>`;
     }
 
@@ -4352,6 +4396,7 @@ python state_sync.py push</pre>
     const HIDDEN_WHY = {
         newer_capture_disagrees: 'a newer capture of the same lot says otherwise',
         newer_capture_exists: 'a newer capture of the same lot exists',
+        newer_capture_repriced: 'a newer capture of the same lot asks a different price',
         document_reread_without_row: 'their list was read again without them',
         newer_list_from_sender: 'the builder has sent a newer list',
         over_confirm_limit: 'they are more than 45 days old',
@@ -4367,7 +4412,7 @@ python state_sync.py push</pre>
         larger_total_in_text: 'their list prints a larger total than their price',
         build_only: 'their price is for the build only',
         land_only: 'their price is for the land only',
-        commercial: 'they are commercial listings',
+        commercial: 'they are commercial listings (an office, shop or warehouse)',
     };
 
     /* One needs-confirming listing. NOT renderShortlistCard, on purpose: no compare tick (a
@@ -4395,6 +4440,23 @@ python state_sync.py push</pre>
         </div>`;
     }
 
+    /* needs_confirming_hidden as sentences -- "1 because they are more than 45 days old" --
+       summed by what they say, so two codes with one meaning read as one line. Plain text;
+       the caller escapes it. [] when nothing was left out. */
+    function hiddenReasons(d) {
+        const hiddenBy = (d && d.needs_confirming_hidden && typeof d.needs_confirming_hidden === 'object'
+                          && !Array.isArray(d.needs_confirming_hidden))
+            ? Object.entries(d.needs_confirming_hidden) : [];
+        const because = new Map();
+        for (const [reason, count] of hiddenBy) {
+            const n = wholeCount(count);
+            if (n === null || n <= 0) continue;
+            const why = HIDDEN_WHY[reason] || String(reason).replace(/_/g, ' ');
+            because.set(why, (because.get(why) || 0) + n);
+        }
+        return [...because].map(([why, n]) => `${n} because ${why}`);
+    }
+
     /* The amber group, CLOSED, below the shortlist. These rows are never put into
        LAST_SHORTLIST, SELECTED or COMPARISONS, so nothing here can reach a comparison, a
        client report, Kommo or Clare. '' when the server sent none. */
@@ -4407,18 +4469,8 @@ python state_sync.py push</pre>
         const one = total === 1;
         const head = `${confirmCountShort(d) ? 'At least ' : ''}${inThousands(total)} more listing`
             + `${one ? ' matches' : 's match'} but need${one ? 's' : ''} confirming before you send ${one ? 'it' : 'them'}`;
-        const hiddenBy = (d.needs_confirming_hidden && typeof d.needs_confirming_hidden === 'object')
-            ? Object.entries(d.needs_confirming_hidden) : [];
-        // Summed by what they say, so two codes with one meaning read as one line.
-        const because = new Map();
-        for (const [reason, count] of hiddenBy) {
-            const n = wholeCount(count);
-            if (n === null || n <= 0) continue;
-            const why = HIDDEN_WHY[reason] || String(reason).replace(/_/g, ' ');
-            because.set(why, (because.get(why) || 0) + n);
-        }
-        const hidden = [...because].map(([why, n]) => `${n} because ${why}`);
-        return `<details class="nc-group"><summary>${esc(head)}</summary>
+        const hidden = hiddenReasons(d);
+        return `<details class="nc-group"><summary class="nc-summary">${esc(head)}</summary>
             <div class="nc-intro">Not in the shortlist: each was last seen more than 14 days ago, or
                 its list doesn't say whether it's available. They can't be compared or put in a
                 client report until the builder confirms them.</div>
@@ -4498,6 +4550,11 @@ python state_sync.py push</pre>
         // this minimum" -- never the page-load run: the explanation re-runs the search for
         // every relaxation, which is seconds nobody is waiting on when the page opens.
         const explain = !!(options && options.explain === true);
+        // focusResults: the click that started this search (a relaxation, "search without
+        // this minimum") was a button inside the results, which the repaint destroys, and
+        // focus fell to <body>. Focus goes to what replaced it: the panel's summary, or the
+        // badge when there is no panel.
+        const refocus = !!(options && options.focusResults === true);
         const run = ++RESEARCH_RUN;
         const overtaken = () => run !== RESEARCH_RUN;
         // Programmatic re-runs (search without a minimum) change the boxes without an
@@ -4600,12 +4657,13 @@ python state_sync.py push</pre>
                 // "Why only N matched", with a button per counted change -- see renderSearchHelp.
                 // The amber group it can open is painted below the cards, so it is looked up
                 // when clicked rather than now.
-                let ncGroup = null;
+                let ncGroup = null, ncSummary = null, helpSummary = null;
                 const helpHtml = renderSearchHelp(data);
                 if (helpHtml) {
                     const helpBox = document.createElement('div');
                     helpBox.innerHTML = helpHtml;
                     resultsDiv.appendChild(helpBox);
+                    helpSummary = helpBox.querySelector('.sh-summary');
                     const offered = relaxationsOf(data);
                     helpBox.querySelectorAll('.relax-btn').forEach(b => {
                         const r = offered[Number(b.dataset.relax)];
@@ -4614,6 +4672,11 @@ python state_sync.py push</pre>
                             if (r.reveal) {
                                 if (!ncGroup) return;
                                 ncGroup.open = true;
+                                // Focus follows the reveal to the group it opened, far below
+                                // the button; scrolling is left to the smooth scroll.
+                                if (ncSummary && typeof ncSummary.focus === 'function') {
+                                    ncSummary.focus({ preventScroll: true });
+                                }
                                 if (typeof ncGroup.scrollIntoView === 'function') {
                                     ncGroup.scrollIntoView({ behavior: 'smooth', block: 'start' });
                                 }
@@ -4630,9 +4693,13 @@ python state_sync.py push</pre>
                             }
                             // Straight to the search, never through the form's submit: its
                             // validation must not be able to swallow a counted re-run.
-                            if (applyBriefPatch(r.patch)) runResearchAgent({ explain: true });
+                            if (applyBriefPatch(r.patch)) runResearchAgent({ explain: true, focusResults: true });
                         };
                     });
+                }
+                if (refocus) {
+                    const target = helpSummary || document.getElementById('shortlistBadge');
+                    if (target && typeof target.focus === 'function') target.focus();
                 }
 
                 LAST_SHORTLIST = data.shortlist || [];
@@ -4842,6 +4909,7 @@ python state_sync.py push</pre>
                     ncBox.innerHTML = ncHtml;
                     resultsDiv.appendChild(ncBox);
                     ncGroup = ncBox.querySelector('.nc-group');
+                    ncSummary = ncBox.querySelector('.nc-summary');
                 }
 
                 // Client report + search coverage summary bar
@@ -4956,7 +5024,7 @@ python state_sync.py push</pre>
                             // and jumped to the top of the form. Validation of any kind must
                             // never be able to swallow a re-run. A click here is a relaxation
                             // someone asked for, so it asks for the explanation too.
-                            runResearchAgent({ explain: true });
+                            runResearchAgent({ explain: true, focusResults: true });
                         };
                     });
                 }

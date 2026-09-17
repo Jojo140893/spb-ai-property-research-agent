@@ -128,6 +128,9 @@ check("the Property Type boxes are read from the form", PRODUCT_TYPES.includes("
 
 // A tiny element: enough DOM for runResearchAgent to render into and for the checks to
 // read back what it wrote. innerHTML replaces children, as it does in a browser.
+// The element the page last focused (release review: focus after a relaxation re-run and a
+// reveal), read back by identity.
+let LAST_FOCUS = null;
 function makeEl(id = "", tag = "div") {
   let inner = "";
   const el = {
@@ -142,6 +145,7 @@ function makeEl(id = "", tag = "div") {
       this.parent = null;
     },
     addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); },
+    focus() { LAST_FOCUS = this; },
     setAttribute(k, v) { this.attrs[k] = String(v); },
     // Class selectors only, read out of this element's own markup. The same objects come
     // back on every call, so a handler the page attaches can be clicked here.
@@ -259,7 +263,8 @@ const fn = (api, name) => (typeof api[name] === "function" ? api[name] : null);
 const TAGS = new Set(["div", "span", "a", "strong", "br", "details", "summary", "p", "button", "em",
   "label", "input", "code"]);
 const ATTRS = new Set(["class", "id", "href", "target", "rel", "title", "style", "type", "disabled",
-  "hidden", "checked", "data-hash", "data-idx", "data-term", "data-field", "open", "data-relax"]);
+  "hidden", "checked", "data-hash", "data-idx", "data-term", "data-field", "open", "data-relax",
+  "role", "aria-live"]);
 function markupProblems(out) {
   const problems = [];
   const text = String(out).replace(/<!--[\s\S]*?-->/g, "");
@@ -706,7 +711,7 @@ console.log("\n--- 'Why only N matched': the counts, and a button per change tha
   const { api, out } = await renderExplained(explained());
   const e = t => api.esc(t);
   check("the panel is open and headed 'Why only 2 matched'",
-    /<details class="search-help" open><summary>Why only 2 matched<\/summary>/.test(out), out.slice(0, 300));
+    /<details class="search-help" open><summary class="sh-summary">Why only 2 matched<\/summary>/.test(out), out.slice(0, 300));
   check("the panel headline is the funnel's in-range count",
     out.includes(e("In QLD, 23 listings are priced at or under $750,000.")), out.slice(0, 600));
   check("... then where they went: the shortlist, and each gate with an in-range count",
@@ -717,7 +722,7 @@ console.log("\n--- 'Why only N matched': the counts, and a button per change tha
   check("... and what became of the ones that passed every check",
     out.includes(`<div class="sh-gate">${e("11 passed every check before scoring; of those:")}</div>`)
     && out.includes(`<div class="sh-gate sh-sub">${e("3 repeat another listing")}</div>`)
-    && out.includes(`<div class="sh-gate sh-sub">${e("6 need confirming with the builder first")}</div>`)
+    && out.includes(`<div class="sh-gate sh-sub">${e("6 couldn't be verified, so they aren't recommended")}</div>`)
     && out.indexOf(e("11 passed every check")) < out.indexOf(e("3 repeat another listing")),
     (out.match(/<div class="sh-gate[^"]*">[^<]*<\/div>/g) || []).join(" | "));
   check("... and not a gate with no in-range number, nor one that counted nothing",
@@ -743,11 +748,11 @@ console.log("\n--- 'Why only N matched': the counts, and a button per change tha
   const nothing = await renderExplained(explained({ shortlist: [], shortlist_count: 0,
     search_help: searchHelp({ relaxations: [RELAX.reveal, { ...RELAX.plus10pct, shortlist_count: 12, adds: 12 }] }) }));
   check("with no results it reads 'Why nothing matched'",
-    /<details class="search-help" open><summary>Why nothing matched<\/summary>/.test(nothing.out));
+    /<details class="search-help" open><summary class="sh-summary">Why nothing matched<\/summary>/.test(nothing.out));
   const many = Array.from({ length: 6 }, (_, i) => prop({ content_hash: `v2:m${i}` }));
   const full = await renderExplained(explained({ shortlist: many, shortlist_count: 6, search_help: searchHelp({ relaxations: [] }) }));
   check("a shortlist of 5 or more folds it away as 'How this search was counted'",
-    /<details class="search-help"><summary>How this search was counted<\/summary>/.test(full.out), full.out.slice(0, 300));
+    /<details class="search-help"><summary class="sh-summary">How this search was counted<\/summary>/.test(full.out), full.out.slice(0, 300));
   const plain = await render(success());
   check("no search_help (the page-load run): no panel", !plain.out.includes("search-help"));
 }
@@ -973,7 +978,7 @@ console.log("\n--- Needs confirming: amber, closed, dated, and never in the shor
   check("the group is a <details class=\"nc-group\"> with no open attribute",
     groupTag === '<details class="nc-group">', groupTag || "no .nc-group rendered");
   const group = out.slice(out.indexOf('<details class="nc-group"'), out.indexOf("</details>", out.indexOf('<details class="nc-group"')));
-  check("its summary counts them", group.includes("<summary>3 more listings match but need confirming before you send them</summary>"),
+  check("its summary counts them", group.includes('<summary class="nc-summary">3 more listings match but need confirming before you send them</summary>'),
     group.slice(0, 200));
   check("it has no .cmp-box and no benchmark button", group.length > 0 && !group.includes("cmp-box") && !group.includes("bench-btn"));
   const outsideGroup = out.replace(group, "");
@@ -1154,13 +1159,150 @@ console.log("\n--- the panel's counts read as one line per meaning, in thousands
   const cut = explained({ search_help: searchHelp({ needs_confirming: { count: 3, listed: 3, count_may_be_short: true } }) });
   const { out, el } = await renderExplained(cut);
   check("a count that may be short reads 'At least N' in the group",
-    out.includes("<summary>At least 3 more listings match but need confirming before you send them</summary>"),
-    (out.match(/<details class="nc-group"><summary>[^<]*/) || [""])[0]);
+    out.includes('<summary class="nc-summary">At least 3 more listings match but need confirming before you send them</summary>'),
+    (out.match(/<details class="nc-group"><summary[^>]*>[^<]*/) || [""])[0]);
   check("... and 'N+ to confirm' on the badge", el("shortlistBadge").textContent === "2 Qualified · 3+ to confirm (1438 Filtered)",
     el("shortlistBadge").textContent);
   const exact = await renderExplained(explained({ search_help: searchHelp({ needs_confirming: { count: 3, count_may_be_short: false } }) }));
-  check("an exact count stays exact", exact.out.includes("<summary>3 more listings match")
+  check("an exact count stays exact", exact.out.includes('<summary class="nc-summary">3 more listings match')
     && exact.el("shortlistBadge").textContent === "2 Qualified · 3 to confirm (1438 Filtered)", exact.el("shortlistBadge").textContent);
+}
+
+// ------------------------------------------------------------------ release review, 17 Sep
+console.log("\n--- release review: the panel's counts, what was left out, and where focus goes ---");
+{
+  // QLD <= $750k after C5: the funnel's Pending count is 4, but one of them is over the
+  // 45-day limit, so the server offers 3. The panel read "4 need confirming with the builder
+  // first" directly above "Show the 3 that need confirming".
+  const body = explained({
+    shortlist: [], shortlist_count: 0, needs_confirming_count: 3,
+    needs_confirming_hidden: { over_confirm_limit: 1 },
+    search_help: searchHelp({
+      funnel: { ...searchHelp().funnel, in_price_range: { available: 7 },
+        gates: [{ code: "same_listing_collapsed", stage: "pool", count: 3, in_price_range: null },
+                { code: "pending_confirmation", stage: "scoring", count: 4, in_price_range: null }] },
+      relaxations: [RELAX.reveal] }),
+  });
+  const { api, out } = await renderExplained(body);
+  const e = t => api.esc(t);
+  check("with 4 Pending and 3 offered, the panel never says '4 need confirming'",
+    !/4 needs? confirming/.test(out) && !out.includes(e("4 need confirming")), (out.match(/class="sh-gate[^"]*">[^<]*/g) || []).join(" | "));
+  check("... it says what the 4 are, under the ones that passed every check",
+    out.includes(`<div class="sh-gate sh-sub">${e("4 couldn't be verified, so they aren't recommended")}</div>`),
+    (out.match(/class="sh-gate[^"]*">[^<]*/g) || []).join(" | "));
+  check("... and the 3 the group offers, counted by the server after its guards",
+    out.includes(`<div class="sh-gate">${e("3 listings that match need confirming with the builder first (listed below)")}</div>`)
+    && /relax-reveal" data-relax="0">Show the 3 that need confirming<\/button>/.test(out),
+    (out.match(/class="sh-gate[^"]*">[^<]*/g) || []).join(" | "));
+}
+{
+  // QLD <= $600k: nothing offered, and the reasons were only ever printed inside the amber
+  // group -- which is not drawn when it is empty.
+  const body = explained({
+    shortlist: [], shortlist_count: 0, needs_confirming: [], needs_confirming_count: 0,
+    needs_confirming_hidden: { over_confirm_limit: 1, build_only: 2, document_reread_without_row: 1, nothing: 0 },
+    search_help: searchHelp({ relaxations: [{ ...RELAX.reveal, count: 0 }] }),
+  });
+  const { api, out } = await renderExplained(body);
+  check("an empty needs-confirming list with hidden counts still says what was left out, and why",
+    out.includes(api.esc("Nothing to confirm with a builder. Left out: 1 because they are more than 45 days old; "
+      + "2 because their price is for the build only; 1 because their list was read again without them."))
+    && !out.includes("nc-group") && !out.includes("0 because"),
+    (out.match(/class="sh-grey">[^<]*/g) || []).join(" | "));
+  const none = await renderExplained(explained({ shortlist: [], shortlist_count: 0, needs_confirming: [],
+    needs_confirming_count: 0, needs_confirming_hidden: {}, search_help: searchHelp({ relaxations: [] }) }));
+  check("... and says nothing when nothing was left out", !none.out.includes("Left out"));
+}
+{
+  // The reveal button follows the server's 'may be short' flag and counts one as one.
+  const short = await renderExplained(explained({ needs_confirming: [dawn(1228)], needs_confirming_count: 1,
+    search_help: searchHelp({ needs_confirming: { count: 1, count_may_be_short: true },
+      relaxations: [{ ...RELAX.reveal, count: 1, capped: true }] }) }));
+  check("a count that may be short reads 'Show the 1+ that need confirming'",
+    /relax-reveal" data-relax="0">Show the 1\+ that need confirming<\/button>/.test(short.out),
+    (short.out.match(/<button[^>]*relax-reveal[^>]*>[^<]*/) || [""])[0]);
+  const one = await renderExplained(explained({ needs_confirming: [dawn(1228)], needs_confirming_count: 1,
+    search_help: searchHelp({ relaxations: [{ ...RELAX.reveal, count: 1, capped: false }] }) }));
+  check("one exact reads 'Show the 1 that needs confirming'",
+    /relax-reveal" data-relax="0">Show the 1 that needs confirming<\/button>/.test(one.out),
+    (one.out.match(/<button[^>]*relax-reveal[^>]*>[^<]*/) || [""])[0]);
+}
+{
+  // "Queensland" in Target Suburbs with QLD selected: the adjustment and the location note
+  // said the same thing, one under the other.
+  const note = { said: "Queensland", used: [], method: "state", note: "a state, not a suburb, so it was not searched as a suburb" };
+  const adj = { field: "primary_suburbs", code: "state_typed_as_suburb", said: "Queensland", from: ["Queensland"], to: [],
+    why: "\"Queensland\" is the selected state, not a suburb, so the whole of QLD was searched" };
+  const { api, out } = await renderExplained(explained({ brief_adjustments: [adj], location_resolution: [note],
+    search_help: searchHelp({ brief_adjustments: [adj], location_notes: [note] }) }));
+  check("'Queensland' typed as a suburb is said once, by the adjustment",
+    out.includes(api.esc("Target suburbs: Queensland → nothing (\"Queensland\" is the selected state, not a suburb, so the whole of QLD was searched)"))
+    && !out.includes(api.esc("\"Queensland\" — a state, not a suburb")),
+    (out.match(/class="(search-note|sh-note)">[^<]*/g) || []).join(" | "));
+  const other = await renderExplained(explained({ brief_adjustments: [], location_resolution: [note] }));
+  check("... while the location note alone still shows", other.out.includes(api.esc("\"Queensland\" — a state, not a suburb")));
+}
+{
+  // The server's threshold, not a copy of it: SPB_EXPLAIN_BELOW=10 prices relaxations for 6.
+  const many = Array.from({ length: 6 }, (_, i) => prop({ content_hash: `v2:b${i}` }));
+  const raised = await renderExplained(explained({ shortlist: many, shortlist_count: 6,
+    search_help: searchHelp({ explain_below: 10 }) }));
+  check("explain_below 10 from the server opens the panel for 6 results",
+    /<details class="search-help" open><summary class="sh-summary">Why only 6 matched<\/summary>/.test(raised.out),
+    raised.out.slice(0, 300));
+  const lowered = await renderExplained(explained({ search_help: searchHelp({ explain_below: 2 }) }));
+  check("... and explain_below 2 folds it for 2", /<details class="search-help"><summary class="sh-summary">How this search was counted/.test(lowered.out));
+}
+{
+  // Accessibility: the refusal is announced; a click's re-run and the reveal move focus.
+  const { out } = await renderExplained(explained());
+  check("the 'brief has changed' line is a polite live region",
+    out.includes('<div class="sh-said sh-grey" role="status" aria-live="polite"></div>'),
+    (out.match(/<div class="sh-said[^>]*>/) || [""])[0]);
+
+  const s = sandbox();
+  s.respond(async () => reply(200, explained()));
+  await s.api.runResearchAgent({ explain: true });
+  await settle();
+  LAST_FOCUS = null;
+  const firstHelp = child(s, "search-help");
+  check("a search nobody clicked from moves no focus", LAST_FOCUS === null);
+  const plus10 = firstHelp ? firstHelp.querySelectorAll(".relax-btn").find(x => x.dataset.relax === "2") : null;
+  if (plus10 && typeof plus10.onclick === "function") plus10.onclick();
+  await settle();
+  const newHelp = child(s, "search-help");
+  const summary = newHelp ? newHelp.querySelector(".sh-summary") : null;
+  check("after a relaxation's re-run, focus is on the new panel's summary",
+    s.calls.fetch.length === 2 && !!summary && LAST_FOCUS === summary && newHelp !== firstHelp,
+    `${s.calls.fetch.length} POST(s), focus ${LAST_FOCUS && LAST_FOCUS.className}`);
+
+  const ncBox = child(s, "nc-group");
+  const reveal = newHelp ? newHelp.querySelectorAll(".relax-btn").find(x => x.dataset.relax === "0") : null;
+  LAST_FOCUS = null;
+  if (reveal && typeof reveal.onclick === "function") reveal.onclick();
+  await settle();
+  const ncSummary = ncBox ? ncBox.querySelector(".nc-summary") : null;
+  check("the reveal moves focus to the group it opened",
+    !!ncSummary && LAST_FOCUS === ncSummary && ncBox.querySelector(".nc-group").open === true,
+    `focus ${LAST_FOCUS && LAST_FOCUS.className}`);
+
+  // No panel to land on (the re-run answered without search_help): the badge takes focus.
+  const t = sandbox();
+  t.el("bedrooms").value = "4";
+  t.respond(async () => reply(200, success({
+    rejected_log: [{ property_id: "SNAPSHOT-COVERAGE", kind: "coverage", address: "Snapshot coverage",
+                     reason: "counted", missing_fields: { "bedroom count": 7 } }],
+  })));
+  await t.api.runResearchAgent({ explain: true });
+  await settle();
+  const gap = t.el("resultsContent").children.find(c => c.className === "gap-note");
+  const clear = gap ? gap.querySelectorAll(".gap-clear")[0] : null;
+  LAST_FOCUS = null;
+  if (clear && typeof clear.onclick === "function") clear.onclick();
+  await settle();
+  check("'search without this minimum' re-runs and puts focus on the badge when there is no panel",
+    t.calls.fetch.length === 2 && LAST_FOCUS === t.el("shortlistBadge"),
+    `${t.calls.fetch.length} POST(s), focus ${LAST_FOCUS && (LAST_FOCUS.id || LAST_FOCUS.className)}`);
 }
 
 // ------------------------------------------------------------------ W14 review: searches that overlap

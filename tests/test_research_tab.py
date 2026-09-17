@@ -70,7 +70,7 @@ MUTANTS = {
     # --- the minimum re-run
     "the minimum re-run goes back through the form's submit": (
         "// someone asked for, so it asks for the explanation too.\n"
-        "                            runResearchAgent({ explain: true });",
+        "                            runResearchAgent({ explain: true, focusResults: true });",
         "// someone asked for, so it asks for the explanation too.\n                            "
         "const form = document.getElementById('propertyForm'); if (form) form.requestSubmit();",
         "clicking it posts the search again"),
@@ -197,9 +197,9 @@ MUTANTS = {
         "only explain === true counts"),
     "the minimum re-run does not ask for explain": (
         "// someone asked for, so it asks for the explanation too.\n"
-        "                            runResearchAgent({ explain: true });",
+        "                            runResearchAgent({ explain: true, focusResults: true });",
         "// someone asked for, so it asks for the explanation too.\n"
-        "                            runResearchAgent();",
+        "                            runResearchAgent({ focusResults: true });",
         "being a relaxation someone clicked, asks for the explanation"),
     # --- the Why only N matched panel
     "the panel is never rendered": (
@@ -235,13 +235,13 @@ MUTANTS = {
         "is not repeated in the panel"),
     # --- the relaxation click
     "a relaxation click goes through the form's submit": (
-        "if (applyBriefPatch(r.patch)) runResearchAgent({ explain: true });",
+        "if (applyBriefPatch(r.patch)) runResearchAgent({ explain: true, focusResults: true });",
         "if (applyBriefPatch(r.patch)) { const form = document.getElementById('propertyForm'); "
         "if (form) form.requestSubmit(); }",
         "clicking it with a blank client name calls runResearchAgent once"),
     "a relaxation click does not write the change into the form": (
-        "if (applyBriefPatch(r.patch)) runResearchAgent({ explain: true });",
-        "if (patchFits(r.patch)) runResearchAgent({ explain: true });",
+        "if (applyBriefPatch(r.patch)) runResearchAgent({ explain: true, focusResults: true });",
+        "if (patchFits(r.patch)) runResearchAgent({ explain: true, focusResults: true });",
         "with budget_max 825000"),
     "the reveal button does not open the group": (
         "ncGroup.open = true;", "ncGroup.open = false;",
@@ -266,7 +266,8 @@ MUTANTS = {
         "the preferred price, left blank, follows the new maximum"),
     # --- Needs confirming
     "the needs-confirming group opens by default": (
-        "<details class=\"nc-group\"><summary>", "<details class=\"nc-group\" open><summary>",
+        "<details class=\"nc-group\"><summary class=\"nc-summary\">",
+        "<details class=\"nc-group\" open><summary class=\"nc-summary\">",
         "with no open attribute"),
     "a needs-confirming card gets a compare tick (renderShortlistCard reused)": (
         "<div class=\"nc-title\">${esc(text(x.lot_address) || NOT_STATED)}</div>",
@@ -317,8 +318,8 @@ MUTANTS = {
         "body: JSON.stringify({ client_brief: brief })",
         "a search asked to explain sends {client_brief, explain:true}"),
     "a relaxation click does not ask for explain": (
-        "if (applyBriefPatch(r.patch)) runResearchAgent({ explain: true });",
-        "if (applyBriefPatch(r.patch)) runResearchAgent();",
+        "if (applyBriefPatch(r.patch)) runResearchAgent({ explain: true, focusResults: true });",
+        "if (applyBriefPatch(r.patch)) runResearchAgent({ focusResults: true });",
         "... asking for the explanation"),
     "the headline drops the in-range total": (
         "const total = wholeCount(funnel.in_price_range_total);", "const total = null;",
@@ -495,7 +496,8 @@ MUTANTS = {
         "if (false) said.textContent = 'The brief above has changed since these '",
         "and says why, in the panel"),
     "the panel has no line for a refused click to speak on": (
-        "            parts.push('<div class=\"sh-said sh-grey\"></div>');\n", "",
+        "            parts.push('<div class=\"sh-said sh-grey\" role=\"status\" aria-live=\"polite\"></div>');\n",
+        "",
         "and says why, in the panel"),
     "a new client name refuses the counted change": (
         "const briefKey = brief => JSON.stringify({ ...brief, client_name: '' });",
@@ -522,6 +524,41 @@ MUTANTS = {
     "a count that may be short reads as exact on the badge": (
         "${confirmCountShort(data) ? '+' : ''}", "",
         "and 'N+ to confirm' on the badge"),
+    # --- release review, 17 Sep: one mutant per new check
+    "the Pending count reads as listings to confirm": (
+        "pending_confirmation: [\"couldn't be verified, so it isn't recommended\",\n"
+        "                               \"couldn't be verified, so they aren't recommended\"],",
+        "pending_confirmation: ['needs confirming with the builder first',\n"
+        "                               'need confirming with the builder first'],",
+        "the panel never says '4 need confirming'"),
+    "the panel does not say how many the group offers": (
+        "        if (amber > 0) {\n            const n = Math.max(waiting ?? 0, amber);",
+        "        if (false) {\n            const n = Math.max(waiting ?? 0, amber);",
+        "and the 3 the group offers"),
+    "an empty group says nothing of what was left out": (
+        "            if (left.length) {", "            if (false) {",
+        "still says what was left out"),
+    "the reveal button ignores 'may be short' and says 'need' for one": (
+        "${esc(`Show the ${inThousands(n)}${plus} that need${n === 1 && !plus ? 's' : ''} confirming`)}",
+        "${esc(`Show the ${n} that need confirming`)}",
+        "Show the 1+ that need confirming"),
+    "the refused-click line is not a live region": (
+        "<div class=\"sh-said sh-grey\" role=\"status\" aria-live=\"polite\"></div>",
+        "<div class=\"sh-said sh-grey\"></div>",
+        "is a polite live region"),
+    "focus is lost after a relaxation's re-run": (
+        "                if (refocus) {", "                if (false) {",
+        "focus is on the new panel's summary"),
+    "the reveal leaves focus on the button": (
+        "if (ncSummary && typeof ncSummary.focus === 'function') {", "if (false) {",
+        "the reveal moves focus to the group it opened"),
+    "a state typed as a suburb is said twice above the results": (
+        ".filter(x => !locationNoteRepeats(x, d.brief_adjustments)).map(locationNoteText),", ".map(locationNoteText),",
+        "is said once, by the adjustment"),
+    "the thin-search threshold ignores the server": (
+        "const few = found < (wholeCount(help.explain_below) ?? EXPLAIN_BELOW);",
+        "const few = found < EXPLAIN_BELOW;",
+        "explain_below 10 from the server opens the panel"),
     "a count is read as short whatever the server says": (
         "return !!(nc && typeof nc === 'object' && nc.count_may_be_short === true);", "return true;",
         "an exact count stays exact"),
