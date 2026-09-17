@@ -227,6 +227,42 @@
     .sheet-badge{display:inline-block;margin-top:0.3rem;padding:0.1rem 0.45rem;font-size:0.75rem;
                  font-weight:700;color:#92400e;background:#fef3c7;border:1px solid #fcd34d;
                  border-radius:4px}
+    /* "Why only N matched" (Part C W14): what the search's own counts say, and a button per
+       change that would find more, each carrying the count a real re-run returned. */
+    .search-help{background:var(--surface-white,#fff);border:1px solid var(--border-strong,#cbd5e1);
+                 border-left:4px solid var(--accent-blue);border-radius:8px;margin:0 0 1rem;
+                 font-size:0.86rem;line-height:1.5;color:var(--text-body)}
+    .search-help > summary{cursor:pointer;padding:0.65rem 0.9rem;font-weight:700;
+                 color:var(--text-heading)}
+    .search-help .sh-body{padding:0 0.9rem 0.75rem}
+    .search-help .sh-line{margin-top:0.25rem}
+    .search-help .sh-gate{margin-left:0.9rem;color:var(--text-muted)}
+    .search-help .sh-sub{margin-left:1.8rem}
+    .search-help .sh-note{margin-top:0.35rem;padding:0.3rem 0.55rem;border-left:3px solid #f59e0b;
+                 background:#fffbeb;color:#78350f;border-radius:4px}
+    .search-help .sh-grey{margin-top:0.45rem;color:var(--text-muted);font-size:0.8rem}
+    .search-help .sh-offers{display:flex;flex-wrap:wrap;gap:0.4rem;margin-top:0.6rem}
+    .relax-btn{padding:0.35rem 0.7rem;border:1px solid var(--accent-blue);background:transparent;
+               color:var(--accent-blue);border-radius:6px;font:inherit;font-size:0.82rem;
+               font-weight:600;cursor:pointer;text-align:left}
+    .relax-btn:hover{background:var(--blue-light,#eff6ff)}
+    .relax-btn.relax-reveal{border-color:#f59e0b;color:#92400e}
+    /* NEEDS CONFIRMING: real listings a phone call could make sendable, kept apart from the
+       shortlist. Amber, closed, no compare tick and no benchmark button -- see
+       renderNeedsConfirming. */
+    .nc-group{background:#fffbeb;border:1px solid #fde68a;border-left:4px solid #f59e0b;
+              border-radius:8px;margin:1rem 0;color:#78350f;font-size:0.86rem;line-height:1.5}
+    .nc-group > summary{cursor:pointer;padding:0.75rem 1rem;font-weight:700}
+    .nc-group .nc-intro{padding:0 1rem 0.5rem;font-size:0.82rem}
+    .nc-group .nc-card{background:var(--surface-white,#fff);border:1px solid #fde68a;
+              border-radius:8px;margin:0.5rem 0.8rem 0.7rem;padding:0.7rem 0.9rem;color:var(--text-body)}
+    .nc-group .nc-title{font-weight:700;color:var(--text-heading)}
+    .nc-group .nc-sub,.nc-group .nc-facts{font-size:0.82rem}
+    .nc-group .nc-stated{margin-top:0.3rem;font-weight:600;color:#92400e}
+    .nc-group .nc-date{font-size:0.8rem;color:var(--amber-yellow);font-weight:600}
+    .nc-group .nc-why{font-size:0.8rem;color:var(--text-muted)}
+    .nc-group .nc-warn{margin-top:0.35rem;font-size:0.8rem;font-weight:700;color:#92400e}
+    .nc-group .nc-hidden{padding:0 1rem 0.75rem;font-size:0.8rem;color:var(--text-muted)}
 
     /* The rejection log, folded. Thirty red cards below five results made a working
            page look like a failed one; the reasoning is still one click away. */
@@ -3537,6 +3573,10 @@ python state_sync.py push</pre>
 
     const sourceLinkRow = link => {
         if (!link || !link.url) return '';
+        // A web address or nothing. esc() stops a URL breaking out of href="", not a
+        // javascript: URL running on click, and these come from builders' lists and emails.
+        // Every link in the 17 Sep snapshot is https (16,581 of 16,581).
+        if (!/^https?:\/\//i.test(String(link.url).trim())) return '';
         const what = OPENS_LABEL[link.opens] || 'opens the source';
         return `<div style="font-size:0.8rem; margin-top:0.35rem;">
             <strong>Where this came from:</strong>
@@ -3913,11 +3953,501 @@ python state_sync.py push</pre>
             + '</div>';
     }
 
-    async function runResearchAgent() {
-        // Programmatic re-runs (search without a minimum) change the boxes without an
-        // input event; keep the echo in step with what is about to be sent.
+    /* WHY ONLY N MATCHED, AND WHAT WOULD FIND MORE (Part C W14, 17 Sep).
+     *
+     * Colin searched "QLD under $750k", got two results, and retried at $760k and $770k by
+     * hand -- each a guess, each the same answer. The server now explains a search when it
+     * is asked to (explain:true, sent on a form submit or a click below, never on the
+     * page-load run or a Clare's Leads re-run): search_help.funnel counts where the in-range
+     * listings went, and search_help.relaxations lists changes to the brief WITH THE COUNT A
+     * REAL RE-RUN OF EACH RETURNED. A button here only ever offers a change whose count was
+     * computed ("exact"); one that adds nothing goes on a grey "No change:" line, so nobody
+     * has to try it to find out.
+     *
+     * A click writes the change into the form (applyBriefPatch) and runs the search straight
+     * away -- never through the form's submit, whose validation swallowed the old "search
+     * without this minimum" re-run. Every string here came from the server, and some of it
+     * (suburbs, notes) was typed by a person: all of it goes through esc(). */
+    const EXPLAIN_BELOW = 5;             // api/research.py SPB_EXPLAIN_BELOW: fewer opens the panel
+    const wholeCount = v => {
+        if (v === null || v === undefined || v === '' || typeof v === 'boolean') return null;
+        const n = Number(v);
+        return Number.isFinite(n) ? Math.round(n) : null;
+    };
+    // Where each brief field lives on the form. A relaxation whose brief_patch names anything
+    // else cannot be reproduced by a click, so it gets no button (see relaxationsOf).
+    const BRIEF_PATCH_BOX = {
+        budget_min: 'budgetMin', budget_max: 'budgetMax', preferred_spending_cap: 'budgetPref',
+        state: 'stateSelect', primary_suburbs: 'suburbs', search_radius_km: 'searchRadius',
+        bedrooms_min: 'bedrooms', bathrooms_min: 'bathrooms', car_spaces_min: 'carSpaces',
+        storeys_max: 'storeys', house_size_min_sqm: 'houseSize', land_size_min_sqm: 'landSize',
+        product_type: 'productType', requires_incentive: 'requiresIncentive',
+    };
+    const patchFits = patch => !!patch && typeof patch === 'object' && !Array.isArray(patch)
+        && Object.keys(patch).length > 0
+        && Object.keys(patch).every(k => Object.prototype.hasOwnProperty.call(BRIEF_PATCH_BOX, k));
+
+    /* Would the browser's own validation accept `text` in this number box? Inside its min
+       and max, and on its step -- 1 when the markup names none, as in a browser, counted
+       from min (or 0). A relaxation click never goes through the form's submit, so nothing
+       else would notice a value the box refuses; but the NEXT Execute would, and it would
+       post nothing (Part C review, correction 15). Read from the element, so it follows the
+       markup. '' is always accepted: blank is "any" on every box a patch writes. */
+    const boxHolds = (el, text) => {
+        if (text === '') return true;
+        const n = Number(text);
+        if (!Number.isFinite(n)) return false;
+        const attr = k => {
+            const v = el ? el[k] : undefined;
+            return (v === undefined || v === null || String(v).trim() === '') ? null : String(v).trim();
+        };
+        const lo = attr('min'), hi = attr('max'), step = attr('step');
+        if (lo !== null && Number.isFinite(Number(lo)) && n < Number(lo)) return false;
+        if (hi !== null && Number.isFinite(Number(hi)) && n > Number(hi)) return false;
+        if (step !== null && step.toLowerCase() === 'any') return true;
+        const size = step !== null && Number(step) > 0 ? Number(step) : 1;
+        const base = lo !== null && Number.isFinite(Number(lo)) ? Number(lo) : 0;
+        const q = (n - base) / size;
+        return Math.abs(q - Math.round(q)) < 1e-9;
+    };
+
+    /* The writes a relaxation's brief_patch would make to the form, as [element, property,
+       value], worked out WITHOUT writing any. Blank means "any" on every minimum box, so a
+       0 is written as blank rather than as a 0 somebody has to read. null for a patch the
+       form cannot express: a field it has no box for, a state the select does not offer, or
+       a figure a box's own validation would refuse. The panel asks this before it offers a
+       button (W14 review: a TAS whole-state patch was a button that did nothing when
+       clicked), and applyBriefPatch writes only a complete answer, so a refused patch never
+       leaves the form half changed. */
+    function briefPatchWrites(patch) {
+        if (!patchFits(patch)) return null;
+        const box = id => document.getElementById(id);
+        const amount = v => {
+            const n = Number(v);
+            return (v === null || v === undefined || v === '' || !Number.isFinite(n) || n <= 0
+                    || n >= RESEARCH_NO_CEILING) ? '' : String(n);
+        };
+        const writes = [];               // [element, property, value]
+        for (const [key, value] of Object.entries(patch)) {
+            if (key === 'product_type') {
+                const wanted = new Set(textList(value));
+                document.querySelectorAll('#productType input')
+                    .forEach(c => writes.push([c, 'checked', wanted.has(c.value)]));
+                continue;
+            }
+            const el = box(BRIEF_PATCH_BOX[key]);
+            if (!el) return null;
+            let text;
+            if (key === 'requires_incentive') {
+                writes.push([el, 'checked', value === true]);
+                continue;
+            } else if (key === 'state') {
+                const want = String(value ?? '').trim();
+                text = /^any state$/i.test(want) ? '' : want.toUpperCase();
+                if (el.options && ![...el.options].some(o => o.value === text)) return null;
+                writes.push([el, 'value', text]);
+                continue;
+            } else if (key === 'primary_suburbs') {
+                writes.push([el, 'value', textList(value).join(', ')]);
+                continue;
+            } else if (key === 'search_radius_km') {
+                text = amount(value) || '0';
+            } else if (key === 'preferred_spending_cap') {
+                // A blank Preferred Price already means "the maximum". Filling it in with the
+                // new maximum would pin it there when the maximum is next changed by hand.
+                if (String(el.value || '').trim() === '' && Number(value) === Number(patch.budget_max)) continue;
+                text = amount(value);
+            } else if (key === 'storeys_max') {
+                const n = Number(value);
+                text = Number.isFinite(n) && n >= 1 && n < 3 ? String(n) : '';
+            } else {
+                text = amount(value);
+            }
+            if (!boxHolds(el, text)) return null;
+            writes.push([el, 'value', text]);
+        }
+        return writes;
+    }
+
+    /* Writes a relaxation's brief_patch into the form, so the search that runs next is the
+       one that was counted AND the consultant can see what changed. false, writing nothing,
+       when briefPatchWrites refuses the patch. */
+    function applyBriefPatch(patch) {
+        const writes = briefPatchWrites(patch);
+        if (!writes) return false;
+        for (const [el, prop, v] of writes) el[prop] = v;
+        // The price echo describes the boxes; they just changed without an input event.
         paintBudgetEcho();
-        const brief = {
+        return true;
+    }
+
+    // A label for a relaxation the server sent without one. Plain text; the caller escapes it.
+    function relaxationLabel(key, patch) {
+        const p = (patch && typeof patch === 'object') ? patch : {};
+        if ('budget_max' in p) {
+            const top = Number(p.budget_max);
+            return top > 0 && top < RESEARCH_NO_CEILING ? `Budget up to ${echoMoney(top)}` : 'No maximum price';
+        }
+        if ('search_radius_km' in p) return `Within ${Number(p.search_radius_km) || 0} km`;
+        if (key === 'whole_state') return 'The whole state, not just these suburbs';
+        if (key === 'drop_all_minimums') return 'Without any of the minimums';
+        if (key === 'drop_product_type') return 'Any property type';
+        if (key === 'drop_incentive') return 'With or without a rebate';
+        if (key === 'drop_price_floor') return 'No minimum price';
+        const dropped = /^drop_(.+)$/.exec(key);
+        if (dropped) return `Without the ${(BRIEF_FIELD_LABEL[dropped[1]] || dropped[1].replace(/_/g, ' ')).toLowerCase()}`;
+        return key.replace(/_/g, ' ') || 'Change the brief';
+    }
+
+    /* search_help.relaxations read once, the same way for the panel and its click handlers:
+       {key, label, reveal, patch, fits, count, adds, exact, capped}. Read by id or kind, and
+       count by shortlist_count or count, because the two designs behind the endpoint spell
+       them differently. "adds" is taken from the server; without it, count minus this
+       search's own shortlist_count. */
+    function relaxationsOf(data) {
+        const d = (data && typeof data === 'object') ? data : {};
+        const help = (d.search_help && typeof d.search_help === 'object') ? d.search_help : {};
+        const base = wholeCount(d.shortlist_count);
+        return (Array.isArray(help.relaxations) ? help.relaxations : [])
+            .filter(r => r && typeof r === 'object' && !Array.isArray(r))
+            .map(r => {
+                const key = String(briefPick(r, 'id', 'kind', 'code') ?? '').trim();
+                const reveal = key === 'include_needs_confirming' || r.kind === 'reveal';
+                const patch = (r.brief_patch && typeof r.brief_patch === 'object') ? r.brief_patch : null;
+                const count = wholeCount(briefPick(r, 'shortlist_count', 'count'));
+                const given = wholeCount(r.adds);
+                const adds = given !== null ? given
+                    : (reveal ? count : (count !== null && base !== null ? count - base : null));
+                const status = String(r.count_status ?? '').trim();
+                const said = r.label;
+                return {
+                    // Offered as a button only when the form can hold the whole patch now.
+                    key, reveal, patch, fits: briefPatchWrites(patch) !== null, count, adds,
+                    capped: r.capped === true,
+                    failed: status === 'error',
+                    exact: count !== null && (status === 'exact' || (!status && !reveal)),
+                    label: (typeof said === 'string' || typeof said === 'number') && String(said).trim()
+                        ? String(said).trim() : relaxationLabel(key, patch),
+                };
+            });
+    }
+
+    // [one, several]: "1 has a price we couldn't verify", "6 are on lists that ...".
+    const GATE_LABEL = {
+        scored: ['was scored against the brief', 'were scored against the brief'],
+        not_available: ['is marked Sold, On Hold or otherwise not available',
+                        'are marked Sold, On Hold or otherwise not available'],
+        availability_unstated: ["is on a list that doesn't say whether it's available",
+                                "are on lists that don't say whether they're available"],
+        price_unverified: ["has a price we couldn't verify", "have a price we couldn't verify"],
+        no_price: ['has no price', 'have no price'],
+        under_minimum: ['is under the minimum price', 'are under the minimum price'],
+        over_budget: ['is over the maximum price', 'are over the maximum price'],
+        no_suburb: ['has no suburb we could place', 'have no suburb we could place'],
+        suburb_not_a_locality: ["names a suburb that isn't a real locality",
+                                "name a suburb that isn't a real locality"],
+        incomplete_facts: ["doesn't state enough about the home to judge it",
+                           "don't state enough about the home to judge it"],
+        other_product_type: ['is a different property type', 'are a different property type'],
+        no_incentive: ['carries no rebate or discount', 'carry no rebate or discount'],
+        same_listing_collapsed: ['repeats another listing', 'repeat another listing'],
+        duplicates_merged: ['repeats another listing', 'repeat another listing'],
+        truncated: ['was past the most the search can score at once',
+                    'were past the most the search can score at once'],
+        // Stale, or demoted by a newer capture: either way it is not sendable until confirmed.
+        pending_confirmation: ['needs confirming with the builder first',
+                               'need confirming with the builder first'],
+        stale: ["wasn't checked at the source in the last 14 days",
+                "weren't checked at the source in the last 14 days"],
+        newer_capture_disagrees: ['has a newer capture that says otherwise',
+                                  'have a newer capture that says otherwise'],
+        bedrooms_below_min: ['has fewer bedrooms than the minimum', 'have fewer bedrooms than the minimum'],
+        bathrooms_below_min: ['has fewer bathrooms than the minimum', 'have fewer bathrooms than the minimum'],
+        car_spaces_below_min: ['has fewer car spaces than the minimum', 'have fewer car spaces than the minimum'],
+        storeys_above_max: ['has more storeys than the maximum', 'have more storeys than the maximum'],
+        not_in_requested_suburbs: ["isn't in the requested suburbs", "aren't in the requested suburbs"],
+        outside_radius: ['is outside the search radius', 'are outside the search radius'],
+        distance_unverified: ["is in a suburb we couldn't measure the distance to",
+                              "are in suburbs we couldn't measure the distance to"],
+        house_size_below_min: ['has a smaller house than the minimum', 'have a smaller house than the minimum'],
+        land_size_below_min: ['has less land than the minimum', 'have less land than the minimum'],
+    };
+    // funnel.gates stages that come after the checks: merging repeats and the cap ('pool'),
+    // then the scorer and the confirm step ('scoring'). Anything else is a check.
+    const AFTER_THE_CHECKS = new Set(['pool', 'scoring']);
+    const gateLabel = (code, n) => {
+        const said = GATE_LABEL[code];
+        if (said) return said[n === 1 ? 0 : 1];
+        return String(code).replace(/^(scorer|admitted)[.:]/, '').replace(/_/g, ' ');
+    };
+    // Two codes with one meaning read as one line, added together, where the first stood:
+    // same_listing_collapsed and duplicates_merged both "repeat another listing", and the
+    // full 17 Sep snapshot printed them one under the other (W14 review).
+    const byMeaning = lines => {
+        const said = new Map();
+        for (const g of lines) {
+            const key = gateLabel(g.code, 2);
+            if (said.has(key)) said.get(key).n += g.n;
+            else said.set(key, { code: g.code, n: g.n });
+        }
+        return [...said.values()];
+    };
+    // 11,716, not 11716: these counts reach the thousands on a broad search.
+    const inThousands = n => Number(n).toLocaleString('en-AU');
+
+    /* The panel. Open when the search found fewer than EXPLAIN_BELOW; on a longer shortlist
+       it is folded away as "How this search was counted". '' when the server sent no
+       search_help (the page-load run does not ask for one). */
+    function renderSearchHelp(data) {
+        const d = (data && typeof data === 'object') ? data : {};
+        const help = d.search_help;
+        if (!help || typeof help !== 'object' || Array.isArray(help)) return '';
+        const found = wholeCount(d.shortlist_count) ?? (Array.isArray(d.shortlist) ? d.shortlist.length : 0);
+        const few = found < EXPLAIN_BELOW;
+        const title = !few ? 'How this search was counted'
+            : found === 0 ? 'Why nothing matched' : `Why only ${found} matched`;
+        const parts = [];
+
+        // Where the in-range listings went, from the funnel's own numbers.
+        const funnel = (help.funnel && typeof help.funnel === 'object') ? help.funnel : {};
+        const used = (d.brief_used && typeof d.brief_used === 'object') ? d.brief_used
+            : ((help.brief_as_searched && typeof help.brief_as_searched === 'object') ? help.brief_as_searched : {});
+        const state = String(used.state ?? '').trim();
+        const where = !state || /^any state$/i.test(state) ? 'Across every state' : `In ${state}`;
+        const lo = Number(used.budget_min) > 0 ? Number(used.budget_min) : 0;
+        const top = Number(used.budget_max);
+        const hi = top > 0 && top < RESEARCH_NO_CEILING ? top : 0;
+        const range = lo && hi ? `between ${echoMoney(lo)} and ${echoMoney(hi)}`
+            : hi ? `at or under ${echoMoney(hi)}` : lo ? `at ${echoMoney(lo)} or more` : '';
+        const total = wholeCount(funnel.in_price_range_total);
+        const allGates = (Array.isArray(funnel.gates) ? funnel.gates : [])
+            .filter(g => g && typeof g === 'object' && typeof g.code === 'string' && g.code.trim());
+        // Stopped by a check before scoring: only the gates with an in-range count. A gate
+        // the server counts only across every price (over budget, no price) says nothing
+        // about this brief's range, so it is left out rather than shown as a big number.
+        const gates = allGates.filter(g => !AFTER_THE_CHECKS.has(String(g.stage ?? '').trim()))
+            .map(g => ({ code: g.code.trim(), n: wholeCount(g.in_price_range) }))
+            .filter(g => g.n !== null && g.n > 0);
+        // What became of the listings that passed them. Every one of these was already inside
+        // the price range -- the price checks come first -- so the plain count is the in-range
+        // count. A listing the scorer rejects can carry more than one reason.
+        const inRange = (funnel.in_price_range && typeof funnel.in_price_range === 'object')
+            ? funnel.in_price_range : {};
+        const passed = wholeCount(inRange.available);
+        const after = allGates.filter(g => AFTER_THE_CHECKS.has(String(g.stage ?? '').trim()))
+            .map(g => ({ code: g.code.trim(), n: wholeCount(g.count) }))
+            .filter(g => g.n !== null && g.n > 0);
+        if (total !== null || gates.length) {
+            const headline = total === null ? `${where}, ${range ? `priced ${range}` : 'at any price'}:`
+                : range ? `${where}, ${inThousands(total)} listing${total === 1 ? ' is' : 's are'} priced ${range}.`
+                : `${where}, ${inThousands(total)} listing${total === 1 ? ' has' : 's have'} a price.`;
+            parts.push(`<div class="sh-line">${esc(headline)}</div>`);
+            parts.push(`<div class="sh-gate">${esc(`${inThousands(found)} made the shortlist`)}</div>`);
+            for (const g of byMeaning(gates)) {
+                parts.push(`<div class="sh-gate">${esc(`${inThousands(g.n)} ${gateLabel(g.code, g.n)}`)}</div>`);
+            }
+            if (passed !== null && passed > 0) {
+                parts.push(`<div class="sh-gate">${esc(`${inThousands(passed)} passed every check before scoring`
+                    + (after.length ? '; of those:' : ''))}</div>`);
+            }
+            for (const g of (passed !== null && passed > 0) ? byMeaning(after) : []) {
+                parts.push(`<div class="sh-gate sh-sub">${esc(`${inThousands(g.n)} ${gateLabel(g.code, g.n)}`)}</div>`);
+            }
+        }
+
+        // Notes the search made about the brief, unless the notes above already say them.
+        const above = new Set([
+            ...(Array.isArray(d.brief_adjustments) ? d.brief_adjustments : []).map(adjustmentText),
+            ...(Array.isArray(d.location_resolution) ? d.location_resolution : []).map(locationNoteText),
+        ].map(s => String(s || '').trim()).filter(Boolean));
+        const notes = [...new Set([
+            ...(Array.isArray(help.brief_adjustments) ? help.brief_adjustments : []).map(adjustmentText),
+            ...(Array.isArray(help.location_notes) ? help.location_notes : []).map(locationNoteText),
+        ].map(s => String(s || '').trim()).filter(s => s && !above.has(s)))];
+        for (const n of notes) parts.push(`<div class="sh-note">${esc(n)}</div>`);
+
+        // The offers: a button only for a counted change that finds more.
+        const offers = [], noChange = [], notCounted = [], failed = [], byHand = [];
+        const waiting = wholeCount(d.needs_confirming_count);
+        const amber = Array.isArray(d.needs_confirming) ? d.needs_confirming.length : 0;
+        relaxationsOf(d).forEach((r, i) => {
+            if (r.reveal) {
+                const n = waiting ?? r.count ?? amber;
+                if (amber > 0 && n > 0) {
+                    offers.push(`<button type="button" class="relax-btn relax-reveal" data-relax="${i}">`
+                        + `${esc(`Show the ${n} that need confirming`)}</button>`);
+                }
+                return;
+            }
+            if (r.failed) { failed.push(r.label); return; }
+            if (!r.exact) { notCounted.push(r.label); return; }
+            if (!(r.adds > 0)) { noChange.push(r.label); return; }
+            const text = `${r.label} → ${inThousands(r.count)}${r.capped ? '+' : ''} match${r.count === 1 ? '' : 'es'} (+${inThousands(r.adds)})`;
+            if (!r.fits) { byHand.push(text); return; }
+            offers.push(`<button type="button" class="relax-btn" data-relax="${i}">${esc(text)}</button>`);
+        });
+        if (offers.length) {
+            parts.push(`<div class="sh-offers">${offers.join('')}</div>`);
+            // Filled by a click that cannot run (see runResearchAgent). Plain text only.
+            parts.push('<div class="sh-said sh-grey"></div>');
+        }
+        if (byHand.length) parts.push(`<div class="sh-grey">${esc(`Change the brief above to try: ${byHand.join('; ')}`)}</div>`);
+        if (noChange.length) parts.push(`<div class="sh-grey">${esc(`No change: ${noChange.join(', ')}`)}</div>`);
+        if (notCounted.length) parts.push(`<div class="sh-grey">${esc(`Not counted in time: ${notCounted.join(', ')}`)}</div>`);
+        if (failed.length) parts.push(`<div class="sh-grey">${esc(`Could not be counted: ${failed.join(', ')}`)}</div>`);
+
+        const err = help.error;
+        if (err !== undefined && err !== null && err !== '' && err !== false) {
+            parts.push(`<div class="sh-grey">${esc('The explanation could not be worked out this time'
+                + (typeof err === 'string' ? ` (${err})` : '') + '. The results below are not affected.')}</div>`);
+        }
+        if (!parts.length) return '';
+        return `<details class="search-help"${few ? ' open' : ''}><summary>${esc(title)}</summary>`
+            + `<div class="sh-body">${parts.join('')}</div></details>`;
+    }
+
+    /* How old a needs-confirming row's date is. The server's age_days wins: it was computed
+       on the search's own today (AEST), the same one its freshness rule used. */
+    function daysSince(given, ddmmyyyy) {
+        const n = wholeCount(given);
+        if (n !== null) return Math.max(0, n);
+        const m = String(ddmmyyyy || '').trim().match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+        if (!m) return null;
+        const seen = new Date(+m[3], +m[2] - 1, +m[1]);
+        return Math.max(0, Math.floor((Date.now() - seen.getTime()) / 86400000));
+    }
+    const daysAgo = n => n === 0 ? 'today' : n === 1 ? '1 day ago' : `${n} days ago`;
+
+    /* The row's own date, never the day of the search. An EMAILED list's date_checked is
+       the last night the inbox sweep re-read the message -- the Shape Homes list dated
+       13 Aug reads "checked 20/08" -- so it says "email last read", and the list's own age
+       beside it when the snapshot has it (Part C review, correction 27). The first read is
+       email_first_seen on a package; the needs_confirming entry may call it first_seen,
+       which is read only on an emailed row (every row in the database has a first_seen,
+       and on anything but an email it is not a list's age). Plain text. */
+    function confirmDateText(x) {
+        const date = String(x.date_checked ?? '').trim();
+        const days = date ? daysSince(x.age_days, date) : null;
+        const emailFirst = String(x.email_first_seen ?? '').trim();
+        const emailed = /^digital email$/i.test(String(x.source_channel ?? '').trim()) || !!emailFirst;
+        const first = emailFirst || (emailed ? String(x.first_seen ?? '').trim() : '');
+        if (emailed) {
+            let text = date ? `Email last read ${date}${days !== null ? `, ${daysAgo(days)}` : ''}`
+                            : 'Email last read: no date recorded';
+            if (first) {
+                const listDays = daysSince(x.list_age_days, first);
+                text += ` · list first read ${first}${listDays !== null ? `, ${daysAgo(listDays)}` : ''}`;
+            }
+            return text;
+        }
+        if (!date) return 'Last checked: no date recorded';
+        return `Last checked ${date}${days !== null ? ` — ${daysAgo(days)}` : ''}`;
+    }
+
+    const CONFIRM_WHY = {
+        stale: "not checked at the source in the last 14 days",
+        newer_capture: 'a newer capture of this lot exists',
+        document_partially_read: 'its list was only partly read the last time',
+    };
+    const HIDDEN_WHY = {
+        newer_capture_disagrees: 'a newer capture of the same lot says otherwise',
+        newer_capture_exists: 'a newer capture of the same lot exists',
+        document_reread_without_row: 'their list was read again without them',
+        newer_list_from_sender: 'the builder has sent a newer list',
+        over_confirm_limit: 'they are more than 45 days old',
+        builder_documents_reread: "the builder's other lists were read again without them",
+        no_capture_date: 'they have no capture date',
+        untraceable: "they could not be traced back to their listing",
+        no_document: "their list could not be identified",
+        document_states_available: "their list marks other lots Available, so a blank is not a yes",
+        document_marks_no_exceptions: 'their list marks nothing as gone',
+        text_marks_unavailable: "their own line says they've gone",
+        no_price_evidence: "their price could not be checked against the list",
+        price_not_in_text: "their price could not be checked against the list",
+        larger_total_in_text: 'their list prints a larger total than their price',
+        build_only: 'their price is for the build only',
+        land_only: 'their price is for the land only',
+        commercial: 'they are commercial listings',
+    };
+
+    /* One needs-confirming listing. NOT renderShortlistCard, on purpose: no compare tick (a
+       tick puts a row into SELECTED and from there into a client report), no benchmark
+       button (it finds its row in LAST_SHORTLIST by position), no score and no rank. What
+       it does carry is what a consultant needs for the phone call. Plain fields, all
+       escaped. */
+    function needsConfirmingCard(x) {
+        const text = v => String(v ?? '').trim();
+        const price = Number(x.advertised_package_price);
+        const place = [text(x.suburb), text(x.state)].filter(Boolean).join(', ');
+        const stated = typeof x.availability_as_stated === 'string' ? x.availability_as_stated.trim() : '';
+        const why = (Array.isArray(x.confirm) ? x.confirm : [])
+            .map(c => CONFIRM_WHY[c]).filter(Boolean);
+        return `<div class="nc-card">
+            <div class="nc-title">${esc(text(x.lot_address) || NOT_STATED)}</div>
+            <div class="nc-sub">${esc(place || NOT_STATED)} | Builder: <strong>${esc(text(x.builder_name) || NOT_STATED)}</strong></div>
+            <div class="nc-facts">${esc(Number.isFinite(price) && price > 0 ? echoMoney(price) : `Price ${NOT_STATED}`)}
+                &middot; ${esc(spec(x.bedrooms, 'Bed'))} | ${esc(spec(x.bathrooms, 'Bath'))} | ${esc(spec(x.car_spaces, 'Car'))}</div>
+            <div class="nc-stated">${stated ? `Stated: ${esc(stated)}` : "Source doesn't say whether it's available"}</div>
+            <div class="nc-date">${esc(confirmDateText(x))}</div>
+            ${why.length ? `<div class="nc-why">${esc(`Needs confirming: ${why.join('; ')}`)}</div>` : ''}
+            ${sourceLinkRow(x.source_link)}
+            <div class="nc-warn">Confirm price and availability with the builder before sending</div>
+        </div>`;
+    }
+
+    /* The amber group, CLOSED, below the shortlist. These rows are never put into
+       LAST_SHORTLIST, SELECTED or COMPARISONS, so nothing here can reach a comparison, a
+       client report, Kommo or Clare. '' when the server sent none. */
+    function renderNeedsConfirming(data) {
+        const d = (data && typeof data === 'object') ? data : {};
+        const list = (Array.isArray(d.needs_confirming) ? d.needs_confirming : [])
+            .filter(x => x && typeof x === 'object' && !Array.isArray(x));
+        if (!list.length) return '';
+        const total = Math.max(wholeCount(d.needs_confirming_count) ?? 0, list.length);
+        const one = total === 1;
+        const head = `${confirmCountShort(d) ? 'At least ' : ''}${inThousands(total)} more listing`
+            + `${one ? ' matches' : 's match'} but need${one ? 's' : ''} confirming before you send ${one ? 'it' : 'them'}`;
+        const hiddenBy = (d.needs_confirming_hidden && typeof d.needs_confirming_hidden === 'object')
+            ? Object.entries(d.needs_confirming_hidden) : [];
+        // Summed by what they say, so two codes with one meaning read as one line.
+        const because = new Map();
+        for (const [reason, count] of hiddenBy) {
+            const n = wholeCount(count);
+            if (n === null || n <= 0) continue;
+            const why = HIDDEN_WHY[reason] || String(reason).replace(/_/g, ' ');
+            because.set(why, (because.get(why) || 0) + n);
+        }
+        const hidden = [...because].map(([why, n]) => `${n} because ${why}`);
+        return `<details class="nc-group"><summary>${esc(head)}</summary>
+            <div class="nc-intro">Not in the shortlist: each was last seen more than 14 days ago, or
+                its list doesn't say whether it's available. They can't be compared or put in a
+                client report until the builder confirms them.</div>
+            ${total > list.length ? `<div class="nc-intro">${esc(`Showing the ${list.length} best matches of ${total}.`)}</div>` : ''}
+            ${list.map(needsConfirmingCard).join('')}
+            ${hidden.length ? `<div class="nc-hidden">${esc(`Also left out: ${hidden.join('; ')}.`)}</div>` : ''}
+        </details>`;
+    }
+
+    /* True when the server says its needs-confirming count may be short: the search's own
+       pool was cut at the candidate cap, so stale matches past the cut were never scored or
+       counted (Any state, no ceiling: 7,622 cut on the 17 Sep snapshot). The group then
+       says "At least N" and the badge "N+" (W14 review). */
+    const confirmCountShort = d => {
+        const help = d && d.search_help;
+        const nc = help && typeof help === 'object' ? help.needs_confirming : null;
+        return !!(nc && typeof nc === 'object' && nc.count_may_be_short === true);
+    };
+
+    // What the badge counts as "to confirm": the server's exact count, when it sent the rows.
+    const needsConfirmingCount = d => {
+        const list = d && Array.isArray(d.needs_confirming) ? d.needs_confirming.length : 0;
+        return list ? Math.max(wholeCount(d.needs_confirming_count) ?? 0, list) : 0;
+    };
+
+    /* The brief exactly as the form states it now. A search posts this; a relaxation click
+       compares it with what the search posted (see briefKey). */
+    function readBriefForm() {
+        return {
             client_name: document.getElementById('clientName').value || 'Unnamed Client',
             // A BLANK BUDGET MEANS NO CEILING, not a ceiling of zero. The form used to
             // ship pre-filled with a fictional client (Sarah & Mark Johnson, $780,000,
@@ -3948,6 +4478,33 @@ python state_sync.py push</pre>
                 .map(el => el.value),
             requires_incentive: !!(document.getElementById('requiresIncentive') || {}).checked
         };
+    }
+    // What a relaxation's count was made over: the whole brief but the client's name, which
+    // changes nothing about the stock that matches.
+    const briefKey = brief => JSON.stringify({ ...brief, client_name: '' });
+
+    /* ONLY THE LATEST SEARCH PAINTS (W14 review, 17 Sep). An explained search takes
+       seconds longer than a plain one, and a thin search -- the kind that prices
+       relaxations -- longer than a broad one. So the page-load run (every state, no
+       ceiling) could answer AFTER the consultant's own QLD <= $750k and paint national
+       results, their Kommo payload and LAST_SHORTLIST under a form reading QLD. Every
+       search takes a number; one that is no longer the latest drops its answer, or its
+       error, at each await. */
+    let RESEARCH_RUN = 0;
+
+    async function runResearchAgent(options) {
+        // explain:true asks the server for search_help and needs_confirming. Only a search
+        // someone asked for sends it -- a form submit, a relaxation click, "search without
+        // this minimum" -- never the page-load run: the explanation re-runs the search for
+        // every relaxation, which is seconds nobody is waiting on when the page opens.
+        const explain = !!(options && options.explain === true);
+        const run = ++RESEARCH_RUN;
+        const overtaken = () => run !== RESEARCH_RUN;
+        // Programmatic re-runs (search without a minimum) change the boxes without an
+        // input event; keep the echo in step with what is about to be sent.
+        paintBudgetEcho();
+        const brief = readBriefForm();
+        const searchedKey = briefKey(brief);
 
         const resultsDiv = document.getElementById('resultsContent');
         resultsDiv.innerHTML = '<div style="text-align:center; padding:3rem; color:var(--accent-blue); font-weight:600;">Processing Property Evaluation & Benchmarking...</div>';
@@ -3968,14 +4525,17 @@ python state_sync.py push</pre>
             let res = null, lastErr = null, authExpired = false;
             for (let attempt = 1; attempt <= 2; attempt++) {
                 if (attempt === 2) {
+                    if (overtaken()) return;
                     resultsDiv.innerHTML = '<div style="text-align:center; padding:3rem; color:var(--accent-blue); font-weight:600;">Still working — retrying…</div>';
                     await new Promise(r => setTimeout(r, 1200));
+                    if (overtaken()) return;
                 }
                 try {
                     res = await fetch('/api/research', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ client_brief: brief })
+                        body: JSON.stringify(explain ? { client_brief: brief, explain: true }
+                                                     : { client_brief: brief })
                     });
                     if (res.ok && (res.headers.get('Content-Type') || '').includes('json')) break;
                     // 401 IS NOT WORTH RETRYING, and telling somebody to press the button
@@ -3991,6 +4551,7 @@ python state_sync.py push</pre>
                     res = null;
                 }
             }
+            if (overtaken()) return;       // a newer search owns the results now
             if (!res && authExpired) {
                 // A 12-hour session (SESSION_SECONDS in middleware.js). The brief is still
                 // on the page, so signing in and pressing the button again costs nothing.
@@ -4017,9 +4578,16 @@ python state_sync.py push</pre>
             }
 
             const data = await res.json();
+            if (overtaken()) return;
             if (data.status === 'success') {
                 resultsDiv.innerHTML = '';
-                document.getElementById('shortlistBadge').textContent = `${data.shortlist_count} Qualified (${data.rejected_count} Filtered)`;
+                // "· M to confirm" only when the server sent needs_confirming rows. They are
+                // not Qualified; the Filtered count still includes them (it is every in-state
+                // listing that did not make the shortlist), so M is a part of F, not added to it.
+                const toConfirm = needsConfirmingCount(data);
+                document.getElementById('shortlistBadge').textContent = `${data.shortlist_count} Qualified`
+                    + (toConfirm ? ` · ${toConfirm}${confirmCountShort(data) ? '+' : ''} to confirm` : '')
+                    + ` (${data.rejected_count} Filtered)`;
 
                 // "Searched: ..." and the notes, above everything else -- see searchNotesHtml.
                 const notesHtml = searchNotesHtml(data);
@@ -4027,6 +4595,44 @@ python state_sync.py push</pre>
                     const notesBox = document.createElement('div');
                     notesBox.innerHTML = notesHtml;
                     resultsDiv.appendChild(notesBox);
+                }
+
+                // "Why only N matched", with a button per counted change -- see renderSearchHelp.
+                // The amber group it can open is painted below the cards, so it is looked up
+                // when clicked rather than now.
+                let ncGroup = null;
+                const helpHtml = renderSearchHelp(data);
+                if (helpHtml) {
+                    const helpBox = document.createElement('div');
+                    helpBox.innerHTML = helpHtml;
+                    resultsDiv.appendChild(helpBox);
+                    const offered = relaxationsOf(data);
+                    helpBox.querySelectorAll('.relax-btn').forEach(b => {
+                        const r = offered[Number(b.dataset.relax)];
+                        if (!r) return;
+                        b.onclick = () => {
+                            if (r.reveal) {
+                                if (!ncGroup) return;
+                                ncGroup.open = true;
+                                if (typeof ncGroup.scrollIntoView === 'function') {
+                                    ncGroup.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                                }
+                                return;
+                            }
+                            // The count on the button was made over the brief this search
+                            // posted. Edited since, the click would post a different search
+                            // under a button promising that count: say so, run nothing.
+                            const said = helpBox.querySelector('.sh-said');
+                            if (briefKey(readBriefForm()) !== searchedKey) {
+                                if (said) said.textContent = 'The brief above has changed since these '
+                                    + 'were counted. Press Execute to count again.';
+                                return;
+                            }
+                            // Straight to the search, never through the form's submit: its
+                            // validation must not be able to swallow a counted re-run.
+                            if (applyBriefPatch(r.patch)) runResearchAgent({ explain: true });
+                        };
+                    });
                 }
 
                 LAST_SHORTLIST = data.shortlist || [];
@@ -4041,6 +4647,12 @@ python state_sync.py push</pre>
                    since it was written. */
                 const SHORTLIST_PAGE = 25;
                 let shortlistShown = 0;
+                // The cards get a box of their own, so a later "Show more" page lands with
+                // the others -- not below the needs-confirming group and the rejection log,
+                // which are painted after the first page.
+                const cardsBox = document.createElement('div');
+                cardsBox.className = 'shortlist-cards';
+                resultsDiv.appendChild(cardsBox);
                 const paintShortlist = () => {
                     const slice = data.shortlist.slice(shortlistShown,
                                                        shortlistShown + SHORTLIST_PAGE);
@@ -4053,7 +4665,7 @@ python state_sync.py push</pre>
                             more.textContent = `Show ${Math.min(left, SHORTLIST_PAGE)} more `
                                              + `(${left} remaining of ${data.shortlist.length})`;
                             // Cards were just appended after it, so put it back at the end.
-                            resultsDiv.appendChild(more);
+                            cardsBox.appendChild(more);
                         } else {
                             more.remove();
                         }
@@ -4203,7 +4815,7 @@ python state_sync.py push</pre>
                         </div>
                     `;
 
-                    resultsDiv.appendChild(card);
+                    cardsBox.appendChild(card);
                 };
 
                 // The button is created FIRST so the single paint below can label it and
@@ -4218,9 +4830,19 @@ python state_sync.py push</pre>
                     more.style.cssText = 'display:block; width:100%; margin:0.75rem 0 1rem; '
                                        + 'padding:0.6rem; font-weight:600; cursor:pointer;';
                     more.onclick = () => paintShortlist();
-                    resultsDiv.appendChild(more);
+                    cardsBox.appendChild(more);
                 }
                 paintShortlist();
+
+                // Needs confirming: amber, closed, below the confirmed cards and never among
+                // them -- see renderNeedsConfirming. Its rows stay out of LAST_SHORTLIST.
+                const ncHtml = renderNeedsConfirming(data);
+                if (ncHtml) {
+                    const ncBox = document.createElement('div');
+                    ncBox.innerHTML = ncHtml;
+                    resultsDiv.appendChild(ncBox);
+                    ncGroup = ncBox.querySelector('.nc-group');
+                }
 
                 // Client report + search coverage summary bar
                 if (data.shortlist.length > 0) {
@@ -4332,8 +4954,9 @@ python state_sync.py push</pre>
                             // 16 Sep: submitting ran the browser's own validation first, so
                             // with Client Name blank this cleared the minimum, posted nothing
                             // and jumped to the top of the form. Validation of any kind must
-                            // never be able to swallow a re-run.
-                            runResearchAgent();
+                            // never be able to swallow a re-run. A click here is a relaxation
+                            // someone asked for, so it asks for the explanation too.
+                            runResearchAgent({ explain: true });
                         };
                     });
                 }
@@ -4422,6 +5045,7 @@ python state_sync.py push</pre>
                 }
             }
         } catch (e) {
+            if (overtaken()) return;
             // Reached only if rendering the results throws — the fetch itself is
             // handled above with a retry. "Error executing system" tells a
             // non-technical reader nothing they can act on.
@@ -5238,12 +5862,15 @@ ${SPB_BRAND()}
             .catch(() => say('Copy blocked — select the text instead'));
     }
 
+    // A search somebody asked for: explained (Why only N matched, Needs confirming).
     document.getElementById('propertyForm').addEventListener('submit', function(e) {
         e.preventDefault();
-        runResearchAgent();
+        runResearchAgent({ explain: true });
     });
 
     loadBuilderDirectory();
+    // The page-load search is NOT explained: nobody asked for it, and explaining re-runs the
+    // search once per relaxation. Press Execute to see why a search found what it found.
     runResearchAgent();
 
     // On load, on whatever tab happens to be open. The whole point is that a source
