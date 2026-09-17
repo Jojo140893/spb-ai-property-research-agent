@@ -253,7 +253,7 @@ class ComparisonReportGenerator:
                           "checking.</p>")
             return f"<h4>{option_name(p, 1 if p is a else 2)}</h4>{inner}"
 
-        from client_report import _logo_html
+        from client_report import _logo_html, _esc, _state_label
         # The document title. Two different builders read as "A vs B"; two lots from one
         # builder must not read as "Verv Projects vs Verv Projects".
         if same_builder:
@@ -289,7 +289,7 @@ class ComparisonReportGenerator:
   <div>
     <p class="eyebrow">Builder comparison report</p>
     <h1>{names}</h1>
-    <p class="meta">Prepared for <strong>{_plain(brief.client_name)}</strong> &middot; {date_str} &middot; {brief.state}</p>
+    <p class="meta">Prepared for <strong>{_plain(brief.client_name)}</strong> &middot; {date_str} &middot; {_esc(_state_label(brief.state))}</p>
   </div>
 </header>
 

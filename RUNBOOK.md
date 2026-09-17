@@ -145,6 +145,10 @@ nothing.
 | Portal blocks the automated browser | Sign in via `portal_login.py` (it uses a real visible browser); the saved session carries the pass |
 | Listings look wrong/partial | Check `extraction_confidence`; optionally hand-map that portal in `sources/portal_config.py` and set `verified=True` |
 | Torsion is a SharePoint share link | If the stock list is a folder view, point `listings_url` at it in `portal_config.py` |
+| Supersede's "status changed on the same line" pass | ON in the daily-harvest workflow since 17 Sep 2026 (list of 102 reviewed that day); OFF in code unless set. Every run (and `python supersede_duplicates.py --dry-run`) prints every retirement the pass WOULD make, QLD first, with the state a blank-state row's kept row and document are filed under. Once that list is signed off, add `SPB_STATUS_PASS: "1"` to the daily-harvest workflow `env:` |
+| Lots vanished after supersede's "status changed on the same line" retirements | Remove `SPB_STATUS_PASS` from the daily-harvest workflow `env:` (or set it to `0`) and re-run: `supersede_duplicates.py` goes back to its three original passes |
+| Run marked DEGRADED: "a new pass failed; fell back to the previous rule" | A step exited 70 (`DEGRADED_EXIT`): its new pass raised, it logged the traceback and wrote today's behaviour instead. Data still published; fix the traceback in the log |
+| Run marked DEGRADED: "7/7  Replay Colin's searches" | `search_regressions.py` replayed Colin's searches against tonight's build and a `[FAIL]` line in the log names the brief and the row (hash and database id). The stock was still published. Reproduce on a copy with `python search_regressions.py --snapshot vercel_site/stock.json --only <brief id>`; trace one row with `python trace_listing.py --hash <v2:prefix> --state QLD --budget 750000`. When the catalogue has legitimately changed (a `[WARN]` says so for the Dawn lots), update `data/colin_searches.json` |
 
 **Not harvested by design:** the 9 email-only builders (stock arrives by email)
 and Shape Homes (weekly Google Drive PDF).

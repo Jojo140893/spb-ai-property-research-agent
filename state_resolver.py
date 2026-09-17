@@ -352,6 +352,100 @@ def resolve_state(postcode: Any = None, suburb: str = "", page_state: Any = "",
     return "", ""
 
 
+# --- a state that rests on a suburb match, and a row whose own text says otherwise --------
+#
+# Colin, 15 Sep 2026, "QLD under $750k": one of the two results was "Lot 618, Riverhills
+# QLD", $553,284. Its line reads "Available Wollert Titled Townhouse 618 ...", Wollert is in
+# Victoria, and the same lot is live twice more as VIC off E-Agent. The email extractor had
+# put the ESTATE, Riverhills, in the suburb column; Riverhills is also a Brisbane suburb and
+# nowhere else, so resolve_state took that lone gazetteer hit as the state and enrich has
+# treated the row as settled ever since. Nothing downstream looks again:
+# repair_rows.find_refuted_states only fires when the suburb is NOT a locality of the stated
+# state, and Riverhills is one.
+#
+# Measured on the 17 Sep copy: 25 live rows are in that position, all reviewed by hand as
+# misfiled (Wollert, Armstrong Creek, Mambourin, Murray Bridge, Officer, Fraser Rise, Clyde
+# North, Moss Vale). Every guard below exists because a looser version fired on a correct
+# row: house designs ("Rhodes 15", "Ceduna 9.66"), regions ("FRASER COAST"), estates ("The
+# Grove", "Riverstone Springs") and dates ("March 2027").
+TEXT_LOCALITY_SOURCE = "row text locality (over suburb column)"
+
+_TEXT_TOKEN = re.compile(r"[A-Za-z][A-Za-z'\-]*|\d+(?:\.\d+)?")
+_MONTH_WORD = re.compile(
+    r"^(?:jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|"
+    r"sep|sept|september|oct|october|nov|november|dec|december)$", re.IGNORECASE)
+# The word AFTER a name that makes the name something other than the lot's locality: a
+# region ("Fraser Coast"), an estate or development ("Riverstone Springs", "Fraser Rise"
+# read one word short), or a design and its size ("Rhodes 15", "Lawson 20").
+_NOT_A_LOCALITY_AFTER = re.compile(
+    r"^(?:point|park|springs|estate|heights|homes|group|house|range|river|lakes?|green|"
+    r"rise|views?|hills?|waters|shores|quarter|collection|coast|single|double|storey|"
+    r"custom|facade|\d+(?:\.\d+)?)$", re.IGNORECASE)
+
+
+def _estate_key(estate: Any) -> str:
+    """'Riverhills Estate' / ' riverhills ' -> 'riverhills'. '' when there is no name."""
+    words = [t.lower() for t in _TEXT_TOKEN.findall(str(estate or ""))]
+    return " ".join(w for w in words if w != "estate")
+
+
+def text_locality_elsewhere(row_text: Any, state: Any, geo: Any,
+                            stocked: Any, estate: Any = "") -> Optional[Tuple[str, str]]:
+    """(locality, other_state) when the row's own text names a place in ANOTHER state.
+
+    Only a claim strong enough to overrule a state that rests on a suburb match alone. A
+    1-3 word span of the text qualifies when all of these hold:
+
+      * it is a locality in exactly one state, and that state is not `state`;
+      * it is at least 5 characters, does not start with a month or "The ", and is not
+        the tail of a "The ..." name or a bare street word ("The Grove" -> Grove TAS);
+      * it is not the row's own `estate` name. Estates are named after places anywhere in
+        the country, and a line quotes its estate: the CORRECT Hattan copy of lot 618 has
+        suburb Wollert, estate Riverhills and an address "Lot 618, Riverhills". Without
+        this, Riverhills QLD's stock pulls that VIC lot into Queensland -- Colin's bug,
+        backwards;
+      * the word after it is not a street type, a number (a design size) or a region or
+        estate word;
+      * `stocked` holds (locality lower-case, that state): the catalogue has live rows
+        filed under that locality in that state, so the place is where this kind of stock
+        actually is rather than a gazetteer coincidence.
+
+    Longest span first, then left to right. None when nothing qualifies. Pure: reads no
+    database and writes nothing, so enrich decides what to do with the answer.
+    """
+    if geo is None or not row_text:
+        return None
+    from geo import _STREET_TYPE
+
+    own_estate = _estate_key(estate)
+    stored = normalise_state(state)
+    toks = [t.rstrip("-'") for t in _TEXT_TOKEN.findall(str(row_text))]
+    toks = [t for t in toks if t]
+    for size in (3, 2, 1):
+        for i in range(len(toks) - size + 1):
+            span = toks[i:i + size]
+            if any(t[0].isdigit() for t in span):
+                continue
+            cand = " ".join(span)
+            if len(cand) < 5 or _MONTH_WORD.match(span[0]) or span[0].lower() == "the":
+                continue
+            if i > 0 and toks[i - 1].lower() == "the":
+                continue
+            if size == 1 and _STREET_TYPE.fullmatch(cand):
+                continue
+            if own_estate and cand.lower() == own_estate:
+                continue
+            states = [s for s in geo.states_for_suburb(cand) if s in VALID_STATES]
+            if len(states) != 1 or states[0] == stored:
+                continue
+            nxt = toks[i + size] if i + size < len(toks) else ""
+            if nxt and (_STREET_TYPE.fullmatch(nxt) or _NOT_A_LOCALITY_AFTER.match(nxt)):
+                continue
+            if (cand.lower(), states[0]) in stocked:
+                return cand, states[0]
+    return None
+
+
 def disagreement(postcode: Any, suburb: str, page_state: Any, geo: Any) -> Optional[Dict[str, Any]]:
     """Report when the row's own postcode contradicts the page it came from.
 

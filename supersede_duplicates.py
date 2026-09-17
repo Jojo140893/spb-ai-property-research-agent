@@ -39,16 +39,47 @@ run and re-derives it, so a hand-set mark evaporates at 03:27 with no error.
 MARKED, NOT DELETED. The older capture is real history and its price is what was
 advertised then. It keeps its row and gains a pointer to the row that replaced it.
 
+AND THE SAME LINE READ AGAIN WITH A DIFFERENT STATUS WORD. Added 17 Sep 2026 (Part C,
+W01). Howard lot 21 was stored twice on one Smartsheet: "Howard Available 21 Howard
+Crossing ..." read 15/09 and "Howard ON HOLD 21 Howard Crossing ..." read 16/09. Both
+stayed live, so Colin's "QLD under $750k" search recommended a lot the builder had put
+on hold the next morning. The identity split because database.py cuts the text to 100
+characters BEFORE it strips the status word, and none of the three passes below could
+join them: text_key compares the text WITH the status word, lot_key needs an identical
+lot_address, and flattened rows carry the status word there too. See
+find_status_superseded. It is a FOURTH, ADDITIVE pass and it is switchable, OFF BY DEFAULT:
+
+    SPB_STATUS_PASS=1    (or on/true/yes) applies it. Unset, empty, 0/off/false/no, or
+                         anything else: OFF -- the three-pass rule exactly, and nothing
+                         the fourth pass would retire is written.
+
+Off by default because merging to main is going live (critique #4): the nightly workflow
+runs this step on main, and the pass must not apply its ~100 retirements the first night
+before a person has read the list. OFF IS NOT SILENT. Every run, on or off, --dry-run or
+not, prints every retirement the pass would make (the review list, _report_status_pass),
+so the nightly log itself is the list to sign off. Once it is signed off, set
+SPB_STATUS_PASS=1 in the daily-harvest workflow's env.
+
+If the fourth pass raises while ON, the run keeps the three existing passes' marks, prints
+the traceback with an ERROR line, and exits DEGRADED_EXIT (70). run_daily treats 70 as
+"finished, publish, but mark the run DEGRADED", so the nightly still publishes and the
+CI job goes red afterwards instead of the dashboard silently keeping yesterday's data.
+While OFF, a failure costs only the report: it is printed as a WARNING and the run exits 0.
+
     python supersede_duplicates.py --dry-run
     python supersede_duplicates.py
 """
 
 import argparse
+import hashlib
+import os
 import re
 import shutil
 import sqlite3
 import sys
-from collections import defaultdict
+import traceback
+from collections import Counter, defaultdict
+from urllib.parse import urlsplit
 
 from sources.scraper_base import normalise_money_spacing
 from datetime import datetime
@@ -56,6 +87,24 @@ from datetime import datetime
 import config
 
 FIELDS = ("superseded_by", "superseded_at")
+
+# The switch for the fourth pass. OFF unless it is explicitly turned on (critique #4: the
+# gate is the reviewed list, and merging to main runs the nightly on main). A value that is
+# not one of the ON words -- a typo, "garbage" -- leaves it off: the switch fails closed.
+STATUS_PASS_ENV = "SPB_STATUS_PASS"
+_ON_WORDS = {"1", "on", "true", "yes"}
+
+# The exit code for "the three passes ran and were written, the fourth pass failed and
+# was dropped". run_daily._run treats it as success-but-degraded; it must equal
+# run_daily.DEGRADED_EXIT (a test pins them). 2 is taken: it means a harvest CHANNEL read
+# nothing, and CI tells whoever reads that to refresh a portal login. 3 is unsafe: it is
+# what a Windows process exits with when the C runtime aborts, so a crash would read as a
+# fallback. 70 is sysexits' EX_SOFTWARE, which no crash produces.
+DEGRADED_EXIT = 70
+
+STATUS_PASS_REASON = "status changed on the same line"
+KEPT_AVAILABLE_OVER_UNSTATED = "Available, and every later read states no availability (e.g. EOI)"
+KEPT_SAME_READ = "written by the survivor's own read of the document: another line of that read"
 
 
 def _norm(v):
@@ -274,6 +323,384 @@ def find_superseded(rows):
     return out
 
 
+# ---------------------------------------------------------------------------------------
+# THE FOURTH PASS: the same line on the same document, read again with a new status word
+# ---------------------------------------------------------------------------------------
+
+def status_pass_enabled(environ=None):
+    """SPB_STATUS_PASS: ON only when set to 1/on/true/yes (case-insensitive). Default OFF."""
+    env = os.environ if environ is None else environ
+    return str(env.get(STATUS_PASS_ENV, "") or "").strip().lower() in _ON_WORDS
+
+
+# The search's own availability vocabulary. These are api/_candidates.NOT_AVAILABLE and
+# IS_AVAILABLE, copied rather than imported: this is a required nightly step and
+# _candidates drags in the whole search bundle. tests/test_supersede.py pins the copies
+# to the originals, so the two cannot drift apart silently.
+NOT_AVAILABLE = frozenset({
+    "sold", "under offer", "reserved", "leased", "on hold", "withdrawn",
+    "not available", "unavailable", "not avail", "no longer available",
+    "off market", "settled", "deposit taken", "contract pending"})
+IS_AVAILABLE = frozenset({
+    "available", "for sale", "in stock", "released", "selling",
+    "titled", "now selling", "open"})
+
+# The words stripped from the line before two captures are compared: the search's
+# vocabulary plus the spellings price lists use for a status ("HOLD", "EOI", "TBC",
+# "Under Contract", "Sold Out").
+#
+# MINUS words that are as often a fact about the lot as its status. "Titled" is the land
+# title ("Titled Available" is two facts); "Released", "Selling" and "Now Selling" name a
+# stage. Stripping a fact would join two lines that differ in it, so when in doubt a word
+# stays in the line: a missed join leaves today's duplicate, a wrong join hides a lot.
+#
+# This is exactly the list the Part C simulation measured (17 Sep copy: 121 retirements
+# of rows live that day, before the two exceptions in find_status_superseded). The
+# plan's shorter list (the search's words plus eoi/hold, minus titled/open/selling/
+# released) joins 4 fewer lines, e.g. Creation Homes' "Under Contract 8 LAND ONLY ..."
+# (id 9843).
+STATUS_WORDS = frozenset(
+    (NOT_AVAILABLE | IS_AVAILABLE | {
+        "available", "not available", "unavailable", "on hold", "hold", "under offer",
+        "sold", "reserved", "leased", "tbc", "eoi", "under contract", "deposit taken",
+        "sold out"})
+    - {"titled", "open", "selling", "released", "in stock", "for sale", "now selling"})
+
+
+def _status_rx(words):
+    # Longest first, so "on hold" is removed whole rather than leaving "on". A space in a
+    # phrase matches any run of whitespace, including none: "ONHOLD" is the same word.
+    parts = sorted((re.escape(w).replace(r"\ ", r"\s*") for w in words),
+                   key=len, reverse=True)
+    return re.compile(r"\b(?:" + "|".join(parts) + r")\b", re.I)
+
+
+_STATUS_RX = _status_rx(STATUS_WORDS)
+_URL_RX = re.compile(r"(?:https?://|www\.)\S+", re.I)
+_UNIT_RX = re.compile(r"(?<=\d)\s*(?:m2|m²|sqm|sq\.?m)\b", re.I)
+
+
+def _document(row):
+    """The one price list this capture was read from."""
+    return str(row.get("source_url") or row.get("stocklist_file") or "").strip()
+
+
+def status_free_text(text):
+    """The line as text_key compares it, with links and status words taken out.
+
+    Links first, so a status word inside a URL ("/sold-out.pdf") is never what changes
+    the key, and so a link that moved (a re-shared Drive file) does not split one line.
+    """
+    t = str(text or "")
+    t = _URL_RX.sub(" ", t)
+    t = normalise_money_spacing(t)
+    t = _UNIT_RX.sub("", t)
+    t = _STATUS_RX.sub(" ", t)
+    return re.sub(r"\s+", " ", t).strip().lower()
+
+
+def status_text_key(row):
+    """(channel, document, status-free line, price), or None.
+
+    PER DOCUMENT, not per channel. Keyed on the channel alone the simulation retired 167
+    rows instead of 121, and the extra 46 join lines from different emails that nobody
+    has checked are the same listing. One document re-read on two days is the claim this
+    pass can actually prove.
+
+    No document or no text left once the status is removed: None, never grouped. A
+    line that is ONLY a status word and a price is not an identity.
+    """
+    doc = _document(row)
+    text = status_free_text(row.get("source_text"))
+    if not doc or not text:
+        return None
+    try:
+        price = round(float(row.get("price") or 0), 2)
+    except (TypeError, ValueError):
+        return None
+    return (_norm(row.get("source_channel")), doc, text, price)
+
+
+def _stated(row):
+    """'available', 'not available', or None when the capture states neither."""
+    s = str(row.get("availability_status") or "").strip().lower()
+    if s in IS_AVAILABLE:
+        return "available"
+    if s in NOT_AVAILABLE:
+        return "not available"
+    return None
+
+
+def _read_rank(row):
+    """The most recent READ wins: date_checked, then checked_at (the time of day, which
+    date_checked lacks), then last_seen.
+
+    A TIE KEEPS THE LOWER id, the same way api/_candidates._collapse_same_listing keeps
+    the first-stored capture. That is deliberately not _freshness's rule (higher id), and
+    it does not need to be: this pass never touches a row the other three decided.
+
+    A tie on the SAME READ is a different thing, see _same_read: the lower id is still
+    the survivor older captures point at, but the tied capture is not retired.
+    """
+    try:
+        rid = int(row["id"])
+    except (TypeError, ValueError):
+        rid = 0
+    return (_parsed_date(row.get("date_checked")) or datetime.min,
+            _read_time(row) or datetime.min,
+            _parsed_date(row.get("last_seen")) or datetime.min,
+            -rid)
+
+
+# How far apart two lines of ONE read of one document can be stamped. checked_at is
+# written per ROW, to the second (database.record_building: datetime.now()), not once per
+# read. Measured on the 17 Sep copy: one read of a document spans at most 16 s (46 of 336
+# reads wrote their lines across 2-6 different seconds), and two reads of one document on
+# the same day were never less than 41 minutes (2,456 s) apart. Ten minutes sits well
+# clear of both.
+SAME_READ_WINDOW_S = 600
+
+
+def _read_time(row):
+    """checked_at as a naive datetime, or None. The first 19 characters only, so an
+    offset or fraction a future writer adds can neither fail to parse nor raise when
+    compared with a naive stamp."""
+    s = str(row.get("checked_at") or "").strip()[:19].replace(" ", "T")
+    try:
+        return datetime.strptime(s, "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return None
+
+
+def _same_read(a, b):
+    """Two captures written by ONE read of the document: both checked_at stamps present
+    and no more than SAME_READ_WINDOW_S apart.
+
+    NOT an identical second. The stamp is per row, so one read is a run of seconds, and
+    the Merbein pair below is re-stamped every night it is re-read: requiring equality
+    would keep both lots the night they land in one second and hide one of them the night
+    they land a second apart -- whichever was written first, the Available one included.
+
+    Then they are two lines, not one line whose status changed, and neither may retire
+    the other. Both such pairs on the 17 Sep copy are provably two lots:
+      - Creation Homes "8 LAND ONLY CNR 290.5 ... $858,500": 16177 Available is sheet
+        row 92 and 16180 SOLD is row 95, and the same pair was read on 22/08 (9840/11720)
+        and earlier (2594/2597). The lot number is in a column the line does not carry.
+      - Merbein 18203 "Hold" and 18204 "Available": the same PDF page lists identical
+        4/2/2 463 m2 lots at $691,000.
+    Retiring by rank would hide one of each pair; retiring the Available one would hide
+    a real lot, which is the harm the Volos exception below also exists to stop.
+
+    A capture with no checked_at (stored before the column existed) is never "the same
+    read": a tie between two of those falls to _read_rank's lower id.
+    """
+    ta, tb = _read_time(a), _read_time(b)
+    if ta is None or tb is None:
+        return False
+    return abs((ta - tb).total_seconds()) <= SAME_READ_WINDOW_S
+
+
+def _carries_rule_marker(row):
+    """superseded_by holding a judgement rather than a content hash.
+
+    repair_rows writes these ("withdrawn: the source stopped listing it", "spreadsheet
+    filter row, not a listing", ...) and re-writes them every night after this step. A
+    filter row or an email sentence must never be elected the survivor of a real lot.
+    """
+    mark = str(row.get("superseded_by") or "")
+    return bool(mark) and not mark.startswith("v2:")
+
+
+def find_status_superseded(rows, retired_ids=(), kept_live=None):
+    """[(loser_row, winner_row)] for captures of one line that differ only by status.
+
+    ADDITIVE. It runs over the rows find_superseded left live (pass its losers' ids as
+    retired_ids) and only ever adds retirements. It is never folded into that union: the
+    first simulation that did so re-elected the survivor of 4 existing groups (8948/8950,
+    10032/10049, 14881/12408, 14884/12411), moving marks that were already right.
+
+    In each group the most recently read capture survives (_read_rank) and the rest are
+    retired with the reason STATUS_PASS_REASON.
+
+    EXCEPT AN AVAILABLE CAPTURE IS NEVER RETIRED IN FAVOUR OF A READ THAT STATES NOTHING.
+    AVIA Homes' Volos sheet changed 21 lots from "Available" to "EOI" on 16 Sep. "EOI" is
+    not in the search's vocabulary, so the new capture is stored with no status, and
+    retiring the Available capture in its favour would drop a real lot out of every
+    result and every "needs confirming" list. So when every capture read after an
+    Available one states no availability, the Available capture stays live. If any later
+    capture DOES state a status (On Hold, or a newer Available), that statement is the
+    news and the older Available capture is retired as usual.
+
+    AND A CAPTURE FROM THE SURVIVOR'S OWN READ IS NEVER RETIRED (_same_read): two lines
+    on one page at one moment are two lots.
+
+    AN EXISTING SURVIVOR CAN BE RETIRED HERE. Its own losers keep pointing at it (their
+    marks do not move), so they reach the live row in two steps instead of one. Every
+    reader of superseded_by treats it as a flag, never a lookup.
+
+    Pass a list as kept_live to be told which captures the exceptions kept, as
+    [(kept_row, latest_read_row, why)]; it is for the report only and changes nothing.
+    """
+    retired = set(retired_ids)
+    groups = defaultdict(list)
+    for r in rows:
+        if r["id"] in retired or _carries_rule_marker(r):
+            continue
+        k = status_text_key(r)
+        if k is not None:
+            groups[k].append(r)
+
+    out = []
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        ordered = sorted(members, key=_read_rank, reverse=True)
+        winner = ordered[0]
+        for n in range(1, len(ordered)):
+            loser = ordered[n]
+            why = None
+            if _same_read(loser, winner):
+                why = KEPT_SAME_READ
+            elif (_stated(loser) == "available"
+                    and all(_stated(m) is None for m in ordered[:n])):
+                why = KEPT_AVAILABLE_OVER_UNSTATED
+            if why:
+                if kept_live is not None:
+                    kept_live.append((loser, winner, why))
+                continue
+            out.append((loser, winner))
+    return out
+
+
+def status_pass_marks(rows):
+    """{loser id: winner content_hash} for the status-pass retirements the rows now carry.
+
+    FOR repair_rows, which runs after this step and groups LIVE rows only. The status pass
+    can retire the row repair_rows was using as the keeper of a suburb twin or a duplicate
+    line, and the copy it used to retire then has no keeper and is published live again
+    (release review: G Developments lot 101, 11734 'Available' 22/08, lost its keeper 15985
+    'On Hold' 08/09 to 18856 'SOLD' 10/09, and came back as Available stock).
+
+    Nothing in a mark says which pass wrote it, so the pass is worked out again over the
+    same rows and a retirement counts only where the stored mark IS that winner's hash.
+    Tonight's three passes and status pass are deterministic over the same rows, so this is
+    exactly what the step wrote; a mark that does not agree (the switch was off, a later
+    repair moved it) is not claimed, and repair_rows then behaves as it always has.
+    """
+    rows = [dict(r) for r in rows]
+    retired = {l["id"] for l, _ in find_superseded(rows)}
+    marks = {}
+    for loser, winner in find_status_superseded(rows, retired):
+        hash_ = str(winner.get("content_hash") or "")
+        if hash_ and str(loser.get("superseded_by") or "") == hash_:
+            marks[loser["id"]] = hash_
+    return marks
+
+
+def document_label(row):
+    """A reviewer-readable name for the document, WITHOUT its link.
+
+    The nightly log and the review lists get passed around; the links to builders' price
+    lists stay out of them. They name the host (or the email subject) and a short
+    fingerprint instead: two rows with the same [doc xxxxxxxx] came from one document.
+    """
+    doc = _document(row)
+    if not doc:
+        return "(no document)"
+    tag = hashlib.sha1(doc.encode("utf-8")).hexdigest()[:8]
+    if doc.lower().startswith("email:"):
+        # A subject line can carry a link too ("Fwd: stock list https://...").
+        where = "email '" + _URL_RX.sub("<link>", doc[6:]).strip()[:70] + "'"
+    elif "://" in doc:
+        where = urlsplit(doc).hostname or "link"
+    else:
+        where = "file " + os.path.basename(_URL_RX.sub("<link>", doc).replace("\\", "/"))[:60]
+    # PLAIN ASCII. The report is printed inside the status pass's try block, so a subject
+    # carrying a character cp1252 lacks (an emoji; one subject on the 17 Sep copy), printed
+    # to a cp1252 pipe (a Windows run with its output redirected), would raise
+    # UnicodeEncodeError there and throw away every status retirement of the night as a
+    # "failed pass". The [doc] tag still identifies the document.
+    return f"{where} [doc {tag}]".encode("ascii", "replace").decode("ascii")
+
+
+def _status_word(row):
+    return str(row.get("availability_status") or "").strip() or "(blank)"
+
+
+def _state_word(row):
+    return str(row.get("state") or "").strip().upper() or "(blank)"
+
+
+def _document_states(rows):
+    """{document: 'QLD 12, VIC 1'}: the states the rows of each document are filed under.
+
+    For the review list. A capture filed under no state is still on a document whose other
+    lines usually say where it is -- AVIA's Volos sheet is QLD stock with blank-state lines
+    -- and a list that named only losers stored as QLD hid exactly those (release review)."""
+    by_doc = defaultdict(Counter)
+    for r in rows or ():
+        doc = _document(r)
+        if doc:
+            by_doc[doc][_state_word(r)] += 1
+    return {doc: ", ".join(f"{st} {n}" for st, n in sorted(c.items(), key=lambda kv: (-kv[1], kv[0])))
+            for doc, c in by_doc.items()}
+
+
+def _where_filed(loser, winner, doc_states):
+    """'QLD', or for a blank-state loser what its winner and its document say."""
+    st = _state_word(loser)
+    if st != "(blank)":
+        return st
+    said = [f"kept row {_state_word(winner)}"]
+    on_doc = doc_states.get(_document(loser))
+    if on_doc:
+        said.append(f"document {on_doc}")
+    return "(blank; " + "; ".join(said) + ")"
+
+
+def _report_status_pass(status_pairs, kept_live, rows=None, applied=True):
+    """Printed separately from the three passes, because these retirements change what a
+    lot SAYS, not only how many copies of it there are.
+
+    EVERY retirement is listed, one line each, whether or not the pass is applied: this
+    list is what a person signs off before SPB_STATUS_PASS is turned on (critique #4). It
+    used to list only losers stored as QLD -- 25 of 102 on the 17 Sep copy -- so the
+    blank-state AVIA lots on QLD documents could not be reviewed at all."""
+    print()
+    if applied:
+        print(f"    {len(status_pairs)} more superseded because the same line was read again with a")
+        print(f"    different status word ({STATUS_PASS_REASON}):")
+    else:
+        print(f"    status pass OFF ({STATUS_PASS_ENV}={os.environ.get(STATUS_PASS_ENV, '')!r}) -"
+              f" the three-pass rule only. NOT APPLIED:")
+        print(f"    {len(status_pairs)} capture(s) the status pass WOULD supersede ({STATUS_PASS_REASON}).")
+        print(f"    Review the list below; set {STATUS_PASS_ENV}=1 to apply it.")
+    if status_pairs:
+        print("      by state:")
+        for st, n in sorted(Counter(_state_word(l) for l, _ in status_pairs).items(),
+                            key=lambda kv: (-kv[1], kv[0])):
+            print(f"        {n:>5}  {st}")
+        print("      by status, retired -> kept:")
+        trans = Counter(f"{_status_word(l)} -> {_status_word(w)}" for l, w in status_pairs)
+        for t, n in sorted(trans.items(), key=lambda kv: (-kv[1], kv[0])):
+            print(f"        {n:>5}  {t}")
+        doc_states = _document_states(rows)
+        print(f"      every one ({len(status_pairs)}), retired -> kept:")
+        # QLD first (Colin's searches), then the blank-state ones, then the rest by state.
+        order = {"QLD": 0, "(blank)": 1}
+        for l, w in sorted(status_pairs, key=lambda p: (order.get(_state_word(p[0]), 2),
+                                                         _state_word(p[0]), p[0]["id"])):
+            print(f"        {l['id']:>6} -> {w['id']:<6} {_where_filed(l, w, doc_states)}"
+                  f"  {_status_word(l)} {l.get('date_checked') or '?'}"
+                  f" -> {_status_word(w)} {w.get('date_checked') or '?'}"
+                  f"  ${float(l.get('price') or 0):,.0f}  {document_label(l)}")
+    if kept_live:
+        print(f"    {len(kept_live)} capture(s) in those groups deliberately left live:")
+        for why, n in sorted(Counter(k[2] for k in kept_live).items(),
+                             key=lambda kv: (-kv[1], kv[0])):
+            print(f"        {n:>5}  {why}")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--dry-run", action="store_true", help="report only; write nothing")
@@ -301,9 +728,37 @@ def main(argv=None):
     pairs = find_superseded(rows)
 
     total = len(rows)
-    live = total - len(pairs)
     print(f"    {total} row(s) stored")
     print(f"    {len(pairs)} superseded by a fresher capture of the same lot")
+
+    # THE FOURTH PASS, isolated. Everything above is today's rule and is written whatever
+    # happens here: a bug in the new pass must cost tonight's status retirements, not
+    # tonight's publish (this is a required step, and a crash aborts the whole chain).
+    status_pairs, degraded = [], False
+    applying = status_pass_enabled()
+    try:
+        kept_live = []
+        status_pairs = find_status_superseded(
+            rows, {l["id"] for l, _ in pairs}, kept_live=kept_live)
+        _report_status_pass(status_pairs, kept_live, rows, applied=applying)
+    except Exception:                                                  # noqa: BLE001
+        status_pairs = []
+        print()
+        if applying:
+            degraded = True
+            print("ERROR: the status pass failed; falling back to the three existing passes.")
+            print("       Their marks are still written. The run is DEGRADED "
+                  f"(exit {DEGRADED_EXIT}).")
+        else:
+            print(f"WARNING: the status pass is OFF and its review list could not be worked "
+                  f"out.")
+            print("         Nothing depended on it; the three existing passes are written.")
+        traceback.print_exc(file=sys.stdout)
+    if not applying:
+        # Reported above, never written.
+        status_pairs = []
+
+    live = total - len(pairs) - len(status_pairs)
     print(f"    {live} distinct lot(s) remain live")
 
     if pairs:
@@ -340,20 +795,21 @@ def main(argv=None):
             for name, n in sorted(by_builder.items(), key=lambda kv: -kv[1])[:6]:
                 print(f"        {n:>5}  retired from {name}")
 
-    if not args.dry_run and pairs:
+    all_pairs = list(pairs) + list(status_pairs)
+    if not args.dry_run and all_pairs:
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         # Clear first: a row that is no longer a duplicate (because the row that beat
         # it was itself removed, or the spec changed) must not stay flagged.
         conn.execute("UPDATE buildings SET superseded_by=NULL, superseded_at=NULL")
         conn.executemany(
             "UPDATE buildings SET superseded_by=?, superseded_at=? WHERE id=?",
-            [(w["content_hash"], stamp, l["id"]) for l, w in pairs])
+            [(w["content_hash"], stamp, l["id"]) for l, w in all_pairs])
         conn.commit()
         print(f"\n    marked. Superseded rows keep their price and history; they are")
         print(f"    excluded from the benchmark and hidden from the stock table by default.")
 
     print("=" * 66)
-    return 0
+    return DEGRADED_EXIT if degraded else 0
 
 
 if __name__ == "__main__":

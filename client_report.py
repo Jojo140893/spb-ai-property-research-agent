@@ -59,6 +59,16 @@ def _suburb_caveat(p) -> str:
     return ""
 
 
+def _state_label(state) -> str:
+    """The brief's state as a reader should see it: a blank state is a national search.
+
+    Printed raw it was an empty gap, and before brief_parser stopped defaulting a blank
+    state to QLD it printed "QLD" on reports for searches that covered every state.
+    Shared with comparison_report so both headers say the same thing.
+    """
+    return str(state or "").strip().upper() or "Any state"
+
+
 def _esc(v) -> str:
     """Any value that came from a brief or a vendor file, made safe to put in HTML.
 
@@ -389,7 +399,7 @@ class ClientReportGenerator:
   {_logo_html()}
   <div class="titles">
     <h1>Property Recommendations</h1>
-    <p class="meta">Prepared for <strong>{_esc(brief.client_name)}</strong> &middot; {date_str} &middot; Budget up to {_money(brief.budget_max)} &middot; {_esc(brief.state)}</p>
+    <p class="meta">Prepared for <strong>{_esc(brief.client_name)}</strong> &middot; {date_str} &middot; Budget up to {_money(brief.budget_max)} &middot; {_esc(_state_label(brief.state))}</p>
   </div>
 </header>
 <p class="editnote">Any figure with a dashed underline can be clicked and corrected before you print &mdash; the source portals leave the bed / bath / car configuration blank more often than anything else. A blank you leave unfilled is hidden when the report prints.</p>

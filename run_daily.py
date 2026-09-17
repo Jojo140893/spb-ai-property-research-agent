@@ -23,7 +23,9 @@ ORDER MATTERS, and each dependency below is a bug that was actually hit:
                     advertised at its capture date, and those drag medians.
   5. benchmark    — needs the whole set present to compute a median to compare against
   6. export       — CSV + Excel for Coleen
-  7. build+deploy — the snapshot the deployed app reads
+  7. build+deploy — the snapshot the deployed app reads, then Colin's searches replayed
+                    against it through the bundle that ships (search_regressions.py,
+                    optional: a failure marks the run DEGRADED after publishing)
 
 WHAT THIS CANNOT DO UNATTENDED, stated plainly rather than left to fail at 3am:
 Paramount's login carries an invisible reCAPTCHA and Proxima enforces 2FA. Neither can be
@@ -43,6 +45,16 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 _PARTIAL = []          # steps that partly succeeded (exit 2)
+# A step that FINISHED ON ITS FALLBACK PATH: a new pass raised, the step logged it and
+# wrote today's behaviour instead. The chain carries on; the run is marked DEGRADED.
+#
+# 70 (sysexits EX_SOFTWARE, "internal software error") because no crash produces it.
+# Not 2: CI answers 2 with "a channel returned nothing, refresh the portal login". Not 3:
+# a Windows process whose C runtime aborts -- a "Fatal Python error" -- exits 3, and
+# run_daily.cmd runs this chain on Windows, so a REQUIRED step that crashed would read as
+# finished and the chain would publish over it. Steps must use this exact value
+# (supersede_duplicates.DEGRADED_EXIT; tests/test_supersede.py pins the two together).
+DEGRADED_EXIT = 70
 APP = Path(__file__).resolve().parent
 # Written when a channel read nothing, so CI can fail the run AFTER it has published.
 # A file rather than an exit code: the publish step is gated on the run succeeding, and
@@ -81,7 +93,15 @@ def _run(label: str, args: list, optional: bool = False) -> bool:
         # 2 means PARTIAL — some channels failed, others read normally. The chain
         # continues so the channels that DID refresh reach the dashboard; the failure is
         # still reported and still ends the run non-zero.
-        ok = proc.returncode in (0, 2)
+        ok = proc.returncode in (0, 2, DEGRADED_EXIT)
+        if proc.returncode == DEGRADED_EXIT:
+            # FINISHED ON ITS FALLBACK PATH: a step's new pass raised, the step logged it,
+            # kept today's behaviour and wrote that. The chain must continue (it is often
+            # a REQUIRED step, and aborting would withhold the whole night's refresh over
+            # one pass), but the run is marked DEGRADED so CI goes red after publishing.
+            # See DEGRADED_EXIT for why it is this number. First user:
+            # supersede_duplicates.py's status pass.
+            _DEGRADED.append(label + " (a new pass failed; fell back to the previous rule)")
         if proc.returncode == 2:
             _PARTIAL.append(label)
             # Also feed the EXISTING degraded channel, so the "finished but something
@@ -109,6 +129,23 @@ def _run(label: str, args: list, optional: bool = False) -> bool:
     if not ok and optional:
         _DEGRADED.append(label)
     return ok or optional
+
+
+def _lines_already_in_degraded_marker() -> list:
+    """Lines a step wrote into _DEGRADED_MARKER during this run, not already listed.
+
+    main() deletes the marker before the first step, so whatever is in it at the end was
+    written tonight (build_web.py writes one when price evidence failed on some rows).
+    """
+    try:
+        lines = _DEGRADED_MARKER.read_text(encoding="utf-8").splitlines()
+    except (OSError, ValueError):
+        return []
+    out = []
+    for line in (l.strip() for l in lines):
+        if line and line not in _DEGRADED and line not in out:
+            out.append(line)
+    return out
 
 
 def _session_report() -> None:
@@ -336,6 +373,18 @@ def _chain(args) -> int:
         ("6/7  Export CSV + Excel", ["export_csv.py"], False),
         ("6/7  Export Excel workbook", ["export_excel.py"], False),
         ("7/7  Build the deployed snapshot", ["build_web.py"], False),
+        # REPLAY COLIN'S SEARCHES against what was just built, through the bundle that is
+        # about to ship (vercel_site/api), on a read-only copy of the database. Part C,
+        # 16 Sep: his "QLD under $750k" showed a VIC lot filed QLD and a lot a later read
+        # said was On Hold, and nothing checked it. See search_regressions.py.
+        #
+        # OPTIONAL, AND LAST. A failed replay must not withhold tonight's stock: the run
+        # still publishes, _run records the step, main() writes the DEGRADED marker and
+        # alert, and CI goes red after publishing ("Fail the run if a data step died
+        # quietly"). The harness exits 1 on a failure, never 2 (read here as a dead
+        # channel) or DEGRADED_EXIT (read as a fallback).
+        ("7/7  Replay Colin's searches",
+         ["search_regressions.py", "--snapshot", "vercel_site/stock.json"], True),
     ]
 
     print(f"SPB daily run — {datetime.now():%a %d %b %Y %H:%M}")
@@ -404,6 +453,11 @@ def _chain(args) -> int:
                "Last 40 lines of the log:\n\n" + _log_tail())
         return 1
     print("  Data refreshed.")
+    # A STEP CAN MARK THE RUN DEGRADED ITSELF. build_web.py appends a line to the marker
+    # when it published rows without their price evidence -- it has to exit 0, or
+    # deploy.ps1 refuses to publish. Folded in here, or the write_text below would
+    # overwrite that line on a night another step also failed, and no email would name it.
+    _DEGRADED.extend(_lines_already_in_degraded_marker())
     if _DEGRADED:
         # The run finished, so nobody would otherwise look — which is precisely when a
         # degraded step goes unnoticed for days.

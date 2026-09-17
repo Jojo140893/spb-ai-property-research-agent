@@ -100,6 +100,17 @@ MUTANTS = {
         "if (seen.has(id)) return;", "if (false) return;", "no caller listed twice"),
     "a failed hot lookup is not said": (
         "if (c.hotFailed) {", "if (false) {", "hot lookup failed: says a hot caller may be missing"),
+    # Part C W14: explain:true adds search_help and needs_confirming, which belong to the
+    # Research tab. A re-run from a lead card must not ask for them, or show them.
+    "a re-run asks for explain": (
+        "body: JSON.stringify({ client_brief: lead.brief })",
+        "body: JSON.stringify({ client_brief: lead.brief, explain: true })",
+        "re-run never asks for explain"),
+    "the live block falls back to the needs-confirming listings": (
+        "const shortlist = Array.isArray(d.shortlist) ? d.shortlist : [];",
+        "const shortlist = (Array.isArray(d.shortlist) && d.shortlist.length) ? d.shortlist "
+        ": (Array.isArray(d.needs_confirming) ? d.needs_confirming : []);",
+        "needs_confirming only: none of its listings is shown"),
 }
 
 

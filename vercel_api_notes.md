@@ -243,10 +243,48 @@ crawl. Consequences, all surfaced in the UI rather than hidden:
   at $1.05 M: *scored 33 of 4,308 — 3,046 outside QLD, 86 with no state, 88 not
   available, 580 over the ceiling, 69 with no suburb, 399 without the facts the brief's
   minimums are checked against.* `rejected_count` counts in-state rows only; rows for
-  other states are out of scope, not "filtered".
-* **`rejected_log` is capped at 30 pipeline entries** (`SPB_MAX_REJECTED_LOG`) because
-  `index.html` renders one card per entry. `rejected_count` stays exact and a card says
-  the list was trimmed.
+  other states are out of scope, not "filtered". Since Part C (W12) it counts every one
+  of them, and the response carries `in_state_rows` so that
+  `shortlist_count + rejected_count == in_state_rows` can be checked.
+* **`rejected_log` lists up to 30 pending-confirmation entries, then up to 30 hard
+  rejections** (`SPB_MAX_REJECTED_LOG` each) because `index.html` renders one card per
+  entry. Pending entries come first so a stale match is never cut off. `rejected_count`
+  stays exact and a card says what was trimmed.
+* **The brief is read the way the form meant it** (`_normalised_brief`): a price of
+  1-9,999 is thousands, "750k" / "$750,000" / "1.2m" are read, a missing budget_max is
+  no ceiling (not $0), a minimum above the maximum is swapped (and a preferred price
+  equal to the typed maximum moves with it), a state typed into Target
+  Suburbs becomes the state, and a radius with no suburb is noted. Every change is listed
+  in `brief_adjustments`; `brief_used` is what was searched. One JSON line per search
+  (`"event":"spb_research"`, no client name) goes to stdout so a search can be replayed
+  from the function logs.
+* **`"explain": true` (the literal JSON true, nothing else) adds four keys and changes
+  none** (Part C, W13). Without it the response is exactly the one above, which is what
+  Clare's hook and the Hot Leads re-run post. With it:
+  * `search_help` — `funnel` (snapshot rows, out of scope, each gate's count with its
+    in-price-range tally, the scorer's own rejection codes, scored / shortlisted /
+    capped), `location_notes` (resolver entries by `groq`, `fuzzy`, `unresolved` or
+    `state`), `brief_adjustments`, `brief_as_searched`, `timing_ms`, and for a search that
+    shortlisted fewer than `SPB_EXPLAIN_BELOW` (5) the `relaxations`. Each relaxation is
+    the real search re-run with its `brief_patch` (count_status `exact`), priced in the
+    order include_needs_confirming, +$50,000, +10%, whole state, radius, then the
+    minimums and filters, until `SPB_EXPLAIN_BUDGET_MS` (4000) runs out (`not_computed`).
+    Posting `brief_patch` over the form returns exactly its `shortlist_count`; after a
+    swapped min/max a price patch carries the whole range as searched so that stays true.
+    `include_needs_confirming` has no patch: it reveals the list below, and its `capped`
+    repeats `search_help.needs_confirming.count_may_be_short`.
+  * `needs_confirming`, `needs_confirming_count`, `needs_confirming_hidden` — matches a
+    consultant may confirm by phone: Pending candidates whose `confirm_guard` is None, and
+    a separate admit pass over exceptions-only lists with its own collapse and cap, so it
+    never displaces a confirmed lot. Nothing on the shortlist is repeated. Each entry
+    carries the row's own `date_checked` / `age_days`, `source_channel`, and for emailed
+    rows `first_seen` / `list_age_days` (an emailed row's date_checked is the inbox's last
+    re-read, not the list's date). Listed up to `SPB_MAX_NEEDS_CONFIRMING` (50); the count
+    is exact over what was scored (`search_help.needs_confirming.count_may_be_short` says
+    when the candidate cap cut it), and `needs_confirming_hidden` counts matches a
+    sold-stock guard or an admission rule kept back, by reason. These are never
+    recommendations: shortlist, counts, rejected_log, comparisons, reports and
+    kommo_payload are identical with and without the flag.
 * **Verification lapses instead of being asserted.** A stored row *was* verified — by
   the scrape that captured it (`sources/e_agent.py:467`). The deployment cannot
   re-verify it, so the recorded verification is honoured for

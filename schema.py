@@ -141,6 +141,12 @@ class ScoringBreakdown:
     # return nothing at all.
     rejection_reason: str = ""
     advisories: str = ""
+    # One stable code per entry in `rejection_reason` (same order), so a caller can
+    # count "8 over budget, 3 not in the suburbs you named" without parsing sentences.
+    # Codes: over_budget, bedrooms_below_min, bathrooms_below_min,
+    # car_spaces_below_min, storeys_above_max, not_in_requested_suburbs, no_suburb,
+    # distance_unverified, outside_radius, house_size_below_min, land_size_below_min.
+    rejection_codes: List[str] = field(default_factory=list)
 
 
 @dataclass

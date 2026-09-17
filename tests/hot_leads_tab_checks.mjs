@@ -831,6 +831,11 @@ console.log("\n--- Re-run with today's stock ---");
   check("POSTs /api/research", seen && seen.url === "/api/research" && seen.opts.method === "POST");
   check("body is exactly {client_brief: lead.brief}",
     seen && JSON.stringify(JSON.parse(seen.opts.body)) === JSON.stringify({ client_brief: lead.brief }));
+  // Part C W14: explain:true makes the research add search_help and needs_confirming, which
+  // are for the Research tab only. A re-run here must never ask for them.
+  check("re-run never asks for explain",
+    seen && !Object.prototype.hasOwnProperty.call(JSON.parse(seen.opts.body), "explain"),
+    seen ? seen.opts.body.slice(0, 160) : "no request");
   check("button disabled while running", seen && seen.disabled === true);
   check("button re-enabled after", btn.disabled === false && btn.textContent === "Re-run with today's stock");
   check("live results replace the saved ones", !box.innerHTML.includes("SAVED"));
@@ -866,6 +871,25 @@ console.log("\n--- Re-run with today's stock ---");
   await s.api.rerunHotLead(99);
   check("an index with no lead does nothing", s.calls.fetch.length === n);
   check("every fetch went to a dashboard endpoint", s.calls.fetch.every(c => ALLOWED_FETCH.has(c.url)));
+}
+
+// ------------------------------------------------------------------ needs confirming stays out
+console.log("\n--- Needs confirming never reaches a lead card ---");
+{
+  // Part C W14. The research can return listings that need confirming beside an empty
+  // shortlist. They are not recommendations: the live block must read as nothing found,
+  // and must not show them, whatever else the response carries.
+  const s = sandbox();
+  const waiting = rec({ lot_address: "Lot 1228, Dawn, Walloon", builder_name: "Needs Confirming Builder" });
+  const out = s.api.hlLiveBlock({ status: "success", shortlist: [], shortlist_count: 0,
+    needs_confirming: [waiting], needs_confirming_count: 1,
+    search_help: { relaxations: [{ kind: "include_needs_confirming", count: 1 }] } });
+  check("needs_confirming only: \"Nothing in today's stock matches this brief.\"",
+    out.includes(s.api.hlRecsBlock([], { message: "Nothing in today's stock matches this brief." }).trim())
+    && out.includes("Nothing in today&#39;s stock matches this brief."), out.slice(0, 400));
+  check("needs_confirming only: none of its listings is shown",
+    !out.includes("Dawn") && !out.includes("Needs Confirming Builder") && !/class="hl-rec"/.test(out), out.slice(0, 400));
+  auditMarkup("needs_confirming only: markup", out);
 }
 
 // ------------------------------------------------------------------ the page itself

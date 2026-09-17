@@ -168,3 +168,111 @@ def test_apply_marks_rather_than_deletes(tmp_path, monkeypatch):
     assert rows[1][2] == 698050.0, "and keeps the price it was advertised at"
     assert rows[2][1] is None
     assert conn.execute("SELECT COUNT(*) FROM buildings").fetchone()[0] == 2
+
+
+# ------------------------------------- after supersede's status pass (release review)
+#
+# G Developments, Munno Para Downs lot 101 (SA), three reads of one price list:
+#   11734 "Available" 22/08, suburb column "Murray Bridge"  -- a twin of 15985
+#   15985 "ON HOLD"   08/09, "Munno Para Downs" in its own address
+#   18856 "SOLD"      10/09
+# find_suburb_twins retired 11734 in favour of 15985. The status pass then retired 15985 in
+# favour of 18856, repair_rows grouped live rows only, 11734 lost its keeper and was
+# published live again as Available stock. Channel 'digital email' keeps the withdrawn-
+# from-source repair (relisting channels, dated against today) out of the way; the doc is a
+# stand-in, never the builder's link.
+
+_MUNNO_DOC = "email:Fwd: G Developments stock list"
+_MUNNO = ("Munno Para Downs {} 101 Springfield Glenelg Balmoral 4 2 1 300 $322,000 142.2 "
+          "$448,336 $770,336 675 Due {} 2026")
+
+
+def _munno(i, status_word, status, date, checked_at, suburb, due):
+    text = _MUNNO.format(status_word, due)
+    return dict(id=i, builder_name="G Developments", source_channel="digital email",
+                attribution_scope="builder", lot_address=text[:110], suburb=suburb,
+                state="SA", state_source="suburb", estate_name="MURRAY BRIDGE",
+                price=770336.0, bedrooms=4, bathrooms=2, car_spaces=1, land_sqm=300.0,
+                house_sqm=142.2, source_url=_MUNNO_DOC, stocklist_file=_MUNNO_DOC,
+                date_checked=date, last_seen=date, checked_at=checked_at,
+                availability_status=status, source_text=text, content_hash=f"v2:hash{i}")
+
+
+def _munno_db(path):
+    from database import ResearchDatabase
+    ResearchDatabase(path)
+    rows = [
+        _munno(11734, "Available", "Available", "22/08/2026", "2026-08-22T04:03:45",
+               "Murray Bridge", "August"),
+        _munno(15985, "ON HOLD", "On Hold", "08/09/2026", "2026-09-08T11:24:36",
+               "Munno Para Downs", "September"),
+        _munno(18856, "SOLD", "Sold", "10/09/2026", "2026-09-10T11:25:27",
+               "Munno Para Downs", "September"),
+    ]
+    cols = list(rows[0])
+    conn = sqlite3.connect(str(path))
+    conn.executemany(f"INSERT INTO buildings ({', '.join(cols)}) VALUES "
+                     f"({', '.join('?' for _ in cols)})",
+                     [tuple(r[c] for c in cols) for r in rows])
+    conn.commit()
+    conn.close()
+
+
+def _night(db, monkeypatch, status_pass):
+    """supersede_duplicates then repair_rows --apply, as run_daily step 4/7 runs them."""
+    import contextlib
+    import io
+    import config
+    import supersede_duplicates as sd
+    monkeypatch.setattr(config, "DATABASE_PATH", db)
+    monkeypatch.setenv("SPB_SKIP_REREAD", "1")
+    monkeypatch.setenv("SPB_STATUS_PASS", status_pass)
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert sd.main([]) == 0
+        assert R.main(True) == 0
+    conn = sqlite3.connect(str(db))
+    marks = dict(conn.execute("SELECT id, superseded_by FROM buildings"))
+    conn.close()
+    return marks
+
+
+def test_a_twin_stays_retired_when_the_status_pass_retires_its_keeper(tmp_path, monkeypatch):
+    db = tmp_path / "munno.db"
+    _munno_db(db)
+    marks = _night(db, monkeypatch, "1")
+    assert marks[15985] == "v2:hash18856", marks        # the status pass: ON HOLD -> SOLD
+    assert marks[18856] is None, marks
+    # The Available capture stays retired, pointing at the capture that is live.
+    assert marks[11734] == "v2:hash18856", marks
+    # And a second night changes nothing.
+    assert _night(db, monkeypatch, "1") == marks
+
+
+def test_without_the_status_pass_the_twin_keeps_its_old_keeper(tmp_path, monkeypatch):
+    """The premise: this IS a suburb twin (15985 keeps 11734 out), and with the pass off
+    both repairs behave exactly as before it existed."""
+    db = tmp_path / "munno-off.db"
+    _munno_db(db)
+    marks = _night(db, monkeypatch, "0")
+    assert marks == {11734: "v2:hash15985", 15985: None, 18856: None}, marks
+
+
+def test_a_duplicate_line_stays_retired_when_its_keeper_is_status_retired():
+    """find_duplicate_groups, the same shape: AVIA lot 53, 2264 (EOI, filed QLD) kept its
+    blank-state copy 16979 out; the status pass retires 2264 for 4643 (Available)."""
+    line = ("53 Stage 5 400m2 $404,000 August 2026 Vieste Carolina 180m2 4 2 2 0 $500,500 "
+            "$904,500 Volos EOI Owner OCC & Investor {}")
+    keeper = _row(id=2264, suburb="GLENVALE", state="QLD", source_text=line.format("26.06.2026"),
+                  superseded_by="v2:hash4643", content_hash="v2:hash2264",
+                  date_checked="29/07/2026", lot_number="53", land_sqm=400.0,
+                  builder_name="AVIA Homes", lot_address=line.format("")[:110])
+    copy = dict(keeper, id=16979, state=None, suburb="Glenvale", superseded_by=None,
+                source_text=line.format("13.08.2026"), content_hash="v2:hash16979",
+                date_checked="09/09/2026")
+    assert R.find_duplicate_groups([copy]) == [], "premise: alone, the copy has no keeper"
+    ((kept, retired),) = R.find_duplicate_groups([keeper, copy], {2264: "v2:hash4643"})
+    assert kept["id"] == 2264 and [r["id"] for r in retired] == [16979]
+    assert R._keeper_mark(kept, {2264: "v2:hash4643"}) == "v2:hash4643"
+    # A status-retired row is never retired a second time here.
+    assert R.find_duplicate_groups([dict(keeper, state=None), dict(copy, state="QLD")],
+                                   {2264: "v2:hash4643"}) == []

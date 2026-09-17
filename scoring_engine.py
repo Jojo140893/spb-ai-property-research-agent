@@ -11,6 +11,23 @@ from schema import (
 )
 
 
+# Every code ScoringBreakdown.rejection_codes can carry, one per hard-rejection gate in
+# evaluate_property, in gate order. Stable strings: callers count and label by them.
+REJECTION_CODES = (
+    "over_budget",
+    "bedrooms_below_min",
+    "bathrooms_below_min",
+    "car_spaces_below_min",
+    "storeys_above_max",
+    "not_in_requested_suburbs",
+    "no_suburb",
+    "distance_unverified",
+    "outside_radius",
+    "house_size_below_min",
+    "land_size_below_min",
+)
+
+
 class BuilderConfidenceModel:
     """
     Defect #1 Fix: Evaluates builder confidence rating (HIGH, MEDIUM, LOW)
@@ -62,6 +79,8 @@ class ScoringEngine:
         # `advisories` is what a consultant should check before showing it. Pooling
         # them printed advisories on the rejection card as if they were causes.
         rejection_reasons: List[str] = []
+        # One code per reason, appended beside it, so the two lists stay in step.
+        rejection_codes: List[str] = []
         advisories: List[str] = []
         hard_rejection = False
 
@@ -87,6 +106,7 @@ class ScoringEngine:
             hard_rejection = True
             over_amount = advertised - brief.budget_max
             rejection_reasons.append(f"Advertised package price (${advertised:,.0f}) exceeds max budget (${brief.budget_max:,.0f}) by ${over_amount:,.0f}")
+            rejection_codes.append("over_budget")
             budget_pts = 0.0
         else:
             if allowance and realistic_price > brief.budget_max:
@@ -125,16 +145,19 @@ class ScoringEngine:
         if prop.bedrooms is not None and prop.bedrooms < brief.bedrooms_min:
             hard_rejection = True
             rejection_reasons.append(f"Bedrooms ({prop.bedrooms}) below minimum mandatory requirement ({brief.bedrooms_min})")
+            rejection_codes.append("bedrooms_below_min")
             req_pts -= 10.0
 
         if prop.bathrooms is not None and prop.bathrooms < brief.bathrooms_min:
             hard_rejection = True
             rejection_reasons.append(f"Bathrooms ({prop.bathrooms}) below minimum mandatory requirement ({brief.bathrooms_min})")
+            rejection_codes.append("bathrooms_below_min")
             req_pts -= 5.0
 
         if prop.car_spaces is not None and prop.car_spaces < brief.car_spaces_min:
             hard_rejection = True
             rejection_reasons.append(f"Car spaces ({prop.car_spaces}) below minimum mandatory requirement ({brief.car_spaces_min})")
+            rejection_codes.append("car_spaces_below_min")
             req_pts -= 5.0
 
         if prop.storeys is None:
@@ -152,6 +175,7 @@ class ScoringEngine:
         elif brief.storeys_max is not None and prop.storeys > brief.storeys_max:
             hard_rejection = True
             rejection_reasons.append(f"Storeys ({prop.storeys}) exceeds maximum allowed ({brief.storeys_max})")
+            rejection_codes.append("storeys_above_max")
 
         # Distance search is a mandatory boundary, not just a scoring nudge: a client
         # asking for "within N km" must not be shown stock beyond it (SOP Step 3
@@ -173,11 +197,13 @@ class ScoringEngine:
                     "%s is not one of the requested suburbs (%s). Set a search radius to "
                     "include nearby areas." % (prop.suburb or "This listing's suburb",
                                                ", ".join(sorted(brief.primary_suburbs))))
+                rejection_codes.append("not_in_requested_suburbs")
             elif not here:
                 hard_rejection = True
                 rejection_reasons.append(
                     "No suburb recorded for this listing, so it cannot be matched to the "
                     "requested suburbs")
+                rejection_codes.append("no_suburb")
 
         # A radius with NO origin cannot be applied, and applying it anyway rejected
         # EVERYTHING: 2,035 rejections, shortlist 0, status "success". A state-wide search
@@ -195,11 +221,13 @@ class ScoringEngine:
                 rejection_reasons.append(
                     f"Location could not be verified (suburb not recognised), so the "
                     f"{brief.search_radius_km:.0f} km radius from {target} cannot be confirmed")
+                rejection_codes.append("distance_unverified")
             elif prop.distance_km_from_target > brief.search_radius_km:
                 hard_rejection = True
                 rejection_reasons.append(
                     f"{prop.distance_km_from_target:.1f} km from {target} "
                     f"exceeds the {brief.search_radius_km:.0f} km search radius")
+                rejection_codes.append("outside_radius")
 
         # Defect #4 Fix: Mandatory House Size Minimum Check
         if prop.house_size_sqm is None:
@@ -209,6 +237,7 @@ class ScoringEngine:
         elif prop.house_size_sqm < brief.house_size_min_sqm:
             hard_rejection = True
             rejection_reasons.append(f"House size ({prop.house_size_sqm:,.0f} m²) below minimum mandatory requirement ({brief.house_size_min_sqm:,.0f} m²)")
+            rejection_codes.append("house_size_below_min")
             req_pts -= 5.0
 
         # Land size is a MANDATORY minimum, exactly like house size above it.
@@ -231,6 +260,7 @@ class ScoringEngine:
                 rejection_reasons.append(
                     f"Land size ({prop.land_size_sqm:,.0f} m²) below minimum mandatory "
                     f"requirement ({brief.land_size_min_sqm:,.0f} m²)")
+                rejection_codes.append("land_size_below_min")
                 req_pts -= 5.0
 
         req_pts = max(0.0, req_pts)
@@ -286,8 +316,11 @@ class ScoringEngine:
         risk_pts = 10.0 - (len(high_risks) * 5.0 + len(medium_risks) * 2.0)
         risk_pts = max(0.0, risk_pts)
 
+        # A high risk costs points and blocks RECOMMEND, but it rejects nothing, so it is
+        # an advisory. As a "rejection reason" it gave a shortlisted lot a non-empty
+        # rejection_reason with no code to match it.
         if high_risks and not hard_rejection:
-            rejection_reasons.append(f"High risk identified: {high_risks[0].risk_name} ({high_risks[0].description})")
+            advisories.append(f"High risk identified: {high_risks[0].risk_name} ({high_risks[0].description})")
 
         total = budget_pts + req_pts + value_pts + location_pts + builder_pts + suitability_pts + risk_pts
 
@@ -303,6 +336,7 @@ class ScoringEngine:
             hard_rejection=hard_rejection,
             rejection_reason="; ".join(rejection_reasons),
             advisories="; ".join(advisories),
+            rejection_codes=list(rejection_codes),
         )
 
     @classmethod

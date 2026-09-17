@@ -6,8 +6,8 @@ Step 6 Turnkey Auditor, Step 15 QA Checklist, and Kommo CRM v4 REST Integration.
 
 import json
 import os
-from datetime import datetime
-from typing import List, Dict, Any, Optional
+from datetime import datetime, timedelta, timezone
+from typing import List, Dict, Any, Optional, Tuple
 
 from schema import (
     ClientBrief, CandidateProperty, RecommendationStatus,
@@ -61,6 +61,17 @@ def _opt_int(value):
     return None if number is None else int(number)
 
 
+# Stock is checked, stored and read in Australian Eastern Standard Time (Queensland keeps
+# no daylight saving). The deployed function runs in UTC, where 16/09 23:30 is still 16/09
+# while the stock list already says 17/09.
+_AEST = timezone(timedelta(hours=10))
+
+
+def _today_aest() -> str:
+    """Today as a card prints it, dd/mm/YYYY in AEST."""
+    return datetime.now(_AEST).strftime("%d/%m/%Y")
+
+
 class KommoPropertyResearchAgent:
     def __init__(self, csv_filepath: Optional[str] = None):
         self.builder_registry = BuilderRegistry(csv_filepath or str(config.BUILDER_CSV_PATH))
@@ -81,17 +92,28 @@ class KommoPropertyResearchAgent:
         # Step 1 & 2: Structure Client Brief & Research Record
         brief: ClientBrief = ClientBriefParser.parse_dict(raw_brief_dict)
         suburb_name = brief.primary_suburbs[0] if brief.primary_suburbs else 'General'
-        research_record_id = f"{brief.client_name} - {brief.state}/{suburb_name} - ${brief.budget_max:,.0f} - {datetime.now().strftime('%Y-%m-%d')}"
+        # A blank state is Any state (brief_parser), and the record says so. It read
+        # " - /General" once the parser stopped defaulting to QLD, and "QLD/General"
+        # before that for a national search holding one QLD lot in 510.
+        state_label = brief.state or 'Any state'
+        research_record_id = f"{brief.client_name} - {state_label}/{suburb_name} - ${brief.budget_max:,.0f} - {datetime.now().strftime('%Y-%m-%d')}"
 
         # Step 3: Distance search — expand the primary suburbs into a full search
         # area ("within N km of Springfield") when a radius is supplied.
-        search_area = self.geo.expand_search_suburbs(brief.primary_suburbs, brief.state, brief.search_radius_km)
+        search_area = self._search_area(brief)
         search_suburbs = [s['suburb'] for s in search_area] or brief.primary_suburbs
-        distance_lookup = {s['suburb'].lower(): s['distance_km'] for s in search_area}
+        if not brief.state and brief.search_radius_km:
+            # No area was drawn (see _search_area), so the names alone would narrow a
+            # live crawl to the named suburbs and drop every lot inside the radius
+            # around them. Nothing is pre-filtered by name; the scorer measures each lot
+            # from the named suburbs in its own state and applies the radius.
+            search_suburbs = []
 
         # Full builder coverage: every builder in the approved directory for this
-        # state is in scope, split by channel, and reported back for audit.
-        state_builders = self.builder_registry.get_builders_by_state(brief.state)
+        # state is in scope, split by channel, and reported back for audit. Any state
+        # puts the whole directory in scope.
+        state_builders = (self.builder_registry.get_builders_by_state(brief.state)
+                          if brief.state else list(self.builder_registry.get_all_builders()))
         builder_coverage = {
             'total_in_directory': len(self.builder_registry.get_all_builders()),
             'in_scope_for_state': len(state_builders),
@@ -103,15 +125,161 @@ class KommoPropertyResearchAgent:
         # Step 4: Hybrid Search & Capture across channels if candidate_packages is not manually provided
         if not candidate_packages:
             search_filters = {'state': brief.state, 'budget_max': brief.budget_max, 'primary_suburbs': search_suburbs}
+            if not brief.state:
+                # No state filter at all for Any state. Every live source reads it as
+                # filters.get("state", ""), which is the whole directory (see
+                # BuilderRegistry.get_builders_by_state) -- never a state called ''.
+                del search_filters['state']
             raw_captured = []
             raw_captured.extend(self.eagent_source.search(search_filters))
             raw_captured.extend(self.portal_source.search(search_filters))
             raw_captured.extend(self.drive_source.search({'budget_max': brief.budget_max}))
             candidate_packages = DedupeEngine.deduplicate(raw_captured)
 
-        # Step 5 to 11: Process Each Candidate Package
+        # Step 5 to 11: Process Each Candidate Package, ranked by Total Score.
+        processed_candidates, rejected_candidates = self.score_candidates(
+            brief, candidate_packages, search_area=search_area)
+
+        # SOP Step 5: Pending Confirmation packages stay out of the final list
+        # unless a consultant explicitly approves their inclusion.
+        final_pool = [
+            c for c in processed_candidates
+            if c.verification_status == VerificationStatus.VERIFIED or c.consultant_approved
+        ]
+        # EVERY qualifying property, ranked — not the top 5.
+        #
+        # This was `final_pool[:5]`, from the original SOP's "select top 3-5 shortlisted
+        # properties". The cap was invisible and actively misleading: the badge reads
+        # "5 QUALIFIED", which a consultant reads as "five exist". Ahsan's Wyndham Vale
+        # brief (VIC, $800k, 4 bed, 300 m² min) scores 475 candidates and showed him 5.
+        # He asked the obvious question — "are there maximum 5 buildings or are there
+        # more?" — which is the question a hidden cap always eventually produces.
+        #
+        # Ranking is unchanged, so rank #1 is still rank #1; what changes is that #6
+        # onwards now exist. The page renders them in batches (see index.html) so a
+        # 475-result brief does not build 475 scoring matrices at once.
+        #
+        # The env var is a safety valve, not a default: unset means no cap.
+        _cap = int(os.environ.get("SPB_SHORTLIST_MAX", "0") or 0)
+        shortlist = final_pool[:_cap] if _cap > 0 else list(final_pool)
+        pending_awaiting = [c for c in processed_candidates if c not in final_pool]
+        for c in pending_awaiting:
+            rejected_candidates.append({
+                'property_id': c.property_id,
+                'address': c.lot_address,
+                'reason': 'Pending Confirmation - excluded from final list until verified or consultant-approved',
+                # Not a hard rejection: it passed every requirement and only waits on
+                # confirmation, so a reader can keep it apart without matching the text.
+                'kind': 'pending_confirmation',
+                'codes': ['pending_confirmation'],
+            })
+
+        # Step 15: Automated Section 9 QA Checklist Validation
+        qa_passed, qa_failures = Section9QAChecker.verify_pipeline_compliance(brief, len(candidate_packages), shortlist)
+
+        # Step 12: Generate Reports
+        reports = []
+        for prop in shortlist:
+            summary_md = ReportGenerator.generate_property_summary_markdown(brief, prop)
+            reports.append({
+                'property_id': prop.property_id,
+                'address': prop.lot_address,
+                'suburb': prop.suburb,
+                'score': prop.scoring.total_score if prop.scoring else 0,
+                'recommendation': prop.recommendation.value,
+                'summary_markdown': summary_md
+            })
+
+        # Step 12b: Client-facing report (2026-07-22 requirement) — the leading options
+        # with purchase price vs market average, rent, yield, and reasons.
+        #
+        # The count is stated HERE rather than hidden inside the generator, because it is
+        # an editorial decision about a client-facing document and it went wrong once by
+        # being invisible: it was `shortlist[:3]` against a shortlist capped at 5, and
+        # when that cap was lifted it quietly became "top 3 of 544". This is the automatic
+        # document produced for every search, so a short default is right; a consultant
+        # comparing a hand-picked set uses the comparison report instead, which renders
+        # exactly what was selected.
+        _report_options = int(os.environ.get("SPB_REPORT_OPTIONS", "3") or 3)
+        client_report_html = ClientReportGenerator.generate_html(
+            brief, shortlist, limit=_report_options) if shortlist else ""
+        client_report_path = ""
+        if client_report_html:
+            # Sanitised AND bounded. Stripping unsafe characters was not enough: a long
+            # name (a company, or a pasted line of text) built a path past the filesystem
+            # limit and the whole search died with "File name too long" — after the work
+            # was already done. An unnamed client still needs a file, hence the fallback.
+            safe_name = "".join(ch for ch in (brief.client_name or "")
+                                if ch.isalnum() or ch in " -_").strip().replace(" ", "_")
+            safe_name = safe_name[:60].strip("_") or "client"
+            report_file = config.OUTPUT_DIR / f"client_report_{safe_name}_{datetime.now().strftime('%Y%m%d')}.html"
+            with open(report_file, 'w', encoding='utf-8') as f:
+                f.write("<!DOCTYPE html><html><head><meta charset='utf-8'><title>SPB Property Recommendations</title></head><body>"
+                        + client_report_html + "</body></html>")
+            client_report_path = str(report_file)
+
+        # Step 14: Kommo CRM Update Payload Format & Database Audit Trail
+        kommo_update_payload = self._build_kommo_update_payload(brief, research_record_id, shortlist, rejected_candidates)
+        self.db.save_research_run(research_record_id, raw_brief_dict, shortlist, rejected_candidates)
+
+        return {
+            'research_record_id': research_record_id,
+            'client_brief': brief,
+            'search_area': search_area,
+            'builder_coverage': builder_coverage,
+            'shortlist_count': len(shortlist),
+            'shortlist': shortlist,
+            'rejected_count': len(rejected_candidates),
+            'rejected_log': rejected_candidates,
+            # The candidates behind the Pending Confirmation entries above, ranked, with
+            # their own dates. rejected_log keeps only a line of text for each; the
+            # needs-confirming pass needs the candidate. Never part of the shortlist.
+            'pending_confirmation': pending_awaiting,
+            'qa_passed': qa_passed,
+            'qa_failures': qa_failures,
+            'reports': reports,
+            'client_report_html': client_report_html,
+            'client_report_path': client_report_path,
+            'kommo_payload': kommo_update_payload
+        }
+
+    def _search_area(self, brief: ClientBrief) -> List[Dict[str, Any]]:
+        """The primary suburbs, plus every suburb inside the radius around them.
+
+        A radius is drawn inside one state. With no state (Any state) there is no state
+        to draw it in, so no area is drawn: the named suburbs stand at 0.0 km and
+        score_candidates measures every other lot from the named suburbs in the lot's
+        OWN state. Drawn in a state called '' it found nothing, and every lot came back
+        "Location could not be verified": Any state + Springfield + 20 km returned 0.
+        """
+        if not brief.state:
+            return self.geo.expand_search_suburbs(brief.primary_suburbs, '', 0)
+        return self.geo.expand_search_suburbs(brief.primary_suburbs, brief.state,
+                                               brief.search_radius_km)
+
+    def score_candidates(self, brief, candidate_packages: List[Dict[str, Any]],
+                         search_area: Optional[List[Dict[str, Any]]] = None,
+                         ) -> Tuple[List[CandidateProperty], List[Dict[str, Any]]]:
+        """Steps 5-11 for every package: (processed, rejected).
+
+        processed  every candidate that passed the hard rejections, verified or not,
+                   ranked by total score (highest first);
+        rejected   one entry per hard rejection, in package order.
+
+        Nothing else: no audit row, no report, no Kommo payload, and no Pending split --
+        run_property_research does those, so the explain pass can score packages again
+        (needs-confirming rows, relaxations) without writing anything. `brief` is a
+        ClientBrief or the raw brief dict. Like the loop it was lifted from, it writes
+        the resolved locality back into each package's 'suburb'.
+        """
+        if not isinstance(brief, ClientBrief):
+            brief = ClientBriefParser.parse_dict(brief)
+        if search_area is None:
+            search_area = self._search_area(brief)
+        distance_lookup = {s['suburb'].lower(): s['distance_km'] for s in search_area}
+
         processed_candidates: List[CandidateProperty] = []
-        rejected_candidates: List[Dict[str, str]] = []
+        rejected_candidates: List[Dict[str, Any]] = []
 
         for idx, raw_pkg in enumerate(candidate_packages):
             builder_name = raw_pkg.get('builder_name', 'Unknown Builder')
@@ -169,7 +337,9 @@ class KommoPropertyResearchAgent:
             # scoring_engine already treats an unverifiable distance as a hard rejection
             # against a stated radius rather than a free pass.
             bm_res = self.benchmark_engine.benchmark_package(
-                pkg_suburb, brief.state,
+                # The LOT's state. Under Any state brief.state is '' for every package,
+                # and a comparable is matched on state, so nothing could ever match.
+                pkg_suburb, raw_pkg.get('state') or brief.state,
                 # None, not 4: a get() default cannot fire on a key that is present and
                 # null, so this int() crashed the whole request once listings with an
                 # unstated bedroom count were allowed through. Guessing 4 would also
@@ -204,7 +374,13 @@ class KommoPropertyResearchAgent:
             if pkg_suburb.lower() in distance_lookup:
                 dist_km = distance_lookup[pkg_suburb.lower()]
             else:
-                dists = [self.geo.distance_between(pkg_suburb, p, brief.state) for p in brief.primary_suburbs]
+                # Measured in the LOT's state. Under Any state brief.state is '', geo can
+                # place nothing in a state called '', and every lot was rejected as
+                # "Location could not be verified": Any state + Springfield + 20 km
+                # returned 0, and before the parser stopped defaulting to QLD it measured
+                # VIC and NSW lots against Springfield QLD.
+                dists = [self.geo.distance_between(pkg_suburb, p, raw_pkg.get('state') or brief.state)
+                         for p in brief.primary_suburbs]
                 dists = [d for d in dists if d is not None]
                 dist_km = min(dists) if dists else None
 
@@ -268,13 +444,30 @@ class KommoPropertyResearchAgent:
                 builder_confidence_rating=b_rating,
                 source_channel=raw_pkg.get('source_channel', 'E-Agent / Builder Portal'),
                 source_url_or_ref=raw_pkg.get('source_url_or_ref', builder_info.get('portal_link', '') if builder_info else 'Internal Stock'),
-                date_checked=datetime.now().strftime("%d/%m/%Y"),
+                # THE ROW'S OWN DATE, never the day of the search. This was today for every
+                # card, so a lot last seen on 20/08 read "checked 16/09/2026", the card's
+                # "N days ago -- confirm" warning could never fire, and Clare told callers
+                # a lot was "available as at" today. Stored stock always carries the key
+                # (blank when the row had no readable date, which stays blank); a live
+                # crawl sets its own, and only a package with no key at all is today.
+                date_checked=(str(raw_pkg['date_checked'] or '') if 'date_checked' in raw_pkg
+                              else _today_aest()),
                 verification_status=verif_status,
                 consultant_approved=raw_pkg.get('consultant_approved', False),
                 risks=risks,
                 benchmark=bm_res,
                 distance_km_from_target=dist_km
             )
+            # What the snapshot knew about this row that a card, the needs-confirming
+            # pass or Clare has to see, and CandidateProperty has no field for. Read with
+            # getattr, like source_link, so a hand-built candidate simply has none.
+            #   availability_by_the_sheet  the list has no status column at all
+            #   availability_status        the status as the package states it; None when
+            #                              the package does not carry one
+            #   age_days                   days since date_checked on the search's today
+            cand.availability_by_the_sheet = bool(raw_pkg.get('availability_by_the_sheet'))
+            cand.availability_status = raw_pkg.get('availability_status')
+            cand.age_days = raw_pkg.get('age_days')
 
             # Step 11: Score Property Matrix
             cand.scoring = ScoringEngine.evaluate_property(brief, cand)
@@ -290,107 +483,16 @@ class KommoPropertyResearchAgent:
                     # Shown separately: these did not cause the rejection.
                     'advisories': cand.scoring.advisories,
                     'kind': 'rejection',
+                    # One code per '; '-separated reason (scoring_engine.REJECTION_CODES),
+                    # so a funnel can count gates without parsing English.
+                    'codes': list(cand.scoring.rejection_codes),
                 })
             else:
                 processed_candidates.append(cand)
 
         # Rank candidates by Total Score descending
         processed_candidates.sort(key=lambda x: x.scoring.total_score if x.scoring else 0, reverse=True)
-
-        # SOP Step 5: Pending Confirmation packages stay out of the final list
-        # unless a consultant explicitly approves their inclusion.
-        final_pool = [
-            c for c in processed_candidates
-            if c.verification_status == VerificationStatus.VERIFIED or c.consultant_approved
-        ]
-        # EVERY qualifying property, ranked — not the top 5.
-        #
-        # This was `final_pool[:5]`, from the original SOP's "select top 3-5 shortlisted
-        # properties". The cap was invisible and actively misleading: the badge reads
-        # "5 QUALIFIED", which a consultant reads as "five exist". Ahsan's Wyndham Vale
-        # brief (VIC, $800k, 4 bed, 300 m² min) scores 475 candidates and showed him 5.
-        # He asked the obvious question — "are there maximum 5 buildings or are there
-        # more?" — which is the question a hidden cap always eventually produces.
-        #
-        # Ranking is unchanged, so rank #1 is still rank #1; what changes is that #6
-        # onwards now exist. The page renders them in batches (see index.html) so a
-        # 475-result brief does not build 475 scoring matrices at once.
-        #
-        # The env var is a safety valve, not a default: unset means no cap.
-        _cap = int(os.environ.get("SPB_SHORTLIST_MAX", "0") or 0)
-        shortlist = final_pool[:_cap] if _cap > 0 else list(final_pool)
-        pending_awaiting = [c for c in processed_candidates if c not in final_pool]
-        for c in pending_awaiting:
-            rejected_candidates.append({
-                'property_id': c.property_id,
-                'address': c.lot_address,
-                'reason': 'Pending Confirmation - excluded from final list until verified or consultant-approved'
-            })
-
-        # Step 15: Automated Section 9 QA Checklist Validation
-        qa_passed, qa_failures = Section9QAChecker.verify_pipeline_compliance(brief, len(candidate_packages), shortlist)
-
-        # Step 12: Generate Reports
-        reports = []
-        for prop in shortlist:
-            summary_md = ReportGenerator.generate_property_summary_markdown(brief, prop)
-            reports.append({
-                'property_id': prop.property_id,
-                'address': prop.lot_address,
-                'suburb': prop.suburb,
-                'score': prop.scoring.total_score if prop.scoring else 0,
-                'recommendation': prop.recommendation.value,
-                'summary_markdown': summary_md
-            })
-
-        # Step 12b: Client-facing report (2026-07-22 requirement) — the leading options
-        # with purchase price vs market average, rent, yield, and reasons.
-        #
-        # The count is stated HERE rather than hidden inside the generator, because it is
-        # an editorial decision about a client-facing document and it went wrong once by
-        # being invisible: it was `shortlist[:3]` against a shortlist capped at 5, and
-        # when that cap was lifted it quietly became "top 3 of 544". This is the automatic
-        # document produced for every search, so a short default is right; a consultant
-        # comparing a hand-picked set uses the comparison report instead, which renders
-        # exactly what was selected.
-        _report_options = int(os.environ.get("SPB_REPORT_OPTIONS", "3") or 3)
-        client_report_html = ClientReportGenerator.generate_html(
-            brief, shortlist, limit=_report_options) if shortlist else ""
-        client_report_path = ""
-        if client_report_html:
-            # Sanitised AND bounded. Stripping unsafe characters was not enough: a long
-            # name (a company, or a pasted line of text) built a path past the filesystem
-            # limit and the whole search died with "File name too long" — after the work
-            # was already done. An unnamed client still needs a file, hence the fallback.
-            safe_name = "".join(ch for ch in (brief.client_name or "")
-                                if ch.isalnum() or ch in " -_").strip().replace(" ", "_")
-            safe_name = safe_name[:60].strip("_") or "client"
-            report_file = config.OUTPUT_DIR / f"client_report_{safe_name}_{datetime.now().strftime('%Y%m%d')}.html"
-            with open(report_file, 'w', encoding='utf-8') as f:
-                f.write("<!DOCTYPE html><html><head><meta charset='utf-8'><title>SPB Property Recommendations</title></head><body>"
-                        + client_report_html + "</body></html>")
-            client_report_path = str(report_file)
-
-        # Step 14: Kommo CRM Update Payload Format & Database Audit Trail
-        kommo_update_payload = self._build_kommo_update_payload(brief, research_record_id, shortlist, rejected_candidates)
-        self.db.save_research_run(research_record_id, raw_brief_dict, shortlist, rejected_candidates)
-
-        return {
-            'research_record_id': research_record_id,
-            'client_brief': brief,
-            'search_area': search_area,
-            'builder_coverage': builder_coverage,
-            'shortlist_count': len(shortlist),
-            'shortlist': shortlist,
-            'rejected_count': len(rejected_candidates),
-            'rejected_log': rejected_candidates,
-            'qa_passed': qa_passed,
-            'qa_failures': qa_failures,
-            'reports': reports,
-            'client_report_html': client_report_html,
-            'client_report_path': client_report_path,
-            'kommo_payload': kommo_update_payload
-        }
+        return processed_candidates, rejected_candidates
 
     def _build_kommo_update_payload(self, brief: ClientBrief, record_id: str, shortlist: List[CandidateProperty], rejected: List[Dict[str, str]]) -> Dict[str, Any]:
         shortlist_summary = []
