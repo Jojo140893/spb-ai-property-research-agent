@@ -67,6 +67,7 @@
       "timed": true,
       "self_check_nightly": true,
       "expect": {
+        "brief_used": {"state": "QLD", "budget_min": 0, "budget_max": 750000},
         "never": "never_in_a_qld_search",
         "needs_confirming_contains": ["1228", "1229", "1231"],
         "funnel": true,
@@ -80,6 +81,7 @@
       "title": "QLD 760000 -- Colin's first retry",
       "client_brief": {"budget_max": 760000, "preferred_spending_cap": 760000},
       "expect": {
+        "brief_used": {"state": "QLD", "budget_min": 0, "budget_max": 760000},
         "never": "never_in_a_qld_search",
         "never_also": {"v2:022e96c6": "9571 Windermere Mambourin at $752,400"},
         "needs_confirming_contains": ["1228", "1229", "1231"],
@@ -93,6 +95,7 @@
       "title": "QLD 770000 -- Colin's second retry",
       "client_brief": {"budget_max": 770000, "preferred_spending_cap": 770000},
       "expect": {
+        "brief_used": {"state": "QLD", "budget_min": 0, "budget_max": 770000},
         "never": "never_in_a_qld_search",
         "never_also": {"v2:022e96c6": "9571 Windermere Mambourin at $752,400"},
         "needs_confirming_contains": ["1228", "1229", "1231"],
@@ -106,6 +109,7 @@
       "title": "QLD, budget typed as 750",
       "client_brief": {"budget_max": 750, "preferred_spending_cap": 750},
       "expect": {
+        "brief_used": {"state": "QLD", "budget_min": 0, "budget_max": 750000},
         "never": "never_in_a_qld_search",
         "adjustment": {"field": "budget_max", "code": "budget_in_thousands", "from": 750, "to": 750000},
         "equal_to": "qld_750k"
@@ -117,6 +121,7 @@
       "title": "QLD, budget typed as \"750k\"",
       "client_brief": {"budget_max": "750k", "preferred_spending_cap": "750k"},
       "expect": {
+        "brief_used": {"state": "QLD", "budget_min": 0, "budget_max": 750000},
         "never": "never_in_a_qld_search",
         "adjustment": {"field": "budget_max", "code": "budget_from_text", "to": 750000},
         "equal_to": "qld_750k"
@@ -128,6 +133,7 @@
       "title": "QLD, budget typed as \"$750,000\"",
       "client_brief": {"budget_max": "$750,000", "preferred_spending_cap": "$750,000"},
       "expect": {
+        "brief_used": {"state": "QLD", "budget_min": 0, "budget_max": 750000},
         "never": "never_in_a_qld_search",
         "adjustment": {"field": "budget_max", "code": "budget_from_text", "to": 750000},
         "equal_to": "qld_750k"
@@ -139,6 +145,7 @@
       "title": "State QLD, and \"Queensland\" typed in Target Suburbs",
       "client_brief": {"primary_suburbs": ["Queensland"]},
       "expect": {
+        "brief_used": {"state": "QLD", "budget_min": 0, "budget_max": 750000},
         "never": "never_in_a_qld_search",
         "location_method": "state",
         "equal_to": "qld_750k"
@@ -151,7 +158,7 @@
       "client_brief": {"state": "", "primary_suburbs": ["Queensland"]},
       "expect": {
         "never": "never_in_a_qld_search",
-        "brief_used": {"state": "QLD"},
+        "brief_used": {"state": "QLD", "budget_min": 0, "budget_max": 750000},
         "equal_to": "qld_750k"
       }
     },
@@ -162,7 +169,7 @@
       "client_brief": {"state": "", "primary_suburbs": ["QLD"]},
       "expect": {
         "never": "never_in_a_qld_search",
-        "brief_used": {"state": "QLD"},
+        "brief_used": {"state": "QLD", "budget_min": 0, "budget_max": 750000},
         "equal_to": "qld_750k"
       }
     },
@@ -172,6 +179,7 @@
       "title": "Any state, no suburb, 750000",
       "client_brief": {"state": ""},
       "expect": {
+        "brief_used": {"state": "Any state", "budget_min": 0, "budget_max": 750000},
         "record_id_contains": ["Any state"],
         "record_id_excludes": ["QLD/"],
         "min_shortlist": 100,
@@ -186,6 +194,7 @@
       "client_brief": {},
       "drop": ["budget_max", "preferred_spending_cap"],
       "expect": {
+        "brief_used": {"state": "QLD", "budget_min": 0, "budget_max": 9007199254740991},
         "never": "never_in_a_qld_search",
         "adjustment": {"field": "budget_max"},
         "min_shortlist": 100
@@ -198,7 +207,7 @@
       "client_brief": {"budget_min": 750000, "budget_max": 300000, "preferred_spending_cap": 300000},
       "expect": {
         "never": "never_in_a_qld_search",
-        "brief_used": {"budget_min": 300000, "budget_max": 750000},
+        "brief_used": {"state": "QLD", "budget_min": 300000, "budget_max": 750000},
         "adjustment": {"code": "min_max_swapped"},
         "equal_to": "qld_300k_750k"
       }
@@ -209,6 +218,7 @@
       "title": "QLD 300000-750000, the range #10 meant",
       "client_brief": {"budget_min": 300000, "budget_max": 750000, "preferred_spending_cap": 750000},
       "expect": {
+        "brief_used": {"state": "QLD", "budget_min": 300000, "budget_max": 750000},
         "never": "never_in_a_qld_search"
       }
     },
@@ -218,6 +228,7 @@
       "title": "Client name left blank",
       "client_brief": {"client_name": ""},
       "expect": {
+        "brief_used": {"state": "QLD", "budget_min": 0, "budget_max": 750000},
         "never": "never_in_a_qld_search",
         "record_id_startswith": "Unnamed Client"
       }
@@ -228,6 +239,7 @@
       "title": "Client name left blank, on the path a search with nothing to score takes (critique #14)",
       "client_brief": {"client_name": "", "budget_max": 100000, "preferred_spending_cap": 100000},
       "expect": {
+        "brief_used": {"state": "QLD", "budget_min": 0, "budget_max": 100000},
         "never": "never_in_a_qld_search",
         "record_id_startswith": "Unnamed Client"
       }
@@ -238,6 +250,7 @@
       "title": "Werribee VIC, 700000, 4 bed",
       "client_brief": {"state": "VIC", "primary_suburbs": ["Werribee"], "budget_max": 700000, "preferred_spending_cap": 700000, "bedrooms_min": 4},
       "expect": {
+        "brief_used": {"state": "VIC", "budget_min": 0, "budget_max": 700000},
         "min_shortlist": 1,
         "no_over_budget_rejections": true
       }
@@ -248,6 +261,7 @@
       "title": "\"Red Bank Plains\" QLD, 1050000, 4 bed, radius 0 (critique #12)",
       "client_brief": {"primary_suburbs": ["Red Bank Plains"], "budget_max": 1050000, "preferred_spending_cap": 1050000, "bedrooms_min": 4, "search_radius_km": 0},
       "expect": {
+        "brief_used": {"state": "QLD", "budget_min": 0, "budget_max": 1050000},
         "never": "never_in_a_qld_search",
         "min_shortlist": 1,
         "suburb_searched": "Redbank Plains",
@@ -274,6 +288,7 @@
         "search_radius_km": null
       },
       "expect": {
+        "brief_used": {"state": "QLD", "budget_min": 0, "budget_max": 750000},
         "never": "never_in_a_qld_search",
         "no_explain_keys": true,
         "equal_to": "qld_750k"
@@ -285,6 +300,7 @@
       "title": "QLD, budget_max 800000: Armstrong Creek lots 9565/9566 and Dawn lot 1009 are in range",
       "client_brief": {"budget_max": 800000, "preferred_spending_cap": 800000},
       "expect": {
+        "brief_used": {"state": "QLD", "budget_min": 0, "budget_max": 800000},
         "never": "never_in_a_qld_search",
         "needs_confirming_contains": ["1228", "1229", "1231", "1009"],
         "funnel": true,

@@ -25,7 +25,12 @@ retries into nothing, from data/colin_searches.json, and checks what must hold f
             published vercel_site/stock.json by content_hash (critique #13).
 
 WHAT IS CHECKED, for every brief:
-  * the response is status success;
+  * the response is status success, it searched the state and price range the brief says
+    (expect.brief_used, required on every brief: an echo is not an oracle), and a body
+    with explain got every explain key back with no pass failed (search_help.error, a
+    relaxation priced as "error");
+  * what goes to Kommo names shortlisted cards only: the lead's top property is one of
+    them, and no needs-confirming card is written into the internal note;
   * NEGATIVE INVARIANTS on every shortlisted and needs-confirming card: inside the searched
     state and price range; its date_checked equals the catalogue's (the DB's, in --snapshot);
     its row does not say Sold / On Hold; a shortlisted card is at most 14 days old; and no
@@ -73,6 +78,7 @@ import tempfile
 import time
 import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -82,6 +88,8 @@ BRIEFS = APP / "data" / "colin_searches.json"
 DEFAULT_SNAPSHOT = APP / "vercel_site" / "stock.json"
 
 SERVICE_KEY_HEADER = "x-spb-service-key"
+# The only hosts --live may reach over plain http (a stub server in the tests).
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 # A shortlisted card must be verified: read within this many days (_candidates.FRESH_DAYS,
 # stated here on purpose -- the harness does not borrow the rule it is checking).
 FRESH_DAYS = 14
@@ -129,6 +137,8 @@ ALLOWED_VERDICTS = ("shortlist", "needs_confirming", "collapsed_into_visible",
 WARN_VERDICTS = ("no_suburb", "suburb_not_a_locality", "incomplete_facts")
 EXPLAIN_KEYS = ("search_help", "needs_confirming", "needs_confirming_count",
                 "needs_confirming_hidden")
+# What every brief in data/colin_searches.json must say it searched (load_spec).
+BRIEF_USED_REQUIRED = ("state", "budget_min", "budget_max")
 NO_CEILING = 9007199254740991
 EMAIL_CHANNEL = "digital email"
 
@@ -261,6 +271,15 @@ def load_spec(path=BRIEFS):
         for lot in expect.get("needs_confirming_contains") or ():
             if lot not in lots:
                 raise ValueError("%s: Dawn lot %s is not defined" % (brief["id"], lot))
+        # THE BRIEF'S OWN STATE AND RANGE, not only the server's echo of them. Every card is
+        # checked against brief_used; a normaliser that misread the budget would echo its
+        # own misreading and every card inside it would pass (a thousands rule widened to
+        # 1,000,000 searched "QLD $100,000" as $100,000,000 and returned 370 green results).
+        stated = expect.get("brief_used") or {}
+        lacking = [k for k in BRIEF_USED_REQUIRED if k not in stated]
+        if lacking:
+            raise ValueError("%s: expect.brief_used must state %s" % (
+                brief["id"], ", ".join(lacking)))
     return spec
 
 
@@ -570,7 +589,9 @@ class Run:
         confirming = [e for e in resp.get("needs_confirming") or [] if isinstance(e, dict)]
         used = resp.get("brief_used") or {}
 
+        self.explain_answered(where, body, resp)
         self.card_invariants(where, used, shortlist, confirming)
+        self.kommo(where, resp, shortlist, confirming)
         if expect.get("never"):
             listed = dict(self.spec[expect["never"]])
             listed.update(expect.get("never_also") or {})
@@ -632,6 +653,75 @@ class Run:
                 resp.get("needs_confirming_count", "-"), seconds))
 
     # -- the checks
+
+    def explain_answered(self, where, body, resp):
+        """A body with explain gets every explain key back, and none of explain's own passes
+        failed. _with_explain never raises -- a pass that does is caught, leaves [] behind
+        and is named in search_help.error -- so without this a needs-confirming or
+        relaxations pass that throws every night reads as "nothing to offer"."""
+        if body.get("explain") is not True:
+            return
+        missing = [k for k in EXPLAIN_KEYS if k not in resp]
+        if missing:
+            self.report.fail(where, "a body with explain got no %s back" % missing)
+        help_ = resp.get("search_help")
+        if not isinstance(help_, dict):
+            return
+        if help_.get("error"):
+            self.report.fail(where, "search_help.error: %s" % str(help_["error"])[:300])
+        for offer in help_.get("relaxations") or ():
+            if isinstance(offer, dict) and offer.get("count_status") == "error":
+                # A re-run that raised, not one the time budget skipped: the button has no
+                # count, every night, for a reason nobody is told.
+                self.report.fail(where, "relaxation %s failed to price: %s"
+                                 % (offer.get("id"), offer.get("error") or "error"))
+
+    def kommo(self, where, resp, shortlist, confirming):
+        """What the search hands Kommo names shortlisted cards only: the lead's top property
+        is one of them (or none when there are none), and no needs-confirming card that is
+        not also shortlisted is written into the internal note."""
+        payload = resp.get("kommo_payload")
+        if not isinstance(payload, dict):
+            return
+        cat = self.catalogue
+
+        def price(entry):
+            return int(round(_num(entry.get("advertised_package_price")) or 0))
+
+        fields = payload.get("custom_fields_update") or {}
+        if "top_property_match" in fields:
+            top = str(fields.get("top_property_match") or "").strip()
+            top_price = int(round(_num(fields.get("top_property_price")) or 0))
+            if shortlist:
+                prices = {(str(e.get("lot_address") or "").strip(), p)
+                          for e in shortlist
+                          for p in (price(e), int(round(_num(e.get("realistic_total_price"))
+                                                        or 0)))}
+                if (top, top_price) not in prices:
+                    self.report.fail(where, "kommo_payload's top property %r at %s is not a "
+                                            "shortlisted card" % (top, _money(top_price)))
+            elif top_price:
+                self.report.fail(where, "kommo_payload names a top property %r at %s, but "
+                                        "nothing was shortlisted" % (top, _money(top_price)))
+        # One line of the note per shortlisted property: "1. <lot_address>, <suburb> - $<total>
+        # (Score ...)". A needs-confirming card's address on a line is a leak -- unless that
+        # address is also shortlisted (a fresh capture of the lot at a new price), when only
+        # a line carrying the stale card's own price is.
+        lines = str(payload.get("kommo_internal_note") or "").splitlines()
+        listed = {(str(e.get("lot_address") or "").strip(), price(e)) for e in shortlist}
+        addresses = {address for address, _price in listed}
+        for entry in confirming:
+            address = str(entry.get("lot_address") or "").strip()
+            if not address or (address, price(entry)) in listed:
+                continue
+            for line in lines:
+                if (address + ",") not in line or (address in addresses
+                                                   and _money(price(entry)) not in line):
+                    continue
+                self.report.fail(where, "needs confirming %s (%s, %s) is written into the "
+                                        "Kommo note as if shortlisted"
+                                 % (cat.name(_hash(entry)), address, _money(price(entry))))
+                break
 
     def card_invariants(self, where, used, shortlist, confirming):
         state = _searched_state(used)
@@ -702,17 +792,32 @@ class Run:
                                          % (self.catalogue.name(h), kind, why))
 
     def dawn(self, where, lots, confirming):
-        holds, why_not, until = dawn_expectation(self.spec, lots, self.catalogue, self.today)
+        """Each lot on its own: lot 1009 was first read on 19/08, two days after 1228-1231,
+        so its window runs two days longer -- judged as one group it stopped being checked
+        on the day the earliest lot's window closed."""
         dawn = self.spec["dawn"]
-        if not holds:
-            say = "Dawn lots %s not required to need confirming: %s" % (", ".join(lots), why_not)
-            if until is not None and self.today > until:
-                self.report.note(where, say)
-            else:
-                self.report.warn(where, say + " (update data/colin_searches.json)")
-            return
-        estate = _norm(dawn["estate"])
+        lapsed, changed, required = [], [], []
         for lot in lots:
+            holds, why_not, until = dawn_expectation(self.spec, [lot], self.catalogue,
+                                                     self.today)
+            if holds:
+                required.append(lot)
+            elif until is not None and self.today > until:
+                lapsed.append((lot, why_not))
+            else:
+                changed.append((lot, why_not))
+        for group, is_lapse in ((lapsed, True), (changed, False)):
+            if not group:
+                continue
+            text = "Dawn lots %s not required to need confirming: %s" % (
+                ", ".join(lot for lot, _why in group),
+                "; ".join(sorted({why for _lot, why in group})))
+            if is_lapse:
+                self.report.note(where, text)
+            else:
+                self.report.warn(where, text + " (update data/colin_searches.json)")
+        estate = _norm(dawn["estate"])
+        for lot in required:
             price = float(dawn["lots"][lot])
             found = [e for e in confirming
                      if _norm(e.get("estate_context")) == estate
@@ -775,6 +880,8 @@ class Run:
             if offer.get("kind") != "rerun":
                 continue
             rid = offer.get("id")
+            if offer.get("count_status") == "error":
+                continue                                # explain_answered failed it
             if offer.get("count_status") != "exact":
                 self.report.warn(where, "relaxation %s was %s, not re-posted"
                                  % (rid, offer.get("count_status")))
@@ -809,35 +916,71 @@ class Run:
 
 # ------------------------------------------------------------ inside the bundle (--snapshot)
 
+def _email_lot_key(rec, catalogue):
+    """(document, lot, price) for an emailed row: the twins one list gives when it is parsed
+    twice (Dawn 11878/14940: the same email re-parsed on 19/08) share it. None without one."""
+    row = catalogue.row(_hash(rec)) or {}
+    doc = str(row.get("source_doc") or "").strip()
+    lot = _norm(rec.get("lot_number") or row.get("lot_number"))
+    price = _num(rec.get("price"))
+    if not doc or not lot or not price:
+        return None
+    return doc, lot, int(round(price))
+
+
+def obvious_candidates(catalogue, state, low, high, today, build_cells):
+    """The obvious rows for a state and price range, picked from the DATABASE: live, in
+    the state, priced in range, stated available, at most OBVIOUS_MAX_DAYS old, and not a
+    Build Only / Land Only price or one part of a bigger printed total (build_cells is the
+    bundle's snapshot_build_cells).
+
+    An emailed row ages from the list's FIRST read (critique #27), and a lot's first read
+    is the earliest of its live twins on that list: a re-parse stamps its rows with a later
+    first_seen, but the list is no younger for it. Aged by its own stamp, 14940 (first
+    read 19/08) was still obvious on 02/10 while the search -- rightly, by 11878's 17/08 --
+    had stopped offering lot 1228, and the nightly went red over a correct search."""
+    live_db = [r for r in catalogue.db.values() if not r.get("superseded_by")]
+    first_read = {}
+    for rec in live_db:
+        if str(rec.get("source_channel") or "").strip().lower() != EMAIL_CHANNEL:
+            continue
+        key, first = _email_lot_key(rec, catalogue), _day(rec.get("first_seen"))
+        if key is not None and first is not None and (key not in first_read
+                                                      or first < first_read[key]):
+            first_read[key] = first
+    out = []
+    for rec in live_db:
+        if str(rec.get("state") or "").strip().upper() != state:
+            continue
+        price = _num(rec.get("price"))
+        if not price or price <= 0 or price < low or (high and price > high):
+            continue
+        if str(rec.get("availability_status") or "").strip().lower() not in IS_AVAILABLE:
+            continue
+        age = _age(rec.get("date_checked"), today)
+        if age is None or age < 0 or age > OBVIOUS_MAX_DAYS:
+            continue
+        if str(rec.get("source_channel") or "").strip().lower() == EMAIL_CHANNEL:
+            firsts = [d for d in (_day(rec.get("first_seen")),
+                                  first_read.get(_email_lot_key(rec, catalogue)))
+                      if d is not None]
+            if firsts and (today - min(firsts)).days > OBVIOUS_MAX_DAYS:
+                continue
+        cells = build_cells(dict(rec))
+        if str(cells.get("price_kind") or "").lower() in ("build_only", "land_only"):
+            continue
+        printed = _num(cells.get("text_price_max"))
+        if printed is not None and printed > price * (1 + COMPONENT_TOLERANCE):
+            continue
+        out.append(rec)
+    return out
+
+
 def obvious_rows_check(C, research, bootstrap, catalogue, snapshot_path):
     """The independent obvious-rows check, as a Run hook. See the module docstring."""
-    live_db = [r for r in catalogue.db.values() if not r.get("superseded_by")]
 
     def picked(state, low, high, today):
-        out = []
-        for rec in live_db:
-            if str(rec.get("state") or "").strip().upper() != state:
-                continue
-            price = _num(rec.get("price"))
-            if not price or price <= 0 or price < low or (high and price > high):
-                continue
-            if str(rec.get("availability_status") or "").strip().lower() not in IS_AVAILABLE:
-                continue
-            age = _age(rec.get("date_checked"), today)
-            if age is None or age < 0 or age > OBVIOUS_MAX_DAYS:
-                continue
-            if str(rec.get("source_channel") or "").strip().lower() == EMAIL_CHANNEL:
-                first = _age(rec.get("first_seen"), today)
-                if first is not None and first > OBVIOUS_MAX_DAYS:
-                    continue
-            cells = C.snapshot_build_cells(dict(rec))
-            if str(cells.get("price_kind") or "").lower() in ("build_only", "land_only"):
-                continue
-            printed = _num(cells.get("text_price_max"))
-            if printed is not None and printed > price * (1 + COMPONENT_TOLERANCE):
-                continue
-            out.append(rec)
-        return out
+        return obvious_candidates(catalogue, state, low, high, today, C.snapshot_build_cells)
 
     def hook(run, where, brief, body, resp):
         used = resp.get("brief_used") or {}
@@ -1181,13 +1324,23 @@ def run_live(args, report):
         report.fail("setup", "--live needs --key-file")
         return _finish(report, started)
     try:
-        key = Path(args.key_file).read_text(encoding="utf-8").strip()
-    except OSError as exc:
+        # utf-8-sig: a key file saved by Notepad starts with a BOM, which would become part
+        # of the header (not latin-1: every POST fails) and of the text scrubbed from output.
+        key = Path(args.key_file).read_text(encoding="utf-8-sig").strip()
+    except (OSError, UnicodeDecodeError) as exc:
         report.fail("setup", "could not read the key file (%s)" % type(exc).__name__)
         return _finish(report, started)
     report.secrets.append(key)
     if not key:
         report.fail("setup", "the key file is empty")
+        return _finish(report, started)
+    target = urllib.parse.urlsplit(args.live)
+    if target.scheme != "https" and not (target.scheme == "http"
+                                         and target.hostname in LOOPBACK_HOSTS):
+        # Sent before any redirect could be refused: http://app... would put the key on
+        # the wire in clear on the first request, and Vercel's 308 to https comes after.
+        report.fail("setup", "--live must be an https URL (plain http only to this machine), "
+                             "so the service key is never sent in clear")
         return _finish(report, started)
     published = Path(args.published_snapshot).resolve() if args.published_snapshot \
         else DEFAULT_SNAPSHOT

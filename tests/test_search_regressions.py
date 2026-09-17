@@ -278,7 +278,8 @@ def test_live_mode_never_prints_the_key_nor_carries_it_through_a_redirect(tmp_pa
     whatever the redirect points at."""
     key = "spb-test-key-7d1c0b5e0f4a4bd2"
     key_file = tmp_path / "key.txt"
-    key_file.write_text(key + "\n", encoding="utf-8")
+    # Saved the way Notepad saves UTF-8: with a byte-order mark, which is not the key.
+    key_file.write_text("﻿" + key + "\n", encoding="utf-8")
     rows, keys = _subset_rows()
     published = _write_snapshot(tmp_path / "published" / "stock.json", rows[:50], keys)
     _Stub.seen_keys = []
@@ -304,6 +305,21 @@ def test_live_mode_never_prints_the_key_nor_carries_it_through_a_redirect(tmp_pa
         "the redirect was followed: the key reached another server"
     assert all(sent == key for _port, sent in _Stub.seen_keys)
     assert "HTTP 302" in out, out
+
+
+def test_live_mode_never_sends_the_key_in_clear_to_a_remote_host(tmp_path):
+    """The key goes out with the first request, before any redirect to https could be
+    refused: plain http is for a stub on this machine only."""
+    key_file = tmp_path / "key.txt"
+    key_file.write_text("spb-test-key-0b5e\n", encoding="utf-8")
+    rows, keys = _subset_rows()
+    published = _write_snapshot(tmp_path / "stock.json", rows[:5], keys)
+    code, out, err = _harness("--live", "http://app.example.invalid", "--key-file", key_file,
+                              "--published-snapshot", published, "--only", "qld_750k",
+                              timeout=120)
+    assert code == 1
+    assert "--live must be an https URL" in out, out + err
+    assert "spb-test-key-0b5e" not in out + err
 
 
 # ------------------------------------------------------------------- exit codes and steps
@@ -379,12 +395,17 @@ def _card(row, **kw):
     return card
 
 
-def _response(shortlist=(), confirming=None, **kw):
+def _response(shortlist=(), confirming=None, explain=True, **kw):
+    """A search's answer. explain=True (what body_for sends unless a brief says otherwise)
+    carries every explain key, as research._with_explain always adds them."""
     out = {"status": "success", "shortlist_count": len(shortlist), "rejected_count": 0,
            "shortlist": list(shortlist), "research_record_id": "Unit - QLD/General",
            "brief_used": {"state": "QLD", "budget_min": 0, "budget_max": 750000,
                           "primary_suburbs": []},
            "brief_adjustments": [], "rejected_log": []}
+    if explain:
+        out.update(search_help={"relaxations": []}, needs_confirming=[],
+                   needs_confirming_count=0, needs_confirming_hidden={})
     if confirming is not None:
         out["needs_confirming"] = list(confirming)
         out["needs_confirming_count"] = len(confirming)
@@ -663,7 +684,8 @@ def test_a_hook_body_gets_no_explain_keys_back_and_is_sent_without_explain():
     brief = {"id": "hook", "hook_shaped": True, "explain": False,
              "client_brief": {"client_name": "Clare", "state": "QLD", "budget_max": 750000},
              "expect": {"no_explain_keys": True}}
-    report, out, posted = _run([brief], lambda body: _response(needs_confirming=[]), rows)
+    report, out, posted = _run([brief], lambda body: _response(explain=False,
+                                                               needs_confirming=[]), rows)
     assert posted == [{"client_brief": {"client_name": "Clare", "state": "QLD",
                                         "budget_max": 750000}}]
     assert report.failures == 1 and "a body without explain got ['needs_confirming']" in out
@@ -691,3 +713,168 @@ def test_the_briefs_file_holds_no_link_and_every_plan_brief():
     assert "critique #20(d)" in plans
     # Critique #3: Dawn is named by estate, lot and price -- no hash to go stale.
     assert "aec54350" not in raw and "c48b4599" not in raw
+
+
+# ------------------------------------------------------------------ review of W17 (17 Sep)
+
+def test_every_brief_must_say_what_it_searched_and_a_misread_echo_fails(tmp_path):
+    """Cards are checked against brief_used, the server's own echo. A normaliser that misread
+    the budget echoes its misreading, and every card inside it passes: with the thousands
+    rule widened to 1,000,000, "QLD $100,000" searched $100,000,000 and returned 370 green
+    results. So every brief states its state and range, and the echo is checked."""
+    spec = json.loads((APP / "data" / "colin_searches.json").read_text(encoding="utf-8"))
+    del spec["briefs"][0]["expect"]["brief_used"]
+    broken = tmp_path / "briefs.json"
+    broken.write_text(json.dumps(spec), encoding="utf-8")
+    with pytest.raises(ValueError, match="qld_750k: expect.brief_used must state state, "
+                                         "budget_min, budget_max"):
+        SR.load_spec(broken)
+    rows = [_row("v2:ok000000", price=790000.0)]
+    brief = {"id": "b", "client_brief": {}, "expect": {
+        "brief_used": {"state": "QLD", "budget_min": 0, "budget_max": 100000}}}
+    misread = _response([_card(rows[0])], brief_used={
+        "state": "QLD", "budget_min": 0, "budget_max": 100000000, "primary_suburbs": []})
+    report, out, _posted = _run([brief], lambda body: misread, rows)
+    # PREMISE: nothing else about the cards is wrong -- inside the range the echo claims.
+    assert "outside" not in out, out
+    assert report.failures == 1, out
+    assert 'brief_used {"state": "QLD", "budget_min": 0, "budget_max": 100000000}, expected' \
+        in out, out
+
+
+def test_an_explain_pass_that_raised_or_an_explain_key_missing_fails():
+    """_with_explain never raises: a pass that throws leaves [] and says so only in
+    search_help.error, and a relaxation that throws is priced "error". Neither may read
+    as "nothing to offer". A relaxation the time budget skipped is still only a warning."""
+    rows = [_row("v2:ok000000")]
+    brief = {"id": "b", "client_brief": {}}
+    for response, expected in (
+            (_response(search_help={"relaxations": [], "error": "relaxations: RuntimeError"}),
+             "search_help.error: relaxations: RuntimeError"),
+            (_response(search_help={"relaxations": [
+                {"id": "budget_plus_50k", "kind": "rerun", "count_status": "error",
+                 "error": "ValueError", "brief_patch": {"budget_max": 800000}}]}),
+             "relaxation budget_plus_50k failed to price: ValueError"),
+            ({k: v for k, v in _response().items() if k != "needs_confirming_count"},
+             "a body with explain got no ['needs_confirming_count'] back")):
+        report, out, _posted = _run([brief], lambda body, r=response: r, rows)
+        assert report.failures == 1 and expected in out, (expected, out)
+    skipped = _response(search_help={"relaxations": [
+        {"id": "radius_50", "kind": "rerun", "count_status": "not_computed"}]})
+    report, out, _posted = _run([dict(brief, self_check_nightly=True)],
+                                lambda body: skipped, rows)
+    assert report.failures == 0 and report.warnings == 1, out
+    # A body without explain is not asked for the keys.
+    hook = {"id": "h", "explain": False, "client_brief": {}}
+    report, out, _posted = _run([hook], lambda body: _response(explain=False), rows)
+    assert report.failures == 0, out
+
+
+def test_kommo_is_handed_shortlisted_cards_only():
+    """The lead's top property and the internal note come from the shortlist; a
+    needs-confirming card reaching either is a stale lot sold to Kommo as verified."""
+    fresh = _row("v2:fresh000", lot_address="Lot 162, Rosewood Green", price=749900.0)
+    stale = _row("v2:stale000", lot_address="Lot 1228, Dawn, Walloon, Walloon QLD",
+                 price=721900.0, date_checked="20/08/2026", lot_number="1228")
+    repriced = _row("v2:fresh1228", lot_address=stale["lot_address"], price=731900.0,
+                    lot_number="1228")
+    rows = [fresh, stale, repriced]
+
+    def payload(top, top_price, lines):
+        return {"custom_fields_update": {"top_property_match": top,
+                                         "top_property_price": top_price},
+                "kommo_internal_note": "SPB Property Research Completed\n\nTop Shortlisted "
+                                       "Properties:\n" + ("\n".join(lines) or "None")}
+
+    good_line = "1. Lot 162, Rosewood Green, Rosewood - $749,900 (Score: 93.5/100 - Recommend)"
+    leaked_line = "2. Lot 1228, Dawn, Walloon, Walloon QLD, Walloon - $721,900 (Score: 84/100)"
+    brief = {"id": "b", "client_brief": {}}
+    cases = (
+        (_response([_card(fresh)], confirming=[_card(stale)], kommo_payload=payload(
+            "Lot 162, Rosewood Green", 749900.0, [good_line])), None),
+        (_response([], confirming=[_card(stale)], kommo_payload=payload(
+            "No qualifying properties found", 0, [])), None),
+        (_response([_card(fresh)], confirming=[_card(stale)], kommo_payload=payload(
+            "Lot 162, Rosewood Green", 749900.0, [good_line, leaked_line])),
+         "needs confirming v2:stale000 (Lot 1228, Dawn, Walloon, Walloon QLD, $721,900) is "
+         "written into the Kommo note as if shortlisted"),
+        (_response([_card(fresh)], confirming=[_card(stale)], kommo_payload=payload(
+            "Lot 1228, Dawn, Walloon, Walloon QLD", 721900.0, [good_line])),
+         "kommo_payload's top property 'Lot 1228, Dawn, Walloon, Walloon QLD' at $721,900 is "
+         "not a shortlisted card"),
+        (_response([], confirming=[_card(stale)], kommo_payload=payload(
+            "Lot 1228, Dawn, Walloon, Walloon QLD", 721900.0, [])),
+         "kommo_payload names a top property 'Lot 1228, Dawn, Walloon, Walloon QLD' at "
+         "$721,900, but nothing was shortlisted"),
+        # The note prints the realistic total, which can differ from the card's price.
+        (_response([_card(fresh)], confirming=[_card(stale)], kommo_payload=payload(
+            "Lot 162, Rosewood Green", 749900.0,
+            [good_line, leaked_line.replace("$721,900", "$736,900")])),
+         "needs confirming v2:stale000 (Lot 1228, Dawn, Walloon, Walloon QLD, $721,900) is "
+         "written into the Kommo note as if shortlisted"),
+        # A fresh capture of the SAME lot at a new price is shortlisted and in the note;
+        # the stale capture beside it in needs_confirming is not a leak.
+        (_response([_card(fresh), _card(repriced)], confirming=[_card(stale)],
+                   kommo_payload=payload(
+            "Lot 162, Rosewood Green", 749900.0,
+            [good_line, leaked_line.replace("$721,900", "$731,900")])), None))
+    for response, expected in cases:
+        report, out, _posted = _run([brief], lambda body, r=response: r, rows)
+        if expected is None:
+            assert report.failures == 0, out
+        else:
+            assert report.failures == 1 and expected in out, (expected, out)
+
+
+def test_an_emailed_lot_ages_from_the_earliest_first_read_of_its_twins():
+    """Dawn 11878 (first read 17/08) and 14940 (the same email re-parsed, first_seen 19/08)
+    are one lot. The search ages it by 17/08 and stops offering it after 01/10; picked by
+    14940's own stamp, the obvious-rows check still wanted it on 02/10 and 03/10 and turned
+    the nightly red over a correct search. Lot 1009, read only on 19/08, keeps its own."""
+    def dawn(h, lot, price, first, doc="doc-dawn"):
+        return _row(h, estate_name="Dawn, Walloon", lot_number=lot, price=price,
+                    date_checked="20/08/2026", source_channel="digital email",
+                    source_doc=doc, lot_address="Lot %s, Dawn, Walloon" % lot), \
+            {"id": int(h[-4:], 16), "content_hash": h, "state": "QLD", "price": price,
+             "availability_status": "Available", "date_checked": "20/08/2026",
+             "source_channel": "digital email", "first_seen": first, "lot_number": lot,
+             "superseded_by": None}
+
+    pairs = [dawn("v2:dawn0001", "1228", 721900.0, "17/08/2026"),
+             dawn("v2:dawn0002", "1228", 721900.0, "19/08/2026"),
+             dawn("v2:dawn0003", "1009", 791404.0, "19/08/2026"),
+             # the same lot and price on ANOTHER list is another listing: its own first read
+             dawn("v2:dawn0004", "1228", 721900.0, "19/08/2026", doc="doc-other")]
+    catalogue = SR.Catalogue([p[0] for p in pairs], [p[1] for p in pairs])
+
+    def picked(day):
+        return sorted(r["content_hash"] for r in SR.obvious_candidates(
+            catalogue, "QLD", 0, 800000, day, lambda rec: {}))
+
+    everything = ["v2:dawn0001", "v2:dawn0002", "v2:dawn0003", "v2:dawn0004"]
+    assert picked(date(2026, 10, 1)) == everything
+    assert picked(date(2026, 10, 2)) == ["v2:dawn0003", "v2:dawn0004"]
+    assert picked(date(2026, 10, 3)) == ["v2:dawn0003", "v2:dawn0004"]
+    assert picked(date(2026, 10, 4)) == []
+
+
+def test_dawn_lots_are_judged_one_by_one():
+    """Lot 1009's window (first read 19/08) runs to 03/10, two days past 1228's (17/08):
+    on 02/10 a missing 1009 fails, while 1228's lapse is only a note."""
+    rows = _dawn_rows() + [_row("v2:dawn1009", estate_name="Dawn, Walloon", lot_number="1009",
+                                price=791404.0, date_checked="20/08/2026",
+                                source_channel="digital email", email_list="list-1",
+                                email_first_seen="19/08/2026", source_doc="doc-dawn",
+                                lot_address="1009 Available Medium Bates Street")]
+    spec_lots = dict(SPEC["dawn"], lots={"1228": 721900, "1009": 791404})
+    brief = {"id": "b", "client_brief": {}, "expect": {"needs_confirming_contains":
+                                                       ["1228", "1009"]}}
+    report = SR.Report(io.StringIO())
+    SR.Run(dict(SPEC, dawn=spec_lots, briefs=[brief]), lambda body: (200, _response(), 0.01),
+           SR.Catalogue(rows), date(2026, 10, 2), report).execute()
+    out = report.out.getvalue()
+    assert report.failures == 1, out
+    assert "Dawn lot 1009 ($791,404, stated Available, read 20/08/2026) is not in " \
+           "needs_confirming" in out
+    assert "Dawn lots 1228 not required to need confirming: the confirm window ended on " \
+           "01/10/2026" in out
