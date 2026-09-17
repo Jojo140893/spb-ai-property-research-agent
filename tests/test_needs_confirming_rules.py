@@ -322,6 +322,36 @@ def test_a_fresh_row_whose_lot_was_later_read_on_hold_is_not_verified():
     assert pkg["verified"] is True
 
 
+_HOWARD_LINE = ("Howard {} 21 Howard Crossing Kinchant Coastal 4 2 2 350 $224,000 180.58 "
+                "$522,632 $746,632 675 Due September 2026")
+
+
+def test_the_same_line_of_the_same_document_read_later_as_on_hold_is_not_verified():
+    """Howard lot 21 (release review): 18491 "Howard Available 21 Howard Crossing ..." read
+    15/09 and 15953 "Howard ON HOLD 21 ..." read 16/09, on one Smartsheet, with no lot
+    number. While supersede's status pass is off both stay live, and capture_key cannot
+    pair rows with no lot: the line itself does."""
+    available = _row("v2:43802e2d", builder_name="G Developments", estate_name="Kinchant Coastal",
+                     lot_number=None, suburb="Howard", price=746632.0, date_checked="15/09/2026",
+                     source_doc="doc-howard", source_channel="E-Agent",
+                     line_key=C.line_text_key(_HOWARD_LINE.format("Available")))
+    on_hold = dict(available, content_hash="v2:d9553ad6", availability_status="On Hold",
+                   date_checked="16/09/2026",
+                   line_key=C.line_text_key(_HOWARD_LINE.format("ON HOLD")))
+    assert available["line_key"] == on_hold["line_key"], "premise: one line, two status words"
+    (pkg,), counts = _packages([available, on_hold])
+    assert pkg["verified"] is False and pkg["confirm_guard"] == "newer_capture_disagrees"
+    assert counts["newer_capture_demoted"] == 1
+    # Read on the SAME day: two lots printed identically on one page (Merbein), not news.
+    (pkg,), _ = _packages([available, dict(on_hold, date_checked="15/09/2026")])
+    assert pkg["verified"] is True
+    # Another document's identical line, or another price, is not this lot.
+    (pkg,), _ = _packages([available, dict(on_hold, source_doc="doc-other")])
+    assert pkg["verified"] is True
+    (pkg,), _ = _packages([available, dict(on_hold, price=790000.0)])
+    assert pkg["verified"] is True
+
+
 # --------------------------------------------- exceptions-only admission (#1, W11.6)
 
 HEATHWOOD_15897 = ("PR8831 8 Heathwood The Crest Estate September 2026 400 Build Only "
@@ -639,8 +669,9 @@ def test_the_line_key_is_a_snapshot_field_computed_where_the_text_is():
     failures = []
     cells = build_web._line_key_cells({"lot_number": "406", "source_text": text}, failures)
     assert cells == {"line_key": C.line_text_key(text)} and cells["line_key"]
-    # No lot number: the guard cannot key the row, so the snapshot pays nothing for it.
-    assert build_web._line_key_cells({"lot_number": "", "source_text": text}, failures) == \
+    # No lot number still keys the line (Howard lot 21 has none); no text keys nothing.
+    assert build_web._line_key_cells({"lot_number": "", "source_text": text}, failures) == cells
+    assert build_web._line_key_cells({"lot_number": "406", "source_text": ""}, failures) == \
         {"line_key": None}
     assert failures == []
     body = (APP / "build_web.py").read_text(encoding="utf-8")

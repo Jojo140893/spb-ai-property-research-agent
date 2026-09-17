@@ -108,10 +108,11 @@ SNAPSHOT_FIELDS = [
     # subject with dates and Fwd: removed ("shape home stock list"), so a newer list from
     # the same sender can be recognised without publishing the subject line.
     "email_list", "email_first_seen",
-    # A LOT'S LINE WITH ITS PRICES TAKEN OUT, hashed (snapshot_line_cells), on rows with a
-    # lot number. Two captures of one lot at different prices are the same listing
-    # repriced when their lines agree, and two designs when they do not -- see
-    # line_text_key. The text itself is not published.
+    # A LOT'S LINE WITH ITS PRICES AND STATUS WORDS TAKEN OUT, hashed (snapshot_line_cells).
+    # Two captures of one lot at different prices are the same listing repriced when their
+    # lines agree, and two designs when they do not; the same line of one document read
+    # later with a status saying gone is the lot gone -- see _newer_capture. The text
+    # itself is not published.
     "line_key",
 ]
 
@@ -555,11 +556,9 @@ def line_text_key(text):
 
 
 def snapshot_line_cells(row):
-    """{line_key} from a row's source_text -- only on a row with a lot number, the only
-    rows the newer-capture guard can key (capture_key); null elsewhere, so the cell costs
-    the snapshot nothing on the rest."""
-    if not _norm(row.get("lot_number")):
-        return {"line_key": None}
+    """{line_key} from a row's source_text; null when the text leaves too little to compare.
+    On every row, lot number or not: the same line on the same document read later is
+    evidence about a lot the line names without a lot column (Howard lot 21)."""
     try:
         return {"line_key": line_text_key(row.get("source_text"))}
     except Exception:                                                   # noqa: BLE001
@@ -1208,7 +1207,7 @@ class PreparedRows:
                  # superseded ones and other states included, because the capture that
                  # says a lot is On Hold is often exactly the row a search would skip.
                  "captures", "doc_reads", "builder_reads", "email_lists",
-                 "doc_statements")
+                 "doc_statements", "doc_lines")
 
     def __init__(self, **fields):
         for name in self.__slots__:
@@ -1414,6 +1413,7 @@ def latest_read_is_full(reads_by_day, share=FULL_READ_SHARE, runs=FULL_READ_RUNS
 def _guard_indexes(rows):
     """The PreparedRows fields confirm_guard reads. See PreparedRows.__slots__."""
     captures = {}          # capture_key -> [(day, availability, price, line_key)]
+    doc_lines = {}         # (source_doc, line_key) -> [(day, availability, price)]
     reads = {}             # source_doc -> {day: rows}
     builder_reads = {}     # (relisting channel, builder) -> newest day
     email_lists = {}       # email_list -> {source_doc: newest day}
@@ -1436,6 +1436,9 @@ def _guard_indexes(rows):
         if key is not None:
             captures.setdefault(key, []).append(
                 (seen, avail, _num(row.get("price")), str(row.get("line_key") or "")))
+        line = str(row.get("line_key") or "")
+        if doc and line:
+            doc_lines.setdefault((doc, line), []).append((seen, avail, _num(row.get("price"))))
         if doc:
             days = reads.setdefault(doc, {})
             days[seen] = days.get(seen, 0) + 1
@@ -1452,7 +1455,8 @@ def _guard_indexes(rows):
                     docs[doc] = seen
     doc_reads = {doc: (max(days), latest_read_is_full(days)) for doc, days in reads.items()}
     return {"captures": captures, "doc_reads": doc_reads, "builder_reads": builder_reads,
-            "email_lists": email_lists, "doc_statements": doc_statements}
+            "email_lists": email_lists, "doc_statements": doc_statements,
+            "doc_lines": doc_lines}
 
 
 def _confirm_age_days(row, today):
@@ -1481,12 +1485,27 @@ def _newer_capture(row, prepared, seen):
     line, prices taken out, is this row's line (line_key). Hattan lot 406, Mambourin Green
     was offered to confirm at its 17/08 price, $588,950, while the 16/09 read of the same
     line asked $604,776 -- over the brief's $600,000. A later capture at another price
-    whose line differs is another design on the lot and hides nothing."""
-    key = capture_key(row)
-    if key is None or seen is None:
+    whose line differs is another design on the lot and hides nothing.
+
+    disagrees, ALSO WITHOUT A LOT NUMBER: the same line of the same document (source_doc,
+    line_key) read on a later day at the same price (within 2%) says the lot has gone.
+    Howard lot 21 was read "Howard Available 21 Howard Crossing ..." on 15/09 and "Howard ON
+    HOLD 21 ..." on 16/09; its rows carry no lot number, so capture_key could never pair
+    them, and while supersede's status pass is off (SPB_STATUS_PASS) both stay live. Same
+    day never counts: two lots printed identically on one page are read together."""
+    if seen is None:
         return None
     price = _num(row.get("price"))
     line = str(row.get("line_key") or "")
+    doc = str(row.get(_DOC_KEY) or "").strip()
+    if doc and line and price:
+        for when, avail, other_price in prepared.doc_lines.get((doc, line), ()):
+            if (when > seen and avail in NOT_AVAILABLE and other_price
+                    and abs(other_price - price) <= price * NEWER_CAPTURE_PRICE_TOLERANCE):
+                return "newer_capture_disagrees"
+    key = capture_key(row)
+    if key is None:
+        return None
     exists = repriced = False
     for when, avail, other_price, other_line in prepared.captures.get(key, ()):
         if when <= seen:

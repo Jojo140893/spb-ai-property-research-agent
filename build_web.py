@@ -134,11 +134,13 @@ BUILDING_DERIVED_FIELDS += PRICE_EVIDENCE_FIELDS
 # with its dates removed. The subject itself is not published.
 EMAIL_LIST_FIELDS = ["email_list", "email_first_seen"]
 BUILDING_DERIVED_FIELDS += EMAIL_LIST_FIELDS
-# A LOT'S LINE WITH ITS PRICES TAKEN OUT, as a 12-character hash, on rows with a lot number
+# A LOT'S LINE WITH ITS PRICES AND STATUS WORDS TAKEN OUT, as a 12-character hash
 # (api/_candidates.snapshot_line_cells). The search hides a stale capture offered to
 # confirm when a later capture of the same lot asks another price ON THE SAME LINE --
 # Hattan lot 406 at its 17/08 $588,950 against the 16/09 read's $604,776 -- and keeps it
-# when the later line differs (another design on the lot). The line is not published.
+# when the later line differs (another design on the lot); and it does not recommend a
+# row whose own document's same line, read on a later day, says the lot has gone (Howard
+# lot 21: Available 15/09, On Hold 16/09). The line is not published.
 LINE_KEY_FIELDS = ["line_key"]
 BUILDING_DERIVED_FIELDS += LINE_KEY_FIELDS
 
