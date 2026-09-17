@@ -129,12 +129,18 @@ _SAME_LINE_MIN = 30
 # How an obvious row may end up. Anything else fails.
 ALLOWED_VERDICTS = ("shortlist", "needs_confirming", "collapsed_into_visible",
                     "newer_capture_disagrees", "newer_capture_exists",
+                    # A later capture of the same lot, on the same line, asks another
+                    # price (release review: Hattan lot 406 at its 17/08 price).
+                    "newer_capture_repriced",
                     "document_reread_without_row", "builder_documents_reread",
                     # W11's email guard (critique #9), the same kind of sold-stock evidence
                     # as builder_documents_reread for a list sent by email.
                     "newer_list_from_sender",
                     "price_unverified")
-WARN_VERDICTS = ("no_suburb", "suburb_not_a_locality", "incomplete_facts")
+WARN_VERDICTS = ("no_suburb", "suburb_not_a_locality", "incomplete_facts",
+                 # An office or a shop filed as a dwelling (release review: "Building A
+                 # Ground Level Office", an Apartment row) -- the filing is the problem.
+                 "commercial")
 EXPLAIN_KEYS = ("search_help", "needs_confirming", "needs_confirming_count",
                 "needs_confirming_hidden")
 # What every brief in data/colin_searches.json must say it searched (load_spec).
@@ -931,8 +937,9 @@ def _email_lot_key(rec, catalogue):
 def obvious_candidates(catalogue, state, low, high, today, build_cells):
     """The obvious rows for a state and price range, picked from the DATABASE: live, in
     the state, priced in range, stated available, at most OBVIOUS_MAX_DAYS old, and not a
-    Build Only / Land Only price or one part of a bigger printed total (build_cells is the
-    bundle's snapshot_build_cells).
+    Build Only / Land Only price (by its text, or by its own land and build columns), one
+    part of a bigger printed total, or a price-list line that does not print its price
+    (build_cells is the bundle's snapshot_build_cells).
 
     An emailed row ages from the list's FIRST read (critique #27), and a lot's first read
     is the earliest of its live twins on that list: a re-parse stamps its rows with a later
@@ -968,6 +975,17 @@ def obvious_candidates(catalogue, state, low, high, today, build_cells):
                 continue
         cells = build_cells(dict(rec))
         if str(cells.get("price_kind") or "").lower() in ("build_only", "land_only"):
+            continue
+        # The row's own columns saying the price is only the land or only the house
+        # ("Wollert Land Price $143,389": land_price is the price, no build price).
+        land, build = _num(rec.get("land_price")), _num(rec.get("build_price"))
+        if bool(land) != bool(build) and abs((land or build) - price) <= 1.0:
+            continue
+        # A line of a price list that does not print the price it is stored at (an email
+        # sentence stored at $553,284) is not an obvious listing.
+        if (cells.get("price_in_text") is False
+                and str(rec.get("source_channel") or "").strip().lower() in (EMAIL_CHANNEL,
+                                                                             "e-agent")):
             continue
         printed = _num(cells.get("text_price_max"))
         if printed is not None and printed > price * (1 + COMPONENT_TOLERANCE):

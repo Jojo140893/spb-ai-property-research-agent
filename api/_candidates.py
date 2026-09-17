@@ -108,13 +108,18 @@ SNAPSHOT_FIELDS = [
     # subject with dates and Fwd: removed ("shape home stock list"), so a newer list from
     # the same sender can be recognised without publishing the subject line.
     "email_list", "email_first_seen",
+    # A LOT'S LINE WITH ITS PRICES TAKEN OUT, hashed (snapshot_line_cells), on rows with a
+    # lot number. Two captures of one lot at different prices are the same listing
+    # repriced when their lines agree, and two designs when they do not -- see
+    # line_text_key. The text itself is not published.
+    "line_key",
 ]
 
 # Build-time cells a purpose-built snapshot DATABASE may predate. The SQLite reader
 # computes them from the columns they derive from, exactly as build_web does, instead of
 # failing the read over a column the snapshot could not have had.
 _COMPUTED_SNAPSHOT_FIELDS = ("price_kind", "text_price_max", "price_in_text",
-                             "email_list", "email_first_seen")
+                             "email_list", "email_first_seen", "line_key")
 # What those computations read. Selected when the table has them, then dropped before a
 # row is returned: source_text on a row changes what suburb_quality resolves, and the
 # JSON reader's rows never carry it.
@@ -479,8 +484,8 @@ def _is_email(row):
 
 
 def snapshot_build_cells(row):
-    """{price_kind, text_price_max, price_in_text, email_list, email_first_seen} for a row
-    that still has its database columns (source_text, source_url, first_seen).
+    """{price_kind, text_price_max, price_in_text, email_list, email_first_seen, line_key}
+    for a row that still has its database columns (source_text, source_url, first_seen).
 
     build_web publishes these on every stock.json row and the SQLite reader computes them
     for a snapshot database that predates them -- one function, so the two readers cannot
@@ -495,7 +500,70 @@ def snapshot_build_cells(row):
     except Exception:                                                   # noqa: BLE001
         pass
     cells.update(snapshot_email_cells(row))
+    cells.update(snapshot_line_cells(row))
     return cells
+
+
+# ------------------------------------------------------------------ one line, repriced
+#
+# A LOT'S LINE WITH ITS PRICES TAKEN OUT, for a deployed search that never sees the text.
+# Hattan lot 406, Mambourin Green was read from an emailed list on 17/08 at $588,950 and
+# from E-Agent on 16/09 at $604,776 -- the same line, "Available Mambourin Q3 2026
+# Townhouse Lot 406 156 6 Westgarth F | Mambourin Green 16.8 Double Storey 4 2 2", apart
+# from its house and total prices. The 17/08 capture was offered to confirm, in budget,
+# at a price the builder no longer asks. Two captures of one lot at prices more than 2%
+# apart were deliberately NOT treated as one listing (critique #8): the same lot can carry
+# two house designs. The line tells them apart -- "Enzo 10.5" against "VGU19" on Lumina lot
+# 58 -- where lot, land price and bed/bath/car cannot.
+#
+# Taken out before hashing: links, money ($ amounts, and thousands-grouped or 6+ digit
+# bare numbers, which is how price lists print totals), dates, percentages (a yield moves
+# with the price), unit suffixes, and status words (Available / On Hold is the status
+# pass's business, not a new design). A line with little left says nothing about a design
+# and gets no key.
+_LINE_LINK = re.compile(r"(?:[a-z][a-z0-9+.-]*:/+|www\.)\S*|\b[\w-]+(?:\.[\w-]+)+/\S*", re.I)
+_LINE_MONEY = re.compile(
+    r"[A-Za-z]?\$\s?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[kKmM](?![A-Za-z0-9]))?")
+_LINE_GROUPED = re.compile(r"(?<![\d.])\d{1,3}(?:,\d{3})+(?:\.\d+)?(?![\d])")
+_LINE_BARE_BIG = re.compile(r"(?<![\w.])\d{6,}(?:\.\d+)?(?![\w])")
+_LINE_DATE = re.compile(r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b"
+                        r"|\b\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\b")
+_LINE_PERCENT = re.compile(r"\d+(?:\.\d+)?\s?%")
+_LINE_UNITS = re.compile(r"(?<=\d)\s*(?:m2|m²|sqm|sq\.?m)\b", re.I)
+_LINE_STATUS = re.compile(
+    r"\b(?:no\s*longer\s*available|not\s*available|not\s*avail|unavailable|available|"
+    r"on\s*hold|hold|sold\s*out|sold|under\s*offer|under\s*contract|reserved|leased|"
+    r"withdrawn|eoi|tbc|deposit\s*taken|settled|contract\s*pending|off\s*market)\b", re.I)
+_LINE_MIN_CHARS = 12
+
+
+def line_text_key(text):
+    """A short hash of a source line with prices, dates and status words removed, or None
+    when too little is left to tell one design from another."""
+    t = str(text or "")
+    if not t.strip():
+        return None
+    t = _LINE_LINK.sub(" ", t)
+    for pattern in (_LINE_MONEY, _LINE_GROUPED, _LINE_DATE, _LINE_PERCENT, _LINE_BARE_BIG):
+        t = pattern.sub(" ", t)
+    t = _LINE_UNITS.sub(" ", t)
+    t = _LINE_STATUS.sub(" ", t)
+    t = " ".join(_NON_ALNUM.sub(" ", t.lower()).split())
+    if len(t) < _LINE_MIN_CHARS:
+        return None
+    return hashlib.sha256(t.encode("utf-8")).hexdigest()[:12]
+
+
+def snapshot_line_cells(row):
+    """{line_key} from a row's source_text -- only on a row with a lot number, the only
+    rows the newer-capture guard can key (capture_key); null elsewhere, so the cell costs
+    the snapshot nothing on the rest."""
+    if not _norm(row.get("lot_number")):
+        return {"line_key": None}
+    try:
+        return {"line_key": line_text_key(row.get("source_text"))}
+    except Exception:                                                   # noqa: BLE001
+        return {"line_key": None}
 
 
 def snapshot_email_cells(row):
@@ -1275,6 +1343,18 @@ NEWER_CAPTURE_PRICE_TOLERANCE = 0.02
 TEXT_PRICE_TOLERANCE = 0.02
 # A price that is not the price of a home and land a buyer can purchase as listed.
 NOT_ADMITTABLE_PRICE_KINDS = ("build_only", "land_only", "commercial")
+# A stored land or build price this close to the stored price IS the stored price.
+COMPONENT_PRICE_TOLERANCE = 1.0
+# The channels whose row text is the price list's own line (an E-Agent sheet row, a line
+# of an emailed list), so a price the text does not print was not read off that line. A
+# portal row's text is its address card and never prints a price: Proxima's 4,251 live
+# rows all have price_in_text false, and that says nothing against any of them.
+PRICE_LINE_CHANNELS = ("e-agent", EMAIL_CHANNEL)
+# An office, a shop or a warehouse. Only on a row that states no bedrooms, and never
+# "home office" or "study/office": those are rooms in a house.
+_TEXT_COMMERCIAL = re.compile(
+    r"(?<!home )(?<!study )(?<!study/)(?<!sales )(?<!post )(?<!display )"
+    r"\b(?:office|retail|shop|warehouse|tenancy)\b", re.I)
 
 
 def _norm(value):
@@ -1333,7 +1413,7 @@ def latest_read_is_full(reads_by_day, share=FULL_READ_SHARE, runs=FULL_READ_RUNS
 
 def _guard_indexes(rows):
     """The PreparedRows fields confirm_guard reads. See PreparedRows.__slots__."""
-    captures = {}          # capture_key -> [(day, availability, price)]
+    captures = {}          # capture_key -> [(day, availability, price, line_key)]
     reads = {}             # source_doc -> {day: rows}
     builder_reads = {}     # (relisting channel, builder) -> newest day
     email_lists = {}       # email_list -> {source_doc: newest day}
@@ -1354,7 +1434,8 @@ def _guard_indexes(rows):
             continue
         key = capture_key(row)
         if key is not None:
-            captures.setdefault(key, []).append((seen, avail, _num(row.get("price"))))
+            captures.setdefault(key, []).append(
+                (seen, avail, _num(row.get("price")), str(row.get("line_key") or "")))
         if doc:
             days = reads.setdefault(doc, {})
             days[seen] = days.get(seen, 0) + 1
@@ -1393,14 +1474,21 @@ def _confirm_age_days(row, today):
 
 
 def _newer_capture(row, prepared, seen):
-    """'newer_capture_disagrees', 'newer_capture_exists' or None, from capture_key twins
-    read on a strictly later day."""
+    """'newer_capture_disagrees', 'newer_capture_exists', 'newer_capture_repriced' or None,
+    from capture_key twins read on a strictly later day.
+
+    repriced: a later capture at a price more than NEWER_CAPTURE_PRICE_TOLERANCE away whose
+    line, prices taken out, is this row's line (line_key). Hattan lot 406, Mambourin Green
+    was offered to confirm at its 17/08 price, $588,950, while the 16/09 read of the same
+    line asked $604,776 -- over the brief's $600,000. A later capture at another price
+    whose line differs is another design on the lot and hides nothing."""
     key = capture_key(row)
     if key is None or seen is None:
         return None
     price = _num(row.get("price"))
-    exists = False
-    for when, avail, other_price in prepared.captures.get(key, ()):
+    line = str(row.get("line_key") or "")
+    exists = repriced = False
+    for when, avail, other_price, other_line in prepared.captures.get(key, ()):
         if when <= seen:
             continue
         # Any later capture marked gone, at any price: a lot re-priced and then put on
@@ -1410,7 +1498,71 @@ def _newer_capture(row, prepared, seen):
         if (price and other_price
                 and abs(other_price - price) <= price * NEWER_CAPTURE_PRICE_TOLERANCE):
             exists = True
-    return "newer_capture_exists" if exists else None
+        elif price and other_price and line and other_line == line:
+            repriced = True
+    if exists:
+        return "newer_capture_exists"
+    return "newer_capture_repriced" if repriced else None
+
+
+def price_covers(row):
+    """What the stored price is for, as the search reads it.
+
+      land_only / build_only  the row's OWN land and build columns say the price is one of
+                              them: land_price is the price and no build price is stated
+                              ("Wollert Land Price $143,389"), or the other way round
+                              ("FLOORPLAN Victoria 180 HOUSE PRICE $413,000", the house
+                              half of 18 Wiltipoll Road's $617,000)
+      commercial              the line names an office, shop or warehouse and the row
+                              states no bedrooms ("Building A Ground Level Office 81 0 81"
+                              $740,000, filed as an Apartment)
+      otherwise               the snapshot's price_kind ('' when it has none)
+
+    price_kind itself calls the first two 'unknown' (build_web computes it from what the
+    text says, and benchmarks read it); the search reads the columns as well."""
+    price = _num(row.get("price")) or 0.0
+    land = _num(row.get("land_price")) or 0.0
+    build = _num(row.get("build_price")) or 0.0
+    if price > 0:
+        if land and not build and abs(land - price) <= COMPONENT_PRICE_TOLERANCE:
+            return "land_only"
+        if build and not land and abs(build - price) <= COMPONENT_PRICE_TOLERANCE:
+            return "build_only"
+    kind = str(row.get("price_kind") or "").strip().lower()
+    if kind in NOT_ADMITTABLE_PRICE_KINDS:
+        return kind
+    if not _num(row.get("bedrooms")) and any(
+            _TEXT_COMMERCIAL.search(str(row.get(f) or ""))
+            for f in ("lot_address", "title_status", "source_text")):
+        return "commercial"
+    return kind
+
+
+def price_evidence_refusal(row):
+    """Why this row's price is not a home and land at that price, or None -- from what the
+    row POSITIVELY says, so a snapshot without price evidence refuses nothing here.
+
+      price_not_in_text     the row is a line of a price list (PRICE_LINE_CHANNELS) whose
+                            evidence says the stored price is not printed on it: an email
+                            sentence stored at $553,284
+      larger_total_in_text  the line prints an amount above price + 2%: one component
+      build_only / land_only / commercial   price_covers
+
+    For EVERY row offered to confirm (release review). The exceptions-only admission ran
+    these checks, stricter, on unstated rows only; a stale "Available" row reached the amber
+    group through the Pending Confirmation list without them, and Colin's Any state <=
+    $750k search offered three "Land Price" lines, two "HOUSE PRICE" lines and an email
+    sentence as house-and-land listings."""
+    price = _num(row.get("price")) or 0.0
+    stated = row.get("price_in_text")
+    if (stated is not None and not _truthy(stated)
+            and _channel(row).startswith(PRICE_LINE_CHANNELS)):
+        return "price_not_in_text"
+    printed = _num(row.get("text_price_max"))
+    if printed is not None and printed > price * (1 + TEXT_PRICE_TOLERANCE):
+        return "larger_total_in_text"
+    kind = price_covers(row)
+    return kind if kind in NOT_ADMITTABLE_PRICE_KINDS else None
 
 
 def confirm_verdict(row, prepared, today=None):
@@ -1418,9 +1570,17 @@ def confirm_verdict(row, prepared, today=None):
 
     reason is why the row must stay HIDDEN rather than be shown to confirm, first match:
 
+      price_not_in_text, larger_total_in_text, build_only, land_only, commercial
+                                   what the row's own price evidence says: its price is
+                                   not a home and land at that price
+                                   (price_evidence_refusal)
+
       newer_capture_disagrees      a later capture of the same lot says it is gone
       newer_capture_exists         a later capture of the same lot at the same price
                                    (within 2%) exists, so this row is its old copy
+      newer_capture_repriced       a later capture of the same lot, on the same line once
+                                   prices are taken out (line_key), asks another price:
+                                   this row's price is out of date
       document_reread_without_row  relisting channel; the row's document was read after
                                    the row, within REREAD_WITHIN_DAYS, and that read was
                                    a full one (latest_read_is_full)
@@ -1438,6 +1598,9 @@ def confirm_verdict(row, prepared, today=None):
     """
     today = today or _now_aest()
     notes = []
+    refused = price_evidence_refusal(row)
+    if refused:
+        return refused, notes
     seen = _parse_day(row.get("date_checked"))
     if seen is None:
         return "no_capture_date", notes
@@ -1533,7 +1696,9 @@ def admission_refusal(row, prepared, today=None):
       price_not_in_text            the stored price is printed on the row's own line
       larger_total_in_text         nothing larger than price + 2% is printed on it (the
                                    South Ripley $725,000 is half of $1,505,615)
-      build_only / land_only / commercial  the price is for a home and land
+      build_only / land_only / commercial  the price is for a home and land (price_covers:
+                                   the snapshot's price_kind, and the row's own land and
+                                   build columns)
       ...then every confirm_verdict reason, including the 45-day limit.
     """
     doc = str(row.get(_DOC_KEY) or "").strip()
@@ -1554,7 +1719,7 @@ def admission_refusal(row, prepared, today=None):
     printed = _num(row.get("text_price_max"))
     if printed is None or printed > price * (1 + TEXT_PRICE_TOLERANCE):
         return "larger_total_in_text", []
-    kind = str(row.get("price_kind") or "").strip().lower()
+    kind = price_covers(row)
     if kind in NOT_ADMITTABLE_PRICE_KINDS:
         return kind, []
     return confirm_verdict(row, prepared, today)

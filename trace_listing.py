@@ -97,6 +97,8 @@ KIND_LABELS = {
 HIDDEN_BECAUSE = {
     "newer_capture_disagrees": "a later capture of the same lot says it has gone",
     "newer_capture_exists": "a later capture of the same lot at the same price exists",
+    "newer_capture_repriced": ("a later capture of the same lot, on the same line, asks "
+                               "another price"),
     "document_reread_without_row": "document re-read without this row",
     "builder_documents_reread": ("the builder's other documents were re-read and this "
                                  "row's document was not"),
@@ -118,6 +120,22 @@ HIDDEN_BECAUSE = {
     "land_only": "availability not stated, and the price is land only",
     "commercial": "availability not stated, and the price is commercial",
 }
+# The same price refusals on a stale row: availability was stated, the price is the problem.
+HIDDEN_BECAUSE_STALE = {
+    "price_not_in_text": "its price is not printed on its own line",
+    "larger_total_in_text": "its line prints a larger total (the price is one part of it)",
+    "build_only": "the price is build only",
+    "land_only": "the price is land only",
+    "commercial": "the price is commercial (an office, shop or warehouse)",
+}
+
+def _hidden_because(guard, confirm):
+    """The words for a guard: a price refusal on a row whose availability WAS stated (a
+    stale row) is about the price alone."""
+    if "availability_unstated" not in (confirm or ()) and guard in HIDDEN_BECAUSE_STALE:
+        return HIDDEN_BECAUSE_STALE[guard]
+    return HIDDEN_BECAUSE.get(guard, guard)
+
 
 # A scheme ("https:/", even cut short), "www.", an e-mail address, or a bare domain with a
 # path ("docs.google.com/spreadsheets/d/...", "dropbox.com/scl/fi/..."), which a row's text
@@ -252,9 +270,9 @@ def load_catalogue(snapshot_path, db_path=None):
                          "snapshot built from this database" % (unjoined, len(db_only)))
         filled = _fill_build_time_cells(rows)
         if filled:
-            notes.append("this snapshot predates the price-evidence and emailed-list cells; "
-                         "computed for %d row(s) from the database, exactly as build_web "
-                         "computes them" % filled)
+            notes.append("this snapshot predates the price-evidence, emailed-list or line "
+                         "cells; computed for %d row(s) from the database, exactly as "
+                         "build_web computes them" % filled)
     else:
         rows = [dict(r, db=None) for r in rows]
         notes.append("no database: ids, documents and database-only rows are not shown"
@@ -265,21 +283,24 @@ def load_catalogue(snapshot_path, db_path=None):
 
 
 def _fill_build_time_cells(rows):
-    """Compute build_web's price-evidence and emailed-list cells for a snapshot built before
-    they existed, from the joined database columns, with the function build_web and the
-    SQLite reader share (snapshot_build_cells). Returns how many rows were filled."""
-    if not rows or any(f in rows[0] for f in C._COMPUTED_SNAPSHOT_FIELDS):
+    """Compute build_web's price-evidence, emailed-list and line cells for a snapshot built
+    before they existed, from the joined database columns, with the function build_web and
+    the SQLite reader share (snapshot_build_cells). Only the cells the snapshot lacks are
+    filled: one built before line_key keeps the price evidence it was published with.
+    Returns how many rows were filled."""
+    missing = [f for f in C._COMPUTED_SNAPSHOT_FIELDS if not rows or f not in rows[0]]
+    if not rows or not missing:
         return 0
     filled = 0
     for row in rows:
         db = row.get("db")
         if not db:
-            row.update(dict.fromkeys(C._COMPUTED_SNAPSHOT_FIELDS))
+            row.update(dict.fromkeys(missing))
             continue
         inputs = {k: db.get(k) for k in ("source_text", "source_url", "first_seen")}
         cells = C.snapshot_build_cells({k: v for k, v in row.items() if k != "db"}
                                        | inputs)
-        row.update({f: cells.get(f) for f in C._COMPUTED_SNAPSHOT_FIELDS})
+        row.update({f: cells.get(f) for f in missing})
         filled += 1
     return filled
 
@@ -876,7 +897,7 @@ class Tracer:
             if package.get("verified"):
                 return base, "shown"
             if guard:
-                return "hidden: %s (checked %s)" % (HIDDEN_BECAUSE.get(guard, guard),
+                return "hidden: %s (checked %s)" % (_hidden_because(guard, confirm),
                                                    checked), "gate"
             return base + "; unverified, so at most needs confirming", "confirm"
         outcome, detail = scored.get(package["content_hash"], (None, None))
@@ -895,7 +916,7 @@ class Tracer:
         if outcome != "pending":
             return "passes every gate, but the scorer did not return it", "gate"
         if guard:
-            return ("hidden: %s (checked %s)" % (HIDDEN_BECAUSE.get(guard, guard), checked)
+            return ("hidden: %s (checked %s)" % (_hidden_because(guard, confirm), checked)
                     + notes, "gate")
         why = []
         if "availability_unstated" in confirm:

@@ -671,6 +671,9 @@ def test_an_obvious_row_passes_only_as_shown_collapsed_into_a_shown_twin_or_guar
         other, confirm=["stale"], confirm_guard="over_confirm_limit")})[0] not in \
         SR.ALLOWED_VERDICTS
     assert outcome({"gate": "incomplete_facts", "package": None})[0] in SR.WARN_VERDICTS
+    # Release review: a later capture of the same line asks another price -- named, allowed.
+    assert outcome({"gate": "scored", "package": dict(
+        other, confirm=["stale"], confirm_guard="newer_capture_repriced")})[0] in         SR.ALLOWED_VERDICTS
     assert outcome({"gate": "truncated", "package": other})[0] not in SR.ALLOWED_VERDICTS
     lost = outcome({"gate": "scored", "package": dict(other, confirm=["stale"])})
     assert lost == ("rejected_by_the_scorer",
@@ -878,3 +881,29 @@ def test_dawn_lots_are_judged_one_by_one():
            "needs_confirming" in out
     assert "Dawn lots 1228 not required to need confirming: the confirm window ended on " \
            "01/10/2026" in out
+
+
+def test_a_component_price_or_an_unprinted_price_is_not_an_obvious_row():
+    """Release review: the search now hides a stale row whose own columns say its price is
+    the land alone ("Wollert Land Price $143,389") or whose price-list line does not print
+    its price (an email sentence at $553,284). The harness's own definition of an obvious
+    row leaves them out too, instead of failing the night over a correct search."""
+    def rec(i, **kw):
+        base = {"id": i, "content_hash": "v2:obv%04d" % i, "state": "VIC", "price": 553284.0,
+                "availability_status": "Available", "date_checked": "28/08/2026",
+                "source_channel": "digital email", "first_seen": None, "lot_number": None,
+                "superseded_by": None, "land_price": None, "build_price": None}
+        base.update(kw)
+        return base
+
+    db = [rec(1), rec(2, price=143389.0, land_price=143389.0),
+          rec(3, price=413000.0, build_price=413000.0),
+          rec(4, price=617000.0, land_price=204000.0, build_price=413000.0),
+          rec(5, source_channel="Proxima")]
+    catalogue = SR.Catalogue([_row(r["content_hash"]) for r in db], db)
+    cells = {"v2:obv0001": {"price_in_text": False}, "v2:obv0005": {"price_in_text": False}}
+    picked = sorted(r["content_hash"] for r in SR.obvious_candidates(
+        catalogue, "VIC", 0, 750000, date(2026, 9, 16),
+        lambda r: cells.get(r["content_hash"], {"price_in_text": True})))
+    # The package stays; a portal card never prints a price, so it stays too.
+    assert picked == ["v2:obv0004", "v2:obv0005"], picked

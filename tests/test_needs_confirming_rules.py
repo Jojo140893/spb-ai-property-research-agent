@@ -624,3 +624,64 @@ def test_the_fixture_carries_the_build_time_cells_on_the_rows_it_was_cut_with(su
     dawn = next(r for r in subset_rows if r["content_hash"].startswith("v2:aec54350"))
     assert (dawn["price_in_text"], dawn["text_price_max"], dawn["email_first_seen"]) == \
         (True, 721900, "17/08/2026")
+
+
+# ------------------------------------------------ the line key (release review, 17 Sep)
+
+def test_the_line_key_is_a_snapshot_field_computed_where_the_text_is():
+    import build_web
+    assert "line_key" in C.SNAPSHOT_FIELDS and "line_key" in C._COMPUTED_SNAPSHOT_FIELDS
+    assert "line_key" in build_web.BUILDING_DERIVED_FIELDS
+    assert "line_key" not in build_web.BUILDING_FIELDS, "it would reach the SQL SELECT"
+    build_web._check("buildings", build_web.BUILDING_FIELDS + build_web.BUILDING_DERIVED_FIELDS)
+    text = ("Available Mambourin Q3 2026 Townhouse Lot 406 156 6 Westgarth F | Mambourin Green "
+            "16.8 Double Storey 4 2 2 $180,000 $408,950 $588,950")
+    failures = []
+    cells = build_web._line_key_cells({"lot_number": "406", "source_text": text}, failures)
+    assert cells == {"line_key": C.line_text_key(text)} and cells["line_key"]
+    # No lot number: the guard cannot key the row, so the snapshot pays nothing for it.
+    assert build_web._line_key_cells({"lot_number": "", "source_text": text}, failures) == \
+        {"line_key": None}
+    assert failures == []
+    body = (APP / "build_web.py").read_text(encoding="utf-8")
+    body = body[body.index("def build(out_dir"):]
+    assert body.index("_line_key_cells(b, _evidence_failures)") < body.index(
+        'for _internal in ("source_text", "source_url", "stocklist_file")')
+
+
+def test_the_line_key_ignores_prices_dates_and_status_but_not_the_design():
+    one = C.line_text_key("Available Lot 406 Westgarth F 4 2 2 $180,000 $408,950 $588,950 13.08.2026")
+    assert one == C.line_text_key("ON HOLD Lot 406 Westgarth F 4 2 2 $180,000 $424,776 $604,776 "
+                                  "16.09.2026")
+    assert one == C.line_text_key("Available Lot 406 Westgarth F 4 2 2 180,000 424,776 604776")
+    assert one != C.line_text_key("Available Lot 406 Westgarth E 4 2 2 $180,000 $408,950 $588,950")
+    assert C.line_text_key("$588,950 Available") is None      # nothing left to compare
+
+
+def test_a_digest_that_happens_to_read_as_a_phone_number_never_blocks_the_publish(tmp_path):
+    """A 12-hex-character line_key on ~13,000 rows holds digit runs: '0447270629' read as
+    a mobile number and aborted the first build that published the field."""
+    import build_web
+    path = tmp_path / "stock.json"
+    keys = ["content_hash", "lot_address", "line_key", "source_doc", "email_list"]
+    path.write_text(json.dumps({"keys": keys, "rows": [
+        ["v2:a", "Lot 1", "8b0447270629", "ab6e0740786406", "abcdef0412345678"]]}),
+        encoding="utf-8")
+    build_web._assert_no_contact_details(path)
+    path.write_text(json.dumps({"keys": keys, "rows": [
+        ["v2:a", "Call 0447270629", "8b0447270629", None, None]]}), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        build_web._assert_no_contact_details(path)
+
+
+def test_trace_listing_fills_only_the_cells_a_snapshot_lacks():
+    import trace_listing as T
+    text = "Available Lot 406 Westgarth F 4 2 2 $180,000 $408,950 $588,950"
+    row = {"content_hash": "v2:x", "lot_number": "406", "price": 588950.0,
+           "lot_address": "Lot 406", "price_kind": "package", "text_price_max": 1.0,
+           "price_in_text": True, "email_list": None, "email_first_seen": None,
+           "db": {"source_text": text, "source_url": None, "first_seen": None}}
+    assert T._fill_build_time_cells([row]) == 1
+    assert row["line_key"] == C.line_text_key(text)
+    assert row["text_price_max"] == 1.0, "a published cell is never recomputed"
+    assert T._fill_build_time_cells([row]) == 0

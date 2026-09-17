@@ -134,6 +134,13 @@ BUILDING_DERIVED_FIELDS += PRICE_EVIDENCE_FIELDS
 # with its dates removed. The subject itself is not published.
 EMAIL_LIST_FIELDS = ["email_list", "email_first_seen"]
 BUILDING_DERIVED_FIELDS += EMAIL_LIST_FIELDS
+# A LOT'S LINE WITH ITS PRICES TAKEN OUT, as a 12-character hash, on rows with a lot number
+# (api/_candidates.snapshot_line_cells). The search hides a stale capture offered to
+# confirm when a later capture of the same lot asks another price ON THE SAME LINE --
+# Hattan lot 406 at its 17/08 $588,950 against the 16/09 read's $604,776 -- and keeps it
+# when the later line differs (another design on the lot). The line is not published.
+LINE_KEY_FIELDS = ["line_key"]
+BUILDING_DERIVED_FIELDS += LINE_KEY_FIELDS
 
 # benchmarks.json -- market comparables from realestate.com.au, which are NOT stock.
 # Its own payload, not a section of stock.json, for three reasons: stock.json is already
@@ -296,6 +303,19 @@ def _email_list_cells(row, failures: list) -> dict:
     except Exception as exc:                                            # noqa: BLE001
         failures.append((row.get("content_hash") or "", f"{type(exc).__name__}: {exc}"))
         return dict.fromkeys(EMAIL_LIST_FIELDS)
+
+
+def _line_key_cells(row, failures: list) -> dict:
+    """The LINE_KEY_FIELDS cells for one row. Never raises, for the same reason as
+    _price_evidence_cells: a null, which the search reads as "no line to compare" (the
+    repriced guard then hides nothing)."""
+    try:
+        from api._candidates import snapshot_line_cells
+        cells = snapshot_line_cells(row)
+        return {f: cells[f] for f in LINE_KEY_FIELDS}
+    except Exception as exc:                                            # noqa: BLE001
+        failures.append((row.get("content_hash") or "", f"{type(exc).__name__}: {exc}"))
+        return dict.fromkeys(LINE_KEY_FIELDS)
 
 
 # Read by .github/workflows/daily-harvest.yml ("Fail the run if a data step died quietly")
@@ -507,7 +527,12 @@ def _assert_no_contact_details(path: Path) -> None:
             f"they cannot go on a public URL.")
 
 
-_NOT_FREE_TEXT = {"content_hash", "sha256", "dedup_key", "row_key", "superseded_by"}
+# Digests, never text. line_key is a 12-hex-character hash on ~13,000 rows, and hex runs
+# of ten digits turn up in that many: '0447270629' matched as a mobile number and aborted
+# the first build that published it (release review). source_doc and email_list are
+# digests of the same kind.
+_NOT_FREE_TEXT = {"content_hash", "sha256", "dedup_key", "row_key", "superseded_by",
+                  "line_key", "source_doc", "email_list"}
 
 
 def _walk_strings(node, field=""):
@@ -803,6 +828,8 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         b.update(_price_evidence_cells(b, _evidence_failures))
         # Also before source_url is popped: the emailed list's key is its subject's stem.
         b.update(_email_list_cells(b, _evidence_failures))
+        # And the line's key, before source_text is popped.
+        b.update(_line_key_cells(b, _evidence_failures))
         b.pop("first_seen", None)
         # AFTER the link is built, not before: primary_source_link reads source_url and
         # stocklist_file to construct it, and popping them first cost 6,242 rows their

@@ -816,6 +816,89 @@ def _candidate_key(cand):
                         cand.price_breakdown.advertised_package_price)
 
 
+# "18 Wiltipoll Road, Mambourin" -> "18 wiltipoll road". A street number, one to three
+# words and a street type, at the START of the address: "Lot 406, Mambourin Green" and
+# "Unit 5, 12 Smith St" name no street here, because a lot or unit number is not a house
+# number.
+_STREET = re.compile(
+    r"^\s*(\d+[a-z]?)\s+((?:[a-z][a-z'-]*\s+){1,3}?)"
+    r"(road|rd|street|st|avenue|ave|drive|dr|court|ct|crescent|cres|boulevard|blvd|bvd|way|"
+    r"place|pl|lane|ln|parade|pde|circuit|cct|close|cl|terrace|tce|parkway|pkwy|esplanade|"
+    r"esp|highway|hwy)\b", re.I)
+_STREET_TYPE = {"rd": "road", "st": "street", "ave": "avenue", "dr": "drive", "ct": "court",
+                "cres": "crescent", "blvd": "boulevard", "bvd": "boulevard", "pl": "place",
+                "ln": "lane", "pde": "parade", "cct": "circuit", "cl": "close",
+                "tce": "terrace", "pkwy": "parkway", "esp": "esplanade", "hwy": "highway"}
+# Two prices this close are one price; two areas this close are one area.
+_SAME_PRICE_DOLLARS = 1.0
+_SAME_AREA_SQM = 0.5
+
+
+def _street_of(address):
+    m = _STREET.match(str(address or "").strip().lower())
+    if not m:
+        return ""
+    kind = m.group(3).lower()
+    return "%s %s %s" % (m.group(1), " ".join(m.group(2).split()),
+                         _STREET_TYPE.get(kind, kind))
+
+
+def _float(value):
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _card_identity(cand, row):
+    """What a shown card, or a candidate for one, says about which lot it is."""
+    row = row or {}
+    return {
+        "state": str(getattr(cand, "state", "") or "").strip().upper(),
+        "suburb": str(getattr(cand, "suburb", "") or "").strip().lower(),
+        "lot": " ".join(re.sub(r"[^a-z0-9]+", " ",
+                               str(getattr(cand, "lot_number", "") or "").lower()).split()),
+        "price": _float(cand.price_breakdown.advertised_package_price),
+        "bedrooms": getattr(cand, "bedrooms", None) or None,
+        "land": _float(getattr(cand, "land_size_sqm", 0)),
+        "house": _float(getattr(cand, "house_size_sqm", 0)),
+        "street": _street_of(cand.lot_address),
+        "doc": str(row.get("source_doc") or "").strip(),
+    }
+
+
+def _same_listing(x, y):
+    """True when candidate x is a lot card y already stands for, under another hash and
+    another address spelling.
+
+    Release review: brief #8 (Any state <= $750k) shortlisted 18 Wiltipoll Road, Mambourin
+    (Paramount Living, E-Agent, 5 bed, 168 m2, $617,000) and ALSO offered it to confirm as
+    the emailed copy -- no builder, "18 Wiltipoll Road, Mambourin" -- and a third time as
+    the email's fragment "$617,000 TITLE DATE Q2 2027 HOUSE SIZE 167.77sqm". Same price
+    always, then any one of:
+      * the same lot number in the same state, with the land size agreeing, or the
+        bedrooms and the suburb agreeing;
+      * the same street address in the same state (and no two different lot numbers);
+      * on the same document, x names no lot and no bedrooms and its house size is y's:
+        a fragment of y's listing.
+    """
+    if not x["price"] or abs(x["price"] - y["price"]) > _SAME_PRICE_DOLLARS:
+        return False
+    if x["lot"] and y["lot"] and x["lot"] != y["lot"]:
+        return False
+    same_state = bool(x["state"]) and x["state"] == y["state"]
+    if x["lot"] and x["lot"] == y["lot"] and same_state:
+        if x["land"] > 0 and abs(x["land"] - y["land"]) <= _SAME_AREA_SQM:
+            return True
+        if (x["bedrooms"] and x["bedrooms"] == y["bedrooms"]
+                and x["suburb"] and x["suburb"] == y["suburb"]):
+            return True
+    if x["street"] and x["street"] == y["street"] and same_state:
+        return True
+    return bool(x["doc"] and x["doc"] == y["doc"] and not x["lot"] and not x["bedrooms"]
+                and x["house"] > 0 and abs(x["house"] - y["house"]) <= _SAME_AREA_SQM)
+
+
 def _needs_confirming_entry(cand, pkg, row):
     """One amber card: the candidate as scored, with the ROW'S OWN dates.
 
@@ -930,8 +1013,9 @@ def _needs_confirming(agent, brief_dict, rows, prepared, packages, result, short
           admit=availability_unstated and only_admitted=True: its own collapse and its own
           600 cap, so it cannot push a confirmed row out of the search), scored against the
           same brief, survivors only.
-    Merged, with anything already on the shortlist (by content_hash or as the same lot,
-    design and price) dropped, sorted by score, listed up to MAX_NEEDS_CONFIRMING.
+    Merged, with anything already shown dropped -- on the shortlist or offered above, by
+    content_hash, as the same lot, design and price, or as the same lot under another hash
+    and address (_same_listing) -- sorted by score, listed up to MAX_NEEDS_CONFIRMING.
 
     hidden is {reason: n} over matches that were NOT offered: (a) candidates a guard hides
     (newer_capture_disagrees, over_confirm_limit, ...) and unstated rows refused admission
@@ -944,13 +1028,25 @@ def _needs_confirming(agent, brief_dict, rows, prepared, packages, result, short
     live = _live_rows_by_hash(rows)
     taken_hashes = {str(getattr(p, "content_hash", "") or "") for p in shortlist} - {""}
     taken_keys = {_candidate_key(p) for p in shortlist}
+    # Every card shown or standing for one: the shortlist, then each candidate as it is
+    # offered or found to be a copy of one already shown.
+    shown = [_card_identity(p, live.get(str(getattr(p, "content_hash", "") or "")))
+             for p in shortlist]
     entries = []
     hidden = {}
+    offers = []
 
-    def offer(cand, pkg):
+    def offer(cand, pkg, ident, named):
         h = str(cand.content_hash or "")
         key = _candidate_key(cand)
-        if (h and h in taken_hashes) or key in taken_keys:
+        # A candidate that names neither its lot nor its bedrooms is checked against every
+        # card that does -- shown, or about to be offered or found a copy -- so a fragment
+        # meets the listing it came from whichever of the two is offered first.
+        others = shown if (ident["lot"] or ident["bedrooms"]) else shown + named
+        copy = ((h and h in taken_hashes) or key in taken_keys
+                or any(_same_listing(ident, other) for other in others if other is not ident))
+        shown.append(ident)
+        if copy:
             return
         taken_keys.add(key)
         if h:
@@ -967,7 +1063,7 @@ def _needs_confirming(agent, brief_dict, rows, prepared, packages, result, short
         if guard:
             hidden[guard] = hidden.get(guard, 0) + 1
             continue
-        offer(cand, pkg)
+        offers.append((cand, pkg))
 
     admitted, admit_counts = _candidates.build_packages(
         brief_dict, rows, prepared=prepared, admit=ADMIT_UNSTATED, only_admitted=True)
@@ -981,7 +1077,13 @@ def _needs_confirming(agent, brief_dict, rows, prepared, packages, result, short
         if guard:                      # admission already applied every guard; belt only
             hidden[guard] = hidden.get(guard, 0) + 1
             continue
-        offer(cand, pkg)
+        offers.append((cand, pkg))
+
+    # Pending before admitted, each in the order it came.
+    idents = [_card_identity(cand, live.get(str(cand.content_hash or ""))) for cand, _ in offers]
+    named = [i for i in idents if i["lot"] or i["bedrooms"]]
+    for (cand, pkg), ident in zip(offers, idents):
+        offer(cand, pkg, ident, named)
 
     capped = {"admit_pass": bool(admit_counts.get("truncated")), "refusal_pass": False}
     if admit_counts.get("unstated_not_admitted"):

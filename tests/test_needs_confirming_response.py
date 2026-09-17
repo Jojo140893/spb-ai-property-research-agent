@@ -578,3 +578,220 @@ def test_with_nothing_to_score_an_admitted_lot_is_still_offered(synthetic):
     rel = {r["id"]: r for r in out["search_help"]["relaxations"]}
     assert rel["include_needs_confirming"]["count"] == 1
     assert rel["budget_plus_50k"]["shortlist_count"] == 1        # the confirmed lot
+
+
+# ------------------------------------------------ release review, 17 Sep: what is offered
+#
+# Colin's brief #8 (Any state <= $750k) offered 29 listings to confirm, and 8 of them were
+# not a home and land at that price; VIC <= $600k offered Hattan lots at a price their own
+# later read no longer asked; and 18 Wiltipoll Road was shortlisted AND offered to confirm
+# twice more. Every row below is shaped from the real row (fields as the 17 Sep snapshot
+# carries them; documents and links are stand-ins). Frozen at 16/09/2026.
+
+_HATTAN_406_EMAIL = ("Available Mambourin Q3 2026 Townhouse Lot 406 156 6 Westgarth F | "
+                     "Mambourin Green 16.8 Double Storey 4 2 2 $180,000 $408,950 $588,950")
+_HATTAN_406_LATER = ("Available Mambourin Q3 2026 Townhouse Lot 406 156 6 Westgarth F | "
+                     "Mambourin Green 16.8 Double Storey 4 2 2 $180,000 $424,776 $604,776")
+_LUMINA_ENZO = ("2-Part Detached SS North 58 Lumina Estate Sunbury Jul-27 263 $330,000 Enzo "
+                "10.5 3 / 2/ / 2 $359,350 $689,350")
+_LUMINA_VGU19 = ("2-Part Detached SS North 58 Lumina Estate Sunbury Jul-27 263 $330,000 VGU19 "
+                 "3 / 2/ / 2 $387,925 $717,925")
+
+
+def _stale(content_hash, **kw):
+    """A stated-Available row last read 20+ days before 16/09: it reaches the amber group
+    through the search's own Pending Confirmation list (source a)."""
+    base = dict(state="VIC", source_channel="digital email", date_checked="27/08/2026",
+                builder_name="Hattan Homes", source_doc="doc-hattan-update", bedrooms=None,
+                bathrooms=None, car_spaces=None, land_sqm=None, house_sqm=None,
+                price_kind="unknown")
+    base.update(kw)
+    return _listing(content_hash, **base)
+
+
+@pytest.fixture(scope="module")
+def release_review(tmp_path_factory):
+    rows = [
+        # --- source (a): stale, stated Available, not a home and land at that price
+        _stale("v2:8f2276ff-land", lot_address="Wollert Land Price $143,389",
+               suburb="Wollert", price=143389.0, land_price=143389.0),
+        _stale("v2:41cc2ae3-house", lot_address="FLOORPLAN Victoria 180 HOUSE PRICE $413,000",
+               suburb="Mambourin", builder_name=None, price=413000.0, build_price=413000.0,
+               source_doc="doc-paramount-mambourin", date_checked="28/08/2026"),
+        _stale("v2:13084826-sentence",
+               lot_address=("We have a couple of partners presenting this lot but it is not "
+                            "on hold exclusively or at this stage sold. Plea"),
+               suburb="Donnybrook", price=553284.0, text_price_max=None,
+               price_in_text=False, date_checked="28/08/2026"),
+        # --- source (a): a real stale lot on the same Hattan email -- still offered
+        _stale("v2:dfe420c3-lot", lot_address="Lot 3752, Ceduna", lot_number="3752",
+               suburb="Clyde North", price=604929.0, bedrooms=3, bathrooms=2, car_spaces=2,
+               land_sqm=186.0, price_kind="package", land_price=250000.0,
+               build_price=354929.0, date_checked="17/08/2026"),
+        # --- source (b): an exceptions-only price list (one lot marked Sold, since retired)
+        _listing("v2:rockdale-sold", lot_address="Building B Level 2 Unit 204",
+                 suburb="Rockdale", state="NSW", availability_status="Sold",
+                 source_doc="doc-rockdale", superseded_by="v2:rockdale-sold-later",
+                 source_channel="E-Agent", date_checked="10/09/2026", price=700000.0),
+        _listing("v2:da06b5df-office", lot_address="Building A Ground Level Office 81 0 81 $740,000",
+                 suburb="Rockdale", state="NSW", availability_status=None,
+                 source_doc="doc-rockdale", source_channel="E-Agent", builder_name=None,
+                 attribution_scope="project", product_type="Apartment", price=740000.0,
+                 price_kind="dwelling", bedrooms=None, bathrooms=None, car_spaces=None,
+                 land_sqm=None, house_sqm=81.0),
+        _listing("v2:1dde5e41-unit", lot_address="1 Standard North Court, Yard",
+                 suburb="Rockdale", state="NSW", availability_status=None,
+                 source_doc="doc-rockdale", source_channel="E-Agent", builder_name=None,
+                 attribution_scope="project", product_type="Apartment", price=740000.0,
+                 price_kind="dwelling", bedrooms=1, bathrooms=1, car_spaces=1,
+                 land_sqm=None, house_sqm=58.0),
+        # --- repriced: Hattan lot 406, emailed 17/08 at $588,950; E-Agent 16/09 at $604,776
+        _stale("v2:85c2eec7-406", lot_address="Lot 406, Mambourin Green", lot_number="406",
+               estate_name="Mambourin Green", suburb="Mambourin", price=588950.0,
+               land_price=180000.0, build_price=408950.0, bedrooms=4, bathrooms=2,
+               car_spaces=2, land_sqm=156.0, price_kind="package",
+               date_checked="17/08/2026", source_doc="doc-hattan-stock-10-aug",
+               line_key=_candidates.line_text_key(_HATTAN_406_EMAIL)),
+        _listing("v2:2dda14e0-406", lot_address="Lot 406, Mambourin Green", lot_number="406",
+                 estate_name="Mambourin Green", suburb="Mambourin", state="VIC",
+                 builder_name="Hattan Homes", price=604776.0, land_price=180000.0,
+                 build_price=424776.0, bedrooms=4, bathrooms=2, car_spaces=2, land_sqm=156.0,
+                 source_channel="E-Agent", date_checked="16/09/2026",
+                 source_doc="doc-eagent-hattan", price_kind="package",
+                 line_key=_candidates.line_text_key(_HATTAN_406_LATER)),
+        # --- another design on one lot: Lumina lot 58, Enzo stale, VGU19 read later
+        _stale("v2:lumina-enzo", lot_address="58 Lumina Estate", lot_number="58",
+               estate_name="Lumina Estate", suburb="Sunbury", builder_name="Example Homes",
+               price=689350.0, land_price=330000.0, build_price=359350.0, bedrooms=3,
+               bathrooms=2, car_spaces=2, land_sqm=263.0, price_kind="package",
+               date_checked="25/08/2026", source_doc="doc-lumina-email",
+               line_key=_candidates.line_text_key(_LUMINA_ENZO)),
+        _listing("v2:lumina-vgu19", lot_address="58 Lumina Estate", lot_number="58",
+                 estate_name="Lumina Estate", suburb="Sunbury", state="VIC",
+                 builder_name="Example Homes", price=717925.0, land_price=330000.0,
+                 build_price=387925.0, bedrooms=3, bathrooms=2, car_spaces=2, land_sqm=263.0,
+                 source_channel="E-Agent", date_checked="16/09/2026",
+                 source_doc="doc-eagent-lumina", price_kind="package",
+                 line_key=_candidates.line_text_key(_LUMINA_VGU19)),
+        # --- 18 Wiltipoll Road: shortlisted, its emailed copy, and the email's fragment
+        _listing("v2:d485879e-e-agent", lot_address="18 Wiltipoll Road", lot_number="18",
+                 suburb="Mambourin", state="VIC", builder_name="Paramount Living",
+                 source_channel="E-Agent", date_checked="10/09/2026", price=617000.0,
+                 land_price=204000.0, build_price=413000.0, bedrooms=5, bathrooms=2.5,
+                 car_spaces=2, land_sqm=168.0, house_sqm=167.77, product_type="House & Land",
+                 price_kind="package", source_doc="doc-eagent-paramount"),
+        _stale("v2:cfbf6bff-email", lot_address="18 Wiltipoll Road, Mambourin", lot_number="18",
+               suburb="Mambourin", builder_name=None, price=617000.0, land_price=204000.0,
+               build_price=413000.0, bedrooms=5, bathrooms=2.5, car_spaces=2, land_sqm=168.0,
+               house_sqm=167.77, price_kind="package", date_checked="28/08/2026",
+               source_doc="doc-paramount-mambourin"),
+        _stale("v2:69dee931-fragment",
+               lot_address="$617,000 TITLE DATE Q2 2027 HOUSE SIZE 167.77sqm",
+               suburb="Mambourin", builder_name=None, price=617000.0, house_sqm=167.77,
+               title_status="Q2 2027", date_checked="28/08/2026",
+               source_doc="doc-paramount-mambourin"),
+        # ...and a different lot on that email at the same price: still offered.
+        _stale("v2:paramount-lot-19", lot_address="19 Wiltipoll Road, Mambourin",
+               lot_number="19", suburb="Mambourin", builder_name=None, price=617000.0,
+               land_price=204000.0, build_price=413000.0, bedrooms=4, bathrooms=2,
+               car_spaces=2, land_sqm=170.0, house_sqm=160.0, price_kind="package",
+               date_checked="28/08/2026", source_doc="doc-paramount-mambourin"),
+    ]
+    path = tmp_path_factory.mktemp("release_review") / "stock.json"
+    path.write_text(json.dumps({"buildings": rows}), encoding="utf-8")
+    mp, module = _research_on(path)
+    yield module
+    mp.undo()
+
+
+def _offered(out):
+    return {e["content_hash"] for e in out["needs_confirming"]}
+
+
+def test_brief_8_offers_no_price_fragment_email_sentence_or_office(release_review):
+    """Any state <= $750k. A "Land Price" line, a "HOUSE PRICE" line, an email sentence and
+    a ground-floor office are not a home and land at their price, whichever way they reach
+    the group: the first three are stale Available rows (the Pending list), the office an
+    unstated row admitted from an exceptions-only list. Each is hidden and counted."""
+    out = _run(release_review, _brief(state="", budget_max=750000,
+                                      preferred_spending_cap=750000), explain=True)
+    offered = _offered(out)
+    for never in ("v2:8f2276ff-land", "v2:41cc2ae3-house", "v2:13084826-sentence",
+                  "v2:da06b5df-office"):
+        assert never not in offered, (never, sorted(offered))
+    # PREMISE: both paths offer the real lots beside them.
+    assert {"v2:dfe420c3-lot", "v2:1dde5e41-unit"} <= offered, sorted(offered)
+    hidden = out["needs_confirming_hidden"]
+    assert hidden.get("land_only") == 1 and hidden.get("build_only") == 1, hidden
+    assert hidden.get("price_not_in_text") == 1 and hidden.get("commercial") == 1, hidden
+
+
+def test_the_price_the_row_itself_states_decides_land_and_build_only():
+    row = _listing("v2:x", price=143389.0, land_price=143389.0, price_kind="unknown")
+    assert _candidates.price_covers(row) == "land_only"
+    assert _candidates.price_covers(dict(row, land_price=None, build_price=143389.0)) == \
+        "build_only"
+    # Both halves stated: a package, not a component.
+    assert _candidates.price_covers(dict(row, price=617000.0, land_price=204000.0,
+                                         build_price=413000.0)) == "unknown"
+    # A room in a house is not an office.
+    assert _candidates.price_covers(dict(row, land_price=None, lot_address="Lot 7 4 bed + home office",
+                                         bedrooms=None)) == "unknown"
+    assert _candidates.price_covers(dict(row, land_price=None, bedrooms=None,
+                                         lot_address="Lot PT12 Unit Retail 19, 35 Kitchener Parade")) \
+        == "commercial"
+    # A portal card never prints its price; that says nothing against it.
+    portal = dict(row, land_price=None, source_channel="Proxima", price_in_text=False,
+                  text_price_max=None)
+    assert _candidates.price_evidence_refusal(portal) is None
+    assert _candidates.price_evidence_refusal(dict(portal, source_channel="digital email")) == \
+        "price_not_in_text"
+
+
+def test_a_lot_repriced_on_its_own_line_is_not_offered_at_its_old_price(release_review):
+    """VIC <= $600k. Hattan lot 406 was emailed at $588,950 (17/08); its 16/09 read of the
+    same line asks $604,776, over the brief. Not offered, and counted."""
+    assert _candidates.line_text_key(_HATTAN_406_EMAIL) == \
+        _candidates.line_text_key(_HATTAN_406_LATER), "premise: one line, two prices"
+    out = _run(release_review, _brief(state="VIC", budget_max=600000,
+                                      preferred_spending_cap=600000), explain=True)
+    assert "v2:85c2eec7-406" not in _offered(out), sorted(_offered(out))
+    assert out["needs_confirming_hidden"].get("newer_capture_repriced") == 1, \
+        out["needs_confirming_hidden"]
+    assert out["shortlist_count"] == 0
+
+
+def test_another_design_on_the_lot_read_later_hides_nothing(release_review):
+    """Lumina lot 58: Enzo ($689,350) was last read 25/08, VGU19 ($717,925) on 16/09. Two
+    designs, two lines: the Enzo package is still offered to confirm at $700k."""
+    assert _candidates.line_text_key(_LUMINA_ENZO) != _candidates.line_text_key(_LUMINA_VGU19)
+    out = _run(release_review, _brief(state="VIC", budget_max=700000,
+                                      preferred_spending_cap=700000), explain=True)
+    assert "v2:lumina-enzo" in _offered(out), (sorted(_offered(out)),
+                                               out["needs_confirming_hidden"])
+
+
+@pytest.mark.parametrize("order", ["as scored", "reversed"])
+def test_a_shortlisted_lot_is_not_offered_again_as_its_emailed_copy_or_fragment(
+        release_review, monkeypatch, order):
+    """18 Wiltipoll Road: shortlisted from E-Agent; the emailed copy (no builder, another
+    address spelling) and the email's "TITLE DATE ... HOUSE SIZE 167.77sqm" fragment are
+    the same listing. Lot 19 on the same email, at the same price, is not. In either order
+    the Pending list may bring the copy and the fragment in."""
+    if order == "reversed":
+        real = release_review._with_explain
+
+        def reversed_pending(response, brief, rows, prepared, counts, packages, result):
+            if result:
+                result = dict(result, pending_confirmation=list(
+                    reversed(result.get("pending_confirmation") or [])))
+            return real(response, brief, rows, prepared, counts, packages, result)
+
+        monkeypatch.setattr(release_review, "_with_explain", reversed_pending)
+    out = _run(release_review, _brief(state="VIC", budget_max=750000,
+                                      preferred_spending_cap=750000), explain=True)
+    assert "v2:d485879e-e-agent" in _hashes(out["shortlist"]), _hashes(out["shortlist"])
+    offered = _offered(out)
+    assert "v2:cfbf6bff-email" not in offered, sorted(offered)
+    assert "v2:69dee931-fragment" not in offered, sorted(offered)
+    assert "v2:paramount-lot-19" in offered, sorted(offered)
