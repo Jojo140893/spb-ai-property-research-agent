@@ -139,6 +139,8 @@ _GENERIC_BUILDER_WORDS = {"homes", "home", "group", "builders", "builder", "buil
                           "development", "pty", "ltd", "the", "and", "australia", "qld",
                           "nsw", "vic", "properties", "property", "living", "residential"}
 _DOC_EXTENSIONS = (".pdf", ".xlsx", ".xls", ".xlsm", ".csv", ".docx", ".doc")
+# How a warning says the row's text names a place in another state (see Tracer.warnings).
+_NAMES_ELSEWHERE = "; its text names "
 
 
 def _no_links(value):
@@ -490,13 +492,62 @@ def match_statuses(query, row):
             "lot": _lot_status(query, row), "price": _price_status(query, row)}
 
 
+def differing_fact(query, statuses):
+    """'price' or 'builder' when the estate AND the lot named both agree and that one fact
+    is all that disagrees, else None.
+
+    The estate and the lot name one piece of land. Dawn lot 1228 quoted at $735,000 is
+    the catalogue's Dawn lot 1228 at $721,900, repriced since the list was read -- not a
+    listing the catalogue never received. Before this, a 1.8% price change sent the lot
+    to "not in the catalogue (intake gap)", and that one line is the one that decides
+    between harvest, email intake and the parser. A price that differs is forgiven only
+    when the builder agrees or was not named (another builder's package on the same lot
+    is another listing); a builder that differs only when the price agrees (the lot filed
+    under its developer). Never both."""
+    if statuses.get("estate") != "yes" or statuses.get("lot") != "yes":
+        return None
+    against = [c for c in query.criteria() if statuses.get(c) == "no"]
+    if against == ["price"] and statuses.get("builder") in (None, "yes"):
+        return "price"
+    if against == ["builder"] and statuses.get("price") == "yes":
+        return "builder"
+    return None
+
+
+def differs_note(query, row):
+    """What the catalogue records differently for a row matched by differing_fact, or None."""
+    if not query.criteria():
+        return None
+    fact = differing_fact(query, match_statuses(query, row))
+    if fact == "price":
+        price = C._num(row.get("price"))
+        return ("the catalogue holds it at %s, not the %s named (%+.1f%%)"
+                % (_money(price), _money(query.price),
+                   100.0 * (price - query.price) / query.price))
+    if fact == "builder":
+        return 'filed under builder "%s", not "%s"' % (row.get("builder_name"),
+                                                       query.builder)
+    return None
+
+
 def is_match(query, statuses):
     """The row is the listing named: no stated fact contradicts it, the lot or the price
     (when given) agrees, and two facts agree when two or more were given -- a lot number
     counts as two. A price alone is not a listing: 1% of $721,900 takes in a Mernda
-    townhouse with no estate, builder or lot on its row."""
+    townhouse with no estate, builder or lot on its row. The one exception to "no fact
+    contradicts it" is differing_fact: the same estate and lot, repriced or filed under
+    another name."""
     given = query.criteria()
-    if not given or any(statuses[c] == "no" for c in given):
+    forgiven = differing_fact(query, statuses)
+    if not given or any(statuses[c] == "no" for c in given if c != forgiven):
+        return False
+    # Named by where it is, it must be found there. A row stating neither the estate nor
+    # the lot named is not the listing on builder and price alone: Torsion's filter-row
+    # fragment "LAND SIZE : 1463 m2 LAND PRICE" at $798,000 (no estate, no lot) matched
+    # "Torsion, Walloon Highlands, lot 224, $799,995", and for a lot the catalogue does
+    # not hold, that fragment's "parse gap" would have been the listing's one-line verdict.
+    placed = [c for c in ("estate", "lot") if c in given]
+    if placed and not any(statuses[c] == "yes" for c in placed):
         return False
     identifiers = [c for c in ("lot", "price") if c in given]
     if identifiers and not any(statuses[c] == "yes" for c in identifiers):
@@ -870,7 +921,7 @@ class Tracer:
                                              else " and its document", source))
             elsewhere = self._text_names_elsewhere(row)
             if elsewhere:
-                text += "; its text names %s, a %s locality" % elsewhere
+                text += _NAMES_ELSEWHERE + "%s, a %s locality" % elsewhere
             out.append(text)
         if row.get("db") is None and "db" in row and self.catalogue.db_label != "none":
             out.append("the database has no row with this content_hash")
@@ -960,13 +1011,18 @@ def run_trace(catalogue, query, brief, today, adjustments=(), agent_factory=pipe
     listings against one search explains and scores the catalogue once."""
     tracer = tracer or Tracer(catalogue, brief, today, agent_factory=agent_factory)
     matches, everything = find_rows(catalogue, query)
+    traced = []
+    for row in matches[:limit]:
+        item = tracer.trace(row)
+        item["differs"] = differs_note(query, row)
+        traced.append(item)
     report = {
         "query": query.describe(),
         "brief": brief, "adjustments": list(adjustments),
         "today": today.strftime("%d/%m/%Y"),
         "snapshot": catalogue.snapshot_label, "database": catalogue.db_label,
         "notes": list(catalogue.notes),
-        "matches": [tracer.trace(r) for r in matches[:limit]],
+        "matches": traced,
         "more": max(0, len(matches) - limit),
         "not_found": not matches,
         "nearest": [],
@@ -1005,7 +1061,57 @@ def summarise(report):
     rows = len(report["matches"]) + report["more"]
     if rows > 1:
         text += " (%d rows hold it)" % rows
+    if best.get("differs"):
+        text += "; " + best["differs"]
+    # 14905 is "shortlisted" to a QLD client and is VIC stock: the warning is half the
+    # verdict, so the one line carries it too.
+    elsewhere = next((w.split(_NAMES_ELSEWHERE, 1)[1] for w in best["warnings"]
+                      if _NAMES_ELSEWHERE in w), None)
+    if elsewhere:
+        text += "; its state rests on the suburb column, and its text names " + elsewhere
+    gone = _later_capture_gone(report["matches"], best)
+    if gone is not None:
+        text += ("; but a later capture, %s checked %s, says %s"
+                 % (_row_name(gone["row"]), gone["row"].get("date_checked"),
+                    str(gone["row"].get("availability_status")).strip()))
     return best["kind"], text
+
+
+def _later_capture_gone(items, best):
+    """The newest live row among `items`, when it was read after `best` and its source
+    marks the lot gone -- and `best` is shown or offered to confirm. Else None.
+
+    "Shortlisted" alone is the search's answer, and a true one; it is not the whole
+    answer when the same lot was read again a day later as On Hold (Howard lot 21: id
+    18491 Available 15/09 shortlisted, id 15953 On Hold 16/09). The one-line verdict must
+    not read as "this listing is fine"."""
+    if best["kind"] not in ("shown", "confirm"):
+        return None
+    shown_day = C._parse_day(best["row"].get("date_checked"))
+    shown_lots = _row_lots(best["row"])
+    shown_price = C._num(best["row"].get("price"))
+    newest, newest_day = None, None
+    for item in items:
+        row = item["row"]
+        day = C._parse_day(row.get("date_checked"))
+        if item is best or row.get("superseded_by") or day is None:
+            continue
+        # Only a capture of the SAME lot speaks for it: both state the lot, or neither
+        # does and the price is the same to the dollar. A row matched loosely (no lot on
+        # it, a price within 1%) may be the lot next door -- Howard's lot 13 at $745,857,
+        # Sold, is not lot 21 at $746,632.
+        lots = _row_lots(row)
+        if shown_lots and lots:
+            if not shown_lots & lots:
+                continue
+        elif round(C._num(row.get("price")) or 0) != round(shown_price or 0):
+            continue
+        if newest_day is None or day > newest_day:
+            newest, newest_day = item, day
+    if newest is None or (shown_day is not None and newest_day <= shown_day):
+        return None
+    status = str(newest["row"].get("availability_status") or "").strip().lower()
+    return newest if status in C.NOT_AVAILABLE else None
 
 
 def read_listings(path):
@@ -1154,6 +1260,7 @@ def json_lines(report, **extra):
     for item in report["matches"] or report["nearest"]:
         out.append(dict(extra, id=_row_id(item["row"]), content_hash=item["content_hash"],
                         kind=item["kind"], gate=item.get("gate"), verdict=item["verdict"],
+                        differs=item.get("differs"),
                         confirm_guard=item.get("confirm_guard"),
                         warnings=item["warnings"], nearest=bool(item.get("near"))))
     if report["not_found"]:
@@ -1189,6 +1296,8 @@ def _render_item(item, near=False):
     out.append("    confirm_guard: %s%s" % (item.get("confirm_guard") or "none",
                                          " (%s)" % item["guard_note"]
                                          if item.get("guard_note") else ""))
+    if item.get("differs"):
+        out.append("    differs     : %s" % item["differs"])
     for warning in item["warnings"]:
         out.append("    WARNING     : %s" % warning)
     out.append("    verdict     : [%s] %s" % (KIND_LABELS[item["kind"]], item["verdict"]))
@@ -1247,6 +1356,11 @@ def main(argv=None, out=None, agent_factory=pipeline_agent):
         pass
     ap = _parser()
     args = ap.parse_args(argv)
+    # --limit 0 left a found listing with no rows to take its one-line verdict from.
+    if args.limit < 1:
+        ap.error("--limit must be 1 or more")
+    if args.nearest < 0:
+        ap.error("--nearest must be 0 or more")
     price = None
     if args.price:
         import research

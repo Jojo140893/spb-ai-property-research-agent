@@ -379,6 +379,96 @@ def test_a_lot_its_address_states_is_a_fact_without_a_lot_column(catalogue, agen
     assert "lot 4402 (+1)" in reasons
 
 
+def test_a_repriced_lot_is_the_same_listing_not_an_intake_gap(catalogue, agent_factory):
+    """Dawn lot 1228 quoted at $735,000 is the catalogue's Dawn lot 1228 at $721,900. A
+    1.8% price change used to make it "not in the catalogue (intake gap)" -- the verdict
+    that sends the next piece of work to the harvest, for a lot the catalogue holds."""
+    report = _trace(catalogue, agent_factory, builder="Shape Homes", estate="Dawn",
+                    lot="1228", price=735000)
+    assert not report["not_found"], [i["verdict"] for i in report["nearest"]]
+    assert {item["content_hash"] for item in report["matches"]} == set(DAWN_1228)
+    note = "the catalogue holds it at $721,900, not the $735,000 named (-1.8%)"
+    assert all(item["differs"] == note for item in report["matches"])
+    kind, text = T.summarise(report)
+    assert kind == "confirm" and text.endswith(DAWN_STALE + " (2 rows hold it); " + note)
+    assert "    differs     : " + note in T.render(report)
+    assert json.loads(T.json_lines(report)[0])["differs"] == note
+    # The same estate and lot quoted with its correct price differs in nothing.
+    exact = _trace(catalogue, agent_factory, builder="Shape Homes", estate="Dawn",
+                   lot="1228", price=721900)
+    assert all(item["differs"] is None for item in exact["matches"])
+
+    # Only the estate AND the lot make it the same land, and only one fact may differ.
+    dawn = next(r for r in catalogue.rows if r["content_hash"] == DAWN_1228[0])
+    for query in (T.Query(builder="Shape Homes", lot="1228", price=735000),     # no estate
+                  T.Query(builder="Metricon", estate="Dawn", lot="1228", price=735000),
+                  T.Query(builder="Shape Homes", estate="Dawn", lot="1229", price=735000)):
+        assert not T.is_match(query, T.match_statuses(query, dawn)), query.describe()
+    # A lot filed under another name (its developer) at the price named is the lot.
+    developer = {"builder_name": "Walloon Land Co", "estate_name": "Highland",
+                 "suburb": "Walloon", "lot_number": "224", "price": 799995.0, "db": None}
+    q224 = T.Query(builder="Torsion", estate="Walloon Highlands", lot="224", price=799995)
+    assert T.is_match(q224, T.match_statuses(q224, developer))
+    assert T.differs_note(q224, developer) == 'filed under builder "Walloon Land Co", not "Torsion"'
+
+
+def test_a_row_stating_neither_the_estate_nor_the_lot_named_is_not_the_listing(
+        catalogue, agent_factory):
+    """Torsion's filter-row fragment 12739 ("HOUSE SIZE : 160 m2 HOUSE PRICE : $ 409,695")
+    names no estate and no lot. A Torsion lot quoted in Walloon Highlands at that price is
+    not that fragment: the listing is absent, an intake gap -- not the fragment's "parse
+    gap", which would send the work to the parser instead."""
+    report = _trace(catalogue, agent_factory, builder="Torsion Homes",
+                    estate="Walloon Highlands", lot="230", price=409695)
+    assert report["not_found"], [i["verdict"] for i in report["matches"]]
+    assert T.summarise(report)[0] == "intake"
+    fragment = next(r for r in catalogue.rows
+                    if r["content_hash"] == TORSION_12739["content_hash"])
+    # Named by builder and price alone, the fragment still is what was asked for.
+    loose = T.Query(builder="Torsion Homes", price=409695)
+    assert T.is_match(loose, T.match_statuses(loose, fragment))
+
+
+def test_a_shown_listing_read_again_as_gone_says_so_in_its_one_line(catalogue,
+                                                                    agent_factory):
+    """Howard lot 21: id 18491 (Available, 15/09) is shortlisted, and id 15953 read the
+    same lot On Hold on 16/09. "[shortlisted]" alone reads as "this listing is fine"."""
+    report = _trace(catalogue, agent_factory, builder="G Developments", estate="Howard",
+                    lot="21", price=746632)
+    kind, text = T.summarise(report)
+    assert kind == "shown" and "id 18491 (v2:43802e2d): shortlisted" in text, text
+    assert text.endswith("; but a later capture, id 15953 (v2:d9553ad6) checked "
+                         "16/09/2026, says On Hold"), text
+    # Nothing is added when the listing's newest capture is the one shown.
+    newest = [i for i in report["matches"] if i["content_hash"].startswith("v2:43802e2d")]
+    assert T._later_capture_gone(newest, newest[0]) is None
+    # Nor for a row matched loosely that is another lot: no lot on it and not the same
+    # price (Howard lot 13 at $745,857), or a different lot stated.
+    shown = newest[0]
+
+    def later(**row):
+        return {"row": dict(row, date_checked="17/09/2026", availability_status="Sold",
+                            content_hash="v2:later"), "kind": "gate"}
+
+    lot_13 = later(lot_address="Howard SOLD 13 Howard Crossing", price=745857.0)
+    assert T._later_capture_gone([shown, lot_13], shown) is None
+    same = later(lot_address="Howard SOLD 21 Howard Crossing", price=746632.0)
+    assert T._later_capture_gone([shown, same], shown) is same
+    # Both rows state a lot: only the same lot speaks, whatever its price.
+    stated = dict(shown, row=dict(shown["row"], lot_number="21"))
+    assert T._later_capture_gone([stated, later(lot_number="22", price=746632.0)],
+                                 stated) is None
+    repriced = later(lot_number="21", price=760000.0)
+    assert T._later_capture_gone([stated, repriced], stated) is repriced
+
+
+def test_a_limit_below_one_is_refused(files, agent_factory):
+    stock, db = files
+    with pytest.raises(SystemExit):
+        _cli(["--id", "15899", "--limit", "0", "--snapshot", str(stock), "--db", str(db)],
+             agent_factory)
+
+
 def test_json_lines_stay_json_when_a_value_holds_a_link():
     item = {"row": {"content_hash": "v2:x", "db": {"id": 7}}, "content_hash": "v2:x",
             "kind": "gate", "gate": "superseded", "confirm_guard": None,
@@ -442,9 +532,11 @@ def test_listings_end_with_one_verdict_line_each(files, agent_factory, tmp_path,
         summary[1])
     assert "-> [hidden by a rule] id 15899 (v2:3b141dd8): hidden: document re-read " in (
         summary[2])
-    # Superseded captures of lot 618 hold it too; the live, shown one speaks for it.
+    # Superseded captures of lot 618 hold it too; the live, shown one speaks for it --
+    # and its line carries the warning that makes "shortlisted" a wrong result.
     assert re.search(r"-> \[shortlisted\] id 14905 \(v2:1c5ca48e\): shortlisted "
-                     r"\(\d+ rows hold it\)$", summary[3]), summary[3]
+                     r"\(\d+ rows hold it\); its state rests on the suburb column, and its "
+                     r"text names Wollert, a VIC locality$", summary[3]), summary[3]
     assert text.count("LISTING ") == 4
 
     _code, text = _cli(common + ["--json"], agent_factory)
