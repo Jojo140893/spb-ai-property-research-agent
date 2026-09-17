@@ -578,7 +578,7 @@ def test_a_subject_line_with_an_emoji_or_a_link_cannot_sink_the_status_pass(
     conn.close()
 
     pipe = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
-    monkeypatch.delenv("SPB_STATUS_PASS", raising=False)
+    monkeypatch.setenv("SPB_STATUS_PASS", "1")
     monkeypatch.setattr(config, "DATABASE_PATH", db)
     monkeypatch.setattr(sys, "stdout", pipe)
     code = sd.main([])
@@ -590,13 +590,18 @@ def test_a_subject_line_with_an_emoji_or_a_link_cannot_sink_the_status_pass(
     assert "SECRET9" not in out and "://" not in out, out
 
 
-def test_the_status_pass_switch_reads_off_words_only():
+def test_the_status_pass_switch_is_off_unless_turned_on():
+    """Critique #4 (release review): merging to main runs the nightly on main, so the pass
+    must not apply before its list is signed off. Only an ON word turns it on; unset, empty
+    and anything unrecognised leave it off."""
     import supersede_duplicates as sd
-    for on in ({}, {"SPB_STATUS_PASS": ""}, {"SPB_STATUS_PASS": "1"},
-               {"SPB_STATUS_PASS": "on"}, {"SPB_STATUS_PASS": "yes"}):
+    for on in ({"SPB_STATUS_PASS": "1"}, {"SPB_STATUS_PASS": "on"},
+               {"SPB_STATUS_PASS": " YES"}, {"SPB_STATUS_PASS": "True"}):
         assert sd.status_pass_enabled(on), on
-    for off in ("0", "off", "OFF ", "false", "No"):
-        assert not sd.status_pass_enabled({"SPB_STATUS_PASS": off}), off
+    for off in ({}, {"SPB_STATUS_PASS": ""}, {"SPB_STATUS_PASS": "0"},
+                {"SPB_STATUS_PASS": "off"}, {"SPB_STATUS_PASS": "false"},
+                {"SPB_STATUS_PASS": "No"}, {"SPB_STATUS_PASS": "garbage"}):
+        assert not sd.status_pass_enabled(off), off
 
 
 def _seed_db(path):
@@ -636,10 +641,10 @@ def _marks(path):
     return out
 
 
-def test_main_applies_the_status_pass_by_default_and_off_restores_today(
-        tmp_path, monkeypatch, capsys):
-    """Critique #4: SPB_STATUS_PASS defaults ON; turning it off writes exactly what the
-    three-pass rule writes today."""
+def test_main_applies_the_status_pass_only_when_turned_on(tmp_path, monkeypatch, capsys):
+    """Critique #4 (release review): SPB_STATUS_PASS defaults OFF, which writes exactly what
+    the three-pass rule writes today, and still prints what the pass WOULD retire -- the
+    list a person signs off before turning it on. SPB_STATUS_PASS=1 applies it."""
     import config
     import supersede_duplicates as sd
 
@@ -648,6 +653,16 @@ def test_main_applies_the_status_pass_by_default_and_off_restores_today(
         _seed_db(p)
 
     monkeypatch.delenv("SPB_STATUS_PASS", raising=False)
+    monkeypatch.setattr(config, "DATABASE_PATH", off_db)
+    assert sd.main([]) == 0
+    off = _marks(off_db)
+    assert off == {1: "v2:hash2", 2: None, 18491: None, 15953: None}, off
+    out = capsys.readouterr().out
+    assert "status pass OFF" in out and "NOT APPLIED" in out, out
+    assert "1 capture(s) the status pass WOULD supersede" in out, out
+    assert "18491 -> 15953" in out, out
+
+    monkeypatch.setenv("SPB_STATUS_PASS", "1")
     monkeypatch.setattr(config, "DATABASE_PATH", on_db)
     assert sd.main([]) == 0
     on = _marks(on_db)
@@ -655,14 +670,51 @@ def test_main_applies_the_status_pass_by_default_and_off_restores_today(
     assert on[2] is None and on[15953] is None, on
     out = capsys.readouterr().out
     assert "1 more superseded because the same line was read again" in out, out
-    assert "18491 -> 15953" in out, out
+    assert "18491 -> 15953" in out and "NOT APPLIED" not in out, out
 
-    monkeypatch.setenv("SPB_STATUS_PASS", "0")
-    monkeypatch.setattr(config, "DATABASE_PATH", off_db)
-    assert sd.main([]) == 0
-    off = _marks(off_db)
-    assert off == {1: "v2:hash2", 2: None, 18491: None, 15953: None}, off
-    assert "status pass OFF" in capsys.readouterr().out
+
+def test_the_review_list_names_every_retirement_not_only_qld_ones(capsys):
+    """Release review: the list printed 'every QLD one' filtered on the LOSER's state -- 25
+    of 102 on the 17 Sep copy. A blank-state AVIA lot on a QLD sheet, or any other state,
+    appeared only as a count and could not be reviewed. Every retirement is a line now, and
+    a blank-state one says what its kept row and its document are filed under."""
+    import re
+    import supersede_duplicates as sd
+    howard_old = _capture(18491, _HOWARD.format("Available"), "Available", "15/09/2026",
+                          "2026-09-15T11:40:07")
+    howard_new = _capture(15953, _HOWARD.format("ON HOLD"), "On Hold", "16/09/2026",
+                          "2026-09-16T11:41:43")
+    volos_held = _capture(9000, _VOLOS_45.format("On Hold"), "On Hold", "12/09/2026",
+                          "2026-09-12T11:00:00", doc=_VOLOS_DOC, price=906_600.0,
+                          state=None, suburb=None, lot_number="45")
+    volos_new = _capture(18990, _VOLOS_45.format("Available"), "Available", "16/09/2026",
+                         "2026-09-16T11:41:42", doc=_VOLOS_DOC, price=906_600.0,
+                         state=None, suburb=None, lot_number="45")
+    volos_sibling = _capture(7791, _VOLOS_74.format("Available"), "Available", "16/09/2026",
+                             "2026-09-16T11:41:42", doc=_VOLOS_DOC, price=1_042_400.0,
+                             suburb=None, lot_number="74")
+    sa_old = _capture(11734, _HOWARD.format("Available"), "Available", "15/09/2026",
+                      "2026-09-15T11:40:07", doc="https://sheets.example.test/sa", state="SA",
+                      price=770_336.0)
+    sa_new = _capture(18856, _HOWARD.format("SOLD"), "Sold", "16/09/2026",
+                      "2026-09-16T11:41:43", doc="https://sheets.example.test/sa", state="SA",
+                      price=770_336.0)
+    rows = [howard_old, howard_new, volos_held, volos_new, volos_sibling, sa_old, sa_new]
+    _base, status = _retirements(rows)
+    assert status == {18491: 15953, 9000: 18990, 11734: 18856}, status
+    by_id = {r["id"]: r for r in rows}
+    pairs = [(by_id[l], by_id[w]) for l, w in status.items()]
+    sd._report_status_pass(pairs, [], rows, applied=False)
+    out = capsys.readouterr().out
+    assert "every one (3)" in out, out
+    lines = [ln for ln in out.splitlines() if " -> " in ln and "$" in ln]
+    assert len(lines) == 3, out
+    assert re.search(r"18491 -> 15953\s+QLD ", out), out
+    assert re.search(r"11734 -> 18856\s+SA ", out), out
+    # The blank-state Volos capture: listed, with what its kept row and its sheet say.
+    assert re.search(r"9000 -> 18990\s+\(blank; kept row \(blank\); document \(blank\) 2, QLD 1\) ", out), out
+    # QLD first, then blank, then the rest.
+    assert out.index("18491 ->") < out.index("9000 ->") < out.index("11734 ->"), out
 
 
 def test_a_failing_status_pass_falls_back_and_marks_the_run_degraded(
@@ -680,7 +732,7 @@ def test_a_failing_status_pass_falls_back_and_marks_the_run_degraded(
     def boom(*a, **k):
         raise RuntimeError("status pass exploded")
 
-    monkeypatch.delenv("SPB_STATUS_PASS", raising=False)
+    monkeypatch.setenv("SPB_STATUS_PASS", "1")
     monkeypatch.setattr(config, "DATABASE_PATH", db)
     monkeypatch.setattr(sd, "find_status_superseded", boom)
     assert sd.main([]) == sd.DEGRADED_EXIT
@@ -688,6 +740,16 @@ def test_a_failing_status_pass_falls_back_and_marks_the_run_degraded(
     out = capsys.readouterr().out
     assert "ERROR: the status pass failed" in out and "Traceback" in out, out
     assert "status pass exploded" in out, out
+
+    # OFF, a failure costs only the review list: said, and the run is not degraded.
+    off_db = tmp_path / "boom-off.db"
+    _seed_db(off_db)
+    monkeypatch.delenv("SPB_STATUS_PASS", raising=False)
+    monkeypatch.setattr(config, "DATABASE_PATH", off_db)
+    assert sd.main([]) == 0
+    assert _marks(off_db) == {1: "v2:hash2", 2: None, 18491: None, 15953: None}
+    out = capsys.readouterr().out
+    assert "WARNING: the status pass is OFF" in out and "status pass exploded" in out, out
 
 
 def test_run_daily_publishes_a_degraded_step_and_records_it(tmp_path, monkeypatch):
@@ -765,7 +827,7 @@ def run_all():
         ("Volos lot reaches the search", test_the_volos_lot_still_reaches_the_search_after_the_pass),
         ("status words are the search's", test_status_words_are_the_searchs_own_vocabulary),
         ("review label has no link", test_the_review_label_never_carries_the_link),
-        ("status pass switch", test_the_status_pass_switch_reads_off_words_only),
+        ("status pass switch", test_the_status_pass_switch_is_off_unless_turned_on),
     ]
     failed = 0
     for name, fn in tests:

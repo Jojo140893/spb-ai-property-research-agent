@@ -116,6 +116,10 @@ jobs:
       # Melbourne is the business's clock — Colin reads these dates, not the runner — so
       # the runner keeps it. 09:21 AEST is nowhere near a date boundary either.
       TZ: Australia/Melbourne
+      # SUPERSEDE'S STATUS PASS IS OFF until its review list is signed off (Part C critique #4:
+      # merging to main runs this job on main). Step 4/7's log prints every capture it WOULD
+      # retire. After sign-off, uncomment:
+      # SPB_STATUS_PASS: "1"
       # Portal credentials. secrets_store resolves portal+field to an env name
       # (portal_bathla + password -> PORTAL_BATHLA_PASSWORD) and falls back to env when no
       # OS vault exists, which is exactly the case on a Linux runner.

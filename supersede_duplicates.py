@@ -47,15 +47,24 @@ on hold the next morning. The identity split because database.py cuts the text t
 characters BEFORE it strips the status word, and none of the three passes below could
 join them: text_key compares the text WITH the status word, lot_key needs an identical
 lot_address, and flattened rows carry the status word there too. See
-find_status_superseded. It is a FOURTH, ADDITIVE pass and it is switchable:
+find_status_superseded. It is a FOURTH, ADDITIVE pass and it is switchable, OFF BY DEFAULT:
 
-    SPB_STATUS_PASS=0    (or off/false/no) turns it off and restores the three-pass rule
-                         exactly. Unset, empty or anything else: ON.
+    SPB_STATUS_PASS=1    (or on/true/yes) applies it. Unset, empty, 0/off/false/no, or
+                         anything else: OFF -- the three-pass rule exactly, and nothing
+                         the fourth pass would retire is written.
 
-If the fourth pass raises, the run keeps the three existing passes' marks, prints the
-traceback with an ERROR line, and exits DEGRADED_EXIT (70). run_daily treats 70 as
+Off by default because merging to main is going live (critique #4): the nightly workflow
+runs this step on main, and the pass must not apply its ~100 retirements the first night
+before a person has read the list. OFF IS NOT SILENT. Every run, on or off, --dry-run or
+not, prints every retirement the pass would make (the review list, _report_status_pass),
+so the nightly log itself is the list to sign off. Once it is signed off, set
+SPB_STATUS_PASS=1 in the daily-harvest workflow's env.
+
+If the fourth pass raises while ON, the run keeps the three existing passes' marks, prints
+the traceback with an ERROR line, and exits DEGRADED_EXIT (70). run_daily treats 70 as
 "finished, publish, but mark the run DEGRADED", so the nightly still publishes and the
 CI job goes red afterwards instead of the dashboard silently keeping yesterday's data.
+While OFF, a failure costs only the report: it is printed as a WARNING and the run exits 0.
 
     python supersede_duplicates.py --dry-run
     python supersede_duplicates.py
@@ -79,11 +88,11 @@ import config
 
 FIELDS = ("superseded_by", "superseded_at")
 
-# The switch for the fourth pass. ON unless it is explicitly turned off, because the
-# harm it removes (a lot recommended as Available the day after its own list said On
-# Hold) is live today; OFF exists so a bad night can be undone without a code revert.
+# The switch for the fourth pass. OFF unless it is explicitly turned on (critique #4: the
+# gate is the reviewed list, and merging to main runs the nightly on main). A value that is
+# not one of the ON words -- a typo, "garbage" -- leaves it off: the switch fails closed.
 STATUS_PASS_ENV = "SPB_STATUS_PASS"
-_OFF_WORDS = {"0", "off", "false", "no"}
+_ON_WORDS = {"1", "on", "true", "yes"}
 
 # The exit code for "the three passes ran and were written, the fourth pass failed and
 # was dropped". run_daily._run treats it as success-but-degraded; it must equal
@@ -319,9 +328,9 @@ def find_superseded(rows):
 # ---------------------------------------------------------------------------------------
 
 def status_pass_enabled(environ=None):
-    """SPB_STATUS_PASS: ON unless set to 0/off/false/no (case-insensitive)."""
+    """SPB_STATUS_PASS: ON only when set to 1/on/true/yes (case-insensitive). Default OFF."""
     env = os.environ if environ is None else environ
-    return str(env.get(STATUS_PASS_ENV, "") or "").strip().lower() not in _OFF_WORDS
+    return str(env.get(STATUS_PASS_ENV, "") or "").strip().lower() in _ON_WORDS
 
 
 # The search's own availability vocabulary. These are api/_candidates.NOT_AVAILABLE and
@@ -563,6 +572,31 @@ def find_status_superseded(rows, retired_ids=(), kept_live=None):
     return out
 
 
+def status_pass_marks(rows):
+    """{loser id: winner content_hash} for the status-pass retirements the rows now carry.
+
+    FOR repair_rows, which runs after this step and groups LIVE rows only. The status pass
+    can retire the row repair_rows was using as the keeper of a suburb twin or a duplicate
+    line, and the copy it used to retire then has no keeper and is published live again
+    (release review: G Developments lot 101, 11734 'Available' 22/08, lost its keeper 15985
+    'On Hold' 08/09 to 18856 'SOLD' 10/09, and came back as Available stock).
+
+    Nothing in a mark says which pass wrote it, so the pass is worked out again over the
+    same rows and a retirement counts only where the stored mark IS that winner's hash.
+    Tonight's three passes and status pass are deterministic over the same rows, so this is
+    exactly what the step wrote; a mark that does not agree (the switch was off, a later
+    repair moved it) is not claimed, and repair_rows then behaves as it always has.
+    """
+    rows = [dict(r) for r in rows]
+    retired = {l["id"] for l, _ in find_superseded(rows)}
+    marks = {}
+    for loser, winner in find_status_superseded(rows, retired):
+        hash_ = str(winner.get("content_hash") or "")
+        if hash_ and str(loser.get("superseded_by") or "") == hash_:
+            marks[loser["id"]] = hash_
+    return marks
+
+
 def document_label(row):
     """A reviewer-readable name for the document, WITHOUT its link.
 
@@ -597,12 +631,50 @@ def _state_word(row):
     return str(row.get("state") or "").strip().upper() or "(blank)"
 
 
-def _report_status_pass(status_pairs, kept_live):
+def _document_states(rows):
+    """{document: 'QLD 12, VIC 1'}: the states the rows of each document are filed under.
+
+    For the review list. A capture filed under no state is still on a document whose other
+    lines usually say where it is -- AVIA's Volos sheet is QLD stock with blank-state lines
+    -- and a list that named only losers stored as QLD hid exactly those (release review)."""
+    by_doc = defaultdict(Counter)
+    for r in rows or ():
+        doc = _document(r)
+        if doc:
+            by_doc[doc][_state_word(r)] += 1
+    return {doc: ", ".join(f"{st} {n}" for st, n in sorted(c.items(), key=lambda kv: (-kv[1], kv[0])))
+            for doc, c in by_doc.items()}
+
+
+def _where_filed(loser, winner, doc_states):
+    """'QLD', or for a blank-state loser what its winner and its document say."""
+    st = _state_word(loser)
+    if st != "(blank)":
+        return st
+    said = [f"kept row {_state_word(winner)}"]
+    on_doc = doc_states.get(_document(loser))
+    if on_doc:
+        said.append(f"document {on_doc}")
+    return "(blank; " + "; ".join(said) + ")"
+
+
+def _report_status_pass(status_pairs, kept_live, rows=None, applied=True):
     """Printed separately from the three passes, because these retirements change what a
-    lot SAYS, not only how many copies of it there are."""
+    lot SAYS, not only how many copies of it there are.
+
+    EVERY retirement is listed, one line each, whether or not the pass is applied: this
+    list is what a person signs off before SPB_STATUS_PASS is turned on (critique #4). It
+    used to list only losers stored as QLD -- 25 of 102 on the 17 Sep copy -- so the
+    blank-state AVIA lots on QLD documents could not be reviewed at all."""
     print()
-    print(f"    {len(status_pairs)} more superseded because the same line was read again with a")
-    print(f"    different status word ({STATUS_PASS_REASON}):")
+    if applied:
+        print(f"    {len(status_pairs)} more superseded because the same line was read again with a")
+        print(f"    different status word ({STATUS_PASS_REASON}):")
+    else:
+        print(f"    status pass OFF ({STATUS_PASS_ENV}={os.environ.get(STATUS_PASS_ENV, '')!r}) -"
+              f" the three-pass rule only. NOT APPLIED:")
+        print(f"    {len(status_pairs)} capture(s) the status pass WOULD supersede ({STATUS_PASS_REASON}).")
+        print(f"    Review the list below; set {STATUS_PASS_ENV}=1 to apply it.")
     if status_pairs:
         print("      by state:")
         for st, n in sorted(Counter(_state_word(l) for l, _ in status_pairs).items(),
@@ -612,10 +684,14 @@ def _report_status_pass(status_pairs, kept_live):
         trans = Counter(f"{_status_word(l)} -> {_status_word(w)}" for l, w in status_pairs)
         for t, n in sorted(trans.items(), key=lambda kv: (-kv[1], kv[0])):
             print(f"        {n:>5}  {t}")
-        qld = [(l, w) for l, w in status_pairs if _state_word(l) == "QLD"]
-        print(f"      every QLD one ({len(qld)}):")
-        for l, w in sorted(qld, key=lambda p: p[0]["id"]):
-            print(f"        {l['id']:>6} -> {w['id']:<6} {_status_word(l)} {l.get('date_checked') or '?'}"
+        doc_states = _document_states(rows)
+        print(f"      every one ({len(status_pairs)}), retired -> kept:")
+        # QLD first (Colin's searches), then the blank-state ones, then the rest by state.
+        order = {"QLD": 0, "(blank)": 1}
+        for l, w in sorted(status_pairs, key=lambda p: (order.get(_state_word(p[0]), 2),
+                                                         _state_word(p[0]), p[0]["id"])):
+            print(f"        {l['id']:>6} -> {w['id']:<6} {_where_filed(l, w, doc_states)}"
+                  f"  {_status_word(l)} {l.get('date_checked') or '?'}"
                   f" -> {_status_word(w)} {w.get('date_checked') or '?'}"
                   f"  ${float(l.get('price') or 0):,.0f}  {document_label(l)}")
     if kept_live:
@@ -659,23 +735,28 @@ def main(argv=None):
     # happens here: a bug in the new pass must cost tonight's status retirements, not
     # tonight's publish (this is a required step, and a crash aborts the whole chain).
     status_pairs, degraded = [], False
-    if not status_pass_enabled():
-        print(f"    status pass OFF ({STATUS_PASS_ENV}="
-              f"{os.environ.get(STATUS_PASS_ENV, '')!r}) - the three-pass rule only")
-    else:
-        try:
-            kept_live = []
-            status_pairs = find_status_superseded(
-                rows, {l["id"] for l, _ in pairs}, kept_live=kept_live)
-            _report_status_pass(status_pairs, kept_live)
-        except Exception:                                              # noqa: BLE001
+    applying = status_pass_enabled()
+    try:
+        kept_live = []
+        status_pairs = find_status_superseded(
+            rows, {l["id"] for l, _ in pairs}, kept_live=kept_live)
+        _report_status_pass(status_pairs, kept_live, rows, applied=applying)
+    except Exception:                                                  # noqa: BLE001
+        status_pairs = []
+        print()
+        if applying:
             degraded = True
-            status_pairs = []
-            print()
             print("ERROR: the status pass failed; falling back to the three existing passes.")
             print("       Their marks are still written. The run is DEGRADED "
                   f"(exit {DEGRADED_EXIT}).")
-            traceback.print_exc(file=sys.stdout)
+        else:
+            print(f"WARNING: the status pass is OFF and its review list could not be worked "
+                  f"out.")
+            print("         Nothing depended on it; the three existing passes are written.")
+        traceback.print_exc(file=sys.stdout)
+    if not applying:
+        # Reported above, never written.
+        status_pairs = []
 
     live = total - len(pairs) - len(status_pairs)
     print(f"    {live} distinct lot(s) remain live")

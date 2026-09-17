@@ -856,11 +856,62 @@ def find_tally_estates(rows):
             and _is_a_tally(str(r["estate_name"]).strip())]
 
 
-def find_duplicate_groups(rows):
-    """Groups of live rows sharing a source_text, reduced to strictly redundant copies."""
+def status_pass_keepers(rows):
+    """{id: the hash its stale copies should point at} for rows supersede's status pass
+    retired tonight. See supersede_duplicates.status_pass_marks.
+
+    These rows still count as members of a duplicate line or a suburb-twin group, as they
+    did when they were live, so a copy they used to keep out stays out. They are never
+    retired again here (their own mark stands), and a copy retired in their favour points
+    at the END of their superseded_by chain -- the capture that is live -- not at them.
+
+    Never raises: on any error this is {} and both passes behave as they did before the
+    status pass existed (repair_rows is an optional step, but a crash would cost every
+    other repair of the night).
+    """
+    try:
+        import supersede_duplicates
+        marks = supersede_duplicates.status_pass_marks(rows)
+    except Exception as exc:                                         # noqa: BLE001
+        print(f"   (status-pass retirements could not be worked out: {type(exc).__name__}; "
+              f"twins and duplicates are grouped over live rows only)")
+        return {}
+    by_hash = {}
+    for r in rows:
+        h = str(r["content_hash"] or "")
+        if h and h not in by_hash:
+            by_hash[h] = r
+    out = {}
+    for rid, target in marks.items():
+        seen = set()
+        # Follow the chain while it stays on content hashes; a rule marker ("an email
+        # sentence, not a listing") or a live row ends it.
+        while target in by_hash and target not in seen:
+            seen.add(target)
+            nxt = str(by_hash[target]["superseded_by"] or "")
+            if not nxt.startswith("v2:"):
+                break
+            target = nxt
+        out[rid] = target
+    return out
+
+
+def _keeper_mark(keeper, status_keepers):
+    """What a copy retired in favour of `keeper` points at."""
+    if keeper["id"] in (status_keepers or {}):
+        return status_keepers[keeper["id"]]
+    return keeper["content_hash"] or str(keeper["id"])
+
+
+def find_duplicate_groups(rows, status_keepers=None):
+    """Groups of live rows sharing a source_text, reduced to strictly redundant copies.
+
+    status_keepers ({id: hash}, status_pass_keepers) are rows the status pass retired
+    tonight: grouped as though live, so they can still be the keeper; never a loser."""
+    status_keepers = status_keepers or {}
     by = collections.defaultdict(list)
     for r in rows:
-        if r["superseded_by"]:
+        if r["superseded_by"] and r["id"] not in status_keepers:
             continue
         text = _line_identity(r["source_text"])
         # THE LINE ALONE, across documents. Keying on (source_url, text) was a caution
@@ -878,7 +929,8 @@ def find_duplicate_groups(rows):
             continue
         g = sorted(g, key=_completeness, reverse=True)
         keeper, rest = g[0], g[1:]
-        redundant = [r for r in rest if subsumed_by(r, keeper)]
+        redundant = [r for r in rest
+                     if r["id"] not in status_keepers and subsumed_by(r, keeper)]
         if redundant:
             groups.append((keeper, redundant))
     return groups
@@ -980,8 +1032,12 @@ def _shows_a_suburb(row) -> bool:
     return _suburb_evidence(row) > 0
 
 
-def find_suburb_twins(rows):
+def find_suburb_twins(rows, status_keepers=None):
     """One package stored twice because it only recently started stating its suburb.
+
+    status_keepers ({id: hash}, status_pass_keepers): rows supersede's status pass retired
+    tonight, grouped as though live so a twin they kept retired stays retired, and never
+    retired again here.
 
     THE MECHANISM. `suburb_norm` is one of the eight fields in content_hash, so the day a
     stocklist's Suburb COLUMN began to be read (18 Aug 2026, see
@@ -1011,9 +1067,10 @@ def find_suburb_twins(rows):
     SHOWS, which is the same test the published snapshot applies, and it is the same
     widening find_suburbs_in_own_document already makes for the same reason.
     """
+    status_keepers = status_keepers or {}
     by = collections.defaultdict(list)
     for r in rows:
-        if r["superseded_by"]:
+        if r["superseded_by"] and r["id"] not in status_keepers:
             continue
         by[_identity_without_suburb(r)].append(r)
 
@@ -1059,7 +1116,8 @@ def find_suburb_twins(rows):
         keeper = sorted(named, key=lambda r: (_iso(r["date_checked"]), _completeness(r)),
                         reverse=True)[0]
         cut = _iso(keeper["date_checked"])
-        stale = [r for r in blank if _iso(r["date_checked"]) < cut]
+        stale = [r for r in blank
+                 if _iso(r["date_checked"]) < cut and r["id"] not in status_keepers]
         if stale:
             pairs.append((keeper, stale))
     return pairs
@@ -1220,7 +1278,14 @@ def main(apply_changes):
         print(f"     land={r['land_sqm']}m2 no dwelling :: "
               f"{str(r['estate_name'] or r['lot_address'])[:64]}")
 
-    groups = find_duplicate_groups(live)
+    # Rows supersede's status pass retired tonight still hold their twins and duplicate
+    # lines retired (status_pass_keepers), as they did while they were live.
+    status_keepers = status_pass_keepers(rows)
+    grouped = live + [r for r in rows if r["id"] in status_keepers and r["superseded_by"]]
+    if status_keepers:
+        print(f"   ({len(status_keepers)} row(s) the status pass retired tonight still keep "
+              f"their duplicates and twins retired)")
+    groups = find_duplicate_groups(grouped, status_keepers)
     losers = [r for _, rest in groups for r in rest]
     print(f"\n2. identical-source_text groups: {len(groups)}, "
           f"redundant copies to supersede: {len(losers)}")
@@ -1286,7 +1351,7 @@ def main(apply_changes):
         print(f"     ${float(r['price'] or 0):>10,.0f}  {(r['builder_name'] or '?')[:20]:20} "
               f"{str(r['lot_address'])[:52]}")
 
-    twins = find_suburb_twins(live)
+    twins = find_suburb_twins(grouped, status_keepers)
     twin_losers = [r for _, rest in twins for r in rest]
     print(f"\n5. one package stored twice, the older copy missing only its suburb: "
           f"{len(twins)} group(s), {len(twin_losers)} copy(ies) to supersede")
@@ -1340,7 +1405,7 @@ def main(apply_changes):
     for keep, rest in list(groups) + list(twins):
         for r in rest:
             cur.execute("UPDATE buildings SET superseded_by=?, superseded_at=? WHERE id=?",
-                        (keep["content_hash"] or str(keep["id"]), now, r["id"]))
+                        (_keeper_mark(keep, status_keepers), now, r["id"]))
     for r in refuted:
         cur.execute("UPDATE buildings SET state=NULL, state_source=? WHERE id=?",
                     ("withdrawn: refuted by the row's own suburb", r["id"]))
