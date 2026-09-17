@@ -23,7 +23,9 @@ ORDER MATTERS, and each dependency below is a bug that was actually hit:
                     advertised at its capture date, and those drag medians.
   5. benchmark    — needs the whole set present to compute a median to compare against
   6. export       — CSV + Excel for Coleen
-  7. build+deploy — the snapshot the deployed app reads
+  7. build+deploy — the snapshot the deployed app reads, then Colin's searches replayed
+                    against it through the bundle that ships (search_regressions.py,
+                    optional: a failure marks the run DEGRADED after publishing)
 
 WHAT THIS CANNOT DO UNATTENDED, stated plainly rather than left to fail at 3am:
 Paramount's login carries an invisible reCAPTCHA and Proxima enforces 2FA. Neither can be
@@ -371,6 +373,18 @@ def _chain(args) -> int:
         ("6/7  Export CSV + Excel", ["export_csv.py"], False),
         ("6/7  Export Excel workbook", ["export_excel.py"], False),
         ("7/7  Build the deployed snapshot", ["build_web.py"], False),
+        # REPLAY COLIN'S SEARCHES against what was just built, through the bundle that is
+        # about to ship (vercel_site/api), on a read-only copy of the database. Part C,
+        # 16 Sep: his "QLD under $750k" showed a VIC lot filed QLD and a lot a later read
+        # said was On Hold, and nothing checked it. See search_regressions.py.
+        #
+        # OPTIONAL, AND LAST. A failed replay must not withhold tonight's stock: the run
+        # still publishes, _run records the step, main() writes the DEGRADED marker and
+        # alert, and CI goes red after publishing ("Fail the run if a data step died
+        # quietly"). The harness exits 1 on a failure, never 2 (read here as a dead
+        # channel) or DEGRADED_EXIT (read as a fallback).
+        ("7/7  Replay Colin's searches",
+         ["search_regressions.py", "--snapshot", "vercel_site/stock.json"], True),
     ]
 
     print(f"SPB daily run — {datetime.now():%a %d %b %Y %H:%M}")
