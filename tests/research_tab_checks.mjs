@@ -1221,6 +1221,16 @@ console.log("\n--- release review: the panel's counts, what was left out, and wh
   check("a count that may be short reads 'Show the 1+ that need confirming'",
     /relax-reveal" data-relax="0">Show the 1\+ that need confirming<\/button>/.test(short.out),
     (short.out.match(/<button[^>]*relax-reveal[^>]*>[^<]*/) || [""])[0]);
+  check("... and the panel line reads '1+ listings that match need confirming'",
+    short.out.includes(short.api.esc("1+ listings that match need confirming with the builder first (listed below)")),
+    (short.out.match(/class="sh-gate">[^<]*/g) || []).join(" | "));
+  const junk = await renderExplained(explained({ needs_confirming: [null, 3, "x", dawn(1228)], needs_confirming_count: null,
+    search_help: searchHelp({ relaxations: [] }) }));
+  check("entries that are not objects are counted nowhere: panel, group and badge agree on 1",
+    junk.out.includes(junk.api.esc("1 listing that matches needs confirming with the builder first (listed below)"))
+    && junk.out.includes("1 more listing matches but needs confirming")
+    && junk.el("shortlistBadge").textContent === "2 Qualified · 1 to confirm (1438 Filtered)",
+    junk.el("shortlistBadge").textContent);
   const one = await renderExplained(explained({ needs_confirming: [dawn(1228)], needs_confirming_count: 1,
     search_help: searchHelp({ relaxations: [{ ...RELAX.reveal, count: 1, capped: false }] }) }));
   check("one exact reads 'Show the 1 that needs confirming'",

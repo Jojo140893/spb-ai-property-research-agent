@@ -555,6 +555,14 @@ MUTANTS = {
     "a state typed as a suburb is said twice above the results": (
         ".filter(x => !locationNoteRepeats(x, d.brief_adjustments)).map(locationNoteText),", ".map(locationNoteText),",
         "is said once, by the adjustment"),
+    "a count that may be short says '1+ listing that matches needs'": (
+        "${n === 1 && !confirmShort ? ' that matches needs' : 's that match need'}",
+        "${n === 1 ? ' that matches needs' : 's that match need'}",
+        "the panel line reads '1+ listings that match need confirming'"),
+    "the panel counts entries the group cannot draw": (
+        "        const amber = needsConfirmingEntries(d).length;",
+        "        const amber = Array.isArray(d.needs_confirming) ? d.needs_confirming.length : 0;",
+        "panel, group and badge agree on 1"),
     "the thin-search threshold ignores the server": (
         "const few = found < (wholeCount(help.explain_below) ?? EXPLAIN_BELOW);",
         "const few = found < EXPLAIN_BELOW;",
