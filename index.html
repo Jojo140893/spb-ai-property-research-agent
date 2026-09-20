@@ -4762,6 +4762,8 @@ python state_sync.py push</pre>
                                 <div class="prop-subtitle-text">${esc(prop.suburb)}, ${esc(prop.state)} | Builder: <strong>${esc(prop.builder_name || NOT_STATED)}</strong>${prop.house_design ? ` (${esc(prop.house_design)})` : ''}</div>
                                 ${prop.availability_by_the_sheet === true
                                     ? '<div class="sheet-badge">Confirm availability: this list has no status column</div>'
+                                    : prop.availability_by_exception_list === true
+                                    ? '<div class="sheet-badge">Confirm availability: this list marks only sold lots</div>'
                                     : ''}
                             </div>
                             <div class="score-badge">

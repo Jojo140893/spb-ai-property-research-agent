@@ -7,9 +7,15 @@ the three "Windermere Mambourin" lots filed QLD "Available" on 21 Aug come back 
 the 16 Sep read of the same builder, estate and lot 27102 files them VIC and On Hold.
 
 So an unverified row carries `confirm` (what to check) and `confirm_guard` (None, or the
-catalogue's own evidence that it is gone), and an unstated row is admitted to confirm only
-from an exceptions-only list whose line prints the whole price. The shapes below are the
-17 Sep rows behind Colin's search (ids in the names); everything is frozen at 16/09/2026.
+catalogue's own evidence that it is gone), and an unstated row is taken from an
+exceptions-only list only when its line prints the whole price. Where that row then GOES is
+SPB_EXCEPTIONS_LIST_MODE: "confirm" (the default, and the shipped behaviour) offers it under
+"Needs confirming", and "available" (built 20 Sep 2026, currently off) RECOMMENDS it with a
+badge when it was read inside FRESH_DAYS. The same admission_refusal decides both, so no lot
+is ever in both places. Every test below that turns on the difference PINS the mode it
+exercises -- the module reads the environment once, at import, so the constant is set on the
+module rather than in os.environ. The shapes are the 17 Sep rows behind Colin's search (ids
+in the names); everything is frozen at 16/09/2026.
 """
 import importlib.util
 import json
@@ -37,6 +43,19 @@ _spec.loader.exec_module(gen)
 TODAY = datetime(2026, 9, 16)
 QLD_750K = {"state": "QLD", "budget_max": 750000, "preferred_spending_cap": 750000}
 ADMIT = ("availability_unstated",)
+# Both routes an exceptions-only list's blank rows can take. "confirm" is what ships.
+MODES = ("confirm", "available")
+
+
+def _pin_mode(monkeypatch, mode):
+    """Fix SPB_EXCEPTIONS_LIST_MODE for one test.
+
+    _candidates reads the environment variable once, when it is imported, so setting
+    os.environ here would change nothing; the gate reads the module constant on every row,
+    so setting that is enough and no reload is needed.
+    """
+    assert mode in MODES, mode
+    monkeypatch.setattr(C, "EXCEPTIONS_LIST_MODE", mode)
 
 
 def _row(content_hash, **kw):
@@ -389,30 +408,88 @@ def _exceptions_list(*blank_rows, marked="On Hold", marked_live=True):
     return [marker] + list(blank_rows)
 
 
-def test_a_list_whose_only_statement_is_a_superseded_on_hold_is_confirmed_not_recommended():
+@pytest.mark.parametrize("mode", MODES)
+def test_a_list_whose_only_statement_is_a_superseded_on_hold_routes_its_fresh_blanks(
+        mode, monkeypatch):
     """Critique 1. 17 documents say On Hold or Sold only on SUPERSEDED captures; their 53
     live rows are blank, 40 of them fresh. Counting live rows alone would call those lists
-    silent and recommend every blank row. They are exceptions-only lists: nothing reaches
-    the shortlist, and the rows are there to confirm."""
+    silent; they are exceptions-only lists, and the blank rows are the stock.
+
+    WHERE THOSE FRESH BLANKS GO IS THE SWITCH, so this pins it instead of reading the
+    default. Under "confirm" -- what ships, and what ran until 20 Sep 2026 -- nothing on
+    such a list reaches the shortlist and all three are offered to confirm. Counted against
+    the live E-Agent portal on 20 Sep that cost Colin almost everything: 42 Silkwood lots
+    published, 42 in the catalogue, 2 shortlisted, and 36 of the 40 missing were blank
+    purely because the sheet marks exceptions. Under "available" the same three are results
+    carrying availability_by_exception_list, and none of them is ADMITTED any more, so
+    "Needs confirming" no longer offers what the shortlist already shows.
+
+    Staleness decides the route under BOTH modes, which is what the second half measures."""
+    _pin_mode(monkeypatch, mode)
     blanks = [_evidenced("v2:gd-%04d" % i, PLAIN_LINE.replace("$601,500", "$60%d,500" % i),
                          600500.0 + i * 1000) for i in range(1, 4)]
+    three = ["v2:gd-0001", "v2:gd-0002", "v2:gd-0003"]
     rows = _exceptions_list(*blanks, marked_live=False)
     packages, counts = _packages(rows, {"state": "QLD", "budget_max": 900000})
-    assert packages == [], "no blank row on an exceptions-only list is recommended"
-    assert counts["availability_unstated"] == 3
+    admitted, admitted_counts = _packages(rows, {"state": "QLD", "budget_max": 900000},
+                                          admit=ADMIT, only_admitted=True)
+    if mode == "available":
+        assert sorted(p["content_hash"] for p in packages) == three
+        for p in packages:
+            assert p["verified"] is True
+            assert p["availability_by_exception_list"] is True
+            assert "confirm" not in p, "a promoted row is a result, not a thing to confirm"
+        assert counts["availability_unstated"] == 0
+        assert counts["available_by_exception_list"] == 3
+        # A promoted row still HOLDS its slot in the confirm pool -- the two pools have
+        # separate caps and _keeps_confirm_slot is the net for a promoted row the main cap
+        # truncates -- but it is not admitted: no "confirm", so research.py's merge drops
+        # it from "Needs confirming" and no lot is offered in both places.
+        assert sorted(p["content_hash"] for p in admitted) == three
+        for p in admitted:
+            assert "confirm" not in p, "kept for the cap, never offered"
+            assert p["verified"] is True
+            assert p["availability_by_exception_list"] is True
+        assert admitted_counts["admitted"] == {"availability_unstated": 0}
+        assert admitted_counts["not_admitted"] == 0
+    else:
+        assert packages == [], "no blank row on an exceptions-only list is recommended"
+        assert counts["availability_unstated"] == 3
+        assert counts.get("available_by_exception_list", 0) == 0
+        assert sorted(p["content_hash"] for p in admitted) == three
+        for p in admitted:
+            assert p["confirm"] == ["availability_unstated"]
+            assert p["confirm_guard"] is None and p["verified"] is False
+            assert p["availability_by_exception_list"] is False
+        assert admitted_counts["admitted"] == {"availability_unstated": 3}
+    # Still not by_the_sheet: this document DOES state availability, on its On Hold row.
     assert counts["available_by_the_sheet"] == 0
 
-    admitted, admitted_counts = _packages(rows, {"state": "QLD", "budget_max": 900000},
+    # AND THE OLD ROUTE IS UNTOUCHED, UNDER EITHER MODE. FRESH_DAYS still decides: the same
+    # three rows on a list last read on 20/08 -- 27 days, the age that hid Dawn -- are
+    # offered to confirm and reach no shortlist, exactly as every blank row did before
+    # 20 Sep.
+    stale = _exceptions_list(*[dict(b, date_checked="20/08/2026") for b in blanks],
+                             marked_live=False)
+    packages, counts = _packages(stale, {"state": "QLD", "budget_max": 900000})
+    assert packages == [], "no stale blank row on an exceptions-only list is recommended"
+    assert counts["availability_unstated"] == 3
+    assert counts.get("available_by_exception_list", 0) == 0
+
+    admitted, admitted_counts = _packages(stale, {"state": "QLD", "budget_max": 900000},
                                           admit=ADMIT, only_admitted=True)
     assert sorted(p["content_hash"] for p in admitted) == ["v2:gd-0001", "v2:gd-0002",
                                                            "v2:gd-0003"]
     for p in admitted:
-        assert p["confirm"] == ["availability_unstated"]
+        assert p["confirm"] == ["availability_unstated", "stale"]
         assert p["confirm_guard"] is None and p["verified"] is False
+        assert p["availability_by_exception_list"] is False
     assert admitted_counts["admitted"] == {"availability_unstated": 3}
 
 
-def test_the_exceptions_only_admission_rules():
+@pytest.mark.parametrize("mode", MODES)
+def test_the_exceptions_only_admission_rules(mode, monkeypatch):
+    _pin_mode(monkeypatch, mode)
     ok = _evidenced("v2:ok-0001", PLAIN_LINE, 601500.0)
     heathwood = _evidenced("v2:hw-15897", HEATHWOOD_15897, 390639.0)
     ripley = _evidenced("v2:sr-0330", SOUTH_RIPLEY_330, 725000.0, product_type=None)
@@ -432,9 +509,31 @@ def test_the_exceptions_only_admission_rules():
                    "v2:cb-9812": "larger_total_in_text",
                    "v2:np-0002": "price_not_in_text", "v2:ne-0003": "no_price_evidence"}
 
+    # ok-0001 was read on 15/09, inside FRESH_DAYS, and no refusal touches it, so it is the
+    # one row of the seven that goes anywhere. Under "confirm" it is offered to confirm and
+    # nothing is recommended; under "available" the same row is recommended with the badge
+    # and stops being admitted. Either way the six refusals are unchanged -- 20 Sep left
+    # admission_refusal alone and it still runs before any row is promoted -- so those six
+    # reach neither list under either mode, which the shared assertions below measure.
+    shortlist, main_counts = _packages(rows, {"state": "QLD", "budget_max": 800000})
     admitted, counts = _packages(rows, {"state": "QLD", "budget_max": 800000},
                                  admit=ADMIT, only_admitted=True)
-    assert [p["content_hash"] for p in admitted] == ["v2:ok-0001"]
+    if mode == "available":
+        assert [p["content_hash"] for p in shortlist] == ["v2:ok-0001"]
+        assert shortlist[0]["availability_by_exception_list"] is True
+        assert main_counts["availability_unstated"] == 6
+        # Kept in the pool for the cap (_keeps_confirm_slot), but not offered: no
+        # "confirm", so the needs-confirming merge drops it.
+        assert [p["content_hash"] for p in admitted] == ["v2:ok-0001"]
+        assert "confirm" not in admitted[0], "shortlisted, so not offered twice"
+        assert counts["admitted"] == {"availability_unstated": 0}
+    else:
+        assert shortlist == [], "no blank row on an exceptions-only list is recommended"
+        assert main_counts["availability_unstated"] == 7
+        assert [p["content_hash"] for p in admitted] == ["v2:ok-0001"]
+        assert admitted[0]["confirm"] == ["availability_unstated"]
+        assert admitted[0]["availability_by_exception_list"] is False
+        assert counts["admitted"] == {"availability_unstated": 1}
     assert counts["unstated_not_admitted"] == {
         "build_only": 1, "larger_total_in_text": 3, "price_not_in_text": 1,
         "no_price_evidence": 1}
@@ -468,11 +567,18 @@ BUILDING_B_OPEN = ("Building B level 4 Type 13 B404 2 BRM + 2 BATH 1 Standard No
 UNDER_CONSTRUCTION = "PR9002 14 Walloon Estate Under Construction 450 $611,500 Hampton 220 4/2/2"
 
 
-def test_a_line_that_says_it_has_gone_is_not_offered_to_confirm():
+@pytest.mark.parametrize("mode", MODES)
+def test_a_line_that_says_it_has_gone_is_not_offered_to_confirm(mode, monkeypatch):
     """The NSW 'Building B' list marks 7 lots Sold, which the status column holds, and 10
     'Under contract' / 'Under contact', which it does not. Those 10 are blank on a list
     that marks lots gone -- exactly the exceptions-only shape -- and 6 passed every other
-    rule on the 17 Sep copy. Their own line says they are under contract."""
+    rule on the 17 Sep copy. Their own line says they are under contract.
+
+    Under "available" a fresh blank on such a list is recommended, so this rule guards the
+    shortlist as well as the confirm pool -- the stronger of the two places for it, and the
+    reason admission_refusal was left alone by that change. Pinned both ways here: B302,
+    B101 and B105 reach neither list under either mode."""
+    _pin_mode(monkeypatch, mode)
     contract = _evidenced("v2:bb-b302", BUILDING_B_UNDER_CONTRACT, 910000.0,
                           product_type="Apartment")
     cut_off = _evidenced("v2:bb-b101", BUILDING_B_CUT_OFF, 956000.0, product_type="Apartment")
@@ -495,10 +601,35 @@ def test_a_line_that_says_it_has_gone_is_not_offered_to_confirm():
     assert C.admission_refusal(address_only, _prepared(rows + [address_only]),
                                TODAY)[0] == "text_marks_unavailable"
 
+    # The three open lines take the mode's route -- offered to confirm under "confirm",
+    # RECOMMENDED under "available" -- and B302, B101 and B105 take neither, which is what
+    # this test is for. Control, measured 20 Sep: strike the words "Under contract" from
+    # B302's own line and that same lot, at the same $910,000 and the same Apartment type,
+    # is shortlisted -- so it is the text that keeps it out here and nothing incidental to
+    # the fixture.
+    open_lines = ["v2:bb-b404", "v2:bb-neg", "v2:uc-9002"]
+    shortlist, main_counts = _packages(rows, {"state": "QLD", "budget_max": 1000000})
     admitted, counts = _packages(rows, {"state": "QLD", "budget_max": 1000000},
                                  admit=ADMIT, only_admitted=True)
-    assert sorted(p["content_hash"] for p in admitted) == ["v2:bb-b404", "v2:bb-neg",
-                                                           "v2:uc-9002"]
+    if mode == "available":
+        assert sorted(p["content_hash"] for p in shortlist) == open_lines
+        for p in shortlist:
+            assert p["availability_by_exception_list"] is True
+        assert main_counts["availability_unstated"] == 3, \
+            "the three gone lines, and only those"
+        assert main_counts["available_by_exception_list"] == 3
+        # Held in the pool against the cap, offered by neither: no "confirm" on them.
+        assert sorted(p["content_hash"] for p in admitted) == open_lines
+        for p in admitted:
+            assert "confirm" not in p, "shortlisted, so not offered twice"
+        assert counts["admitted"] == {"availability_unstated": 0}
+    else:
+        assert shortlist == [], "no blank row on an exceptions-only list is recommended"
+        assert main_counts["availability_unstated"] == 6, "all six blanks, gone lines too"
+        assert sorted(p["content_hash"] for p in admitted) == open_lines
+        for p in admitted:
+            assert p["confirm"] == ["availability_unstated"]
+        assert counts["admitted"] == {"availability_unstated": 3}
     assert counts["unstated_not_admitted"] == {"text_marks_unavailable": 3}
 
 

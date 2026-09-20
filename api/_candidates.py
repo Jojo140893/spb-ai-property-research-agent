@@ -321,6 +321,44 @@ FRESH_DAYS = int(os.environ.get("SPB_SNAPSHOT_FRESH_DAYS", "14"))
 # NOT widened: at 30 or 45 days the VIC On-Hold Windermere rows become "Available" QLD.
 CONFIRM_MAX_DAYS = int(os.environ.get("SPB_CONFIRM_MAX_DAYS", "45"))
 
+# DOES A BLANK LOT ON AN EXCEPTIONS-ONLY LIST COUNT AS AVAILABLE?
+#
+# Some builders mark only the lots that have GONE and leave the rest blank. Silkwood's
+# QLD sheet is the standing example: 245 blank rows and 5 On Hold. Until 20 Sep such a
+# blank was admitted to "Needs confirming" and never to the shortlist, on the view that
+# the source had not said the word "available".
+#
+# Measured against the live E-Agent portal on 20 Sep 2026, that cost Colin almost
+# everything he has: of 42 Silkwood lots published on E-Agent that day, 42 were in the
+# catalogue and 2 reached the shortlist. The other 40 were real, current, in-budget lots
+# sitting behind a collapsed panel, and 36 of them were blank purely because the sheet
+# marks exceptions only.
+#
+#   "available"  a blank row on an exceptions-only list, READ WITHIN FRESH_DAYS and
+#                past every admission_refusal check, is shown as a result and carries
+#                "Confirm availability: this list marks only sold lots".
+#   "confirm"    the behaviour before 20 Sep: shown only under "Needs confirming".
+#
+# FRESH_DAYS still applies: a stale blank row goes to "Needs confirming" exactly as
+# before, so this widens what is SHOWN, never how old a row may be. admission_refusal is
+# unchanged and still rejects build-only prices, land-only prices, commercial tenancies,
+# price components of a larger printed total, and anything its own text marks as gone.
+#
+# This answers the open client question "do exceptions-only price lists count as
+# available" in the affirmative. Roll back with:  SPB_EXCEPTIONS_LIST_MODE=confirm
+#
+# THREE DEFECTS WERE FOUND BY REPLAYING THIS OVER THE LIVE SNAPSHOT BEFORE IT SHIPPED, and
+# all three are fixed above. Two are in promotion_refusal (gone_at_any_date, line_truncated)
+# and one was in the fall-through when promotion is refused, which admitted rows into the
+# confirmed pool that no caller had asked for and cost 42 verified lots on a no-ceiling
+# brief -- see the comment at that return. Measured on the live snapshot, both modes, five
+# brief shapes: not one row that was shown before is hidden after, nothing falls out of
+# both pools, and no verified lot is evicted by the cap.
+#
+#   Rollback:  SPB_EXCEPTIONS_LIST_MODE=confirm  (restores the behaviour before 20 Sep)
+#
+EXCEPTIONS_LIST_MODE = os.environ.get("SPB_EXCEPTIONS_LIST_MODE", "available").strip().lower()
+
 # THE DAY IS BRISBANE'S. date_checked is written in AEST by the nightly runner (checked_at
 # 11:41 on a run that started 01:07Z), and Vercel's clock is UTC, so between midnight and
 # 10am AEST a search aged every row one day younger than it is. Queensland keeps no
@@ -1696,6 +1734,58 @@ def text_marks_unavailable(row):
     return False
 
 
+# The lengths the extractors cut a source line to: sources/spreadsheet_extract.py and
+# sources/email_inbox.py write lot_address as line[:110], sources/adaptive_extract.py as
+# ln[:120]. A status word past the cut is simply not in the text we hold.
+_TRUNCATED_AT = 110
+
+
+def promotion_refusal(row, prepared):
+    """(reason or None): may this UNSTATED row be shown as a RESULT, not only to confirm?
+
+    admission_refusal decides whether a consultant could ring the builder about a blank
+    row. This decides the stronger thing -- whether the row may be RECOMMENDED -- and asks
+    two questions that only start to matter once a blank row is put in front of a buyer.
+    Added 20 Sep 2026 with EXCEPTIONS_LIST_MODE; both were found by replaying the promotion
+    over the live snapshot before it shipped.
+
+      gone_at_any_date  _newer_capture demotes a row only on a STRICTLY LATER gone reading,
+                        which was sound while a blank row could never be more than "please
+                        confirm". Gallery Group's Lot 12 Wildey Street, Raceview QLD
+                        ($1,074,966) is read "On Hold" on 09/09 and blank on 17/09, so the
+                        blank is the LATER capture and nothing demotes it. Offered to
+                        confirm that was survivable; recommended it is not. So for
+                        promotion only, a live capture of the same lot that says it has
+                        gone stops it whichever day it was read.
+      line_truncated    text_marks_unavailable reads the text we stored, and lot_address is
+                        cut at 110/120 characters. A Rockdale NSW line ends
+                        "... $1,250,000 Under c" -- "Under contract", cut mid-word, so the
+                        check saw nothing. When the untruncated source_text is missing and
+                        lot_address sits on the cut, the row's own status may be past the
+                        end, and a row we cannot fully read is not recommended.
+
+    Neither changes the confirm path: a row refused here falls back to "Needs confirming"
+    exactly as it did before, so this can only narrow what is newly shown.
+    """
+    key = capture_key(row)
+    if key is not None:
+        for _when, avail, _price, _line in prepared.captures.get(key, ()):
+            if avail in NOT_AVAILABLE:
+                return "gone_at_any_date"
+    price = _num(row.get("price"))
+    line = str(row.get("line_key") or "")
+    doc = str(row.get(_DOC_KEY) or "").strip()
+    if doc and line and price:
+        for _when, avail, other_price in prepared.doc_lines.get((doc, line), ()):
+            if (avail in NOT_AVAILABLE and other_price
+                    and abs(other_price - price) <= price * NEWER_CAPTURE_PRICE_TOLERANCE):
+                return "gone_at_any_date"
+    if not str(row.get("source_text") or "").strip():
+        if len(str(row.get("lot_address") or "")) >= _TRUNCATED_AT:
+            return "line_truncated"
+    return None
+
+
 def admission_refusal(row, prepared, today=None):
     """(reason or None, notes): may this UNSTATED row be admitted to confirm?
 
@@ -1746,6 +1836,24 @@ def admission_refusal(row, prepared, today=None):
 
 def _is_admitted(package):
     return "availability_unstated" in ((package or {}).get("confirm") or ())
+
+
+def _keeps_confirm_slot(package):
+    """Which packages the only_admitted pool keeps: the admitted ones, and the PROMOTED
+    ones as a safety net.
+
+    The two pools have separate MAX_CANDIDATES caps, and promotion moves a row out of a
+    pool with room into the confirmed pool, which on the live snapshot is already full.
+    Measured before this line existed: an any-state search lost 10 lots to nowhere -- not
+    shortlisted because the cap truncated them, and not offered either, because promotion
+    had taken them out of the confirm pool. Keeping them here means the worst the cap can
+    do is put a lot back under "Needs confirming", where it used to be.
+
+    Nothing is shown twice: research.py's needs-confirming merge drops everything already
+    on the shortlist, by content_hash, by candidate key and by _same_listing.
+    """
+    return _is_admitted(package) or bool(
+        (package or {}).get("availability_by_exception_list"))
 
 
 class _BriefContext:
@@ -2000,6 +2108,7 @@ def _gate(ctx, row, prepared, today):
         detail["availability_status"] = str(row.get("availability_status") or "")
         return GateResult("not_available", None, tags, detail)
     by_the_sheet = False
+    by_exception_list = False
     admitting = False
     if avail not in IS_AVAILABLE:
         # A SHEET WITH NO STATUS COLUMN IS ITSELF THE AVAILABILITY STATEMENT.
@@ -2030,13 +2139,24 @@ def _gate(ctx, row, prepared, today):
             # See IS_AVAILABLE for why "unstated" is not "available".
             detail["availability_status"] = str(row.get("availability_status") or "")
             detail["document_states_availability"] = bool(doc)
-            if "availability_unstated" not in ctx.admit:
+            # EXCEPTIONS-ONLY LIST, READ RECENTLY: a result, not a footnote. Decided here
+            # so BOTH passes agree and no lot is offered twice -- the main pass shows it
+            # and the shortlist shows it. The only_admitted pass KEEPS it as well -- see
+            # _keeps_confirm_slot, added after the two pools' separate caps were measured
+            # -- and research.py drops whatever is already on the shortlist, so it is
+            # never shown twice and the cap can only send it back to "Needs confirming".
+            # Stale rows fall through to the old path and still go to "Needs confirming".
+            if EXCEPTIONS_LIST_MODE == "available" and _fresh(row, today or _now_aest())[0]:
+                admitting = True
+                by_exception_list = True
+            elif "availability_unstated" not in ctx.admit:
                 return GateResult("availability_unstated", None, tags, detail)
-            # ASKED FOR, NOT YET ADMITTED, AND NEVER APPROVED. The caller wants rows a
-            # consultant could confirm. Whether this is one (admission_refusal) is decided
-            # once it has passed every later gate, so the refusals counted are refusals
-            # of rows that match the brief -- not of the over-budget majority.
-            admitting = True
+            else:
+                # ASKED FOR, NOT YET ADMITTED, AND NEVER APPROVED. The caller wants rows a
+                # consultant could confirm. Whether this is one (admission_refusal) is
+                # decided once it has passed every later gate, so the refusals counted are
+                # refusals of rows that match the brief -- not of the over-budget majority.
+                admitting = True
 
     price = _num(row.get("price"))
     if not price or price <= 0:
@@ -2142,8 +2262,42 @@ def _gate(ctx, row, prepared, today):
         if refusal:
             detail["not_admitted"] = refusal
             return GateResult("availability_unstated", None, tags, detail)
-        admitted.append("availability_unstated")
-        detail["admitted"] = list(admitted)
+        promo = promotion_refusal(row, prepared) if by_exception_list else None
+        if promo:
+            # Good enough to confirm, not good enough to recommend.
+            by_exception_list = False
+            detail["not_promoted"] = promo
+            tags.append("not_promoted_" + promo)
+            if "availability_unstated" not in ctx.admit:
+                # AND THE MAIN PASS ADMITS NOTHING -- so it leaves by the same door it
+                # would have used with the mode off. Without this return it fell through
+                # to the `else` below and was ADMITTED into the confirmed pool, which no
+                # caller asked for: the main pass runs with ctx.admit empty, and _pass
+                # raises ValueError elsewhere precisely to keep the two pools apart.
+                #
+                # It cost 42 lots. On a brief with no ceiling, 89 promotion-refused rows
+                # (88 line_truncated, 1 gone_at_any_date) entered the confirmed pool
+                # carrying availability_by_exception_list=False, so the promoted hold-out
+                # below -- which tests that flag -- did not hold them out. Priced
+                # $832,201-$1,105,539 they sat under the 600th price, dropping the cut
+                # from $1,171,900 to $1,113,900 and pushing 60 stated rows off the end,
+                # 42 of them verified. Every slot stolen was taken by a REFUSED row;
+                # not one promoted row was involved, which is why sorting promoted rows
+                # to the back never moved the number.
+                return GateResult("availability_unstated", None, tags, detail)
+        if by_exception_list:
+            # PROMOTED. It passed every check admission_refusal makes, cleared
+            # promotion_refusal, and was read inside FRESH_DAYS, so it is shown as a
+            # result. `admitted` is left empty on purpose -- _is_admitted is what makes a
+            # package unverified -- but the confirm pool still KEEPS it (see
+            # _keeps_confirm_slot): the two pools have separate 600-row caps, and without
+            # that a promoted row the main cap truncated would appear nowhere at all.
+            # research.py drops anything already on the shortlist from "Needs confirming",
+            # by content_hash, candidate key and _same_listing, so it is never shown twice.
+            tags.append("available_by_exception_list")
+        else:
+            admitted.append("availability_unstated")
+            detail["admitted"] = list(admitted)
 
     storeys = _storeys(row)
     if storeys is None and ctx.storey_is_binding:
@@ -2217,6 +2371,10 @@ def _gate(ctx, row, prepared, today):
         # recommended — see the filter above for why — but a consultant should know
         # the source did not say the word before quoting it to a buyer.
         "availability_by_the_sheet": by_the_sheet,
+        # True when this row was blank on a price list that marks ONLY the lots that have
+        # gone (Silkwood's 245 blank / 5 On Hold sheet). Being on the list is the evidence
+        # it is still for sale, and the card says so. See EXCEPTIONS_LIST_MODE.
+        "availability_by_exception_list": by_exception_list,
         # The rebate, as the source stated it. Coleen's target one-pager has a "Rebate"
         # and an "Effective Price" column ($728,500 package - $10,000 rebate =
         # $718,500), and neither could be filled because these two never left the
@@ -2329,6 +2487,7 @@ def _gate(ctx, row, prepared, today):
     detail["date_checked"] = seen_on or ""
     detail["age_days"] = age_days
     detail["availability_by_the_sheet"] = by_the_sheet
+    detail["availability_by_exception_list"] = by_exception_list
     detail["confirm"] = confirm
     detail["confirm_guard"] = guard
     return GateResult(PASSED, package, tags, detail, seen_at)
@@ -2439,11 +2598,12 @@ def _pass(brief_dict, rows, today=None, prepared=None, admit=(), only_admitted=F
     if only_admitted:
         # The admitted rows get their OWN pool. Sharing the confirmed search's 600-row cap
         # cost 143 of 379 confirmed VIC <= $900k results when it was measured.
-        left_out = [row for row, adm in zip(entry_rows, entry_admitted) if not adm]
+        entry_kept = [_keeps_confirm_slot(p) for _seen, p in entries]
+        left_out = [row for row, adm in zip(entry_rows, entry_kept) if not adm]
         for row in left_out:
             outcome[id(row)] = "not_admitted"
         counts["not_admitted"] = len(left_out)
-        keep = [i for i, adm in enumerate(entry_admitted) if adm]
+        keep = [i for i, adm in enumerate(entry_kept) if adm]
         entries = [entries[i] for i in keep]
         entry_rows = [entry_rows[i] for i in keep]
 
@@ -2457,6 +2617,22 @@ def _pass(brief_dict, rows, today=None, prepared=None, admit=(), only_admitted=F
     row_of_package = {id(entries[i][1]): entry_rows[i] for i in kept}
     packages.sort(key=lambda p: p["advertised_package_price"])
     if len(packages) > MAX_CANDIDATES:
+        # A PROMOTED ROW NEVER EVICTS A STATED ONE, AND NEVER REORDERS THEM EITHER.
+        # Held out of everything below and appended at the end, because the reorderings
+        # are SELECTIONS over the whole list -- _spread_across_the_budget especially --
+        # so merely sorting promoted rows to the back afterwards is not enough: their
+        # presence in the input already changed which stated rows came forward. Measured
+        # on the live snapshot: with them in the spread, 42 stated, verified lots dropped
+        # out of one brief's 600 even though every promoted row was then cut. Held out
+        # here, the stated ordering is identical to the mode being off.
+        # Nothing is lost by being cut: _keeps_confirm_slot leaves a promoted row in the
+        # confirm pool, so the cap can only send it back to "Needs confirming".
+        promoted_tail = []
+        if not only_admitted:
+            promoted_tail = [p for p in packages if p.get("availability_by_exception_list")]
+            if promoted_tail:
+                packages = [p for p in packages
+                            if not p.get("availability_by_exception_list")]
         # THE CAP USED TO CUT THE BRIEF'S OWN STOCK BEFORE THE BRIEF WAS APPLIED.
         #
         # Sorted by price ascending and truncated to the 600 cheapest -- and the suburb
@@ -2503,6 +2679,7 @@ def _pass(brief_dict, rows, today=None, prepared=None, admit=(), only_admitted=F
             # STABLE, so price-ascending order survives inside each group.
             packages.sort(key=lambda p: -_meets_binding(p, brief_dict, ctx.binding_facts))
             packages = _spread_across_the_budget(packages, brief_dict, ctx.binding_facts)
+        packages = packages + promoted_tail
         counts["truncated"] = len(packages) - MAX_CANDIDATES
         for p in packages[MAX_CANDIDATES:]:
             outcome[id(row_of_package[id(p)])] = "truncated"

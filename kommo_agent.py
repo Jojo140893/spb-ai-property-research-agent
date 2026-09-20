@@ -462,10 +462,14 @@ class KommoPropertyResearchAgent:
             # pass or Clare has to see, and CandidateProperty has no field for. Read with
             # getattr, like source_link, so a hand-built candidate simply has none.
             #   availability_by_the_sheet  the list has no status column at all
+            #   availability_by_exception_list  the list marks only the lots that have
+            #                              gone and this one was blank
             #   availability_status        the status as the package states it; None when
             #                              the package does not carry one
             #   age_days                   days since date_checked on the search's today
             cand.availability_by_the_sheet = bool(raw_pkg.get('availability_by_the_sheet'))
+            cand.availability_by_exception_list = bool(
+                raw_pkg.get('availability_by_exception_list'))
             cand.availability_status = raw_pkg.get('availability_status')
             cand.age_days = raw_pkg.get('age_days')
 

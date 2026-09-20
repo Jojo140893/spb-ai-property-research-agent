@@ -14,7 +14,12 @@ relaxation priced by re-running the real search. These tests pin the contract:
   * every relaxation reported 'exact' re-POSTs to exactly its shortlist_count;
   * relaxations are priced in priority order, so a slow search runs out of time on the
     least likely ones, never on the budget steps (critique #24);
-  * an explanation that breaks never costs the consultant the search.
+  * an explanation that breaks never costs the consultant the search;
+  * the funnel accounts for Colin's search under BOTH settings of
+    _candidates.EXCEPTIONS_LIST_MODE, which every test here pins rather than inherits:
+    'confirm' (the default, and what ships) and 'available' (20 Sep, currently off).
+    The mode moves 254 blank rows on exceptions-only price lists from the availability
+    gate to the gate that really excludes them; it moves nothing about the result.
 
 Run on tests/fixtures/colin_17sep_subset.json, today frozen at 16/09/2026.
 """
@@ -109,6 +114,11 @@ def research():
     mp.delenv("GROQ_API_KEY", raising=False)
     mp.delenv("SPB_SHORTLIST_MAX", raising=False)
     mp.setattr(_candidates, "datetime", _Sep16)
+    # PINNED, NOT INHERITED. EXCEPTIONS_LIST_MODE is read into a module constant at import
+    # time, so a SPB_EXCEPTIONS_LIST_MODE in the environment would otherwise decide what
+    # this file measures. Everything below is the shipped default; the one test that pins
+    # "available" says so itself.
+    mp.setattr(_candidates, "EXCEPTIONS_LIST_MODE", "confirm")
     import research as module
     mp.setattr(module, "EXPLAIN_BUDGET_MS", 60000)
     mp.setattr(module, "EXPLAIN_BELOW", 5)
@@ -181,15 +191,46 @@ def test_explain_adds_its_own_keys_and_changes_none_of_the_searchs(plain, explai
 
 # ------------------------------------------------------------------------- the funnel
 
-def test_the_funnel_accounts_for_colins_search(explained):
-    out = explained["qld_750k"]
+# WHERE THE 254 ROWS STOP, PER MODE. They are blank lines on price lists that mark only
+# what has gone -- 25 APLACE by Glenville lots across Brisbane North, 27 Avia Homes, 12
+# Silkwood at Walloon Taylors Ridge -- every one of them read inside FRESH_DAYS. Under
+# "confirm" the availability gate stops all 254; under "available" they pass it and stop at
+# the gate that really excludes them, which for all 254 is over_budget: the cheapest is
+# Prosperity Residential's Rosewood Green lot 162 at $790,000, read 16/09/2026, against
+# Colin's $750,000 ceiling. That one row is also the difference in just_over, since
+# availability is gated BEFORE budget and a row stopped at availability never reaches the
+# just-over counter. Not one of the 254 reaches the shortlist, which is why every other
+# number in the test below is the same in both modes.
+FUNNEL_BY_MODE = {
+    "confirm":   {"just_over": 8, "availability_unstated": 403, "over_budget": 499},
+    "available": {"just_over": 9, "availability_unstated": 149, "over_budget": 753},
+}
+
+
+@pytest.fixture(scope="module")
+def colin_by_mode(research):
+    """Colin's search priced once per EXCEPTIONS_LIST_MODE. The constant is read at call
+    time inside the gate, so setting it on the module is enough."""
+    runs = {}
+    for mode in FUNNEL_BY_MODE:
+        mp = pytest.MonkeyPatch()
+        mp.setattr(_candidates, "EXCEPTIONS_LIST_MODE", mode)
+        runs[mode] = _run(research, _brief("qld_750k"), explain=True)
+        mp.undo()
+    return runs
+
+
+@pytest.mark.parametrize("mode", list(FUNNEL_BY_MODE))
+def test_the_funnel_accounts_for_colins_search(colin_by_mode, mode):
+    out = colin_by_mode[mode]
+    expected = FUNNEL_BY_MODE[mode]
     funnel = out["search_help"]["funnel"]
     assert funnel["snapshot_rows"] == 8694
     assert (funnel["snapshot_rows"] - sum(funnel["out_of_scope"].values())
             == funnel["in_state_rows"] == out["in_state_rows"])
     assert funnel["shortlisted"] == out["shortlist_count"] == 2
     assert funnel["scored"] == 8 and funnel["pending_confirmation"] == 6
-    assert funnel["just_over"] == 8 and funnel["capped"] is False
+    assert funnel["just_over"] == expected["just_over"] and funnel["capped"] is False
     # Critique #11's in-range tally: 11 passed every gate, 6 unstated, 5 sold or on hold.
     assert funnel["in_price_range"] == {"available": 11, "availability_unstated": 6,
                                         "not_available": 5, "price_unverified": 1}
@@ -199,7 +240,13 @@ def test_the_funnel_accounts_for_colins_search(explained):
         c for c in _candidates.GATE_ORDER if c not in ("superseded", "state_unknown",
                                                          "other_state")]
     by_code = {g["code"]: g for g in funnel["gates"]}
-    assert by_code["availability_unstated"]["count"] == 403
+    assert by_code["availability_unstated"]["count"] == expected["availability_unstated"]
+    assert by_code["over_budget"]["count"] == expected["over_budget"]
+    # The same 902 rows either way, told apart by which gate stops them: the mode moves the
+    # 254 between these two counters and creates none, so a count that drifted on its own
+    # could not hide behind the other.
+    assert (by_code["availability_unstated"]["count"] + by_code["over_budget"]["count"]
+            == 902)
     assert by_code["availability_unstated"]["in_price_range"] == 6
     assert by_code["not_available"]["in_price_range"] == 5
     assert by_code["over_budget"]["in_price_range"] is None

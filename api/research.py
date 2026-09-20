@@ -65,6 +65,11 @@ def _shortlist_entry(p, availability=None):
     # (vapi-kommo-hook lib/tools/verify.js), so the costly mistake is a False too many.
     _by_the_sheet = (bool(getattr(p, 'availability_by_the_sheet', False))
                      or bool(_known.get('availability_by_the_sheet', False)))
+    # Same rule, same reason, for the exceptions-only list (blank means "not one of the
+    # ones that went"). Kept separate from _by_the_sheet because the card says a different
+    # sentence for each and a consultant should be told which one this is.
+    _by_exception_list = (bool(getattr(p, 'availability_by_exception_list', False))
+                          or bool(_known.get('availability_by_exception_list', False)))
     # A blank on the candidate is "not carried", not "the source said nothing": both come
     # from the same snapshot row, so the row's own statement is the fallback.
     _status = (getattr(p, 'availability_status', None)
@@ -129,6 +134,11 @@ def _shortlist_entry(p, availability=None):
         # (_candidates.py, "A SHEET WITH NO STATUS COLUMN"). The card shows "Confirm
         # availability" for it, and Clare must not call it "available" on its strength.
         'availability_by_the_sheet': bool(_by_the_sheet),
+        # THE LIST MARKS ONLY WHAT HAS GONE. True when this lot was blank on a price list
+        # that names its sold / on-hold lots and leaves the rest empty, so being on the
+        # list is the evidence it is for sale. Same handling as the line above: the card
+        # shows "Confirm availability", and Clare must not call it "available" on it.
+        'availability_by_exception_list': bool(_by_exception_list),
         # The availability exactly as the source row stated it ('' when it stated none).
         'availability_status': str(_status or ''),
         # Benchmark A: could this buyer find comparable stock cheaper right now?
@@ -650,12 +660,16 @@ def _availability_by_hash(shortlist, packages, rows):
     wanted = {str(getattr(p, 'content_hash', '') or '') for p in shortlist} - {''}
     if not wanted:
         return {}
-    out = {h: {'availability_by_the_sheet': False, 'availability_status': ''}
+    out = {h: {'availability_by_the_sheet': False,
+               'availability_by_exception_list': False,
+               'availability_status': ''}
            for h in wanted}
     for pkg in packages:
         h = str(pkg.get('content_hash') or '')
         if h in out:
             out[h]['availability_by_the_sheet'] = bool(pkg.get('availability_by_the_sheet'))
+            out[h]['availability_by_exception_list'] = bool(
+                pkg.get('availability_by_exception_list'))
     for row in rows:
         h = str(row.get('content_hash') or '').strip()
         if h in out and not row.get('superseded_by'):
@@ -945,6 +959,7 @@ def _needs_confirming_entry(cand, pkg, row):
         # The availability exactly as the source row stated it; None when it stated none.
         "availability_as_stated": stated or None,
         "availability_by_the_sheet": bool(pkg.get("availability_by_the_sheet")),
+        "availability_by_exception_list": bool(pkg.get("availability_by_exception_list")),
         "date_checked": str(pkg.get("date_checked") or ""),
         "age_days": pkg.get("age_days"),
         "fresh_days": _candidates.FRESH_DAYS,
