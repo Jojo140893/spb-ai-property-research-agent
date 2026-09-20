@@ -83,15 +83,41 @@ def full_prepared(full_rows):
     return C.prepare_rows(full_rows)
 
 
-# On every package from W04/W11 on; confirm and confirm_guard only on unverified ones.
-ALWAYS_ADDED = {"age_days", "email_first_seen", "list_age_days"}
+def _pin(monkeypatch, mode):
+    """Pin the exceptions-only rule to `mode` for one test.
+
+    _candidates reads SPB_EXCEPTIONS_LIST_MODE once, at import, into EXCEPTIONS_LIST_MODE,
+    but _gate reads that module constant on every row, so setting the constant is enough
+    and no reload is needed. Every test that depends on the rule pins the mode it is
+    about: "confirm" is the shipped behaviour and what the goldens were saved from,
+    "available" is the 20/09/2026 promotion, built and shipped OFF. Neither behaviour is
+    then left to whatever default the environment running the suite happens to carry.
+    """
+    monkeypatch.setattr(C, "EXCEPTIONS_LIST_MODE", mode)
+
+
+# 20/09/2026 added one more always-present package field, availability_by_exception_list
+# (see _candidates.EXCEPTIONS_LIST_MODE), written on EVERY package in BOTH modes and False
+# unless the row was promoted. make_colin_subset's NEW_PACKAGE_KEYS predates it, so the
+# goldens -- saved before the field existed -- are compared with it removed here, exactly
+# as that module removes W04's and W11's, and the assertions below still say these are the
+# ONLY differences from the saved output.
+W18_PACKAGE_KEYS = ("availability_by_exception_list",)
+ADDITIVE_PACKAGE_KEYS = set(gen.NEW_PACKAGE_KEYS) | set(W18_PACKAGE_KEYS)
+
+# On every package from W04/W11/W18 on; confirm and confirm_guard only on unverified ones.
+ALWAYS_ADDED = {"age_days", "email_first_seen", "list_age_days",
+                "availability_by_exception_list"}
 
 
 def _assert_matches_golden(packages, counts, golden, keep_packages_up_to=60):
-    """Legacy output identical, and the W04/W11 additions the only difference."""
+    """Legacy output identical, and the W04/W11/W18 additions the only difference.
+
+    Called only under a pinned "confirm": the goldens are the shipped mode's output.
+    """
     legacy = set(golden["packages"][0]) if golden.get("packages") else None
     for p in packages:
-        added = set(p) & set(gen.NEW_PACKAGE_KEYS)
+        added = set(p) & ADDITIVE_PACKAGE_KEYS
         if legacy is not None:
             assert set(p) - legacy == added, set(p) - legacy
         # A default search admits nothing: confirm appears exactly on the packages it
@@ -100,10 +126,17 @@ def _assert_matches_golden(packages, counts, golden, keep_packages_up_to=60):
         assert added == ALWAYS_ADDED | ({"confirm", "confirm_guard"} if unverified else set())
         assert "availability_unstated" not in p.get("confirm", ()), (
             "a default search must admit nothing")
+        # The shipped mode promotes nothing off an exceptions-only price list, so the new
+        # field is False on every saved package. This is what pins the goldens to
+        # "confirm": with the rule on, the 20/09 promotion puts extra rows in here.
+        assert p["availability_by_exception_list"] is False
     extra_counts = {k for k in counts if k in gen.NEW_COUNT_KEYS}
     assert extra_counts == {"counts_in_range", "just_over", "stale_over_limit",
                             "newer_capture_demoted", "confirm_guarded"}, extra_counts
-    got = gen.golden_record(packages, counts, keep_packages_up_to)
+    assert "available_by_exception_list" not in counts, "confirm mode promotes nothing"
+    got = gen.golden_record(
+        [{k: v for k, v in p.items() if k not in W18_PACKAGE_KEYS} for p in packages],
+        counts, keep_packages_up_to)
     assert got["counts"] == golden["counts"], "counts (values or key order) moved"
     assert got["content_hashes"] == golden["content_hashes"], "package set or order moved"
     if "packages" in golden and "packages" in got:
@@ -133,7 +166,9 @@ def test_the_goldens_are_frozen_to_the_day_the_live_replays_matched(subset_rows)
 
 
 @pytest.mark.parametrize("name", SUBSET_BRIEFS)
-def test_default_output_equals_the_golden_on_the_subset(name, subset_rows, subset_prepared):
+def test_default_output_equals_the_golden_on_the_subset(name, subset_rows, subset_prepared,
+                                                        monkeypatch):
+    _pin(monkeypatch, "confirm")           # the mode the goldens were saved from
     golden = GOLDEN["briefs"][name]["subset"]
     packages, counts = C.build_packages(_brief(name), subset_rows, today=TODAY)
     _assert_matches_golden(packages, counts, golden)
@@ -145,7 +180,8 @@ def test_default_output_equals_the_golden_on_the_subset(name, subset_rows, subse
 
 @pytest.mark.parametrize("name", ALL_BRIEFS)
 def test_default_output_equals_the_golden_on_the_full_snapshot(name, full_rows,
-                                                                full_prepared):
+                                                                full_prepared, monkeypatch):
+    _pin(monkeypatch, "confirm")           # the mode the goldens were saved from
     golden = GOLDEN["briefs"][name]["full_snapshot"]
     packages, counts = C.build_packages(_brief(name), full_rows, today=TODAY)
     _assert_matches_golden(packages, counts, golden, keep_packages_up_to=0)
@@ -230,7 +266,12 @@ def test_fresh_keeps_its_three_tuple_and_age_days_is_separate():
 
 @pytest.mark.parametrize("name", ["qld_750k", "variant_E_max_blank_pref_750k"])
 def test_admit_returns_exactly_the_unstated_rows_that_pass_every_later_gate(
-        name, subset_rows, subset_prepared):
+        name, subset_rows, subset_prepared, monkeypatch):
+    # THE SHIPPED RULE, PINNED. Every blank row goes to "Needs confirming" and none is
+    # promoted, so this pool is the whole of what an unstated row can become. What
+    # EXCEPTIONS_LIST_MODE=available does with the same rows is asserted in
+    # test_available_mode_promotes_the_fresh_blank_rows_it_can_read_in_full below.
+    _pin(monkeypatch, "confirm")
     brief = _brief(name)
     default = C.explain_rows(brief, subset_rows, prepared=subset_prepared, today=TODAY)
     unstated = [row for row, v in default if v["gate"] == "availability_unstated"]
@@ -283,8 +324,23 @@ def test_admit_returns_exactly_the_unstated_rows_that_pass_every_later_gate(
         # duplex halves, a garbled line, the Wacol lot its sheet was re-read without).
         assert not got
     else:
+        # Max blank / $750k preferred admits 48 lots, every one of them off a single
+        # document -- Silkwood Homes' E-Agent sheet aa285df384618124, 431 rows in this
+        # fixture of which 426 are blank and 5 are On Hold, re-read on 16/09/2026 so
+        # age_days is 0 (Walloon Taylors Ridge lot 35, Burpengary Sage lot 534,
+        # Rosewood lot 146 v2:d26d5470). Under the shipped rule a list that marks only
+        # what has gone has still not said the word "available", so all 48 are offered to
+        # confirm and none is shortlisted.
         assert got, "Max blank / $750k preferred admits exceptions-only stock"
+        assert len(got) == 48
+        shortlist, plain_counts = C.build_packages(brief, subset_rows, today=TODAY,
+                                                   prepared=subset_prepared)
+        assert not [p for p in shortlist if p["availability_by_exception_list"]]
+        assert "available_by_exception_list" not in plain_counts
+        assert not ({p["content_hash"] for p in shortlist} &
+                    {p["content_hash"] for p in got}), "no lot may sit in both pools"
     for p in got:
+        assert p["availability_by_exception_list"] is False
         assert "availability_unstated" in p["confirm"]
         assert p["confirm_guard"] is None
         assert p["verified"] is False
@@ -310,10 +366,15 @@ def test_admitted_rows_never_share_the_confirmed_pool(subset_rows, subset_prepar
 
 @pytest.mark.parametrize("name", ["variant_E_max_blank_pref_750k", "qld_750k"])
 def test_explain_with_admit_reports_each_row_from_the_pool_it_is_really_in(
-        name, subset_rows, subset_prepared):
+        name, subset_rows, subset_prepared, monkeypatch):
     """A confirmed row's fate comes from the confirmed search, an admitted row's from the
     admitted pass. At Max blank / $750k preferred a shared pool reported 181 rows the
-    search scores as truncated."""
+    search scores as truncated.
+
+    The shipped rule, pinned: nothing is promoted, so every blank row's fate comes from
+    the admitted pass and seen_promoted stays at zero.
+    """
+    _pin(monkeypatch, "confirm")
     brief = _brief(name)
     admit = ("availability_unstated",)
     default = C.explain_rows(brief, subset_rows, prepared=subset_prepared, today=TODAY)
@@ -323,9 +384,15 @@ def test_explain_with_admit_reports_each_row_from_the_pool_it_is_really_in(
                                         prepared=subset_prepared, admit=admit,
                                         only_admitted=True)
     seen_admitted = Counter()
+    seen_promoted = 0
     for (row, plain), (_same, verdict) in zip(default, with_admit):
         if plain["gate"] != "availability_unstated":
             assert verdict == plain, (row["content_hash"], plain["gate"], verdict["gate"])
+            # A promoted row comes through HERE, from the confirmed search, because the
+            # exceptions-only rule is decided in _gate and admit= cannot move it.
+            if (plain["package"] or {}).get("availability_by_exception_list"):
+                assert plain["gate"] == "scored"
+                seen_promoted += 1
             continue
         if verdict["package"] is None:
             continue                     # stopped by a later gate, or refused admission
@@ -336,6 +403,8 @@ def test_explain_with_admit_reports_each_row_from_the_pool_it_is_really_in(
         assert not seen_admitted, "Colin's six in-range unstated rows are all refused"
     else:
         assert seen_admitted["scored"] > 0
+    assert not seen_promoted, (
+        "the shipped rule promotes nothing, so no package carries the badge")
     # One row at a time says the same, for every kind of verdict the pass produced.
     first = {}
     for row, verdict in with_admit:
@@ -350,6 +419,109 @@ def test_only_the_unstated_gate_can_be_admitted(subset_rows, subset_prepared):
     with pytest.raises(ValueError):
         C.build_packages(_brief("qld_750k"), subset_rows, today=TODAY,
                          prepared=subset_prepared, admit=("not_available",))
+
+
+# ------------------------------------------- 3b. the exceptions-only rule, mode by mode
+#
+# SPB_EXCEPTIONS_LIST_MODE=available is the 20/09/2026 behaviour: a blank row on a price
+# list that marks only the lots that have GONE, read inside FRESH_DAYS and past both
+# admission_refusal and promotion_refusal, is shown as a RESULT carrying the badge instead
+# of being offered under "Needs confirming". Every test here pins the mode it exercises
+# rather than trusting the default, so the pair keeps passing whichever way the switch
+# ships: these two pin it on and everything above pins it off.
+
+def test_available_mode_promotes_the_fresh_blank_rows_it_can_read_in_full(
+        subset_rows, subset_prepared, monkeypatch):
+    """Max blank / $750k preferred, the brief this rule was written for.
+
+    The shipped rule offers 48 lots under "Needs confirming", all off one document --
+    Silkwood Homes' E-Agent sheet aa285df384618124, 431 rows in this fixture of which 426
+    are blank and 5 are On Hold, re-read on 16/09/2026 so age_days is 0. FOUR of the 48 are
+    promoted to the shortlist (badged, verified, no confirm). The other 44 are refused by
+    promotion_refusal -- their stored line is cut at 110 characters, so a status word could
+    be past the end, and a row we cannot read in full is not recommended.
+
+    A REFUSED ROW MUST LEAVE BY THE availability_unstated GATE, which is what the last
+    assertion here is for. It used to fall through and be ADMITTED into the confirmed pool
+    instead, carrying confirm=['availability_unstated'] on a pass whose ctx.admit is empty.
+    On the live snapshot that put 89 such rows into the pool priced under the 600th, which
+    dropped the cut from $1,171,900 to $1,113,900 and pushed 42 verified lots off the end.
+    Nothing the shipped rule shortlists is lost: all 501 stay.
+    """
+    brief = _brief("variant_E_max_blank_pref_750k")
+
+    _pin(monkeypatch, "confirm")
+    shipped, shipped_counts = C.build_packages(brief, subset_rows, today=TODAY,
+                                               prepared=subset_prepared)
+    offered, _offered_counts = C.build_packages(
+        brief, subset_rows, today=TODAY, prepared=subset_prepared,
+        admit=("availability_unstated",), only_admitted=True)
+    assert len(shipped) == 501 and len(offered) == 48
+
+    _pin(monkeypatch, "available")
+    shortlist, counts = C.build_packages(brief, subset_rows, today=TODAY,
+                                         prepared=subset_prepared)
+    assert len(shortlist) == 505
+    assert {p["content_hash"] for p in shipped} <= {p["content_hash"] for p in shortlist}
+    added = {p["content_hash"] for p in shortlist} - {p["content_hash"] for p in shipped}
+    assert added <= {p["content_hash"] for p in offered}, (
+        "the rule may only move rows the shipped rule offers to confirm")
+
+    badged = [p for p in shortlist if p["availability_by_exception_list"]]
+    assert len(badged) == 4 == counts["available_by_exception_list"]
+    assert {p["content_hash"] for p in badged} == added, (
+        "the only rows added to the shortlist are the promoted ones")
+    for p in badged:
+        # Promoted, not admitted: confirm and confirm_guard are what route a package into
+        # "Needs confirming", and a promoted row carries neither.
+        assert p["verified"] is True
+        assert "confirm" not in p and "confirm_guard" not in p
+        assert p["date_checked"] == "16/09/2026" and p["age_days"] == 0
+    assert "available_by_exception_list" not in shipped_counts
+
+    # THE 44 REFUSED ROWS ARE NOT IN THE CONFIRMED POOL AT ALL. This is the assertion the
+    # 42-lot eviction was hiding behind: they must leave _gate by the availability_unstated
+    # gate, exactly as they do with the mode off, and reach the consultant only through the
+    # admit pass -- which still offers all 48, refused and promoted alike.
+    assert counts["not_promoted_line_truncated"] == 44
+    refused = {p["content_hash"] for p in offered} - added
+    assert len(refused) == 44
+    assert not (refused & {p["content_hash"] for p in shortlist}), (
+        "a promotion-refused row was admitted into the confirmed pool; the main pass "
+        "admits nothing, so it must return the availability_unstated gate result")
+    assert not [p for p in shortlist if p.get("confirm") == ["availability_unstated"]], (
+        "no package on this pass may carry availability_unstated: ctx.admit is empty")
+
+
+def test_available_mode_leaves_colins_own_search_exactly_as_it_ships(
+        subset_rows, subset_prepared, monkeypatch):
+    """QLD <= $750k: no lot in range sits on an exceptions-only list that can be read in
+    full, so turning the rule on returns the same packages, in the same order.
+
+    The first-fail tally does move, and that is the tally doing its job: availability is
+    gated before price, so 254 fresh blank rows that used to stop at availability_unstated
+    now walk on and are stopped by the budget instead. Every row still lands in exactly
+    one bucket.
+    """
+    brief = _brief("qld_750k")
+
+    _pin(monkeypatch, "confirm")
+    shipped, shipped_counts = C.build_packages(brief, subset_rows, today=TODAY,
+                                               prepared=subset_prepared)
+    _pin(monkeypatch, "available")
+    shortlist, counts = C.build_packages(brief, subset_rows, today=TODAY,
+                                         prepared=subset_prepared)
+
+    assert shortlist == shipped, "nothing is promoted, so nothing Colin sees may move"
+    assert not [p for p in shortlist if p["availability_by_exception_list"]]
+    assert "available_by_exception_list" not in counts
+
+    moved = shipped_counts["availability_unstated"] - counts["availability_unstated"]
+    assert moved == 254
+    assert counts["over_budget"] - shipped_counts["over_budget"] == moved
+    buckets = C.GATE_ORDER + C.POOL_OUTCOMES
+    assert sum(counts[b] for b in buckets) == counts["snapshot_rows"]
+    assert sum(shipped_counts[b] for b in buckets) == shipped_counts["snapshot_rows"]
 
 
 # -------------------------------------------------------------------- 4. in-range tally

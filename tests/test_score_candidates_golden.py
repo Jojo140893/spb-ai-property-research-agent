@@ -13,7 +13,10 @@ by THIS file's __main__ from the code BEFORE the extraction, with today frozen a
   * qld_750k                 Colin's search: shortlisted, pending, rejected (16 packages
                              when saved; 8 since W11 dropped the $50k budget headroom)
   * werribee_vic_700k_4bed   a suburb brief, so the requested-suburb and bedroom gates run
-  * qld_no_budget            the form's blank maximum: every QLD package, 501 of them
+  * qld_no_budget            the form's blank maximum: every QLD package. 501 when this
+                             line was written; 497 in the golden as it now stands, which
+                             is what W11's enrichment left and what its 402 shortlisted
+                             plus 95 pending add back up to.
 
 Compared: shortlist ids, scores and order; the rejected_log text; and kommo_payload with
 its dates masked. The changes W10 makes ON PURPOSE are excluded here and pinned
@@ -27,6 +30,45 @@ is fed change on purpose (W11 did), regenerate with the pre-extraction kommo_age
 golden's "history".
 
     python tests/test_score_candidates_golden.py --write [--snapshot <17 Sep stock.json>]
+
+MODE-PINNED, 20 Sep 2026 -- and why the golden was NOT regenerated. This is the W11 case
+again, a PACKAGES change and not a scoring one: SPB_EXCEPTIONS_LIST_MODE now defaults to
+"available", so a blank row on an exceptions-only price list (the vendor marks only what
+has gone -- Silkwood's QLD sheet, 245 blank rows and 5 On Hold) that was read inside
+FRESH_DAYS is promoted in _gate instead of being held back as availability_unstated. On
+the subset that moves qld_no_budget, and only qld_no_budget: 4 rows are promoted and the
+other 44 of the 48 are refused by promotion_refusal for a line cut at 110 characters.
+
+The golden records CONFIRM-mode output and the snapshot behind it is not on this machine,
+so packages_for pins the mode rather than re-recording something it cannot verify. See
+its docstring. Regenerating for "available" needs the snapshot whose fingerprint is
+4d07b8ef..., and must add a GOLDEN_HISTORY entry with its proof.
+
+Measured before and after by content_hash, never by property_id, because the answer turns
+on that distinction:
+
+  * all 48 new rows are the promoted ones, one for one -- every one Verified, Recommend,
+    carrying availability_by_exception_list, and every one read 16/09/2026, i.e. today,
+    so none of them is a stale row sneaking past _fresh. Glenvale 5, Walloon 4, Lilywood
+    4, Caboolture 4, Yarrabilba 3, Morayfield 3, then a long tail of ones and twos.
+  * not one of the 402 rows already shortlisted was lost, none changed score,
+    recommendation or verification, and the 402 keep their order -- the old shortlist is
+    a subsequence of the new one.
+  * `pending` and `rejected_log` are the same 95 entries in the same order. Nothing was
+    promoted out of the confirm pool here and nothing fell into it, so no lot is offered
+    twice.
+
+So both failures are renumbering, not movement: PROP-n is positional, assigned per search
+in kommo_agent.py, and 48 more packages shift every id after the first promotion --
+shortlist PROP-31 -> PROP-32 at index 2, pending PROP-281 -> PROP-311 at index 3, with
+identical content_hashes behind both. qld_750k and werribee_vic_700k_4bed do not move at
+all: QLD <= $750k has no exceptions-list stock in range and the suburb brief is VIC.
+
+Regenerate with the command above, and only with someone holding the 17 Sep stock.json
+the full_snapshot half was saved from (fingerprint 4d07b8ef...). The vercel_site/stock.json
+in this worktree is a later harvest and does not match it, which is why the three
+full-snapshot cases skip; running --write WITHOUT --snapshot would drop
+full_snapshot_fingerprint and those goldens with it.
 """
 import argparse
 import copy
@@ -128,10 +170,27 @@ def fresh_agent(rows):
 
 
 def packages_for(brief, rows):
-    """What api/research.py hands the pipeline: build_packages, then the same dedupe."""
+    """What api/research.py hands the pipeline: build_packages, then the same dedupe.
+
+    PINNED TO CONFIRM MODE, because that is the mode the golden records. It was written
+    before SPB_EXCEPTIONS_LIST_MODE existed, and it cannot be re-recorded on this machine:
+    the snapshot behind it (full_snapshot_fingerprint 4d07b8ef...) is not here -- neither
+    worktree's stock.json matches -- and `--write` without `--snapshot` would drop that
+    fingerprint and the three full-snapshot goldens with it.
+
+    Pinning keeps this file testing the one thing it was built to test: that moving the
+    per-package loop into score_candidates changed nothing. The available-mode packages
+    are asserted directly, on the same subset, by
+    tests/test_gate_single_path.py::test_available_mode_promotes_the_fresh_blank_rows_it_can_read_in_full.
+    """
     import _candidates
     from sources.dedupe import DedupeEngine
-    packages, _counts = _candidates.build_packages(dict(brief), rows, today=gen.TODAY)
+    was = _candidates.EXCEPTIONS_LIST_MODE
+    _candidates.EXCEPTIONS_LIST_MODE = "confirm"
+    try:
+        packages, _counts = _candidates.build_packages(dict(brief), rows, today=gen.TODAY)
+    finally:
+        _candidates.EXCEPTIONS_LIST_MODE = was
     return DedupeEngine.deduplicate(packages)
 
 

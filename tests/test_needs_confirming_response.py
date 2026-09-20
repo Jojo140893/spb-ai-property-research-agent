@@ -15,6 +15,18 @@ back in `needs_confirming`, each with its OWN dates, while:
   * hidden reasons are counted AFTER scoring, so a suburb search does not count the refusals
     of every other suburb in the state.
 
+EXCEPTIONS_LIST_MODE, the 20 Sep switch, ships OFF: "confirm" is the default and everything
+above is what it does. Under "available" a blank row on a list that marks only what has gone
+is a RESULT when it was read inside FRESH_DAYS -- shortlisted, badged "Confirm availability:
+this list marks only sold lots", and deliberately never _is_admitted, so it leaves the
+confirm pool and no lot can sit in both groups. Either way only STALE blank rows are
+admitted, which is why the pool-of-its-own guarantee is proved on `stale_exceptions_snapshot`
+rather than on `synthetic`, whose blank rows are fresh enough for "available" to promote.
+
+Every test that turns on either behaviour PINS its mode with `_pin_mode`, so both are covered
+whichever way the switch ships and neither depends on the default. The rest say nothing about
+blank rows and run on the default.
+
 Dawn has live twins (11878/14940, 11879/14941, 11880/14942) and a later supersede pass may
 keep either one, so Dawn is matched as (estate 'Dawn, Walloon', lot, price) with either
 twin's hash accepted (critique #3). Everything is frozen at 16/09/2026.
@@ -106,6 +118,20 @@ def _brief(**changes):
 def _run(research, brief, **payload):
     with contextlib.redirect_stdout(io.StringIO()):
         return research.run_research(dict(payload, client_brief=json.loads(json.dumps(brief))))
+
+
+MODES = ("confirm", "available")
+
+
+def _pin_mode(monkeypatch, mode):
+    """Pin EXCEPTIONS_LIST_MODE for one test, whatever the module default is.
+
+    The env var is read once at import into a module constant, so setenv alone would not
+    reach an already-imported _candidates -- but _gate reads the constant on every row, so
+    pointing the constant itself at a mode is enough and needs no reload.
+    """
+    assert mode in MODES, mode
+    monkeypatch.setattr(_candidates, "EXCEPTIONS_LIST_MODE", mode)
 
 
 def _masked_kommo(out):
@@ -379,19 +405,27 @@ def test_the_dawn_lots_need_confirming_whichever_twin_survives(w18_snapshot, res
 
 # ------------------------------------------------ (f) never the confirmed search's pool
 
+@pytest.mark.parametrize("mode", MODES)
 @pytest.mark.parametrize("changes", [
     # Max blank, $750k preferred: the admit pass admits rows here.
     {"budget_max": NO_CEILING, "preferred_spending_cap": 750000},
     # Every state, no ceiling: the 600-candidate cap truncates the confirmed pool.
     {"state": "", "budget_max": NO_CEILING, "preferred_spending_cap": NO_CEILING},
 ])
-def test_admitted_rows_never_change_the_confirmed_shortlist(research, changes):
+def test_admitted_rows_never_change_the_confirmed_shortlist(research, monkeypatch, changes,
+                                                            mode):
+    """(f) holds under either EXCEPTIONS_LIST_MODE: explain never moves the shortlist."""
+    _pin_mode(monkeypatch, mode)
     brief = _brief(**changes)
     plain = _run(research, brief)
     out = _run(research, brief, explain=True)
     assert [e["content_hash"] for e in out["shortlist"]] == [
         e["content_hash"] for e in plain["shortlist"]]
     assert out["shortlist_count"] == plain["shortlist_count"]
+    # Both modes still admit rows here: "available" promotes only a blank row read inside
+    # FRESH_DAYS that also clears promotion_refusal, and on this subset most blank rows are
+    # refused there (a live capture of the same lot says it has gone, or the stored line is
+    # truncated), so they fall back to the admit pass exactly as under "confirm".
     admitted = [e for e in out["needs_confirming"] if "availability_unstated" in e["confirm"]]
     assert admitted, "premise: this brief admits unstated rows to confirm"
 
@@ -465,10 +499,17 @@ def _listing(content_hash, **kw):
 
 
 EXCEPTIONS = dict(source_doc="doc-exceptions", availability_status=None)
+# The same list, last read 20/08/2026: 27 days before the frozen today, so outside
+# FRESH_DAYS=14 and inside CONFIRM_MAX_DAYS=45. FRESH_DAYS is the hinge of the 20 Sep
+# change -- a blank row read this long ago is still only a lot to confirm, never a result.
+LAST_READ_IN_AUGUST = dict(EXCEPTIONS, date_checked="20/08/2026")
 
 
 @pytest.fixture(scope="module")
 def synthetic(tmp_path_factory):
+    """Every blank row here was read 15/09, one day before the frozen today, so from 20 Sep
+    the two that pass admission_refusal are promoted to results and only the Build Only pair
+    is refused. `stale_exceptions_snapshot` is the same list read a month ago."""
     rows = [
         # A confirmed lot, on a list that says "Available".
         _listing("v2:syn-confirmed"),
@@ -478,7 +519,7 @@ def synthetic(tmp_path_factory):
                  date_checked="01/09/2026"),
         # ...the SAME lot, design and price as the confirmed one, under another hash.
         _listing("v2:syn-same-lot", **EXCEPTIONS),
-        # ...a different lot, admitted to confirm.
+        # ...a different lot: offered to confirm until 20 Sep, promoted and badged since.
         _listing("v2:syn-admitted", lot_address="14 Example Street", price=590000.0,
                  **EXCEPTIONS),
         # ...two Build Only prices: one in Walloon, one in Redbank Plains.
@@ -494,7 +535,11 @@ def synthetic(tmp_path_factory):
     mp.undo()
 
 
-def test_a_lot_already_shortlisted_is_not_offered_again_under_another_hash(synthetic):
+def test_a_lot_already_shortlisted_is_not_offered_again_under_another_hash(synthetic,
+                                                                          monkeypatch):
+    """EXCEPTIONS_LIST_MODE=confirm, the shipped behaviour: both blank rows are admitted,
+    so only the shortlist check keeps the confirmed lot's twin out of the amber group."""
+    _pin_mode(monkeypatch, "confirm")
     brief = _brief(budget_max=650000, preferred_spending_cap=650000)
     rows, _path = _candidates.load_snapshot()
     admitted, _counts = _candidates.build_packages(
@@ -512,15 +557,88 @@ def test_a_lot_already_shortlisted_is_not_offered_again_under_another_hash(synth
     assert entry["first_seen"] is None and entry["list_age_days"] is None
 
 
-def test_an_admitted_lot_never_takes_a_confirmed_lots_place_under_the_cap(synthetic,
-                                                                         monkeypatch):
+def test_a_promoted_lot_is_not_offered_again_under_another_hash(synthetic, monkeypatch):
+    """EXCEPTIONS_LIST_MODE=available: still one lot, one entry -- but here the same-listing
+    merge is what keeps it that way. Both blank rows were read 15/09, inside FRESH_DAYS, so
+    the gate promotes them and neither is ADMITTED any more; the confirm pool holds them only
+    as _keeps_confirm_slot's safety net, for a cap that sends a promoted row back. The merge
+    (same lot, same design, same price) keeps ONE of the two hashes, and it keeps the row
+    that states Available, so the card does not ask a consultant to confirm what the source
+    already said."""
+    _pin_mode(monkeypatch, "available")
+    brief = _brief(budget_max=650000, preferred_spending_cap=650000)
+    rows, _path = _candidates.load_snapshot()
+    admitted, _counts = _candidates.build_packages(
+        brief, rows, admit=("availability_unstated",), only_admitted=True)
+    # The pool keeps both, as it does under "confirm" -- but as promoted rows, not admitted
+    # ones, so nothing here can be offered beside the shortlist that now carries them.
+    assert sorted(p["content_hash"] for p in admitted) == ["v2:syn-admitted",
+                                                           "v2:syn-same-lot"]
+    assert [p["content_hash"] for p in admitted if _candidates._is_admitted(p)] == []
+    assert all(p["availability_by_exception_list"] for p in admitted)
+    _scored, counts = _candidates.build_packages(brief, rows)
+    assert counts["same_listing_collapsed"] == 1, "premise: the twin is merged, not scored"
+    out = _run(synthetic, brief, explain=True)
+    assert _hashes(out["shortlist"]) == ["v2:syn-admitted", "v2:syn-confirmed"]
+    assert out["needs_confirming"] == []
+    by_hash = {e["content_hash"]: e for e in out["shortlist"]}
+    # The badge on the card, not the amber group, is what tells a consultant the source
+    # never said the word: "Confirm availability: this list marks only sold lots".
+    promoted = by_hash["v2:syn-admitted"]
+    assert promoted["availability_by_exception_list"] is True
+    assert promoted["availability_status"] == ""
+    assert promoted["date_checked"] == "15/09/2026"
+    kept = by_hash["v2:syn-confirmed"]
+    assert kept["availability_by_exception_list"] is False
+    assert kept["availability_status"] == "Available"
+
+
+@pytest.fixture(scope="module")
+def stale_exceptions_snapshot(tmp_path_factory):
+    """The same six rows, with both blank ones last read 20/08/2026 instead of yesterday.
+
+    From 20 Sep a blank row read inside FRESH_DAYS is promoted to a result, so `synthetic`
+    admits nothing any more and (f)'s red proof -- an admitted row must never take a
+    confirmed lot's slot under the cap -- would have had nothing left to stand on. A STALE
+    blank row is admitted exactly as it always was, so the proof stands on that instead, and
+    the two tests below are the same tests they were, on rows the change deliberately leaves
+    where they were. Built as a file, like w18_snapshot, so the env var it is read under
+    lives and dies inside the test rather than across the module.
+    """
+    rows = [
+        _listing("v2:syn-confirmed"),
+        _listing("v2:syn-sold", lot_address="99 Example Street", availability_status="Sold",
+                 source_doc="doc-exceptions", superseded_by="v2:syn-sold-later",
+                 date_checked="01/09/2026"),
+        _listing("v2:syn-same-lot", **LAST_READ_IN_AUGUST),
+        _listing("v2:syn-admitted", lot_address="14 Example Street", price=590000.0,
+                 **LAST_READ_IN_AUGUST),
+        _listing("v2:syn-build-walloon", lot_address="16 Example Street", price=580000.0,
+                 price_kind="build_only", **LAST_READ_IN_AUGUST),
+        _listing("v2:syn-build-redbank", lot_address="3 Other Road", price=570000.0,
+                 suburb="Redbank Plains", price_kind="build_only", **LAST_READ_IN_AUGUST),
+    ]
+    path = tmp_path_factory.mktemp("stale_exceptions") / "stock.json"
+    path.write_text(json.dumps({"buildings": rows}), encoding="utf-8")
+    return path
+
+
+def test_an_admitted_lot_never_takes_a_confirmed_lots_place_under_the_cap(
+        stale_exceptions_snapshot, monkeypatch):
     """(f) where the cap bites on a fixture: one candidate slot. The admitted lot at $590,000
     is cheaper than the confirmed one at $600,000, so a pool shared and cut by price would
-    give it the only slot and the confirmed lot would never be scored."""
+    give it the only slot and the confirmed lot would never be scored.
+
+    On the stale snapshot since 20 Sep: the rows this proof needs are ones the gate still
+    admits rather than promotes, and a blank row read 20/08 is exactly that."""
     monkeypatch.setattr(_candidates, "MAX_CANDIDATES", 1)
     brief = _brief(budget_max=650000, preferred_spending_cap=650000)
-    plain = _run(synthetic, brief)
-    out = _run(synthetic, brief, explain=True)
+    mp, module = _research_on(stale_exceptions_snapshot)
+    try:
+        plain = _run(module, brief)
+        out = _run(module, brief, explain=True)
+    finally:
+        mp.undo()
     assert _hashes(plain["shortlist"]) == _hashes(out["shortlist"]) == ["v2:syn-confirmed"]
     assert out["shortlist_count"] == plain["shortlist_count"] == 1
     (entry,) = out["needs_confirming"]
@@ -531,47 +649,89 @@ def test_an_admitted_lot_never_takes_a_confirmed_lots_place_under_the_cap(synthe
     assert out["search_help"]["needs_confirming"]["count_may_be_short"] is True
 
 
-def test_refusals_are_counted_only_for_lots_that_match_the_brief(synthetic):
+@pytest.mark.parametrize("mode", MODES)
+def test_refusals_are_counted_only_for_lots_that_match_the_brief(synthetic, monkeypatch, mode):
     """Build Only is refused in both suburbs. Searching Walloon, the Redbank Plains one is a
-    lot the scorer rejects anyway, so it is not "hidden" from this search."""
+    lot the scorer rejects anyway, so it is not "hidden" from this search.
+
+    The refusals this test is for do not move with EXCEPTIONS_LIST_MODE: only where the
+    Walloon lot the same check LETS THROUGH ends up does."""
+    _pin_mode(monkeypatch, mode)
     anywhere = _run(synthetic, _brief(budget_max=650000, preferred_spending_cap=650000),
                     explain=True)
     assert anywhere["needs_confirming_hidden"] == {"build_only": 2}
     walloon = _run(synthetic, _brief(budget_max=650000, preferred_spending_cap=650000,
                                      primary_suburbs=["Walloon"]), explain=True)
     assert walloon["needs_confirming_hidden"] == {"build_only": 1}
-    assert _hashes(walloon["needs_confirming"]) == ["v2:syn-admitted"]
+    shortlisted = set(_hashes(walloon["shortlist"]))
+    # Refused by the very check that lets the blank row through: never a result, either mode.
+    assert not {"v2:syn-build-walloon", "v2:syn-build-redbank"} & shortlisted
+    if mode == "confirm":
+        assert _hashes(walloon["needs_confirming"]) == ["v2:syn-admitted"]
+    else:
+        # Blank on a list that marks only what has gone, read 15/09: the lot this search
+        # offers under "confirm" is shortlisted with the badge instead.
+        assert walloon["needs_confirming"] == []
+        assert "v2:syn-admitted" in shortlisted, sorted(shortlisted)
 
 
-@pytest.mark.parametrize("slots,count_short,hidden_short", [
-    # Room for everything: nothing may be short.
-    (600, False, False),
-    # 3 slots: the search (1 row) and the admit pass (2) fit, but the refusal pass -- every
-    # unstated row searched as though stated, beside the confirmed lot, 5 rows -- is cut.
-    # Only the hidden count may be short, and only it says so.
-    (3, False, True),
-    # 1 slot: the admit pass is cut too, so the count and the reveal say so as well.
-    (1, True, True),
-])
-def test_each_pass_the_cap_cuts_says_which_number_may_be_short(synthetic, monkeypatch, slots,
-                                                                count_short, hidden_short):
+# Which pass the cap cuts depends on EXCEPTIONS_LIST_MODE, so the mode is a parameter and
+# both tables are kept. Under "confirm" the search is 1 row and the exceptions-only lot at
+# $590,000 waits in the admit pass's own pool; under "available" that lot was read 15/09 and
+# is promoted, so the SEARCH is 2 rows and at one slot the search is what the cap cuts.
+@pytest.mark.parametrize(
+    "mode,slots,shortlisted,search_capped,count_short,hidden_short,offered", [
+        # --- confirm: the search (1 row), the admit pass (2) and the refusal pass (5).
+        # Room for everything: nothing may be short.
+        ("confirm", 600, 1, False, False, False, 1),
+        # 3 slots: the search and the admit pass fit, but the refusal pass -- every unstated
+        # row searched as though stated, beside the confirmed lot, 5 rows -- is cut. Only the
+        # hidden count may be short, and only it says so.
+        ("confirm", 3, 1, False, False, True, 1),
+        # 1 slot: the admit pass is cut too, so the count and the reveal say so as well.
+        ("confirm", 1, 1, False, True, True, 1),
+        # --- available: the search is 2 rows, and while both fit the group is empty.
+        ("available", 600, 2, False, False, False, 0),
+        ("available", 3, 2, False, False, True, 0),
+        # 1 slot: the SEARCH itself is cut, where under "confirm" it was the admit pass --
+        # and the promoted lot the cap cut comes back under "Needs confirming" rather than
+        # falling out of the answer, so the count is 1 again.
+        ("available", 1, 1, True, True, True, 1),
+    ])
+def test_each_pass_the_cap_cuts_says_which_number_may_be_short(synthetic, monkeypatch, mode,
+                                                                slots, shortlisted,
+                                                                search_capped, count_short,
+                                                                hidden_short, offered):
+    _pin_mode(monkeypatch, mode)
     monkeypatch.setattr(_candidates, "MAX_CANDIDATES", slots)
     out = _run(synthetic, _brief(budget_max=650000, preferred_spending_cap=650000),
                explain=True)
-    assert out["shortlist_count"] == 1 and out["search_help"]["funnel"]["capped"] is False
+    assert out["shortlist_count"] == shortlisted
+    assert out["search_help"]["funnel"]["capped"] is search_capped
     flags = out["search_help"]["needs_confirming"]
     assert (flags["count_may_be_short"], flags["hidden_may_be_short"]) == (count_short,
                                                                            hidden_short)
     (reveal,) = [r for r in out["search_help"]["relaxations"] if r["kind"] == "reveal"]
-    assert reveal["count"] == out["needs_confirming_count"] == 1
+    # Under "available" with room that is 0, because the one lot "confirm" offers is
+    # shortlisted. The flags above are still the point -- an empty group can be short too,
+    # and only the cut pass says so.
+    assert reveal["count"] == out["needs_confirming_count"] == offered
     assert reveal["count_status"] == "exact" and reveal["capped"] is count_short
 
 
-def test_with_nothing_to_score_an_admitted_lot_is_still_offered(synthetic):
+def test_with_nothing_to_score_an_admitted_lot_is_still_offered(stale_exceptions_snapshot):
     """$595,000: the confirmed lot is over budget, so the search takes the zero-packages
-    branch -- and the exceptions-only lot at $590,000 still needs confirming."""
-    out = _run(synthetic, _brief(budget_max=595000, preferred_spending_cap=595000),
-               explain=True)
+    branch -- and the exceptions-only lot at $590,000 still needs confirming.
+
+    On the stale snapshot since 20 Sep, for the same reason as the cap test above: read
+    15/09 that lot would be promoted and scored, and there would be no zero-packages search
+    to take. Read 20/08 it is admitted, and this is the branch it arrives through."""
+    mp, module = _research_on(stale_exceptions_snapshot)
+    try:
+        out = _run(module, _brief(budget_max=595000, preferred_spending_cap=595000),
+                   explain=True)
+    finally:
+        mp.undo()
     assert out["shortlist_count"] == 0 and out["rejected_log"][0]["kind"] == "coverage"
     assert _hashes(out["needs_confirming"]) == ["v2:syn-admitted"]
     assert out["needs_confirming_hidden"] == {"build_only": 2}
@@ -708,19 +868,35 @@ def _offered(out):
     return {e["content_hash"] for e in out["needs_confirming"]}
 
 
-def test_brief_8_offers_no_price_fragment_email_sentence_or_office(release_review):
+@pytest.mark.parametrize("mode", MODES)
+def test_brief_8_offers_no_price_fragment_email_sentence_or_office(release_review, monkeypatch,
+                                                                   mode):
     """Any state <= $750k. A "Land Price" line, a "HOUSE PRICE" line, an email sentence and
     a ground-floor office are not a home and land at their price, whichever way they reach
     the group: the first three are stale Available rows (the Pending list), the office an
     unstated row admitted from an exceptions-only list. Each is hidden and counted."""
+    _pin_mode(monkeypatch, mode)
     out = _run(release_review, _brief(state="", budget_max=750000,
                                       preferred_spending_cap=750000), explain=True)
     offered = _offered(out)
+    shortlisted = {e["content_hash"] for e in out["shortlist"]}
     for never in ("v2:8f2276ff-land", "v2:41cc2ae3-house", "v2:13084826-sentence",
                   "v2:da06b5df-office"):
         assert never not in offered, (never, sorted(offered))
-    # PREMISE: both paths offer the real lots beside them.
-    assert {"v2:dfe420c3-lot", "v2:1dde5e41-unit"} <= offered, sorted(offered)
+        # Under "available" the office has a second way in -- its Rockdale list marks only
+        # what has gone and it was read 15/09 -- so the same refusal has to hold on the
+        # results side too. A ground-floor office is not a home at $740,000 either way.
+        assert never not in shortlisted, (never, sorted(shortlisted))
+    # PREMISE: both paths still show the real lots beside them. The stale Ceduna lot is
+    # offered to confirm whatever the mode; the Rockdale unit, blank on that same
+    # exceptions-only list and read 15/09, moves from the amber group to the badged results.
+    assert "v2:dfe420c3-lot" in offered, sorted(offered)
+    if mode == "confirm":
+        assert "v2:1dde5e41-unit" in offered, sorted(offered)
+    else:
+        assert "v2:1dde5e41-unit" in shortlisted, sorted(shortlisted)
+        unit = [e for e in out["shortlist"] if e["content_hash"] == "v2:1dde5e41-unit"][0]
+        assert unit["availability_by_exception_list"] is True
     hidden = out["needs_confirming_hidden"]
     assert hidden.get("land_only") == 1 and hidden.get("build_only") == 1, hidden
     assert hidden.get("price_not_in_text") == 1 and hidden.get("commercial") == 1, hidden
