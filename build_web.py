@@ -1932,8 +1932,15 @@ def _login_for(name, logins):
                 break
     if hit is None:
         return {"state": "unknown"}
-    return {"state": hit.get("state") or "unknown", "session": hit.get("session"),
-            "age_days": hit.get("age_days"), "checked_at": hit.get("checked_at")}
+    out = {"state": hit.get("state") or "unknown", "session": hit.get("session"),
+           "age_days": hit.get("age_days"), "checked_at": hit.get("checked_at")}
+    # Whether "Fetch stock now" can fix this row, and when it cannot, why. Carried
+    # through rather than recomputed in the browser: the answer depends on whether a
+    # password is stored in the vendor sheet, which the page must never see.
+    for k in ("self_service", "blocked_by", "note"):
+        if k in hit:
+            out[k] = hit[k]
+    return out
 
 
 # Worst first: one dead sign-in inside a group is what the group should report.

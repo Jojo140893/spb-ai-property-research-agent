@@ -196,6 +196,41 @@ def _page_is_logged_in(page, logged_in_selector: str) -> bool:
         return False
 
 
+# CAN THE BUTTON FIX THIS ONE? "Fetch stock now" dispatches the harvest, and the harvest
+# re-authenticates any lapsed session from stored credentials -- that is how E-Agent
+# recovered on 17 Aug after four nights at zero (api/refresh.py says why there is no
+# separate login-only job). So a red row is only actionable BY COLEEN when two things
+# hold: we hold a password for it, and signing in does not need a human in the loop.
+# Paramount's login carries an invisible reCAPTCHA and Proxima wants a 2FA code from an
+# inbox; no button signs those in, and a row that implied otherwise would send her to
+# press it and watch nothing change.
+_NEEDS_A_PERSON = {"portal_paramount_living": "its login has an invisible reCAPTCHA",
+                   "portal_proxima": "its login needs a 2FA code from an inbox"}
+
+
+def _self_service(name) -> tuple:
+    """(can the Fetch stock now button fix this, why not) for one portal."""
+    if name in _NEEDS_A_PERSON:
+        return False, _NEEDS_A_PERSON[name]
+    try:
+        reg = BuilderRegistry()
+        for b in reg.get_all_builders():
+            url = (b.get("portal_url") or "").strip()
+            if not url or "." not in url:
+                continue
+            slug = "e_agent" if "e-agent" in url.lower() else "portal_" + _slug(b["builder_name"])
+            if slug != name:
+                continue
+            if (b.get("portal_login_email") or "").strip() and \
+                    (b.get("portal_login_password") or "").strip():
+                return True, ""
+    except Exception:                                                 # noqa: BLE001
+        return False, "could not read the builder registry"
+    # No password stored, so nothing on the runner can sign it in. Naming the sheet
+    # rather than the script: this is a row for Coleen, not a developer.
+    return False, "no password is stored for it in the vendor sheet"
+
+
 def check_logins(write: bool = True):
     """[{session, label, state, age_days, checked_at}] for every portal, and write it.
 
@@ -226,6 +261,11 @@ def check_logins(write: bool = True):
             entry["age_days"] = age.days
             ok = _session_logged_in(name, url, f)
             entry["state"] = "unknown" if ok is None else ("ok" if ok else "expired")
+        if entry["state"] in ("expired", "missing"):
+            fixable, why = _self_service(name)
+            entry["self_service"] = fixable
+            if why:
+                entry["blocked_by"] = why
         out.append(entry)
     if write:
         try:
