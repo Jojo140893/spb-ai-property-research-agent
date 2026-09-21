@@ -1511,7 +1511,12 @@
                 + (l.session ? `<div style="font-size:0.72rem; color:var(--text-muted); margin-top:0.15rem;">portal_login.py ${esc(l.session)}</div>` : '');
             // An inbox has no sign-in to break; it is judged on whether mail arrived.
             if (l.state === 'not_applicable') return '<span style="color:var(--text-muted);">&mdash;</span>';
-            return '<span class="pill pill-muted">not checked</span>';
+            // Torsion's stocklist is public: the signed-in and anonymous renders are
+            // byte-identical and both return 235 rows. Red here sent a person to
+            // re-authenticate something with no login, so it says so instead.
+            if (l.state === 'no_login_needed') return '<span class="pill pill-muted">no sign-in needed</span>';
+            return '<span class="pill pill-muted">not checked</span>'
+                + (l.note ? `<div style="font-size:0.72rem; color:var(--text-muted); margin-top:0.15rem;">${esc(l.note)}</div>` : '');
         };
         const table = (rows, firstCol) => `
           <table style="width:100%; border-collapse:collapse;">

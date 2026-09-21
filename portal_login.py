@@ -89,6 +89,47 @@ def _targets():
 
 LOGIN_STATUS_PATH = SESSION_DIR / "login_status.json"
 
+# STOCK THAT NEEDS NO SIGN-IN. Torsion's configured stocklist is a public SharePoint-backed
+# page: measured 21 Sep, the session render and the anonymous render are byte-identical
+# (innerText sha 3acba30e8b) and BOTH return 235 rows. Asking "is this signed in" of it is
+# a meaningless question, and answering it red sent a person to re-authenticate something
+# that has no login -- while the harvest, believing the same red, threw the 235 rows away
+# every night because it had no credentials to re-authenticate WITH.
+_PUBLIC_STOCK = {"portal_torsion_homes"}
+
+# SESSIONS THIS CHECKER CANNOT SEE. Proxima harvests from the persistent browser profile
+# .browser_profiles/portal_proxima, not from .sessions/portal_proxima.json, so whatever
+# that JSON says is about a store nothing uses -- red or green, it is noise. Reported as
+# unknown with its reason rather than guessed. NOT probed by launching the profile:
+# writing to it can destroy the device-trust cookie that is the only thing keeping
+# Proxima's 2FA from firing nightly (export_proxima_session.py).
+_ELSEWHERE = {"portal_proxima": "harvests from .browser_profiles, not this session file"}
+
+
+def _eagent_signed_in(page) -> bool:
+    """E-Agent is signed in iff its stocklist files are reachable.
+
+    NOT the marker check. E-Agent renders no "Log Out", "My Account" or "Dashboard"
+    anywhere, signed in or out, so the configured selector and the shared LOGGED_IN_JS
+    both match nothing on a perfectly authenticated page -- sources/e_agent.py
+    ::_authenticated says so at length and judges it functionally for exactly this reason.
+    Doing anything else here cost us the worst row on the tab: on 21 Sep the dashboard
+    told Coleen to re-authenticate E-Agent, ~4,500 listings and the one channel that was
+    actually working, because a marker that does not exist did not match.
+
+    Signed out, /access-projects is a Wix signup wall with no file links at all.
+    """
+    try:
+        return bool(page.evaluate(
+            """() => Array.from(document.querySelectorAll('a')).some(a => {
+                   const t = (a.innerText || '').trim();
+                   const h = (a.getAttribute('href') || '');
+                   return /live packages/i.test(t)
+                       || /\\.(pdf|xlsx|xls|csv)(\\?|$)|docs\\.google|onedrive|smartsheet/i.test(h);
+               })"""))
+    except Exception:                                                 # noqa: BLE001
+        return False
+
 
 def _session_logged_in(name, url, session_file):
     """Open the portal with the saved session and look for its signed-in marker.
@@ -109,10 +150,41 @@ def _session_logged_in(name, url, session_file):
             pg = ctx.new_page()
             pg.goto(cfg.listings_url or url, wait_until="domcontentloaded", timeout=30000)
             pg.wait_for_timeout(1500)
-            sel = cfg.logged_in_selector or ""
-            ok = any(pg.query_selector(s.strip()) for s in sel.split(",") if s.strip())
+            # ONE DEFINITION OF "SIGNED IN", shared with the harvest. This used to carry
+            # its own split-and-any, which was right about the commas but missing the two
+            # guards scraper_base.is_logged_in has: the input[type=password] veto (without
+            # it Paramount's public "AGENT PORTAL" nav reads as authenticated) and the
+            # LOGGED_IN_JS fallback for a portal whose markers the config gets wrong.
+            # Three definitions of one fact is how the harvest and this tab came to
+            # disagree about Hermitage on the same runner 47 minutes apart.
+            ok = (_eagent_signed_in(pg) if name == "e_agent"
+                  else _page_is_logged_in(pg, cfg.logged_in_selector or ""))
             br.close()
             return bool(ok)
+    except Exception:                                                 # noqa: BLE001
+        return False
+
+
+def _page_is_logged_in(page, logged_in_selector: str) -> bool:
+    """scraper_base.is_logged_in's rule, against a bare Playwright page.
+
+    The helper hangs off PlaywrightScraper and this checker has no scraper, so the rule
+    lives in one place and is applied here rather than re-invented: password-field veto
+    first, then each comma-separated alternative, then the shared DOM heuristic.
+    """
+    try:
+        if page.query_selector("input[type=password]") is not None:
+            return False
+    except Exception:                                                 # noqa: BLE001
+        pass
+    for sel in [s.strip() for s in (logged_in_selector or "").split(",") if s.strip()]:
+        try:
+            if page.query_selector(sel) is not None:
+                return True
+        except Exception:                                             # noqa: BLE001
+            continue
+    try:
+        return bool(page.evaluate(LOGGED_IN_JS))
     except Exception:                                                 # noqa: BLE001
         return False
 
@@ -135,7 +207,12 @@ def check_logins(write: bool = True):
         f = SESSION_DIR / f"{name}.json"
         entry = {"session": name, "label": label, "age_days": None,
                  "checked_at": datetime.now().strftime("%d/%m/%Y %H:%M")}
-        if not f.exists():
+        if name in _PUBLIC_STOCK:
+            entry["state"] = "no_login_needed"
+        elif name in _ELSEWHERE:
+            entry["state"] = "unknown"
+            entry["note"] = _ELSEWHERE[name]
+        elif not f.exists():
             entry["state"] = "missing"
         else:
             age = datetime.now() - datetime.fromtimestamp(f.stat().st_mtime)

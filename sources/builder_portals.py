@@ -229,7 +229,26 @@ class BuilderPortalSource(PropertySource):
                 signed_in = True
                 if has_session and cfg.logged_in_selector:
                     try:
-                        signed_in = bool(scraper.page.query_selector(cfg.logged_in_selector))
+                        # is_logged_in, NOT query_selector on the whole config string.
+                        # Every logged_in_selector in portal_config starts with "text="
+                        # and contains a comma, and a text= selector takes everything
+                        # after the "=" as ONE literal string -- commas alternate only in
+                        # the CSS engine. So this line asked each portal for the literal
+                        # text "Log Out, text=Logout, text=Dashboard", never found it, and
+                        # was CONSTANT-FALSE for every portal on every night since it was
+                        # written. is_logged_in splits the alternatives, vetoes on a
+                        # visible password field and falls back to a DOM heuristic -- its
+                        # own docstring names this exact hazard, and L149/L180 already
+                        # call it. Only this gate, the one that decides whether to trust a
+                        # saved session, went round it.
+                        #
+                        # Measured 21 Sep: Hermitage renders "Welcome, Lee ... Logout" and
+                        # 138 rows with its session and redirects to /login with 0 rows
+                        # without it -- provably signed in, declared dead nightly, and
+                        # re-authenticated with stored credentials against a live session.
+                        # Torsion is worse: a public 235-row stocklist thrown away every
+                        # night because the forced re-auth finds no credentials to use.
+                        signed_in = scraper.is_logged_in(cfg.logged_in_selector)
                     except Exception:                                   # noqa: BLE001
                         signed_in = True          # cannot tell; do not throw away a read
                     if not signed_in:
