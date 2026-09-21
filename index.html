@@ -1493,11 +1493,32 @@
                         ? '<span class="pill pill-reject">not sending</span>'
                         : '<span class="pill pill-muted">unknown</span>';
 
+        // MEASURED, NOT INFERRED. "Status" answers how much stock came back; this
+        // answers whether the saved sign-in still works, and they are not the same
+        // question. On 20 Sep Hermitage read 43% of its stock on a perfectly good
+        // login while E-Agent read 65% on a session that was not signed in at all, so
+        // reading one off the other sends you to re-authenticate the wrong portal.
+        // Written by portal_login.py --check, which the nightly runs before the build.
+        const loginPill = c => {
+            const l = (c && c.login) || {};
+            const age = (l.age_days === 0) ? 'saved today'
+                      : (l.age_days > 0) ? `saved ${l.age_days}d ago` : '';
+            if (l.state === 'ok') return `<span class="pill pill-recommend">signed in</span>`
+                + (age ? `<div style="font-size:0.72rem; color:var(--text-muted); margin-top:0.15rem;">${esc(age)}</div>` : '');
+            if (l.state === 'expired') return `<span class="pill pill-reject">re-login needed</span>`
+                + (l.session ? `<div style="font-size:0.72rem; color:var(--text-muted); margin-top:0.15rem;">portal_login.py ${esc(l.session)}</div>` : '');
+            if (l.state === 'missing') return `<span class="pill pill-reject">never signed in</span>`
+                + (l.session ? `<div style="font-size:0.72rem; color:var(--text-muted); margin-top:0.15rem;">portal_login.py ${esc(l.session)}</div>` : '');
+            // An inbox has no sign-in to break; it is judged on whether mail arrived.
+            if (l.state === 'not_applicable') return '<span style="color:var(--text-muted);">&mdash;</span>';
+            return '<span class="pill pill-muted">not checked</span>';
+        };
         const table = (rows, firstCol) => `
           <table style="width:100%; border-collapse:collapse;">
             <thead><tr style="text-align:left; color:var(--text-muted); font-size:0.8rem;">
               <th style="padding:0.45rem 0.5rem;">${firstCol}</th>
               <th style="padding:0.45rem 0.5rem;">Status</th>
+              <th style="padding:0.45rem 0.5rem;">Login</th>
               <th style="padding:0.45rem 0.5rem;">Last sent stock</th>
               <th style="padding:0.45rem 0.5rem; text-align:right;">Listings held</th>
               <th style="padding:0.45rem 0.5rem; text-align:right;">Refreshed</th>
@@ -1506,6 +1527,7 @@
               <tr style="border-top:1px solid var(--border-light);">
                 <td style="padding:0.55rem 0.5rem;"><strong>${esc(c.channel)}</strong></td>
                 <td style="padding:0.55rem 0.5rem;">${pill(c.state)}</td>
+                <td style="padding:0.55rem 0.5rem;">${loginPill(c)}</td>
                 <td style="padding:0.55rem 0.5rem;">${c.last_stock ? esc(c.last_stock) : '&mdash;'}
                   ${agoText(c) ? `<span style="color:var(--text-muted);"> (${agoText(c)})</span>` : ''}</td>
                 <td style="padding:0.55rem 0.5rem; text-align:right;">${(c.live || 0).toLocaleString()}</td>
@@ -1537,6 +1559,20 @@
             ${CHANNELS.partial_min_live || 25} listings. An inbox is not re-sent daily, so
             a low &ldquo;Refreshed&rdquo; on the email channel is how it always looks
             &mdash; it is judged on whether anything arrived, like every source is.
+          </p>
+          <p style="margin-top:0.6rem; font-size:0.8rem; color:var(--text-muted);">
+            <strong>Login</strong> is a separate, measured check&nbsp;&mdash; the saved
+            sign-in is opened against the portal and asked whether it is still signed in.
+            It is not read off &ldquo;Refreshed&rdquo;, because the two disagree: a portal
+            can send only part of its stock on a perfectly good login, and a portal with a
+            dead login can still look busy. So fix what this column names, not what
+            Status implies. A row saying <em>re-login needed</em> or
+            <em>never signed in</em> prints the command that fixes it; run it, then
+            <code>python state_sync.py push</code> so tonight&rsquo;s harvest gets the new
+            session. An inbox shows &ldquo;&mdash;&rdquo;: there is no sign-in to break.
+            ${CHANNELS.logins_checked_at
+              ? `Sign-ins last checked ${esc(CHANNELS.logins_checked_at)}.`
+              : 'Sign-ins have not been checked on this build &mdash; every row reads &ldquo;not checked&rdquo; rather than guessing.'}
           </p>
           ${(CHANNELS.sheet_check && CHANNELS.sheet_check.checked) ? `
           <div style="margin-top:1rem; padding:0.9rem 1.1rem; border:1px solid var(--border-light);

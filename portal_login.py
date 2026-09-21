@@ -30,6 +30,7 @@ for _stream in (sys.stdout, sys.stderr):
         _stream.reconfigure(encoding="utf-8", errors="replace")
     except Exception:                                                 # noqa: BLE001
         pass
+import json
 import time
 from datetime import datetime
 from pathlib import Path
@@ -83,6 +84,71 @@ def _targets():
         if cfg and cfg.login_verified and cfg.login_url:
             url = cfg.login_url
         out.append((name, b["builder_name"], url))
+    return out
+
+
+LOGIN_STATUS_PATH = SESSION_DIR / "login_status.json"
+
+
+def _session_logged_in(name, url, session_file):
+    """Open the portal with the saved session and look for its signed-in marker.
+
+    The same check --verify prints, factored out so the nightly can record it. Returns
+    True, False, or None when Playwright is not installed and nothing was actually
+    tested -- None is NOT False, because "we could not look" and "the session is dead"
+    send a person to two different places.
+    """
+    from sources.portal_config import EAGENT_CONFIG, config_for_url
+    if sync_playwright is None or not PLAYWRIGHT_AVAILABLE:
+        return None
+    cfg = EAGENT_CONFIG if name == "e_agent" else config_for_url(url)
+    try:
+        with sync_playwright() as pw:
+            br = pw.chromium.launch(headless=True)
+            ctx = br.new_context(storage_state=str(session_file))
+            pg = ctx.new_page()
+            pg.goto(cfg.listings_url or url, wait_until="domcontentloaded", timeout=30000)
+            pg.wait_for_timeout(1500)
+            sel = cfg.logged_in_selector or ""
+            ok = any(pg.query_selector(s.strip()) for s in sel.split(",") if s.strip())
+            br.close()
+            return bool(ok)
+    except Exception:                                                 # noqa: BLE001
+        return False
+
+
+def check_logins(write: bool = True):
+    """[{session, label, state, age_days, checked_at}] for every portal, and write it.
+
+    WHY THE DASHBOARD CANNOT WORK THIS OUT FOR ITSELF. The Settings tab had one signal,
+    "how much stock came back", and inferred a sign-in from it. Those are different
+    facts and on 20 Sep they disagreed in the worst way: Hermitage read 43% and its
+    login was FINE, while E-Agent read 65% on a session that was not signed in at all.
+    Worse, a session FILE is written by an anonymous visit too, so `--status` said all
+    three of that morning's sign-ins had worked when only one had.
+
+    So the state here is measured, never inferred: 'ok', 'expired' (a file that is not
+    signed in), 'missing' (no file), 'unknown' (no Playwright to look with).
+    """
+    out = []
+    for name, label, url in _targets():
+        f = SESSION_DIR / f"{name}.json"
+        entry = {"session": name, "label": label, "age_days": None,
+                 "checked_at": datetime.now().strftime("%d/%m/%Y %H:%M")}
+        if not f.exists():
+            entry["state"] = "missing"
+        else:
+            age = datetime.now() - datetime.fromtimestamp(f.stat().st_mtime)
+            entry["age_days"] = age.days
+            ok = _session_logged_in(name, url, f)
+            entry["state"] = "unknown" if ok is None else ("ok" if ok else "expired")
+        out.append(entry)
+    if write:
+        try:
+            SESSION_DIR.mkdir(exist_ok=True)
+            LOGIN_STATUS_PATH.write_text(json.dumps(out, indent=1), encoding="utf-8")
+        except OSError as e:                                          # noqa: BLE001
+            print(f"[warn] could not write {LOGIN_STATUS_PATH}: {e}")
     return out
 
 
@@ -373,6 +439,16 @@ def capture(only: str = ""):
 
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:]]
+    if "--check" in args:
+        # What the nightly runs before the build, so the Settings tab can show a MEASURED
+        # sign-in rather than one inferred from how much stock came back. Never fatal:
+        # a portal that cannot be reached is worth a row saying so, not a failed harvest.
+        for row in check_logins():
+            print("  [%-8s] %-42s %s" % (
+                row["state"], row["label"],
+                "" if row["age_days"] is None else f"saved {row['age_days']}d ago"))
+        print(f"\nwritten to {LOGIN_STATUS_PATH}")
+        raise SystemExit(0)
     if "--status" in args or "--verify" in args:
         status(verify="--verify" in args)
         raise SystemExit(0)
