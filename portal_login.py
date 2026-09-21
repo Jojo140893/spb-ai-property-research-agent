@@ -89,13 +89,20 @@ def _targets():
 
 LOGIN_STATUS_PATH = SESSION_DIR / "login_status.json"
 
-# STOCK THAT NEEDS NO SIGN-IN. Torsion's configured stocklist is a public SharePoint-backed
-# page: measured 21 Sep, the session render and the anonymous render are byte-identical
-# (innerText sha 3acba30e8b) and BOTH return 235 rows. Asking "is this signed in" of it is
-# a meaningless question, and answering it red sent a person to re-authenticate something
-# that has no login -- while the harvest, believing the same red, threw the 235 rows away
-# every night because it had no credentials to re-authenticate WITH.
-_PUBLIC_STOCK = {"portal_torsion_homes"}
+def _needs_no_login(name, url) -> bool:
+    """PortalConfig.no_login_required, read from the config rather than repeated here.
+
+    Torsion's stocklist is public: measured 21 Sep, the session render and the anonymous
+    render are byte-identical (innerText sha 3acba30e8b) and BOTH return 235 rows. Asking
+    "is this signed in" of it is a meaningless question, and answering it red sent a
+    person to re-authenticate something that has no login -- while the harvest, believing
+    the same red, threw those rows away nightly for want of credentials to re-authenticate
+    WITH. That fact now lives in portal_config, where the harvest reads it too; keeping a
+    second copy here is how the tab and the harvest came to disagree in the first place.
+    """
+    from sources.portal_config import EAGENT_CONFIG, config_for_url
+    cfg = EAGENT_CONFIG if name == "e_agent" else config_for_url(url)
+    return bool(getattr(cfg, "no_login_required", False))
 
 # SESSIONS THIS CHECKER CANNOT SEE. Proxima harvests from the persistent browser profile
 # .browser_profiles/portal_proxima, not from .sessions/portal_proxima.json, so whatever
@@ -207,7 +214,7 @@ def check_logins(write: bool = True):
         f = SESSION_DIR / f"{name}.json"
         entry = {"session": name, "label": label, "age_days": None,
                  "checked_at": datetime.now().strftime("%d/%m/%Y %H:%M")}
-        if name in _PUBLIC_STOCK:
+        if _needs_no_login(name, url):
             entry["state"] = "no_login_needed"
         elif name in _ELSEWHERE:
             entry["state"] = "unknown"

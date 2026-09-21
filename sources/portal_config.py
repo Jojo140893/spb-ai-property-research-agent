@@ -47,6 +47,13 @@ class PortalConfig:
     continue_selector: str = ""
     login_verified: bool = False           # login field selectors confirmed against the live page
     logged_in_selector: str = ""           # element only present once authenticated
+    # PUBLISHES ITS STOCK WITHOUT A SIGN-IN, so "are we signed in?" is not a question
+    # about it. Without this the signed-in gate reads False (correctly -- there is no
+    # Log Out marker because there is no login), the harvest calls that a lapsed session,
+    # looks for credentials to re-authenticate with, finds none, and DISCARDS the read.
+    # Torsion lost its whole stocklist every night that way: measured 21 Sep, its session
+    # and anonymous renders are byte-identical and both return 235 rows.
+    no_login_required: bool = False
     # Listings
     listings_url: str = ""                  # primary page/route holding the stock list
     extra_listings_urls: tuple = ()         # additional stock pages (portals split inventory)
@@ -119,6 +126,20 @@ EAGENT_CONFIG = PortalConfig(
 # --- Direct builder portals, keyed by domain --------------------------------
 # All best-effort until confirmed on the live authenticated portal.
 BUILDER_PORTAL_CONFIGS: Dict[str, PortalConfig] = {
+    # Torsion publishes its stocklist openly: the page renders identically with and
+    # without a session (innerText sha 3acba30e8b either way) and returns 235 rows both
+    # times. It had no entry here at all, so it took the generic fallback -- which
+    # carries a logged_in_selector, which made the signed-in gate say "not signed in",
+    # which made the harvest hunt for credentials it does not have and throw the read
+    # away. Named here purely to say the one thing that is true about it.
+    "referrer.torsionhomes.au": PortalConfig(
+        name="Torsion Homes",
+        no_login_required=True,
+        listings_url="https://referrer.torsionhomes.au/Stocklist.aspx",
+        listing_card_selector=".property-card, .listing, .stock-item, tr",
+        field_selectors={"title": ".title, .address, h3", "price": ".price"},
+        verified=False,
+    ),
     "portal.hermitagehomes.com.au": PortalConfig(
         name="Hermitage Homes",
         login_url="https://portal.hermitagehomes.com.au/login",
