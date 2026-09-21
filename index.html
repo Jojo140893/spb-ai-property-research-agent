@@ -1452,6 +1452,20 @@
         }
     }
 
+    // The per-row "Sign this one in" buttons run the SAME action as the box at the top:
+    // the harvest re-authenticates every lapsed source in one pass, so there is nothing
+    // per-portal to dispatch and a second endpoint would be a second thing to maintain
+    // (api/refresh.py). The row button exists because it appears where the problem is.
+    function wireRowSignIn() {
+        document.querySelectorAll('[data-signin]').forEach(b => {
+            if (b.onclick) return;
+            b.onclick = () => {
+                document.getElementById('refreshBox')?.scrollIntoView({ block: 'center' });
+                startRefresh();
+            };
+        });
+    }
+
     async function loadSettings() {
         const rb = document.getElementById('refreshBtn');
         if (rb && !rb.onclick) rb.onclick = startRefresh;
@@ -1505,10 +1519,28 @@
                       : (l.age_days > 0) ? `saved ${l.age_days}d ago` : '';
             if (l.state === 'ok') return `<span class="pill pill-recommend">signed in</span>`
                 + (age ? `<div style="font-size:0.72rem; color:var(--text-muted); margin-top:0.15rem;">${esc(age)}</div>` : '');
-            if (l.state === 'expired') return `<span class="pill pill-reject">re-login needed</span>`
-                + (l.session ? `<div style="font-size:0.72rem; color:var(--text-muted); margin-top:0.15rem;">portal_login.py ${esc(l.session)}</div>` : '');
-            if (l.state === 'missing') return `<span class="pill pill-reject">never signed in</span>`
-                + (l.session ? `<div style="font-size:0.72rem; color:var(--text-muted); margin-top:0.15rem;">portal_login.py ${esc(l.session)}</div>` : '');
+            // WHAT TO DO ABOUT IT, on the row that needs it. "Fetch stock now" already
+            // signs a lapsed source back in from its stored password -- that is the whole
+            // reason it exists (api/refresh.py) -- so where that will work, this offers
+            // the same action here rather than leaving her to guess which of these rows
+            // the button at the top covers. Where it will NOT work it says why, because a
+            // button that quietly does nothing for Paramount or FRD is worse than no
+            // button: she would press it, wait twenty minutes and still be stuck.
+            if (l.state === 'expired' || l.state === 'missing') {
+                const label = l.state === 'expired' ? 're-login needed' : 'never signed in';
+                // The group row has no sign-in of its own -- it mirrors its worst child.
+                // Offering an action here would be offering it for an unnamed portal,
+                // which is the thing the per-portal table below exists to fix.
+                if (l.from_portals) return `<span class="pill pill-reject">${label}</span>`
+                    + `<div style="font-size:0.72rem; color:var(--text-muted); margin-top:0.15rem;">see the portal below</div>`;
+                const act = l.self_service
+                    ? `<button class="btn-submit" data-signin="1" style="width:auto; margin:0.3rem 0 0;
+                           padding:0.25rem 0.6rem; font-size:0.72rem;">Sign this one in</button>`
+                    : `<div style="font-size:0.72rem; color:var(--text-muted); margin-top:0.15rem;">
+                         Needs a person${l.blocked_by ? ` &mdash; ${esc(l.blocked_by)}` : ''}${
+                           l.session ? `<br><code>portal_login.py ${esc(l.session)}</code>` : ''}</div>`;
+                return `<span class="pill pill-reject">${label}</span>${act}`;
+            }
             // An inbox has no sign-in to break; it is judged on whether mail arrived.
             if (l.state === 'not_applicable') return '<span style="color:var(--text-muted);">&mdash;</span>';
             // Torsion's stocklist is public: the signed-in and anonymous renders are
@@ -1660,6 +1692,8 @@ python state_sync.py push</pre>
               this page clears itself.
             </p>
           </div>` : ''}`;
+        // The table was just rebuilt, so the row buttons inside it are new elements.
+        wireRowSignIn();
     }
 
     /* The actual command that fixes each source, so the instructions are copy-pasteable
