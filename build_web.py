@@ -2116,6 +2116,12 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
         # which is the cause and names the command that fixes it.
         "needs_login": [p["channel"] for p in portals + channels
                         if p.get("login", {}).get("state") in ("expired", "missing")],
+        # A source the checker cannot speak for: a public stocklist with no sign-in, or a
+        # session store it does not read (Proxima harvests from .browser_profiles). Kept
+        # out of needs_login so nobody is sent to fix something that is not broken.
+        "login_not_assessed": [p["channel"] for p in portals + channels
+                               if p.get("login", {}).get("state")
+                               in ("no_login_needed", "unknown")],
         "logins_checked_at": next((r.get("checked_at") for r in _login_status().values()
                                    if r.get("checked_at")), ""),
     }
