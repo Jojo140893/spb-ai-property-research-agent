@@ -372,6 +372,11 @@ def _chain(args) -> int:
         ("5/7  Benchmark against comparable stock", ["benchmark_buildings.py"], True),
         ("6/7  Export CSV + Excel", ["export_csv.py"], False),
         ("6/7  Export Excel workbook", ["export_excel.py"], False),
+        # BEFORE the build, because build_web reads what it writes into the Settings
+        # tab's Login column. Optional on purpose: a portal that will not open tonight
+        # is a row saying so, never a failed harvest. Every source the check cannot
+        # reach reads "not checked" rather than being guessed at.
+        ("6/7  Check each portal sign-in", ["portal_login.py", "--check"], True),
         ("7/7  Build the deployed snapshot", ["build_web.py"], False),
         # REPLAY COLIN'S SEARCHES against what was just built, through the bundle that is
         # about to ship (vercel_site/api), on a read-only copy of the database. Part C,

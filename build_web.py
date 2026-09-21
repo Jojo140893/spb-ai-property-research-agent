@@ -1884,6 +1884,62 @@ def _sheet_check():
     }
 
 
+def _norm_source(name) -> str:
+    """'Bathla Development' and 'Bathla' collapse to the same key."""
+    return re.sub(r"[^a-z0-9]", "", str(name or "").lower())
+
+
+def _login_status():
+    """{normalised source name: login row} from .sessions/login_status.json.
+
+    WRITTEN BY portal_login.py --check, WHICH THE NIGHTLY RUNS. A MEASURED sign-in, not
+    one inferred from how much stock came back -- those are different facts and on
+    20 Sep they disagreed both ways at once: Hermitage read 43% of its stock on a
+    PERFECTLY GOOD login, while E-Agent read 65% on a session that was not signed in at
+    all and had failed 111 stocklist fetches that night. Inferring one from the other
+    sends a person to re-authenticate a portal that is fine and leaves the broken one
+    alone. Absent file -> every row reads 'not checked', which is honest; it never
+    guesses.
+    """
+    path = config.PROJECT_ROOT / ".sessions" / "login_status.json"
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for r in rows:
+        if isinstance(r, dict) and r.get("label"):
+            # "E-Agent (covers all E-Agent builders)" is the channel E-Agent.
+            out[_norm_source(str(r["label"]).split("(")[0])] = r
+    return out
+
+
+def _login_for(name, logins):
+    """The login row for a channel or portal, or a 'not checked' stand-in.
+
+    Matched on a normalised prefix because the two lists are named by different things:
+    the health table by source_channel / builder_name ('Bathla Development'), the
+    sessions by the login they belong to ('Bathla').
+    """
+    key = _norm_source(name)
+    if not key:
+        return {"state": "unknown"}
+    hit = logins.get(key)
+    if hit is None:
+        for k, row in logins.items():
+            if k and (key.startswith(k) or k.startswith(key)):
+                hit = row
+                break
+    if hit is None:
+        return {"state": "unknown"}
+    return {"state": hit.get("state") or "unknown", "session": hit.get("session"),
+            "age_days": hit.get("age_days"), "checked_at": hit.get("checked_at")}
+
+
+# Worst first: one dead sign-in inside a group is what the group should report.
+_LOGIN_RANK = {"missing": 0, "expired": 1, "unknown": 2, "not_applicable": 3, "ok": 4}
+
+
 def _export_channel_health(out_dir: Path, conn) -> dict:
     """When each source last actually produced stock, for the Settings tab.
 
@@ -2005,9 +2061,16 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
                 "refreshed": refreshed, "refreshed_pct": pct,
                 "state": state}
 
+    logins = _login_status()
     chan_ts = _newest_ts("source_channel", "")
     channels = [_health(n, t, chan_ts) for n, t in _tally("source_channel", "").items()]
     channels.sort(key=lambda c: (-(c["days_ago"] or 0), -c["live"]))
+    for c in channels:
+        # An inbox has no sign-in to break, so it says so rather than reading as a
+        # portal nobody has checked -- the same reason it is exempt from the partial
+        # test (CHANNEL_PUSH_SOURCES).
+        c["login"] = ({"state": "not_applicable"} if c["channel"] in CHANNEL_PUSH_SOURCES
+                      else _login_for(c["channel"], logins))
 
     # THE DIRECT PORTALS, BY NAME. They all share one source_channel, so Bathla,
     # Hermitage and Torsion appeared as a single row called "Direct Builder Portal
@@ -2019,6 +2082,16 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
                _tally("builder_name", " AND source_channel LIKE ?",
                       ("Direct Builder Portal%",)).items()]
     portals.sort(key=lambda c: (-(c["days_ago"] or 0), -c["live"]))
+    for p in portals:
+        p["login"] = _login_for(p["channel"], logins)
+    # The group row reports its worst child: "Direct Builder Portal (live)" has no
+    # sign-in of its own, and a green group over a dead portal is the exact thing the
+    # per-portal table below it was added to stop.
+    group = [p["login"].get("state", "unknown") for p in portals]
+    for c in channels:
+        if group and str(c["channel"] or "").startswith("Direct Builder Portal"):
+            c["login"] = {"state": min(group, key=lambda s: _LOGIN_RANK.get(s, 2)),
+                          "from_portals": True}
     unwell = ("stale", "dead", "partial")
     payload = {
         "generated": datetime.now().strftime("%d/%m/%Y %H:%M"),
@@ -2037,6 +2110,14 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
         # Portals are named individually here too: "Direct Builder Portal (live)" tells
         # nobody which sign-in to go and fix.
         "needs_signin": [c["channel"] for c in channels + portals if c["state"] in unwell],
+        # MEASURED, and deliberately not the same list as needs_signin above. That one
+        # is "this source's stock has gone quiet or thin", which is a symptom; this one
+        # is "we opened the portal with the saved session and it was not signed in",
+        # which is the cause and names the command that fixes it.
+        "needs_login": [p["channel"] for p in portals + channels
+                        if p.get("login", {}).get("state") in ("expired", "missing")],
+        "logins_checked_at": next((r.get("checked_at") for r in _login_status().values()
+                                   if r.get("checked_at")), ""),
     }
     (out_dir / "channels.json").write_text(json.dumps(payload), encoding="utf-8")
     return payload
