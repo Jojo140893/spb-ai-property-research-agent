@@ -12,7 +12,7 @@ and fill in a PortalConfig below (or add it to BUILDER_PORTAL_CONFIGS keyed by
 the portal's domain).
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, Optional
 from urllib.parse import urlparse
 
@@ -132,10 +132,14 @@ BUILDER_PORTAL_CONFIGS: Dict[str, PortalConfig] = {
     # carries a logged_in_selector, which made the signed-in gate say "not signed in",
     # which made the harvest hunt for credentials it does not have and throw the read
     # away. Named here purely to say the one thing that is true about it.
+    # listings_url deliberately BLANK: config_for_url fills it from the builder's own
+    # portal_url, which carries the query string that selects the stock
+    # ("...Stocklist.aspx?DriveID=...&FolderID=..."). Hardcoding the bare path here read
+    # as "no readable listings" -- the page loads, the folder does not, and the row count
+    # goes to zero. That was the whole of this entry's first attempt.
     "referrer.torsionhomes.au": PortalConfig(
         name="Torsion Homes",
         no_login_required=True,
-        listings_url="https://referrer.torsionhomes.au/Stocklist.aspx",
         listing_card_selector=".property-card, .listing, .stock-item, tr",
         field_selectors={"title": ".title, .address, h3", "price": ".price"},
         verified=False,
@@ -256,6 +260,15 @@ def config_for_url(portal_url: str) -> Optional[PortalConfig]:
     host = urlparse(portal_url).netloc.lower()
     for domain, cfg in BUILDER_PORTAL_CONFIGS.items():
         if domain in host:
+            # A NAMED CONFIG MAY DECLINE TO OWN THE URL. Most portals have one stock page
+            # and name it here; some carry per-builder routing in the CSV url itself
+            # (Torsion's ?DriveID=...&FolderID=... selects the SharePoint folder the
+            # stock lives in). Leaving listings_url blank means "use the one I was asked
+            # about", which is what the generic fallback below has always done -- and
+            # nothing downstream falls back on its own: builder_portals goes straight to
+            # cfg.listings_url, so a blank one would simply load nothing.
+            if not cfg.listings_url:
+                return replace(cfg, listings_url=portal_url)
             return cfg
     # Generic fallback: try common patterns, flagged unverified.
     return PortalConfig(
