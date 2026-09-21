@@ -227,7 +227,13 @@ class BuilderPortalSource(PropertySource):
                 # So when we HAVE a session, it has to prove itself: if the logged-in
                 # marker is absent, that is a login trigger, not a result.
                 signed_in = True
-                if has_session and cfg.logged_in_selector:
+                if getattr(cfg, "no_login_required", False):
+                    # Nothing to be signed out OF. Asked the question anyway, this portal
+                    # answered False for the honest reason that it has no Log Out marker,
+                    # and the branch below binned a perfectly good public read every
+                    # night because there were no credentials to "recover" with.
+                    pass
+                elif has_session and cfg.logged_in_selector:
                     try:
                         # is_logged_in, NOT query_selector on the whole config string.
                         # Every logged_in_selector in portal_config starts with "text="
