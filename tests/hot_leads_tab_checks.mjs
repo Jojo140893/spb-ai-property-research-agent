@@ -47,12 +47,20 @@ if (!escMatch) {
 const EXPORTS = ["hlSafeUrl", "hlTelHref", "hlMailHref", "hlMoney", "hlWhen", "hlBriefChips",
   "hlRecCard", "hlRecsBlock", "hlLiveBlock", "hlAppointment", "hlLeadCard", "hlRenderLeads",
   "hlSortNewest", "hlUnavailable", "loadHotLeads", "rerunHotLead", "hlGrade", "hlSetFilter",
-  "hlMergeLeads", "hlCoverNote", "hlLocationNote"];
+  "hlMergeLeads", "hlCoverNote", "hlLocationNote",
+  // 23 Sep: WhatsApp leads from the Kommo scan share the tab with Clare's callers, in
+  // their own group.
+  "hlChannel", "hlUnresolvedNote", "hlGroupEmptyText", "hlGroupBlock"];
 
 // The tab's two reads -- every grade, and hot callers on their own -- each with and without
 // include_test=1, and the research. The bare "/api/hot_leads" the hot-only tab used is NOT
 // here: it got the hook's default 50 of every grade, which since 15 Sep can leave hot
 // callers out, so a tab that went back to it fails the run.
+//
+// STILL ACCURATE AFTER THE WHATSAPP SPLIT (23 Sep). WhatsApp leads arrive through the same
+// /api/hot_leads records -- the Kommo scan runs on the hook, not in the browser -- so the
+// tab asks for nothing new, and a grouping that started fetching its own list would be
+// blocked here rather than shipping.
 const ALLOWED_FETCH = new Set([
   "/api/hot_leads?limit=200", "/api/hot_leads?limit=200&include_test=1",
   "/api/hot_leads?limit=200&grade=hot", "/api/hot_leads?limit=200&grade=hot&include_test=1",
@@ -676,6 +684,236 @@ console.log("\n--- All / Hot / Warm / Nurture ---");
   check("every fetch went to a dashboard endpoint", s.calls.fetch.every(c => ALLOWED_FETCH.has(c.url)));
 }
 
+// ------------------------------------------------------------------ WhatsApp and Vapi
+// 23 Sep: a WhatsApp lead the Kommo bot has qualified is written to the same store as
+// Clare's callers, carrying channel:"whatsapp". EVERY RECORD WRITTEN BEFORE THAT FIELD
+// EXISTED HAS NO channel AT ALL, so a missing one must read as Vapi -- the whole tab is
+// those records, and a different default would move all of them into the wrong group on the
+// day this ships. The two are worked differently, so they are listed apart.
+console.log("\n--- WhatsApp and Vapi are two groups ---");
+
+// The measured shape of a qualified WhatsApp card (23 Sep): no call, so no recording, no
+// duration and no summary -- the message bodies are unreachable (leads/{id}/notes answers
+// 204), so a summary would have to be invented and is left empty. The name and phone come
+// from the CONTACT; lead.name is Kommo's default "Lead #54494433". The suburbs are free
+// text the customer typed.
+const wa = (over = {}) => clean({
+  callId: "wa-54494433", channel: "whatsapp", createdAt: "2026-09-22T23:10:00Z",
+  endedReason: "", durationSeconds: 0, recordingUrl: "", summary: "", appointment: null,
+  customer: { name: "Bari", email: "", phone: "+61479057492" },
+  grade: "warm", gradeSource: "kommo-tag", gradeReason: "Kommo tag WARM LEAD.",
+  brief: { ...clean().brief, client_name: "Bari", state: "QLD",
+           primary_suburbs: ["COUNTRY NEAR MOUNT VICENT"], budget_max: 900000,
+           deposit_amount: 50000, timeframe: "0-3 months", finance_status: "Yes" },
+  kommo: { contactId: 51345283, leadId: 54494433,
+           leadUrl: "https://spb.kommo.com/leads/detail/54494433" },
+  research: { status: "ok", message: "", record_id: "r9", shortlist_count: 3, widened: "",
+              location: [{ said: "COUNTRY NEAR MOUNT VICENT", used: [], method: "unresolved" }] },
+  ...over,
+});
+
+// WhatsApp is drawn first and Vapi last, so a group runs to the next group marker or the end.
+const groupHtml = (html, channel) => {
+  const i = html.indexOf(`id="hlGroup-${channel}"`);
+  if (i < 0) return "";
+  const j = html.indexOf('id="hlGroup-', i + 1);
+  return j < 0 ? html.slice(i) : html.slice(i, j);
+};
+
+{
+  check("channel 'whatsapp' -> whatsapp", api.hlChannel({ channel: "whatsapp" }) === "whatsapp");
+  check("a record with no channel is grouped as Vapi (hlChannel)",
+    api.hlChannel({ callId: "x" }) === "vapi" && api.hlChannel(clean()) === "vapi");
+  for (const c of ["vapi", "WhatsApp", "WHATSAPP", "whatsapp ", " whatsapp", "", null, undefined,
+                   7, EVIL, ["whatsapp"], { channel: "whatsapp" }])
+    check("channel " + JSON.stringify(c) + " -> vapi", api.hlChannel({ channel: c }) === "vapi",
+      api.hlChannel({ channel: c }));
+  check("a non-object is vapi",
+    api.hlChannel(null) === "vapi" && api.hlChannel(undefined) === "vapi"
+    && api.hlChannel("whatsapp") === "vapi");
+
+  const mixed = [
+    wa({ callId: "wa1", createdAt: "2026-09-22T23:10:00Z" }),
+    clean({ callId: "v1", createdAt: "2026-09-22T22:00:00Z",
+            customer: { name: "Clare Caller", email: "", phone: "" } }),
+    clean({ callId: "v2", channel: "vapi", grade: "warm", appointment: null,
+            createdAt: "2026-09-22T21:00:00Z",
+            customer: { name: "Second Caller", email: "", phone: "" } }),
+  ];
+  out = api.hlRenderLeads(mixed, "all");
+  auditMarkup("two groups: markup is only the renderer's own", out);
+  check("both groups are drawn, WhatsApp first",
+    out.indexOf('id="hlGroup-whatsapp"') >= 0
+    && out.indexOf('id="hlGroup-whatsapp"') < out.indexOf('id="hlGroup-vapi"'),
+    out.slice(0, 200));
+  check("each group has a heading and a count",
+    out.includes('<span class="hl-group-name">WhatsApp</span><span class="hl-group-count">(1)</span>')
+    && out.includes('<span class="hl-group-name">Vapi</span><span class="hl-group-count">(2)</span>'));
+  const waHtml = groupHtml(out, "whatsapp"), vapiHtml = groupHtml(out, "vapi");
+  check("the WhatsApp lead is in the WhatsApp group",
+    waHtml.includes("Bari") && !vapiHtml.includes("Bari"));
+  check("a record with no channel is grouped as Vapi, not WhatsApp",
+    vapiHtml.includes("Clare Caller") && !waHtml.includes("Clare Caller"));
+  check("split into two groups: every card is printed once, in its channel's group",
+    [0, 1, 2].every(i => (out.match(new RegExp('id="hlCard-' + i + '"', "g")) || []).length === 1)
+    && waHtml.includes('id="hlCard-0"')
+    && vapiHtml.includes('id="hlCard-1"') && vapiHtml.includes('id="hlCard-2"'),
+    [0, 1, 2].map(i => (out.match(new RegExp('id="hlCard-' + i + '"', "g")) || []).length).join(","));
+  // Grouping changes the order cards are PRINTED in, never the index they carry:
+  // rerunHotLead(i) reads HOT_LEADS[i].
+  check("a card keeps its index into the full list, not its place in its group",
+    vapiHtml.includes('onclick="rerunHotLead(1)"') && vapiHtml.includes('onclick="rerunHotLead(2)"')
+    && !vapiHtml.includes('onclick="rerunHotLead(0)"')
+    && waHtml.includes('onclick="rerunHotLead(0)"'));
+  // Nobody CALLED a WhatsApp lead. Its time is when the bot's last question was answered, so
+  // it says "Qualified". The only label check before 24 Sep used a Clare card, so the wrong
+  // word on every WhatsApp card went unnoticed.
+  check("a WhatsApp card says Qualified, never Called",
+    /class="hl-when">Qualified /.test(waHtml) && !/class="hl-when">Called /.test(waHtml),
+    (waHtml.match(/class="hl-when">[^<]*/) || [""])[0]);
+  check("a Vapi card still says Called",
+    /class="hl-when">Called /.test(vapiHtml) && !/class="hl-when">Qualified /.test(vapiHtml));
+
+  out = api.hlRenderLeads([clean({ callId: "v1" })], "all");
+  auditMarkup("empty WhatsApp group: markup", out);
+  check("an empty group says so rather than vanishing",
+    out.includes('id="hlGroup-whatsapp"')
+    && out.includes('<span class="hl-group-name">WhatsApp</span><span class="hl-group-count">(0)</span>')
+    && /id="hlGroupEmpty-whatsapp">No WhatsApp leads yet\.<\/div>/.test(out), out.slice(0, 300));
+  check("the group that has leads does not show its empty note",
+    /id="hlGroupEmpty-vapi" hidden>/.test(out));
+
+  out = api.hlRenderLeads([wa({ callId: "wa1", grade: "warm" }), clean({ callId: "v1", grade: "hot" })], "hot");
+  check("a group emptied by the filter says which filter emptied it",
+    /id="hlGroupEmpty-whatsapp">No hot WhatsApp leads in this list\.<\/div>/.test(out)
+    && /id="hlGroupEmpty-vapi" hidden>/.test(out), out.slice(0, 400));
+  check("group empty text: All says none yet, a grade says none of that grade",
+    api.hlGroupEmptyText("whatsapp", "all") === "No WhatsApp leads yet."
+    && api.hlGroupEmptyText("vapi", "nurture") === "No nurture Vapi leads in this list.");
+}
+
+// The groups survive a real load, and the filter keeps each group's note honest.
+{
+  const s = sandbox();
+  const content = s.el("hotLeadsContent"), badge = s.el("hotLeadsBadge");
+  s.el("hotLeadsRefresh");
+  s.respond(async () => reply(200, { status: "success", count: 3, leads: [
+    wa({ callId: "wa1", grade: "warm", createdAt: "2026-09-22T23:10:00Z" }),
+    clean({ callId: "v1", grade: "hot", createdAt: "2026-09-22T22:00:00Z",
+            customer: { name: "Clare Caller", email: "", phone: "" } }),
+    wa({ callId: "wa2", grade: "hot", createdAt: "2026-09-22T21:00:00Z",
+         customer: { name: "Second Chat", email: "", phone: "" } }),
+  ] }));
+  await s.api.loadHotLeads();
+  check("the loaded tab is split into two groups",
+    content.innerHTML.includes('id="hlGroup-whatsapp"') && content.innerHTML.includes('id="hlGroup-vapi"'));
+  check("the counts are per group", content.innerHTML.includes('>WhatsApp</span><span class="hl-group-count">(2)</span>')
+    && content.innerHTML.includes('>Vapi</span><span class="hl-group-count">(1)</span>'));
+  check("the badge still counts the whole list", badge.textContent === "3 leads · 2 hot", badge.textContent);
+  auditMarkup("loaded two-group list markup", content.innerHTML);
+
+  const cards = [0, 1, 2].map(i => s.el("hlCard-" + i));
+  const waNote = s.el("hlGroupEmpty-whatsapp"), vapiNote = s.el("hlGroupEmpty-vapi");
+  s.api.hlSetFilter("hot");
+  check("filter Hot: the WhatsApp group keeps its hot lead and hides its warm one",
+    cards[0].hidden === true && cards[2].hidden === false && waNote.hidden === true,
+    cards.map(c => (c.hidden ? "-" : "V")).join(""));
+  s.api.hlSetFilter("nurture");
+  check("a filter that empties a group updates that group's own note",
+    waNote.hidden === false && waNote.textContent === "No nurture WhatsApp leads in this list."
+    && vapiNote.hidden === false && vapiNote.textContent === "No nurture Vapi leads in this list.",
+    waNote.textContent + " | " + vapiNote.textContent);
+  s.api.hlSetFilter("all");
+  check("back to All: both group notes are hidden again",
+    waNote.hidden === true && vapiNote.hidden === true);
+  check("every fetch went to a dashboard endpoint", s.calls.fetch.every(c => ALLOWED_FETCH.has(c.url)));
+}
+
+// ------------------------------------------------------------------ nothing vanishes
+// hlSortNewest drops a record whose grade is none of hot/warm/nurture, and that is right for
+// a CALLER: Clare grades everyone she speaks to, so a grade she did not write is a broken
+// record. A WhatsApp lead's grade is a Kommo tag written after question 2 of 8, so a fully
+// answered lead can carry no tag at all -- and dropping it would delete it from the tab with
+// nothing anywhere saying a lead had been hidden.
+console.log("\n--- a WhatsApp lead is never dropped for its grade ---");
+{
+  const noTag = wa({ callId: "wa-untagged", grade: undefined });
+  check("a WhatsApp record with no grade is not called hot", api.hlGrade(noTag) === "");
+  check("a Vapi record with no grade is still hot (stored while the tab was hot-only)",
+    api.hlGrade(clean({ grade: undefined })) === "hot");
+  const ids = api.hlSortNewest([
+    noTag,
+    wa({ callId: "wa-cold", grade: "cold" }),          // the scan must never write this
+    clean({ callId: "v-closed", grade: "closed" }),
+    clean({ callId: "v-ok", grade: "hot" }),
+  ]).map(l => l.callId);
+  check("an ungraded WhatsApp lead is listed, not dropped",
+    ids.includes("wa-untagged") && ids.includes("wa-cold") && ids.includes("v-ok")
+    && !ids.includes("v-closed"), ids.join(","));
+  out = api.hlLeadCard(noTag, 0);
+  auditMarkup("ungraded WhatsApp card: markup", out);
+  check("an ungraded WhatsApp card says so where the grade pill would be",
+    out.includes('<span class="hl-ungraded">Not graded yet</span>') && !/pill-(hot|warm|nurture)/.test(out));
+  check("an ungraded card is not called hot",
+    !out.includes("Why hot") && out.includes("<strong>Grade reason:</strong>"));
+  check("an ungraded Vapi card carries no such marker",
+    !api.hlLeadCard(clean({ grade: "closed" }), 0).includes("hl-ungraded"));
+  out = api.hlRenderLeads([noTag], "all");
+  check("an ungraded WhatsApp lead is shown under All, in the WhatsApp group",
+    /id="hlCard-0">/.test(out) && !/id="hlCard-0" hidden/.test(out)
+    && groupHtml(out, "whatsapp").includes('id="hlCard-0"'));
+}
+
+// ------------------------------------------------------------------ searched as written
+// A WhatsApp lead types its suburbs free-hand ("COUNTRY NEAR MOUNT VICENT"). The phrase goes
+// to Agent 2 unparsed: api/_location_resolver.py reads it, and lib/research.js widens
+// 20 km -> 50 km -> the whole state when nothing resolves. So the buildings below are real
+// stock for the state -- but not stock near the place the customer named, and they look like
+// an answer to that place until the card says otherwise.
+console.log("\n--- the suburb was searched as written ---");
+{
+  const unres = location => api.hlUnresolvedNote({ status: "ok", location });
+  out = unres([{ said: "COUNTRY NEAR MOUNT VICENT", used: [], method: "unresolved" }]);
+  check("an unresolved phrase is named, as written",
+    out === '<div class="hl-unres">No suburb matched, so this was searched as written: COUNTRY NEAR MOUNT VICENT</div>', out);
+  auditMarkup("unresolved line markup", out);
+  check("a phrase that WAS read produces no such line (hlLocationNote says that instead)",
+    unres([{ said: "Tarn eat", used: ["Tarneit"], method: "groq" }]) === ""
+    && unres([{ said: "Tarneit", used: ["Tarneit"], method: "exact" }]) === ""
+    && unres([{ said: "Cragieburn", used: ["Craigieburn"], method: "fuzzy" }]) === "");
+  check("the same phrase twice is said once",
+    unres([{ said: "A", used: [], method: "unresolved" }, { said: "A", used: [], method: "unresolved" }])
+      === '<div class="hl-unres">No suburb matched, so this was searched as written: A</div>');
+  for (const junk of [undefined, null, "x", 5, { location: "x" }, { location: [] },
+                      { location: [null, 3, "unresolved", { method: "unresolved" },
+                                   { said: "  ", method: "unresolved" },
+                                   { said: "x", method: "UNRESOLVED" }] }])
+    check("unresolved note: " + JSON.stringify(junk) + " -> no line",
+      api.hlUnresolvedNote(junk) === "", JSON.stringify(api.hlUnresolvedNote(junk)));
+  out = api.hlUnresolvedNote({ location: [{ said: EVIL, used: [], method: "unresolved" }] });
+  check("a hostile phrase is shown as text",
+    out === `<div class="hl-unres">No suburb matched, so this was searched as written: ${EVIL_TEXT}</div>`, out);
+  auditMarkup("hostile unresolved line markup", out);
+
+  out = api.hlLeadCard(wa({ callId: "wa1" }), 0);
+  auditMarkup("WhatsApp card markup", out);
+  check("a WhatsApp card shows its brief chips",
+    out.includes('class="hl-chips"') && out.includes("Budget up to $900,000")
+    && out.includes("Deposit $50,000") && out.includes("State: QLD")
+    && out.includes("Suburbs: COUNTRY NEAR MOUNT VICENT") && out.includes("Timeframe: 0-3 months"));
+  check("a WhatsApp card says the suburb was searched as written",
+    out.includes("No suburb matched, so this was searched as written: COUNTRY NEAR MOUNT VICENT"));
+  check("a WhatsApp card has no call summary and no recording link",
+    !out.includes("Call summary") && !out.includes("Call recording"));
+  check("a WhatsApp card keeps its Kommo link and a working Re-run",
+    />Open in Kommo<\/a>/.test(out) && out.includes('onclick="rerunHotLead(0)"')
+    && !/id="hlRerun-0"[^>]*disabled/.test(out));
+  check("a WhatsApp lead whose suburb resolved has no 'as written' line",
+    !api.hlLeadCard(wa({ research: { status: "ok",
+      location: [{ said: "Red Bank Plains", used: ["Redbank Plains"], method: "spoken" }] } }), 0)
+      .includes("searched as written"));
+}
+
 // ------------------------------------------------------------------ a busy store
 // 15 Sep: warm and nurture callers share the hook's answer with hot ones. The hook sends at
 // most `limit` records (50 when none is asked for, 200 at most), newest first, and applies
@@ -908,7 +1146,9 @@ console.log("\n--- the tab is wired into the page ---");
   check("the old Hot Leads label is gone from the nav", !nav.includes("Hot Leads"));
   const pane = (html.match(/<div id="hotLeadsTab" class="view-pane">([\s\S]*?)\n<\/div>/) || [, ""])[1];
   check("pane exists", pane.length > 0);
-  check("pane header text", pane.includes("<span>Leads from Clare's calls</span>"));
+  check("pane header names both sources", pane.includes("<span>Leads from Clare's calls and WhatsApp</span>"));
+  check("pane says WhatsApp leads are listed in their own group",
+    /Qualified <strong>WhatsApp<\/strong> leads from Kommo are listed in their own group/.test(pane));
   // Every hot caller is stored, with or without a state; warm and nurture only with one.
   check("explanation: every hot caller, and warm or nurture who gave a state; hot callers get a call booked",
     /Every hot caller from Clare's calls, and every warm or nurture caller who gave a\s+state/.test(pane)

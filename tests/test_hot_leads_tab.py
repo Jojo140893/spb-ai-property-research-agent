@@ -67,9 +67,10 @@ MUTANTS = {
     "test records are asked for without ?hl_test=1": (
         "(v.length === 1 && v[0] === '1')", "(true)", "include_test not sent"),
     # 15 Sep: warm and nurture callers are researched and stored, so they are listed.
+    # 23 Sep: the same filter, now with the clause that keeps an ungraded WhatsApp lead.
     "warm and nurture callers are dropped from the list": (
-        ".filter(l => l && typeof l === 'object' && hlGrade(l) !== '')",
-        ".filter(l => l && typeof l === 'object' && hlGrade(l) === 'hot')",
+        "&& (hlGrade(l) !== '' || hlChannel(l) === 'whatsapp'))",
+        "&& hlGrade(l) === 'hot')",
         "warm and nurture kept"),
     # A grade straight from the record would put a closed caller on the tab and the
     # record's own text into the pill's class attribute.
@@ -84,14 +85,49 @@ MUTANTS = {
     "the filter does not hide the other grades": (
         "if (card) card.hidden = !on;", "if (card) card.hidden = false;",
         "filter Warm hides"),
+    # 23 Sep: the cards are printed inside their channel's group, so these two anchors moved
+    # from hlRenderLeads into hlGroupBlock and the entries list it is handed. What they
+    # protect did not move: a card is hidden by the filter, not dropped, and it carries its
+    # index into the FULL list.
     "Refresh forgets the filter": (
-        "hlLeadCard(l, i, !hlShows(l, f))", "hlLeadCard(l, i, false)",
+        "hlLeadCard(x.lead, x.i, !hlShows(x.lead, f))", "hlLeadCard(x.lead, x.i, false)",
         "kept after Refresh"),
     # Numbering the filtered list would send the wrong caller's brief to Re-run.
     "cards are numbered by their place in the filtered list": (
-        "list.map((l, i) => hlLeadCard(l, i, !hlShows(l, f)))",
-        "list.filter(l => hlShows(l, f)).map((l, i) => hlLeadCard(l, i, false))",
+        "const entries = list.map((lead, i) => ({ lead, i }));",
+        "const entries = list.filter(l => hlShows(l, f)).map((lead, i) => ({ lead, i }));",
         "re-run from a filtered list"),
+    # --- the WhatsApp / Vapi split (23 Sep) --------------------------------------------
+    # EVERY RECORD IN THE STORE PREDATES THE channel FIELD, so a default of anything but
+    # 'vapi' moves the entire tab into the WhatsApp group on the day this ships.
+    "a record with no channel is grouped as WhatsApp": (
+        "return lead.channel === 'whatsapp' ? 'whatsapp' : 'vapi';",
+        "return lead.channel === 'vapi' ? 'vapi' : 'whatsapp';",
+        "grouped as Vapi"),
+    "the two channels are not split, every card is printed in both groups": (
+        "entries.filter(x => hlChannel(x.lead) === ch)", "entries",
+        "printed once"),
+    # A group that says nothing when it is empty is indistinguishable from one that failed
+    # to render -- and "is the WhatsApp scan running at all?" is the question it answers.
+    "an empty group is silent": (
+        "${visible ? ' hidden' : ''}>${hlGroupEmptyText(channel, f)}</div>",
+        "${visible ? ' hidden' : ' hidden'}>${hlGroupEmptyText(channel, f)}</div>",
+        "empty group says so"),
+    # The Kommo tag is written after question 2 of 8, so a fully answered WhatsApp lead can
+    # carry no tag at all. Dropping it deletes it from the tab with nothing to say so.
+    "an ungraded WhatsApp lead is dropped from the list": (
+        "&& (hlGrade(l) !== '' || hlChannel(l) === 'whatsapp'))",
+        "&& hlGrade(l) !== '')",
+        "not dropped"),
+    "a WhatsApp lead with no tag is called hot": (
+        "if (lead.grade === undefined) return hlChannel(lead) === 'whatsapp' ? '' : 'hot';",
+        "if (lead.grade === undefined) return 'hot';",
+        "with no grade is not called hot"),
+    # An unreadable free-text suburb still returns stock, for the whole state. The card has
+    # to say the search ran on those words, or the buildings read as an answer to the place.
+    "the suburb is not said to have been searched as written": (
+        "${hlUnresolvedNote(L.research)}", "",
+        "searched as written"),
     # Since 15 Sep warm and nurture callers share the hook's answer with hot ones, so a cut-off
     # answer can leave an older hot caller out; the tab then asks for hot callers on their own.
     "hot callers are not looked up when the answer is cut off": (

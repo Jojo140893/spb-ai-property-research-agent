@@ -661,6 +661,20 @@
         .pill-warm { background: var(--amber-bg); color: var(--amber-yellow); border: 1px solid rgba(180, 83, 9, 0.2); }
         .pill-nurture { background: var(--blue-light); color: var(--accent-blue); border: 1px solid rgba(30, 64, 175, 0.18); }
         .hl-filters { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0 0 0.9rem; }
+        /* TWO GROUPS since 23 Sep: WhatsApp leads from the Kommo scan, and Clare's callers.
+           The heading and its count are drawn even for a group with nobody in it, because
+           "no WhatsApp leads" and "the WhatsApp group is not rendering" look identical once
+           the heading goes with it. */
+        .hl-groups { display: flex; flex-direction: column; gap: 1.6rem; }
+        .hl-group-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4rem;
+                         margin: 0 0 0.6rem; }
+        .hl-group-name { font-size: 0.78rem; font-weight: 700; text-transform: uppercase;
+                         letter-spacing: 0.04em; color: var(--text-heading); }
+        .hl-group-count { font-size: 0.8rem; color: var(--text-muted); }
+        .hl-group-empty { margin: 0 0 0.6rem; }
+        /* A WhatsApp lead whose Kommo tag is not written yet. Grey, not a pill: it is the
+           absence of a grade, not a fourth one. */
+        .hl-ungraded { font-size: 0.78rem; color: var(--text-muted); font-style: italic; }
         .hl-filter.is-active { border-color: var(--accent-blue); background: var(--blue-light);
                                color: var(--accent-blue); font-weight: 600; }
         /* The filter hides cards rather than re-rendering them, so a Re-run in progress or
@@ -685,6 +699,10 @@
         .hl-appt-info { background: #f1f5f9; border-color: var(--border-light); color: var(--text-muted); }
         .hl-appt-note { display: block; font-size: 0.78rem; color: var(--amber-yellow); margin-top: 0.2rem; }
         .hl-loc { font-size: 0.8rem; color: var(--text-muted); margin: 0.1rem 0 0.4rem; overflow-wrap: anywhere; }
+        /* "Searched as written": a WhatsApp lead types its suburbs free-hand, so the phrase
+           often resolves to nothing and the search runs on the words themselves. */
+        .hl-unres { font-size: 0.8rem; color: var(--amber-yellow); margin: 0.1rem 0 0.4rem;
+                    overflow-wrap: anywhere; }
         .hl-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.5rem 0; }
         .hl-chip { font-size: 0.76rem; background: #f1f5f9; border: 1px solid var(--border-light);
                    border-radius: 999px; padding: 0.18rem 0.6rem; color: var(--text-body);
@@ -1072,7 +1090,7 @@
 <div id="hotLeadsTab" class="view-pane">
     <div class="panel-card">
         <div class="panel-header" style="flex-wrap:wrap; gap:0.5rem;">
-            <span>Leads from Clare's calls</span>
+            <span>Leads from Clare's calls and WhatsApp</span>
             <span style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
                 <span id="hotLeadsBadge" class="pill pill-hot">not loaded</span>
                 <button id="hotLeadsRefresh" type="button" class="btn-ghost"
@@ -1084,6 +1102,9 @@
             state, newest first &mdash; each with their grade, contact details and the three
             buildings the research picked for them (the research needs a state).
             <strong>Hot</strong> callers also get a discovery call booked.
+            Qualified <strong>WhatsApp</strong> leads from Kommo are listed in their own group,
+            above Clare's callers; they are answered in chat, so there is no call recording
+            and no summary to read.
         </p>
         <div id="hotLeadsContent" style="font-size:0.9rem;">Loading leads…</div>
     </div>
@@ -2799,6 +2820,24 @@ python state_sync.py push</pre>
     const HL_GRADE_LABEL = { hot: 'Hot', warm: 'Warm', nurture: 'Nurture' };
     const HL_FILTERS = ['all', 'hot', 'warm', 'nurture'];
 
+    // WHICH AGENT THE LEAD CAME FROM (23 Sep). Clare's callers reach the store through the
+    // call webhook. A WhatsApp lead reaches it through the Kommo scan of Incoming leads,
+    // which writes channel:"whatsapp" on the record.
+    //
+    // A MISSING channel IS NOT "UNKNOWN" -- IT IS CLARE. Every record already in the store
+    // was written before this field existed, so a default of anything but 'vapi' would move
+    // the entire tab into the wrong group the moment this ships. Only the exact string
+    // 'whatsapp' groups as WhatsApp; a record carrying anything else (a typo, a channel
+    // added later, a hostile value) is still LISTED, under Vapi, because a group nobody
+    // renders is a lead nobody rings. The value returned is one of HL_CHANNELS, so an id or
+    // a class built from it can never carry the record's own text.
+    const HL_CHANNELS = ['whatsapp', 'vapi'];
+    const HL_CHANNEL_LABEL = { whatsapp: 'WhatsApp', vapi: 'Vapi' };
+    function hlChannel(lead) {
+        if (!lead || typeof lead !== 'object') return 'vapi';
+        return lead.channel === 'whatsapp' ? 'whatsapp' : 'vapi';
+    }
+
     // How many records the tab asks the hook for in one answer: the most it gives
     // (MAX_LIMIT in vapi-kommo-hook/lib/hot-leads.js). With no limit it gave the newest 50,
     // which was every hot lead while only hot callers were stored. Since 15 Sep warm and
@@ -2812,7 +2851,12 @@ python state_sync.py push</pre>
     // the record's own text into an attribute.
     function hlGrade(lead) {
         if (!lead || typeof lead !== 'object') return '';
-        if (lead.grade === undefined) return 'hot';
+        // "No grade means hot" is a fact about the OLD records, not a rule about grading:
+        // before 15 Sep the hook stored hot callers and nobody else, so a record with no
+        // grade is one of those. A WhatsApp record cannot be one of those -- the scan that
+        // writes it is newer than the field -- so a missing grade there is a missing grade.
+        // It is not dropped for that: see hlSortNewest.
+        if (lead.grade === undefined) return hlChannel(lead) === 'whatsapp' ? '' : 'hot';
         return HL_GRADES.includes(lead.grade) ? lead.grade : '';
     }
 
@@ -3038,11 +3082,35 @@ python state_sync.py push</pre>
             ? `<div class="hl-loc">${esc('Location read as: ' + parts.join('; '))}</div>` : '';
     }
 
+    // THE SUBURB AS THE CUSTOMER WROTE IT (23 Sep). A WhatsApp lead's "Preferred Suburbs" is
+    // free text typed into a chat -- "COUNTRY NEAR MOUNT VICENT" -- and it goes to Agent 2
+    // unparsed on purpose: api/_location_resolver.py reads it, and lib/research.js widens
+    // 20 km -> 50 km -> the whole state when nothing resolves, so an unreadable phrase still
+    // returns stock for the state. That stock is real, but it is NOT stock near the place
+    // the customer named, and the buildings below look like an answer to a suburb until
+    // something says otherwise. So the card says which words were searched as they stand.
+    //
+    // Separate from hlLocationNote, which says what was READ AS SOMETHING ELSE: "we
+    // understood you" and "we did not, and searched your words" are different things to
+    // tell a consultant, and hlLocationNote deliberately leaves the second out.
+    // Text only -- every word of it was typed by the customer.
+    function hlUnresolvedNote(research) {
+        const rs = (research && typeof research === 'object') ? research : {};
+        const said = [...new Set((Array.isArray(rs.location) ? rs.location : [])
+            .filter(x => x && typeof x === 'object' && x.method === 'unresolved')
+            .map(x => String(x.said ?? '').trim())
+            .filter(Boolean))];
+        if (!said.length) return '';
+        return `<div class="hl-unres">${esc('No suburb matched, so this was searched as written: '
+            + said.join('; '))}</div>`;
+    }
+
     // hidden: the card is rendered but out of the current filter (see hlSetFilter).
     function hlLeadCard(lead, i, hidden) {
         const n = (Number.isInteger(i) && i >= 0) ? i : 0;
         const L = (lead && typeof lead === 'object') ? lead : {};
         const g = hlGrade(L);
+        const ch = hlChannel(L);
         const c = (L.customer && typeof L.customer === 'object') ? L.customer : {};
         const k = (L.kommo && typeof L.kommo === 'object') ? L.kommo : {};
         const name = String(c.name ?? '').trim() || 'Name not captured';
@@ -3064,14 +3132,16 @@ python state_sync.py push</pre>
         return `<div class="prop-card hl-card" id="hlCard-${n}"${hidden ? ' hidden' : ''}>
             <div class="hl-head">
                 <span class="hl-name">${esc(name)}</span>
-                ${g ? `<span class="pill pill-${g}">${HL_GRADE_LABEL[g]}</span>` : ''}
-                ${when ? `<span class="hl-when">Called ${esc(when)}</span>` : ''}
+                ${g ? `<span class="pill pill-${g}">${HL_GRADE_LABEL[g]}</span>`
+                    : (ch === 'whatsapp' ? '<span class="hl-ungraded">Not graded yet</span>' : '')}
+                ${when ? `<span class="hl-when">${ch === 'whatsapp' ? 'Qualified' : 'Called'} ${esc(when)}</span>` : ''}
             </div>
             <div class="hl-contact">${contact}</div>
             ${reason ? `<div class="hl-reason"><strong>${g ? 'Why ' + g : 'Grade reason'}:</strong> ${esc(reason)}</div>` : ''}
             ${hlAppointment(L.appointment, g)}
             ${hlBriefChips(L.brief)}
             ${hlLocationNote(L.research)}
+            ${hlUnresolvedNote(L.research)}
             ${links ? `<div class="hl-links">${links}</div>` : ''}
             ${summary ? `<details class="hl-summary"><summary>Call summary</summary><p>${esc(summary)}</p></details>` : ''}
             <div class="hl-recs-head">
@@ -3087,6 +3157,12 @@ python state_sync.py push</pre>
     const hlFilterKey = f => HL_FILTERS.includes(f) ? f : 'all';
     const hlShows = (lead, f) => f === 'all' || hlGrade(lead) === f;
     const hlFilterEmptyText = f => `No ${f} leads in this list.`;
+    // What a group with nobody visible in it says. Under All that is "there are none";
+    // under a grade it is "there are some, none of them this grade" -- two different facts,
+    // and a group that said neither would just be a heading with a gap under it.
+    const hlGroupEmptyText = (channel, f) => f === 'all'
+        ? `No ${HL_CHANNEL_LABEL[channel]} leads yet.`
+        : `No ${f} ${HL_CHANNEL_LABEL[channel]} leads in this list.`;
 
     // All / Hot / Warm / Nurture, each with its count. Keys and labels come from HL_FILTERS,
     // never from a record, so the onclick can only ever name one of the four.
@@ -3133,10 +3209,33 @@ python state_sync.py push</pre>
         const shown = list.filter(l => hlShows(l, f)).length;
         // EVERY card is rendered, the ones outside the filter hidden, and each keeps its
         // index in the full list: rerunHotLead(i) reads HOT_LEADS[i], so numbering the
-        // filtered list instead would re-run the wrong caller's brief.
+        // filtered list instead would re-run the wrong caller's brief. The groups below
+        // only change the ORDER the cards are printed in, never the index they carry.
+        const entries = list.map((lead, i) => ({ lead, i }));
         return note + hlFilterBar(list, f)
              + `<div class="hl-notice" id="hlFilterEmpty"${shown ? ' hidden' : ''}>${hlFilterEmptyText(f)}</div>`
-             + `<div class="hl-list">${list.map((l, i) => hlLeadCard(l, i, !hlShows(l, f))).join('')}</div>`;
+             + `<div class="hl-groups">`
+             + HL_CHANNELS.map(ch =>
+                   hlGroupBlock(ch, entries.filter(x => hlChannel(x.lead) === ch), f)).join('')
+             + `</div>`;
+    }
+
+    // ONE GROUP: WhatsApp leads, or Clare's callers. They are worked differently -- one is a
+    // chat the bot finished and nobody has spoken to, the other a call that has already
+    // happened -- so mixing them by timestamp buried the new WhatsApp leads among the old
+    // calls. Both groups are ALWAYS drawn, heading and count included: a group that
+    // disappeared when it was empty is indistinguishable from a group that was never built,
+    // and "WhatsApp (0)" is the answer to "is the scan running?".
+    function hlGroupBlock(channel, entries, f) {
+        const visible = entries.filter(x => hlShows(x.lead, f)).length;
+        return `<div class="hl-group" id="hlGroup-${channel}">`
+             + `<div class="hl-group-head"><span class="hl-group-name">${HL_CHANNEL_LABEL[channel]}</span>`
+             + `<span class="hl-group-count">(${entries.length})</span></div>`
+             + `<div class="hl-notice hl-group-empty" id="hlGroupEmpty-${channel}"`
+             + `${visible ? ' hidden' : ''}>${hlGroupEmptyText(channel, f)}</div>`
+             + `<div class="hl-list">`
+             + entries.map(x => hlLeadCard(x.lead, x.i, !hlShows(x.lead, f))).join('')
+             + `</div></div>`;
     }
 
     // The filter buttons. Hides and shows the cards already on the page instead of
@@ -3152,9 +3251,10 @@ python state_sync.py push</pre>
             b.setAttribute('aria-pressed', String(key === f));
         });
         let shown = 0;
+        const inGroup = { whatsapp: 0, vapi: 0 };
         HOT_LEADS.forEach((lead, i) => {
             const on = hlShows(lead, f);
-            if (on) shown++;
+            if (on) { shown++; inGroup[hlChannel(lead)]++; }
             const card = document.getElementById('hlCard-' + i);
             if (card) card.hidden = !on;
         });
@@ -3163,16 +3263,35 @@ python state_sync.py push</pre>
             empty.textContent = hlFilterEmptyText(f);
             empty.hidden = shown > 0;
         }
+        // Each group's own note, or a heading with nothing under it reads as a group that
+        // failed to render rather than one this filter empties.
+        HL_CHANNELS.forEach(ch => {
+            const note = document.getElementById('hlGroupEmpty-' + ch);
+            if (!note) return;
+            note.textContent = hlGroupEmptyText(ch, f);
+            note.hidden = inGroup[ch] > 0;
+        });
     }
 
     // Newest first. The endpoint already sorts, but the order a consultant works down
     // should not depend on that. Hot, warm and nurture records belong on this tab; a closed
-    // one, or a grade that is none of those, does not.
+    // CALLER, or a grade that is none of those, does not -- Clare grades every caller she
+    // speaks to, so a grade she did not write is a record that went wrong, and dropping it
+    // has cost nobody a lead.
+    //
+    // A WHATSAPP RECORD IS NEVER DROPPED FOR ITS GRADE (23 Sep). Its grade comes from a
+    // Kommo tag that the bot writes after question 2 of 8, so a lead can be sitting in the
+    // store, fully answered and worth ringing, with no tag on it at all -- and the filter
+    // above would have deleted it from the tab with nothing anywhere to say a lead had been
+    // hidden. It is listed instead, with no grade pill and "Not graded yet" where one would
+    // be (hlLeadCard), and it appears under All. hlGrade still refuses to return anything
+    // but a known grade, so nothing the scan writes can reach a class name.
     function hlSortNewest(leads) {
         if (!Array.isArray(leads)) return [];
         const at = l => { const t = Date.parse(l.createdAt); return Number.isFinite(t) ? t : -Infinity; };
         return leads
-            .filter(l => l && typeof l === 'object' && hlGrade(l) !== '')
+            .filter(l => l && typeof l === 'object'
+                         && (hlGrade(l) !== '' || hlChannel(l) === 'whatsapp'))
             .sort((a, b) => (at(b) - at(a)) || 0);
     }
 

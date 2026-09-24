@@ -1,0 +1,156 @@
+# Ask the hook to scan Kommo "Incoming leads" for WhatsApp leads the bot has qualified.
+#
+# WHAT IT IS FOR. A WhatsApp lead answers 8 questions to a Kommo bot, in a fixed order, with
+# the customer's own reply latency between them: measured on 23 Sep, the gaps ran from
+# 2m 38s to 12h 47m. Nothing tells us when the last answer lands. So the hook's scan endpoint
+# reads the column, finds the leads that have a Prefered State (the minimum Agent 2 needs)
+# and writes them to the same store the Clare's Leads tab reads. Polling is the only
+# mechanism available: Kommo's bot does not call us.
+#
+# WHY IT LIVES HERE AND NOT ON VERCEL. The hook is a Vercel project and its plan is not
+# established. Vercel's Hobby plan allows ONE cron per DAY, which for a 12-hour reply gap is
+# the same as not running. GitHub Actions has no such limit, and the nightly harvest already
+# runs from here, so this is a schedule the team already watches.
+#
+# EVERY 15 MINUTES IS A TARGET, NOT A GUARANTEE. GitHub's scheduler is best-effort and drops
+# or delays high-frequency runs under load, especially on the hour. That is survivable
+# because the scan is idempotent: it skips a lead whose record already exists and whose
+# fieldsFingerprint still matches, so a doubled run writes nothing twice and a skipped run
+# only means the lead is picked up 15 minutes later.
+#
+# THE SCAN IS READ-ONLY AGAINST KOMMO. It never PATCHes a lead, because a PATCH on a card in
+# Incoming leads EJECTS IT FROM THE COLUMN (see WORKLOG.md §5). This workflow can therefore
+# be re-run by hand as often as anyone likes without touching the CRM.
+#
+# NO SECRET VALUE IS IN THIS FILE. The key comes from repo secrets; GitHub masks a registered
+# secret wherever it appears in a log line, including inside a response body.
+
+name: WhatsApp lead scan
+
+on:
+  schedule:
+    # Every 15 minutes, UTC. Unlike the nightly harvest this has no local-time meaning, so
+    # there is no daylight-saving pair to gate: "every 15 minutes" is every 15 minutes in
+    # any timezone.
+    - cron: "*/15 * * * *"
+  workflow_dispatch:        # so a lead can be picked up now instead of at the next quarter
+
+concurrency:
+  # TWO SCANS MUST NEVER OVERLAP. A run that takes longer than 15 minutes (a slow Kommo, a
+  # cold Vercel function, a retry) would otherwise be joined by the next one, and both would
+  # read the same column and race to write the same record. cancel-in-progress is false: the
+  # scan already running has done the expensive part, so the newcomer waits its turn rather
+  # than killing a read that is nearly finished.
+  group: spb-whatsapp-scan
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    # A scheduled workflow keeps firing in a fork that never wanted it; this pins it to the
+    # one repository whose secrets can actually answer.
+    if: github.repository == 'Jojo140893/spb-ai-property-research-agent'
+    runs-on: ubuntu-latest
+    # The scan is one HTTP call. Ten minutes is a hang, not a slow Kommo.
+    timeout-minutes: 10
+
+    env:
+      HOOK_SECRET: ${{ secrets.HOOK_SECRET }}
+      # Overridable without editing this file, because the hook's deployment URL is the
+      # hook team's to change. Repo variables (not secrets) -- neither is sensitive.
+      HOOK_BASE: ${{ vars.SPB_HOOK_BASE || 'https://vapi-kommo-hook.vercel.app' }}
+      SCAN_PATH: ${{ vars.SPB_WHATSAPP_SCAN_PATH || '/api/whatsapp-scan' }}
+
+    steps:
+      - name: Fail loudly if the hook secret is not set
+        # WITHOUT THIS THE RUN STILL "WORKS". curl would post ?key= with nothing after it,
+        # the hook would answer 401 'bad key', and the failure below would read as a wrong
+        # secret rather than a missing one -- sending whoever reads it to rotate a key that
+        # was never there. 96 runs a day would say it, all of them wrong.
+        run: |
+          set -uo pipefail
+          if [ -z "${HOOK_SECRET:-}" ]; then
+            echo "::error::HOOK_SECRET is not set, so no WhatsApp lead can be scanned."
+            echo "Add it under Settings -> Secrets and variables -> Actions -> New repository secret."
+            echo "Name: HOOK_SECRET. Value: the same string the vapi-kommo-hook Vercel project"
+            echo "holds in its own HOOK_SECRET environment variable (kept locally in"
+            echo "make-tools/hook_secret.txt -- do not paste it into a log, an issue or this file)."
+            exit 1
+          fi
+          echo "HOOK_SECRET is present."
+
+      - name: Scan Kommo Incoming leads
+        # The key travels in the QUERY STRING because that is how the hook authenticates
+        # every one of its endpoints (api/webhook.js: req.query.key !== env.HOOK_SECRET).
+        # It is built into a shell variable rather than written into the curl line so it is
+        # never echoed; the runner is ephemeral and single-tenant, and daily-harvest.yml
+        # already passes its Vercel token the same way.
+        #
+        # --retry covers a cold Vercel function and a dropped connection, so a blip does not
+        # paint the repo red 96 times a day. Everything past that is reported, because a scan
+        # that quietly stops is a WhatsApp lead nobody rings -- and there is no other signal
+        # that it stopped.
+        run: |
+          set -uo pipefail
+          url="${HOOK_BASE}${SCAN_PATH}?key=${HOOK_SECRET}"
+          code=$(curl -sS -X POST \
+                   -H 'Content-Type: application/json' \
+                   --data '{"source":"github-actions"}' \
+                   --max-time 120 --retry 3 --retry-delay 10 --retry-connrefused \
+                   -o /tmp/scan.json -w '%{http_code}' \
+                   "$url") || code="000"
+          echo "POST ${HOOK_BASE}${SCAN_PATH} -> ${code}"
+          echo "--- what the scan answered ---"
+          head -c 2000 /tmp/scan.json 2>/dev/null || echo "(no body)"
+          echo ""
+          case "$code" in
+            2??)
+              # A 200 IS NOT A SUCCESS ON ITS OWN. The scan answers 200 with a populated
+              # "errors" array whenever per-lead work failed -- a contact it could not read,
+              # a Blob write that failed, Agent 2 answering 401 -- because one bad lead must
+              # not stop the other nineteen. Reading only the status turned a steady per-lead
+              # failure into 96 green runs a day, with nothing anywhere saying a lead was
+              # dropped. jq is on every GitHub-hosted runner.
+              nerr=$(jq -r '(.errors // []) | length' /tmp/scan.json 2>/dev/null || echo "unreadable")
+              if [ "$nerr" = "unreadable" ]; then
+                echo "::error::The scan answered ${code} but its body is not the JSON it should be."
+                exit 1
+              fi
+              if [ "$nerr" -gt 0 ]; then
+                echo "::error::The scan ran but ${nerr} lead(s) failed. First errors:"
+                jq -r '.errors[:5][]' /tmp/scan.json 2>/dev/null | sed 's/^/  /'
+                exit 1
+              fi
+              echo "Scan completed with no per-lead errors."
+              ;;
+            000)
+              echo "::error::Could not reach ${HOOK_BASE} at all (DNS, TLS or timeout), even after retries."
+              exit 1
+              ;;
+            401)
+              echo "::error::The hook refused the key (401). The HOOK_SECRET in this repo and the"
+              echo "HOOK_SECRET on the vapi-kommo-hook Vercel project are not the same string."
+              exit 1
+              ;;
+            404)
+              echo "::error::No scan endpoint at ${SCAN_PATH} (404). Either the hook has not deployed it"
+              echo "yet, or it lives at another path -- set the repo variable SPB_WHATSAPP_SCAN_PATH"
+              echo "(Settings -> Secrets and variables -> Actions -> Variables) to the real one."
+              exit 1
+              ;;
+            405)
+              echo "::error::The scan endpoint answered 405: it does not accept POST at ${SCAN_PATH}."
+              exit 1
+              ;;
+            500)
+              echo "::error::The scan endpoint answered 500. Its own environment is probably incomplete"
+              echo "(HOOK_SECRET, KOMMO_DOMAIN or KOMMO_TOKEN missing on the hook project)."
+              exit 1
+              ;;
+            *)
+              echo "::error::The scan endpoint answered ${code}."
+              exit 1
+              ;;
+          esac
