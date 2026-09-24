@@ -56,3 +56,35 @@ def test_an_absent_file_is_not_an_error():
 
     got = build_web._unreadable_stocklists()
     assert "count" in got and isinstance(got["files"], list)
+
+
+def test_the_harvest_can_actually_record_them(monkeypatch, caplog):
+    """CALLED, not grepped for. test_the_harvest_writes_it_down above checks only that the
+    function's NAME appears in harvest_buildings.py, and it passed for a month while the
+    function could not run one line: it called logger.warning in a module that never defined
+    `logger`. The path only runs when a stocklist yields nothing, so it stayed dormant until
+    24 Sep, when E-Agent read 0 of 13,636 listings and the NameError crashed the whole
+    harvest -- publishing none of the 4,000 rows the other channels HAD read that night.
+    This drives the exact path that crashed: a non-empty UNREADABLE list."""
+    import json
+    import logging
+    from pathlib import Path
+
+    import harvest_buildings as HB
+    import sources.spreadsheet_extract as SX
+
+    target = Path(HB.__file__).resolve().parent / "data" / "unreadable_stocklists.json"
+    saved = target.read_bytes() if target.exists() else None
+    monkeypatch.setattr(SX, "UNREADABLE", [{"file": "x.pdf", "source": "E-Agent"}])
+    try:
+        with caplog.at_level(logging.WARNING):
+            HB._record_unreadable_stocklists()          # raised NameError before 24 Sep
+        assert json.loads(target.read_text(encoding="utf-8"))["files"] == [
+            {"file": "x.pdf", "source": "E-Agent"}]
+        assert any("produced no listings" in r.getMessage() for r in caplog.records), \
+            "the warning that names the missing projects was never logged"
+    finally:
+        if saved is None:
+            target.unlink(missing_ok=True)
+        else:
+            target.write_bytes(saved)                   # never leave the real file changed
