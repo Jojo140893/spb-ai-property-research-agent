@@ -31,6 +31,16 @@ from datetime import datetime
 from typing import Dict
 import logging
 
+# _record_unreadable_stocklists (27 Aug) called logger.warning and logger.info but this module
+# never defined `logger` -- it imported `logging` and stopped. The path only runs when a
+# stocklist produces no listings, so it stayed dormant for a month. On 24 Sep E-Agent read 0
+# of 13,636 stored listings, the path ran, and its first line raised NameError; the except
+# clause then raised the same NameError, so the harvest step CRASHED. A dead channel is meant
+# to be a PARTIAL night (run_daily treats exit 2 as "the channels that did read still publish"):
+# Proxima's 3,312, the inbox's 443 and the portals' 269 were all read fresh that run, and none
+# of it reached the dashboard, because a missing name turned one dead channel into a total one.
+logger = logging.getLogger(__name__)
+
 import benchmarks
 from builder_registry import BuilderRegistry
 from sources.e_agent import EAgentSource
