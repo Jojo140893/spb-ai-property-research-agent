@@ -227,6 +227,9 @@ def _clean_banner(banner: str) -> str:
 
 
 MEMBERS_DIALOG = "[data-testid='siteMembersDialogLayout']"
+# How many per-builder category pages _authenticated may open to decide whether the
+# session is signed in, when no pooled stocklist exists (26 Sep 2026).
+AUTH_CATEGORY_PAGES = 2
 
 
 def open_members_form(page, password_selector="input[type=password]", seconds=30):
@@ -307,8 +310,56 @@ class EAgentSource(PropertySource):
         portals DO render a real marker, and weakening the shared check would trade this
         bug for a silent one where a failed login reads as success.
         """
+        if self._goto_listings(scraper):
+            return True
+        # THE POOLED LISTS ARE GONE; THE BUILDERS' PAGES ARE NOT. The members' listings page
+        # (26 Sep, e-agent-login-check.yml) offers a new "H&L SEARCH" on a separate site
+        # (eagent.mekooflow.com, access through a BDM) and, under "Builders", per-state
+        # buttons to "branded stock lists and packages direct from the builder" -- the
+        # category pages this source already crawls. With no pooled stocklist left anywhere,
+        # judging sign-in by the pooled lists alone called every signed-in run "not signed
+        # in" and never reached those pages. Signed-out, they show the sign-up wall and no
+        # file, so this cannot read a failed login as success.
+        for category in list(self.cfg.category_pages or ())[:AUTH_CATEGORY_PAGES]:
+            scraper.goto(category.url)
+            if self._stocklist_links(scraper):
+                return True
+        return False
+
+    # The members hub's button to the stocklists (26 Sep 2026: "Property Portal ... ACCESS
+    # LISTINGS"), matched exactly, as the login buttons are.
+    _ACCESS_LISTINGS = re.compile(r"^\s*access\s+listings\s*$", re.I)
+
+    def _goto_listings(self, scraper: PlaywrightScraper) -> List[Dict[str, str]]:
+        """Go to the page that holds the stocklist files and return their links, leaving the
+        scraper there -- following the members hub's ACCESS LISTINGS button when
+        listings_url itself holds none.
+
+        26 Sep 2026: the login check (e-agent-login-check.yml) signed in -- the members
+        dialog closed after the submit -- and /access-projects came back as a hub of three
+        buttons (Property Portal, Training & Development, Professional Referrers) with no
+        stocklist on it; ACCESS LISTINGS points at /copy-of-home, members-only. Since
+        24 Sep every run had read "no stocklist files" as "not signed in", logged in again
+        and read 0 E-Agent listings. The button is followed rather than /copy-of-home being
+        written into the config, so the next rename of a Wix page does not break it again.
+        """
         scraper.goto(self.cfg.listings_url)
-        return bool(self._stocklist_links(scraper))
+        links = self._stocklist_links(scraper)
+        if links:
+            return links
+        try:
+            button = scraper.page.get_by_role("link", name=self._ACCESS_LISTINGS)
+            href = button.first.get_attribute("href") if button.count() else None
+        except Exception as e:
+            logger.warning("E-Agent: could not read the ACCESS LISTINGS button: %s", e)
+            href = None
+        if not href or href.rstrip("/") == self.cfg.listings_url.rstrip("/"):
+            return links
+        scraper.goto(href)
+        links = self._stocklist_links(scraper)
+        logger.info("E-Agent: followed ACCESS LISTINGS to %s -- %d stocklist file(s).",
+                    href, len(links))
+        return links
 
     def _record_login_failure(self, page, dialog, stage="login form never appeared") -> None:
         """Say WHAT the page showed when the login failed at `stage`, and keep a copy.
@@ -872,7 +923,7 @@ class EAgentSource(PropertySource):
 
     def _scrape_listings(self, scraper: PlaywrightScraper) -> List[Dict[str, Any]]:
         page = scraper.page
-        scraper.goto(self.cfg.listings_url)
+        self._goto_listings(scraper)
         # Stocklist FILES are E-Agent's real inventory channel — try them first.
         from_files = self._scrape_stocklist_files(scraper)
         if from_files:
@@ -939,7 +990,7 @@ class EAgentSource(PropertySource):
                 # E-Agent shows no reliable "Log Out" marker, so authentication is
                 # judged FUNCTIONALLY: if the stocklist files are reachable we are in.
                 # Only log in when they are not.
-                scraper.goto(self.cfg.listings_url)
+                self._goto_listings(scraper)
                 pooled = self._scrape_stocklist_files(scraper)
                 logged_in = bool(pooled)
                 if not pooled:
@@ -947,7 +998,7 @@ class EAgentSource(PropertySource):
                     if not self._login(scraper):
                         return []
                     logged_in = True
-                    scraper.goto(self.cfg.listings_url)
+                    self._goto_listings(scraper)
                     pooled = self._scrape_stocklist_files(scraper)
 
                 # The pooled files reaching us used to END the run, so the per-builder
