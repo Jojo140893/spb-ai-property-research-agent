@@ -11,7 +11,9 @@ returns [] (never fabricated data). Selectors live in portal_config.EAGENT_CONFI
 
 import logging
 import re
+import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse
 
@@ -278,6 +280,34 @@ class EAgentSource(PropertySource):
         scraper.goto(self.cfg.listings_url)
         return bool(self._stocklist_links(scraper))
 
+    def _record_login_failure(self, page, dialog) -> None:
+        """Say WHAT the page showed when the login form did not appear, and keep a copy.
+
+        Every earlier break of this login was diagnosed blind: the only record was "login
+        form never appeared (site layout may have changed)", which on 24 Sep was not even
+        true -- the layout had not changed. The screenshot and HTML are taken before
+        anything is typed, so they hold no credentials; daily-harvest.yml uploads them as
+        a run artifact.
+        """
+        try:
+            seen = (dialog.inner_text(timeout=2000)[:200] if dialog.count()
+                    else "(no members dialog)")
+        except Exception:
+            seen = "(dialog unreadable)"
+        try:
+            title = page.title()
+        except Exception:
+            title = ""
+        logger.error("E-Agent: login form never appeared. url=%s title=%r dialog=%r",
+                     page.url, title, " ".join(seen.split()))
+        try:
+            out = Path(config.PROJECT_ROOT) / "logs"
+            out.mkdir(parents=True, exist_ok=True)
+            page.screenshot(path=str(out / "e_agent_login_failure.png"), full_page=True)
+            (out / "e_agent_login_failure.html").write_text(page.content(), encoding="utf-8")
+        except Exception as e:
+            logger.warning("E-Agent: could not save the login failure page: %s", e)
+
     def _login(self, scraper: PlaywrightScraper) -> bool:
         page = scraper.page
         # Checked here as well as by the caller so _login is correct when called on its
@@ -291,30 +321,46 @@ class EAgentSource(PropertySource):
                          "Run: python portal_login.py e_agent")
             return False
         try:
-            # E-Agent is a Wix members site: the page opens on a SIGN-UP panel and the
-            # email/password fields only exist after clicking through
-            # "Log In" -> "Log in with Email". The modal is slow, so click, wait, and
-            # re-check for the password field rather than assuming one click is enough.
-            for sel in ("button:has-text('Log In')", "button:has-text('Already a member')",
-                        "a:has-text('Log In')", "button:has-text('Log in with Email')",
-                        "button:has-text('Sign in with email')"):
-                if page.query_selector(self.cfg.password_selector):
-                    break
-                try:
-                    el = page.query_selector(sel)
-                    if el and el.is_visible():
-                        el.click()
-                        page.wait_for_timeout(3000)
-                except Exception:
-                    continue
+            # AS A NEW VISITOR. The login path runs only when the saved session has died,
+            # and from 24 Sep 2026 it died with its E-Agent cookies still in the browser.
+            # A fresh visitor lands on Wix's SIGN-UP panel and clicks through to the email
+            # form; a returning one can land on the LOG-IN panel instead, where the old
+            # loop's first selector, "button:has-text('Log In')" -- a case-insensitive
+            # substring -- matched "Log in with Google" and opened Google's popup. Every
+            # night since then logged "login form never appeared". Measured 26 Sep from a
+            # fresh browser: the form is still there, with the same fields. Only E-Agent's
+            # cookies are cleared; the saved session is still written only after a proven
+            # login (search()).
+            page.context.clear_cookies(domain=re.compile(r"(^|\.)e-agent\.com\.au$"))
             try:
-                page.wait_for_selector(self.cfg.password_selector, timeout=12000)
+                page.evaluate("() => { try { localStorage.clear(); sessionStorage.clear(); }"
+                              " catch (e) {} }")
             except Exception:
-                logger.error("E-Agent: login form never appeared (site layout may have changed).")
+                pass
+            scraper.goto(self.cfg.login_url)
+            # EXACT MATCHES, INSIDE THE MEMBERS DIALOG. "Log In" on the sign-up panel is the
+            # switch to logging in (data-testid signUp.switchToSignUp); "Log in with Email"
+            # then shows the fields. Either panel reaches the form; neither can open Google.
+            dialog = page.locator("[data-testid='siteMembersDialogLayout']")
+            password = dialog.locator(self.cfg.password_selector)
+            to_login = dialog.locator("[data-testid='signUp.switchToSignUp']")
+            by_email = dialog.get_by_role("button", name="Log in with Email", exact=True)
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and not password.is_visible():
+                try:
+                    if to_login.is_visible():
+                        to_login.click()
+                    elif by_email.is_visible():
+                        by_email.click()
+                except Exception:
+                    pass
+                page.wait_for_timeout(1000)
+            if not password.is_visible():
+                self._record_login_failure(page, dialog)
                 return False
-            page.fill(self.cfg.email_selector, self.username, timeout=10000)
-            page.fill(self.cfg.password_selector, self.password, timeout=10000)
-            page.click(self.cfg.submit_selector, timeout=10000)
+            dialog.locator(self.cfg.email_selector).fill(self.username, timeout=10000)
+            password.fill(self.password, timeout=10000)
+            dialog.get_by_role("button", name="Log In", exact=True).click(timeout=10000)
             page.wait_for_load_state("networkidle", timeout=20000)
             scraper.throttle()
         except Exception as e:
