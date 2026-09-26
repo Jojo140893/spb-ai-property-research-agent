@@ -2036,13 +2036,15 @@ python state_sync.py push</pre>
                 : 'yes')
             : key === '__lot_page'
             ? (r.lot_page_gone
-                ? `NO - the builder's page answered "not found" on ${r.lot_page_gone}; likely sold, confirm before sending`
+                ? (r.lot_page_status && r.lot_page_status !== 'gone'
+                    ? `NO - the builder's page says "${r.lot_page_status}" (checked ${r.lot_page_gone}); confirm before sending`
+                    : `NO - the builder's page answered "not found" since ${r.lot_page_gone}; likely sold or withdrawn, confirm before sending`)
                 : 'yes')
             : key === 'listing_url' && r.lot_page_gone
             ? (r.source_link_url || '')
             : r[key];
         const gone = rows.filter(r => r.lot_page_gone).length;
-        if (gone && !confirm(`${gone} of the ${rows.length} marked listing(s) have had their own page taken down by the builder (likely sold). They will be exported with "Lot Page Live?" = NO. Export anyway?`)) return;
+        if (gone && !confirm(`${gone} of the ${rows.length} marked listing(s) have had their own page taken down or marked sold/under offer by the builder. They will be exported with "Lot Page Live?" = NO. Export anyway?`)) return;
         const csv = [columns.map(c => cell(c[1])).join(',')]
             .concat(rows.map(r => columns.map(c => cell(derive(r, c[0]))).join(',')))
             .join('\r\n');
@@ -2448,8 +2450,12 @@ python state_sync.py push</pre>
                26 Sep: three E-Agent lots at the top of an SA search opened Kenekt's 404).
                Say so instead of linking to a page that no longer exists; the search already
                leaves these lots out (lot_page_gone). */
-            if (c.k === 'listing_url' && v && b.lot_page_gone)
-                return `<td style="color:var(--amber-yellow);" title="The builder's page for this lot answered 'page not found' on ${esc(b.lot_page_gone)}. Usually sold or withdrawn; left out of searches.">page gone ${esc(b.lot_page_gone)}</td>`;
+            if (c.k === 'listing_url' && v && b.lot_page_gone) {
+                const says = b.lot_page_status && b.lot_page_status !== 'gone';
+                return says
+                    ? `<td style="color:var(--amber-yellow);" title="The builder's own page for this lot says '${esc(b.lot_page_status)}' (checked ${esc(b.lot_page_gone)}); left out of searches.">page says ${esc(b.lot_page_status)}</td>`
+                    : `<td style="color:var(--amber-yellow);" title="The builder's page for this lot has answered 'page not found' since ${esc(b.lot_page_gone)}. Usually sold or withdrawn; left out of searches.">page gone ${esc(b.lot_page_gone)}</td>`;
+            }
             if (c.link) return `<td>${v ? `<a href="${esc(v)}" target="_blank" rel="noopener noreferrer"
                 style="color:var(--accent-blue);">${c.link}</a>` : ''}</td>`;
             if (c.pill) return `<td>${availPill(v)}</td>`;
@@ -4367,8 +4373,8 @@ python state_sync.py push</pre>
         scored: ['was scored against the brief', 'were scored against the brief'],
         not_available: ['is marked Sold, On Hold or otherwise not available',
                         'are marked Sold, On Hold or otherwise not available'],
-        lot_page_gone: ["has had its own page taken down by the builder (likely sold)",
-                        "have had their own page taken down by the builder (likely sold)"],
+        lot_page_gone: ["has its own page taken down or marked sold by the builder",
+                        "have their own page taken down or marked sold by the builder"],
         availability_unstated: ["is on a list that doesn't say whether it's available",
                                 "are on lists that don't say whether they're available"],
         price_unverified: ["has a price we couldn't verify", "have a price we couldn't verify"],

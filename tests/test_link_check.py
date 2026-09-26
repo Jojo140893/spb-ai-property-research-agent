@@ -49,12 +49,97 @@ def test_a_whole_host_going_dark_is_held_back_not_read_as_sales():
     fine = {f"https://fine.example/p/{i}": (404 if i < 3 else 200) for i in range(12)}
     small = {"https://small.example/a": 404, "https://small.example/b": 404}
     out, held = L.classify({**dark, **fine, **small})
-    assert set(held) == {"dark.example"} and held["dark.example"] == {"pages": 12, "gone": 11}
+    assert set(held) == {"dark.example"}
+    assert held["dark.example"] == {"pages": 12, "newly_gone": 11}
     assert all(out[u]["verdict"] != "gone" for u in dark)
     assert out["https://dark.example/p/0"]["held_back"]
     assert sum(out[u]["verdict"] == "gone" for u in fine) == 3, "3 of 12 is lots selling"
     # Below HOST_FLOOR pages there is nothing to call a pattern: two dead pages are two.
     assert all(out[u]["verdict"] == "gone" for u in small)
+
+
+def _hudson(n_gone_before, n_new, n_ok, n_timeout=0):
+    """A host with pages gone since earlier nights, pages gone tonight, pages fine, and
+    pages that did not answer. Returns (tonight's results, last night's urls)."""
+    results, previous, i = {}, {}, 0
+    for _ in range(n_gone_before):
+        u = f"https://h.example/property/BP-{i}/protected/x"
+        results[u], previous[u] = 404, {"verdict": "gone", "since": "12/09/2026"}
+        i += 1
+    for _ in range(n_new):
+        u = f"https://h.example/property/BP-{i}/protected/x"
+        results[u], previous[u] = 404, {"verdict": "ok"}
+        i += 1
+    for _ in range(n_ok):
+        u = f"https://h.example/property/BP-{i}/protected/x"
+        results[u], previous[u] = (200, "Available"), {"verdict": "ok"}
+        i += 1
+    for _ in range(n_timeout):
+        u = f"https://h.example/property/BP-{i}/protected/x"
+        results[u], previous[u] = "TimeoutError: timed out", {"verdict": "ok"}
+        i += 1
+    return results, previous
+
+
+def test_a_host_dying_slowly_over_weeks_is_never_mistaken_for_a_dark_site():
+    """Review, 26 Sep: Hudson sat at 123 of 213 gone from lots that died over weeks. Under
+    the first rule 48 more ordinary deaths tipped it past 80% and handed all 171 back."""
+    results, previous = _hudson(123, 48, 42)
+    out, held = L.classify(results, previous, today="10/10/2026")
+    assert held == {}, "48 of 90 pages that were fine last night is not a site going dark"
+    assert sum(r["verdict"] == "gone" for r in out.values()) == 171
+    old = out["https://h.example/property/BP-0/protected/x"]
+    new = out["https://h.example/property/BP-150/protected/x"]
+    assert old["since"] == "12/09/2026", "the first-gone date is carried forward"
+    assert new["since"] == "10/10/2026"
+
+
+def test_a_host_going_dark_overnight_is_held_but_its_known_dead_pages_stay_dead():
+    results, previous = _hudson(20, 90, 5)
+    out, held = L.classify(results, previous, today="10/10/2026")
+    assert held == {"h.example": {"pages": 95, "newly_gone": 90}}
+    gone = [u for u, r in out.items() if r["verdict"] == "gone"]
+    assert len(gone) == 20, "the 20 gone before tonight are still gone; only tonight's held"
+    assert sum("held_back" in r for r in out.values()) == 90
+
+
+def test_an_outage_that_also_times_out_pages_is_still_seen_as_one():
+    """Timeouts say nothing about the links; counted in, they diluted a 100% 404 night to
+    75% and let it through as 159 sales."""
+    results, previous = _hudson(0, 60, 0, n_timeout=20)
+    out, held = L.classify(results, previous, today="10/10/2026")
+    assert "h.example" in held, "60 of 60 pages that answered went 404 at once"
+    assert not any(r["verdict"] == "gone" for r in out.values())
+
+
+# ------------------------------------------------------------------ a page that says sold
+
+_KENEKT_PAGE = """<html><div>Price From $882,500</div>
+<turbo-frame id="portal_property_status_build_105545">
+  <div class="flex flex-wrap items-center sm:justify-end space-x-4">
+    <div class="h5 items-center font-medium rounded-full">
+      %s
+    </div>
+  </div>
+</turbo-frame><h2>Lot 86 Narooma Rise</h2></html>"""
+
+
+@pytest.mark.parametrize("word, verdict", [
+    ("Available", "ok"), ("Under offer", "unavailable"), ("Sold", "unavailable"),
+    ("On hold", "unavailable"), ("Coming soon", "ok"),
+])
+def test_a_page_that_is_up_but_says_under_offer_takes_the_lot_out(word, verdict):
+    """Live SA search, 26 Sep: #55, Lot 86 Narooma Rise, Murray Bridge, showed "Available"
+    on the card and "Under offer" on its own Kenekt page."""
+    assert L.page_status(_KENEKT_PAGE % word) == word
+    assert L.verdict(200, L.page_status(_KENEKT_PAGE % word)) == verdict
+
+
+def test_a_page_with_no_status_block_is_judged_by_its_status_code_alone():
+    assert L.page_status("<html>a PDF viewer</html>") is None
+    assert L.verdict(200, None) == "ok"
+    assert L.classify({"https://x.example/doc.pdf": 200})[0]["https://x.example/doc.pdf"] \
+        == {"status": 200, "verdict": "ok"}
 
 
 # ------------------------------------------------------------------ asking every page
@@ -90,6 +175,12 @@ class _Pages(http.server.BaseHTTPRequestHandler):
     def do_GET(self):                                                  # noqa: N802
         code = {"/ok": 200, "/gone": 404, "/removed": 410, "/boom": 500,
                 "/login": 403}.get(self.path)
+        if self.path.startswith("/property/BP-"):
+            self.send_response(200)
+            self.end_headers()
+            word = "Under offer" if "BP-1" in self.path else "Available"
+            self.wfile.write((_KENEKT_PAGE % word).encode("utf-8"))
+            return
         if self.path == "/moved":
             self.send_response(302)
             self.send_header("Location", "/gone")
@@ -119,6 +210,17 @@ def test_probe_reads_the_real_status_and_follows_a_redirect_to_it(local_site):
     assert L.probe(local_site + "/boom") == 500
     assert L.probe(local_site + "/login") == 403
     assert L.probe(local_site + "/moved") == 404, "a redirect to a dead page is dead"
+
+
+def test_probe_reads_the_status_word_off_a_package_page(local_site):
+    assert L.probe(local_site + "/property/BP-1/protected/x") == (200, "Under offer")
+    assert L.probe(local_site + "/property/BP-2/protected/x") == (200, "Available")
+    out, _held = L.classify({local_site + "/property/BP-1/protected/x":
+                             L.probe(local_site + "/property/BP-1/protected/x")},
+                            today="26/09/2026")
+    only = next(iter(out.values()))
+    assert only == {"status": 200, "verdict": "unavailable", "page_status": "Under offer",
+                    "since": "26/09/2026"}
 
 
 def test_a_page_that_cannot_be_reached_says_why_and_is_not_gone():
@@ -172,16 +274,61 @@ def test_the_run_writes_what_the_build_reads(tmp_path, monkeypatch):
 
     import build_web
     monkeypatch.setattr(build_web.config, "PROJECT_ROOT", tmp_path)
-    assert build_web._lot_pages_gone() == ({"https://x.example/1"}, data["date"])
+    assert build_web._lot_pages_gone() == (
+        {"https://x.example/1": (data["date"], "gone")}, data["date"])
+
+    # The next night reads this file first: a page still dead keeps its first-gone date.
+    first = data["date"]
+    monkeypatch.setattr(L, "_today_melbourne", lambda: "31/12/2099")
+    assert L.main([]) == 0
+    again = json.loads(out.read_text(encoding="utf-8"))
+    assert again["urls"]["https://x.example/1"]["since"] == first
 
 
 def test_with_no_check_file_the_build_marks_nothing(tmp_path, monkeypatch):
     import build_web
     monkeypatch.setattr(build_web.config, "PROJECT_ROOT", tmp_path)
-    assert build_web._lot_pages_gone() == (set(), "")
+    assert build_web._lot_pages_gone() == ({}, "")
     (tmp_path / ".sessions").mkdir()
     (tmp_path / ".sessions" / "link_status.json").write_text("{not json", encoding="utf-8")
-    assert build_web._lot_pages_gone() == (set(), ""), "unreadable is not 'all gone'"
+    assert build_web._lot_pages_gone() == ({}, ""), "unreadable is not 'all gone'"
+
+
+def test_a_page_saying_under_offer_reaches_the_build_with_its_word(tmp_path, monkeypatch):
+    import build_web
+    (tmp_path / ".sessions").mkdir()
+    (tmp_path / ".sessions" / "link_status.json").write_text(json.dumps({
+        "date": "26/09/2026", "urls": {
+            "https://ibportal.kenekt.app/property/BP-3826722/protected/x":
+                {"status": 200, "verdict": "unavailable", "page_status": "Under offer",
+                 "since": "26/09/2026"},
+            "https://ibportal.kenekt.app/property/BP-1/protected/y":
+                {"status": 200, "verdict": "ok"},
+            "https://ibportal.kenekt.app/property/BP-9/protected/z":
+                {"status": "TimeoutError: timed out", "verdict": "unknown"}}}),
+        encoding="utf-8")
+    monkeypatch.setattr(build_web.config, "PROJECT_ROOT", tmp_path)
+    pages, date = build_web._lot_pages_gone()
+    assert date == "26/09/2026"
+    assert pages == {"https://ibportal.kenekt.app/property/BP-3826722/protected/x":
+                     ("26/09/2026", "Under offer")}
+
+
+def test_the_same_package_on_a_price_list_with_no_link_is_caught_by_its_id():
+    """Review, 26 Sep: 22 rows from Hudson's "NSW Dual SEP NEW" list had no listing_url but
+    printed the package's BP id, whose page answers 404."""
+    import build_web
+    bps = build_web._bp_ids({
+        "https://partners.hudsonhomes.com.au/property/BP-5098436/protected/x":
+            ("20/09/2026", "gone")})
+    assert bps == {"BP-5098436": ("20/09/2026", "gone")}
+    line = "Available | 52 | Dual Key SODIUM 24 | https://partners.../property/BP-5098436/pro"
+    assert build_web._bp_twin(line, bps) == ("20/09/2026", "gone")
+    assert build_web._bp_twin("Available | BP-1234567", bps) is None, "a different package"
+    both_dead = dict(bps, **{"BP-1234567": ("21/09/2026", "gone")})
+    assert build_web._bp_twin("BP-5098436 and BP-1234567", both_dead) is None, \
+        "a line naming two packages is not one lot, even when both are gone"
+    assert build_web._bp_twin("", bps) is None and build_web._bp_twin(None, bps) is None
 
 
 def test_the_nightly_checks_the_pages_before_it_builds():
@@ -222,7 +369,18 @@ def test_a_lot_whose_page_is_gone_is_not_recommended_and_says_why():
                 C.explain_rows(brief, [live, gone], today=today)}
     assert verdicts["h2"]["gate"] == "lot_page_gone"
     assert verdicts["h2"]["detail"]["lot_page_gone"] == "26/09/2026"
+    assert verdicts["h2"]["detail"]["lot_page_status"] == "gone"
     assert verdicts["h1"]["gate"] != "lot_page_gone"
+
+
+def test_a_lot_whose_page_says_under_offer_is_refused_the_same_way():
+    import _candidates as C
+    from datetime import datetime
+    row = _row(lot_page_gone="26/09/2026", lot_page_status="Under offer")
+    verdict = C.explain_rows({"state": "SA", "primary_suburbs": []}, [row],
+                             today=datetime(2026, 9, 26))[0][1]
+    assert verdict["gate"] == "lot_page_gone"
+    assert verdict["detail"]["lot_page_status"] == "Under offer"
 
 
 def test_a_sold_lot_is_still_reported_as_sold_first():
@@ -293,3 +451,7 @@ def test_the_tracer_says_why_in_words():
     text, kind = tracer._verdict(_row(), {"gate": "lot_page_gone", "package": None,
                                           "detail": {"lot_page_gone": "26/09/2026"}}, 0)
     assert kind == "gate" and "26/09/2026" in text and "not found" in text
+    text, _kind = tracer._verdict(_row(), {"gate": "lot_page_gone", "package": None,
+                                           "detail": {"lot_page_gone": "26/09/2026",
+                                                      "lot_page_status": "Under offer"}}, 0)
+    assert "says 'Under offer'" in text

@@ -117,13 +117,15 @@ SNAPSHOT_FIELDS = [
     # THE DATE THE LOT'S OWN PAGE ANSWERED 404/410 (link_check.py via build_web), else "".
     # The gate refuses such a row as lot_page_gone.
     "lot_page_gone",
+    # Why: "gone" (404/410) or the status word the builder's own page shows ("Under offer").
+    "lot_page_status",
 ]
 
 # Build-time cells a snapshot DATABASE may predate and nothing in it can recompute: the
 # SQLite reader gives them their "not known" value instead of failing the read. A snapshot
 # built before link_check.py existed has no lot_page_gone, which means no page was found
 # gone -- exactly how the search behaved before the check.
-_OPTIONAL_SNAPSHOT_FIELDS = {"lot_page_gone": ""}
+_OPTIONAL_SNAPSHOT_FIELDS = {"lot_page_gone": "", "lot_page_status": ""}
 
 # Build-time cells a purpose-built snapshot DATABASE may predate. The SQLite reader
 # computes them from the columns they derive from, exactly as build_web does, instead of
@@ -2126,6 +2128,7 @@ def _gate(ctx, row, prepared, today):
     # Never raised on a timeout or a 403 -- those are "could not tell", not "gone".
     if str(row.get("lot_page_gone") or "").strip():
         detail["lot_page_gone"] = str(row.get("lot_page_gone"))
+        detail["lot_page_status"] = str(row.get("lot_page_status") or "gone")
         return GateResult("lot_page_gone", None, tags, detail)
     by_the_sheet = False
     by_exception_list = False
@@ -2964,9 +2967,9 @@ def coverage_sentence(counts, source_path, state):
             % counts["other_product_type"])
     if counts.get("lot_page_gone"):
         parts.append(
-            "%d listing(s) were left out because the builder has taken the lot's own page "
-            "down -- it answered \"page not found\" when checked. That usually means sold "
-            "or withdrawn, so they are not offered even to confirm."
+            "%d listing(s) were left out because the builder's own page for the lot has "
+            "been taken down (\"page not found\") or marks it sold, under offer or on hold "
+            "when checked, so they are not offered even to confirm."
             % counts["lot_page_gone"])
     unstated = counts.get("unstated_but_scored") or {}
     if unstated:
