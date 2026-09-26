@@ -29,9 +29,11 @@ effort): "Wyndum Vale" came back unknown, "Cragieburn" was left out of the answe
 "western suburbs of Melbourne" included Coburg and Brunswick, due north of the CBD. So a
 phrase that is not an area is sent with the localities of the brief's state spelt closest
 to it (_candidates); a phrase Groq still does not settle is searched as its closest spelling
-only when that one is close and alone (_fuzzy, method "fuzzy"); and an area phrase that
-says a compass direction of or from a place it names keeps only names that lie that way
-(_gate).
+only when that one is close and alone (_fuzzy, method "fuzzy"); an area phrase that says a
+compass direction of or from a place it names keeps only names that lie that way (_gate);
+and the one name Groq answered, when it starts with the same word as a name the caller
+wrote and ends differently, far away ("COUNTRY NEAR MOUNT VICENT" as Mount Victoria),
+becomes the locality the caller's words clearly spell (_respelt, method "fuzzy").
 
 NEVER A 500, NEVER SILENT. No key, a timeout, a non-200 or an answer that is not the JSON
 asked for all leave the brief exactly as geo.py's fold left it. What was done to every
@@ -185,6 +187,14 @@ _CONNECTIVES = frozenset(("the", "of", "in", "at", "to", "a", "an", "and", "or",
 # Words that say what kind of place a phrase is, never which one. Left out when the phrase's
 # own words are looked up as a locality or as an estate the stock knows.
 _FILLER = AREA_WORDS | ESTATE_WORDS | _CONNECTIVES
+# The words that end one run of a phrase's words and start the next (_runs): the ones that
+# are never part of a locality's name. Compass words, "the", "of", "on" and the estate words
+# often are ("East Maitland", "The Rocks", "Bend Of Islands", "Patrick Estate").
+_RUN_BREAKS = (AREA_WORDS - frozenset((
+    "north", "south", "east", "west", "northern", "southern", "eastern", "western",
+    "northeast", "northwest", "southeast", "southwest",
+    "northeastern", "northwestern", "southeastern", "southwestern"))) | \
+    (_CONNECTIVES - frozenset(("the", "of", "on")))
 # FROM WHERE A DIRECTION IS SAID. Review, 15 Sep 2026: the gate measured from any place the
 # phrase named, so "western suburbs around Werribee" dropped Tarneit, Hoppers Crossing,
 # Point Cook and Truganina "as not west of Werribee", and "northern suburbs like Craigieburn"
@@ -715,13 +725,114 @@ def _named_in_phrase(index, said, state):
     return ""
 
 
-def _gate(index, said, names, state):
+def _runs(said):
+    """The phrase's words between the words that never belong to a place name, each run as
+    one string: "COUNTRY NEAR MOUNT VICENT" is "COUNTRY" and "MOUNT VICENT".
+
+    Not split at a compass word, "the", "of", "on" or "estate": East Maitland, North Ryde,
+    The Pilliga, Bend Of Islands and Patrick Estate are names. Review, 24 Sep 2026: splitting
+    at every _FILLER word read "near East Maitland" as Maitland and "near North Ryde" as Ryde
+    -- 4,787 right answers of 182,031 lost across 675 localities."""
+    runs, run = [], []
+    for word in _words(said):
+        if word.lower() in _RUN_BREAKS:
+            if run:
+                runs.append(" ".join(run))
+            run = []
+        else:
+            run.append(word)
+    if run:
+        runs.append(" ".join(run))
+    return runs
+
+
+def _run_reading(index, run, state):
+    """(name, similarity, how, detail) when a whole run of words IS one locality of `state`:
+    exactly ("exact"), by the spoken fold ("spoken") or by the backstop's own spelling rules
+    ("spelling", _fuzzy). ('', 0.0, '', '') otherwise, and for a real locality of another
+    state -- the same refusal resolve() makes for a whole phrase."""
+    if index.locate(run, state):
+        return index.canonical_suburb(run, state) or run, 1.0, "exact", ""
+    if index.states_for_suburb(run, spoken=True) and not index.locate(run, state, spoken=True):
+        return "", 0.0, "", ""
+    spelt = index.canonical_suburb(run, state, spoken=True)
+    if spelt and index.locate(spelt, state):
+        return spelt, 1.0, "spoken", f"said differently from the gazetteer's {spelt}"
+    if not _spelt_like_one_name(run):
+        return "", 0.0, "", ""
+    ranked = _ranked(index, _phrase_key(run), state)
+    name, detail = _fuzzy(index, run, state, ranked)
+    return (name, ranked[0][0], "spelling", detail) if name else ("", 0.0, "", "")
+
+
+def _respelt(index, said, name, state):
+    """The locality to search instead of `name` -- the ONE locality Groq answered for `said`
+    -- when Groq misspelt a name the caller wrote; None otherwise.
+
+    GROQ READ THE RIGHT WORDS AND CHOSE THE WRONG NAME. WhatsApp lead 54494433, 24 Sep 2026:
+    Preferred Suburbs "COUNTRY NEAR MOUNT VICENT" on an NSW brief. gpt-oss-20b answered Mount
+    Victoria -- in the Blue Mountains, 138 km from Mount Vincent in the Hunter -- and nothing
+    objected: a lone name anchors the map gate on itself. 20 km and 50 km around Mount
+    Victoria held no stock, and the top 3 came from the whole of NSW, Blacktown units 109 km
+    from where the buyer asked. The index reads "MOUNT VICENT" as Mount Vincent at 0.94.
+
+    EXACTLY THAT SHAPE, AND NOTHING WIDER. Review, 24 Sep 2026, offline over every NSW, VIC
+    and QLD locality, of two wider versions. Reading the place from the words alone and
+    letting it overrule Groq sent "near Burleigh Haeds" to Burleigh (1,361 km), "near train
+    station" to Tara Station and "north shore area" to North Shore by Port Macquarie.
+    Replacing any Groq name spelt 0.6 like the words lost 4,787 of 182,031 RIGHT answers
+    ("near East Maitland" to Maitland), merged Groq's real neighbours away, and turned "Lake
+    Mac area" into Lakemba and "near waterfalls" into Waterfall. So a name is respelt only
+    when all of these hold:
+      * Groq returned ONE name for the phrase: it read the phrase as one place, not an area;
+      * a run of the phrase's words (_runs) of two or more words reads as a locality
+        (_run_reading: exactly, by the fold, or by the backstop's rules) with as many words;
+      * Groq's name, the caller's run and that locality all START WITH THE SAME WORD, as the
+        fold spells it (Mount / MOUNT / Mt): the caller wrote the name, and only the rest of
+        it was misread -- "Lake Mac" is not "Lakemba", "waterfalls" is not "Waterfall".
+        Not when that word is "The" or a compass word: "The Palms" for "near the falls" and
+        "North Lismore" for "north shore area" share only a word every place has;
+      * Groq's name is at least CANDIDATE_FLOOR like the run and neither spoken key holds the
+        other (a shortening or a longer name is not a misspelling);
+      * the two localities are more than MAX_KM_FROM_ANCHOR apart. Closer than that, the
+        search radius already reaches the other one, and nothing needs overruling.
+    When Groq does not answer, nothing here runs: the phrase is searched as it always was.
+    """
+    gkey = _spoken_key(name)
+    gfirst = _spoken_key(name.split()[0]) if name.split() else ""
+    for run in _runs(said):
+        words = run.split()
+        rkey = _phrase_key(run)
+        # The first-word test is repeated on the reading below; here it saves a ranking of
+        # the state's localities (tens of ms in NSW) for every run that cannot qualify.
+        if len(words) < 2 or not rkey or not gkey or words[0].lower() in _FILLER \
+                or _spoken_key(words[0]) != gfirst:
+            continue
+        if rkey in gkey or gkey in rkey:
+            continue
+        like = difflib.SequenceMatcher(None, rkey, gkey).ratio()
+        if like < CANDIDATE_FLOOR:
+            continue
+        spelt, similarity, how, detail = _run_reading(index, run, state)
+        if not spelt or spelt.lower() == name.lower() or len(spelt.split()) != len(words) \
+                or _spoken_key(spelt.split()[0]) != gfirst:
+            continue
+        if _km(index, spelt, name, state) <= MAX_KM_FROM_ANCHOR:
+            continue
+        return {"run": run, "groq": name, "name": spelt, "how": how,
+                "similarity": similarity, "like": like, "detail": detail}
+    return None
+
+
+def _gate(index, said, names, state, place=""):
     """(names kept, [why others were not]) -- the names that are ONE reading of `said`.
 
     Every name here is already a real locality of `state`. In order:
       1. the estate: when the phrase's own words are an estate the stock knows in `state`,
          only the localities its listings are filed under;
-      2. the map: only names within MAX_KM_FROM_ANCHOR of the anchor;
+      2. the map: only names within MAX_KM_FROM_ANCHOR of the anchor -- `place` (the name
+         _respelt read from the caller's own words), else a place the phrase names, else
+         where the names agree;
       3. the direction: for an area said as a compass direction of or from a place the
          phrase names, only names that lie that way (DIRECTION_HALF_ANGLE);
       4. the count: one name, when the phrase names one place rather than an area.
@@ -751,7 +862,10 @@ def _gate(index, said, names, state):
                            "place was named, not an area")
             names = [best]
     if names:
-        anchor = _named_in_phrase(index, said, state)
+        # A respelt name is where the caller's words point -- even past a shorter locality
+        # spelt inside them ("Forbes" in "Forbes Rier", read as Forbes River) -- so it is the
+        # anchor, not the shorter one.
+        anchor = (place if place in names else "") or _named_in_phrase(index, said, state)
         if not anchor:
             # The name most of the others are near, the earliest on a tie -- so one far-off
             # name listed FIRST cannot drag the whole reading after it.
@@ -891,7 +1005,7 @@ def _backstop(pending, slots, st, index, ranked_ms):
     room = MAX_PRIMARY_SUBURBS - len(taken)
     checked = used = 0
     for s in pending:
-        if s["method"] == "groq" or not s.get("ranked"):
+        if s["method"] in ("groq", "fuzzy") or not s.get("ranked"):
             continue
         checked += 1
         try:
@@ -966,6 +1080,7 @@ def _resolve_with_groq(pending, slots, st, index):
             continue
         names, confidence = answers[n]
         returned += len(names)
+        s["returned"] = len(names)
         if confidence not in ACCEPTED_CONFIDENCE or not names:
             s["note"] = (f"not a locality {where}; searched as said (Groq's reading was "
                          f"{confidence or 'not given'})")
@@ -1026,8 +1141,19 @@ def _resolve_with_groq(pending, slots, st, index):
         if not candidates[n]:
             continue
         slot = asked[n - 1]
-        names, why = _gate(index, slot["said"], [v[0] for v in candidates[n]], st)
-        slot["gate"] = why
+        offered, fix = [v[0] for v in candidates[n]], None
+        if given and slot.get("returned") == 1 and len(offered) == 1:
+            # One name Groq may have misread from the caller's own words: see _respelt. Only
+            # on the brief's own state, never one inferred from Groq's answer.
+            try:
+                fix = _respelt(index, slot["said"], offered[0], st)
+            except Exception as ex:                                    # noqa: BLE001
+                _log(f"respell error={type(ex).__name__}")
+                fix = None
+            if fix:
+                offered = [fix["name"]]
+        names, why = _gate(index, slot["said"], offered, st, fix["name"] if fix else "")
+        slot["gate"], slot["respelt"] = why, fix
         if not names:
             slot["note"] = (f"not a locality {where}; searched as said (none of the "
                             f"{len(candidates[n])} localities Groq offered was kept: "
@@ -1075,6 +1201,18 @@ def _resolve_with_groq(pending, slots, st, index):
         if slot.get("estates"):
             parts.append(f"{slot['estates']} dropped as the name of an estate the stock "
                          "files elsewhere")
+        fix = slot.get("respelt")
+        if fix and slot["used"] == [fix["name"]]:
+            spelt = (f"spelt like {fix['name']} ({fix['detail']})" if fix["how"] == "spelling"
+                     else f"{fix['name']} as the gazetteer has it" if fix["how"] == "spoken"
+                     else f"exactly {fix['name']}")
+            parts.append(f"Groq read \"{fix['run']}\" as {fix['groq']}, but those words are "
+                         f"{spelt}, and only {fix['like']:.2f} like {fix['groq']}, "
+                         f"{round(_km(index, fix['name'], fix['groq'], st))} km away, so "
+                         f"{fix['name']} was searched instead")
+            # Groq overruled on spelling alone: a consultant should check it, whichever way
+            # the words were read -- "matched by spelling" everywhere a reading is shown.
+            slot["method"] = "fuzzy"
         parts.extend(slot.get("gate") or [])
         if slot.get("already"):
             parts.append("already in the search: " + ", ".join(slot["already"]))
@@ -1083,7 +1221,7 @@ def _resolve_with_groq(pending, slots, st, index):
                          f"{MAX_PRIMARY_SUBURBS} suburbs)")
         slot["note"] = "; ".join(parts)
     for s in asked:
-        for k in ("dropped", "estates", "gate", "already", "capped"):
+        for k in ("dropped", "estates", "gate", "already", "capped", "respelt", "returned"):
             s.pop(k, None)
 
     _log(f"groq phrases={len(phrases)} returned={returned} validated={kept} used={used} "

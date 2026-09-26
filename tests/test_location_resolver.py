@@ -430,6 +430,148 @@ def test_a_council_name_that_sounds_like_no_one_suburb_keeps_its_area(groq):
     assert out["suburbs"] == wyndham
 
 
+# ------------------------------------------------------------------ a name Groq misread
+
+BARI = "COUNTRY NEAR MOUNT VICENT"        # WhatsApp lead 54494433, Preferred Suburbs, NSW
+
+
+def _groq_says(groq, *names):
+    groq.respond = answer([{"id": 1, "localities": list(names), "confidence": "high"}])
+
+
+def _as_before(monkeypatch, phrase, state):
+    """What resolve() gives for `phrase` with _respelt switched off: the resolver before it."""
+    LR._CACHE.clear()
+    monkeypatch.setattr(LR, "_respelt", lambda *_a: None)
+    return LR.resolve([phrase], state, _GEO)
+
+
+def test_a_name_groq_misread_is_searched_as_the_caller_wrote_it(groq):
+    """Live, 24 Sep 2026: Groq read Bari's answer as Mount Victoria, in the Blue Mountains 138
+    km from Mount Vincent; nothing objected, and the top 3 came from the whole of NSW."""
+    assert not _GEO.locate("Mount Vicent", "NSW", spoken=True), "premise: a misspelling"
+    _groq_says(groq, locality("Mount Victoria", "NSW"))
+    out = LR.resolve([BARI], "NSW", _GEO)
+    assert out["suburbs"] == [locality("Mount Vincent", "NSW")]
+    entry = said(out)[BARI]
+    assert entry["method"] == "fuzzy", "Groq overruled on spelling: a consultant should check"
+    assert ('Groq read "MOUNT VICENT" as Mount Victoria, but those words are spelt like '
+            "Mount Vincent (similarity 0.94") in entry["note"]
+    assert "only 0.67 like Mount Victoria, 138 km away, so Mount Vincent was searched " \
+           "instead" in entry["note"]
+    assert groq.calls[0]["phrases"] == [{"id": 1, "said": BARI}], "the prompt is unchanged"
+
+
+def test_the_name_misread_as_one_the_caller_spelt_right_is_searched_as_they_spelt_it(groq):
+    phrase = "COUNTRY NEAR MOUNT VINCENT"
+    _groq_says(groq, locality("Mount Victoria", "NSW"))
+    out = LR.resolve([phrase], "NSW", _GEO)
+    assert out["suburbs"] == ["Mount Vincent"]
+    entry = said(out)[phrase]
+    assert entry["method"] == "fuzzy", "flagged all the same: Groq was overruled"
+    assert "those words are exactly Mount Vincent" in entry["note"]
+
+
+def test_one_misspelt_name_groq_misread_despite_its_candidates_is_respelt_too(groq):
+    _groq_says(groq, locality("Mount Victoria", "NSW"))
+    out = LR.resolve(["MOUNT VICENT"], "NSW", _GEO)
+    assert groq.calls[0]["phrases"][0]["candidates"][0] == "Mount Vincent", \
+        "premise: Groq was offered the right spelling and chose another"
+    assert out["suburbs"] == ["Mount Vincent"]
+    entry = said(out)["MOUNT VICENT"]
+    assert entry["method"] == "fuzzy"
+    # Settled here, so the backstop does not read it a second time and rewrite the note.
+    assert entry["note"].startswith("Groq read this as 1 locality in NSW")
+    assert "Groq did not settle it" not in entry["note"]
+
+
+def test_a_shorter_locality_inside_the_words_does_not_undo_the_respelling(groq):
+    # "Forbes" is itself a locality, 50+ km from Forbes River: measured from it, the respelt
+    # name was dropped again and the phrase searched as said (15 such in the review's run).
+    phrase = "country near Forbes Rier"
+    assert LR._named_in_phrase(_GEO, phrase, "NSW") == "Forbes", "premise"
+    _groq_says(groq, locality("Forbes Creek", "NSW"))
+    out = LR.resolve([phrase], "NSW", _GEO)
+    assert out["suburbs"] == [locality("Forbes River", "NSW")]
+    assert said(out)[phrase]["method"] == "fuzzy"
+
+
+@pytest.mark.parametrize("failure", ["unknown", "timeout"])
+def test_without_an_answer_from_groq_nothing_is_read_from_the_words(groq, failure):
+    groq.respond = UNKNOWN if failure == "unknown" else TimeoutError("timed out")
+    out = LR.resolve([BARI], "NSW", _GEO)
+    assert out["suburbs"] == [BARI] and said(out)[BARI]["method"] == "unresolved"
+
+
+# Review, 24 Sep 2026, of two wider versions, offline over every NSW, VIC and QLD locality.
+# Each of these went wrong in one of them: Tara Station, Marinna, Mountain View, Lakemba,
+# Waterfall, Wentworth, North Shore by Port Macquarie, Burleigh 1,361 km from Burleigh Heads,
+# Maitland for East Maitland, Ryde for North Ryde, and Groq's real neighbours merged away.
+# Groq answered by meaning, answered an area, spelt the words right, or was close enough for
+# the search radius -- so the answer must be exactly the resolver's before _respelt.
+@pytest.mark.parametrize("phrase, state, answered", [
+    ("near train station", "QLD", ["Brisbane"]),
+    ("near the marina", "NSW", ["Port Macquarie"]),
+    ("near the marina", "NSW", ["Ballina"]),                 # 0.62 like "marina"
+    ("near waterfalls", "NSW", ["Wentworth Falls"]),         # 0.67, Waterfall is a locality
+    ("mountain views area", "NSW", ["Katoomba", "Leura"]),
+    ("Lake Mac area", "NSW", ["Belmont", "Warners Bay", "Toronto"]),
+    ("Lake Mac area", "NSW", ["Lake Haven"]),                # "Lake Mac" reads as Lakemba
+    ("near Wentwoth Point", "NSW", ["Wentworth Point"]),
+    ("north shore area", "NSW", ["Chatswood", "Lane Cove"]),
+    ("near Burleigh Haeds", "QLD", ["Burleigh Heads"]),
+    ("near Burleigh", "QLD", ["Burleigh Heads"]),            # a shortening, not a misspelling
+    ("near East Maitland", "NSW", ["East Maitland"]),
+    ("around North Ryde", "NSW", ["North Ryde", "Macquarie Park", "Ryde"]),
+    ("near West Burleigh", "QLD", ["West Burleigh"]),
+    ("between Maitlnd and Cesnock", "NSW", ["Maitland", "Cessnock"]),
+    (BARI, "NSW", ["Mount Victoria", "Blackheath", "Katoomba"]),   # an area answer: the gate's
+    (BARI, "NSW", ["Mount View"]),       # 22 km from Mount Vincent: the radius reaches it
+    ("near the falls", "QLD", ["The Palms"]),                # share only "The"
+    ("north shore area", "NSW", ["North Lismore"]),          # share only "North"
+])
+def test_an_answer_groq_did_not_misread_from_the_words_is_left_alone(groq, monkeypatch, phrase,
+                                                                     state, answered):
+    _groq_says(groq, *[locality(n, state) for n in answered])
+    out = LR.resolve([phrase], state, _GEO)
+    assert out == _as_before(monkeypatch, phrase, state)
+
+
+def test_words_that_are_a_place_in_another_state_are_not_respelt_to_a_local_one(groq,
+                                                                               monkeypatch):
+    # Mount Franklin is a Victorian locality. Spelt like it in NSW is Mount Rankin, by
+    # Bathurst, 660 km from the Mount Warning Groq answers here.
+    assert _GEO.states_for_suburb("Mount Franklin", spoken=True) == ["VIC"], "premise"
+    assert LR._fuzzy(_GEO, "Mount Franklin", "NSW", LR._ranked(
+        _GEO, LR._phrase_key("Mount Franklin"), "NSW"))[0] == "Mount Rankin", \
+        "premise: only the other-state guard stops this"
+    _groq_says(groq, locality("Mount Warning", "NSW"))
+    out = LR.resolve(["near Mount Franklin"], "NSW", _GEO)
+    assert out == _as_before(monkeypatch, "near Mount Franklin", "NSW")
+    assert "Mount Rankin" not in out["suburbs"]
+
+
+def test_without_a_state_on_the_brief_nothing_is_respelt(groq, monkeypatch):
+    # The state is then inferred from Groq's own answer, so there is no gazetteer of the
+    # caller's to read their words against: the resolver behaves exactly as before.
+    _groq_says(groq, locality("Mount Victoria", "NSW"))
+    out = LR.resolve([BARI], "", _GEO)
+    assert out["state"] == "NSW" and out["suburbs"] == ["Mount Victoria"]
+    assert out == _as_before(monkeypatch, BARI, "")
+
+
+def test_a_failure_while_respelling_costs_nothing_else(groq, monkeypatch, capsys):
+    _groq_says(groq, locality("Mount Victoria", "NSW"))
+
+    def broken(*_a):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(LR, "_run_reading", broken)
+    out = LR.resolve([BARI], "NSW", _GEO)
+    assert out["suburbs"] == ["Mount Victoria"], "Groq's reading, exactly as before"
+    assert "[location_resolver] respell error=RuntimeError" in capsys.readouterr().err
+
+
 def _newpark():
     index = SuburbGeoIndex()
     index.know_estates([("Newpark", "Melonba", "NSW")])
