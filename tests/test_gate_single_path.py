@@ -132,7 +132,9 @@ def _assert_matches_golden(packages, counts, golden, keep_packages_up_to=60):
         assert p["availability_by_exception_list"] is False
     extra_counts = {k for k in counts if k in gen.NEW_COUNT_KEYS}
     assert extra_counts == {"counts_in_range", "just_over", "stale_over_limit",
-                            "newer_capture_demoted", "confirm_guarded"}, extra_counts
+                            "newer_capture_demoted", "confirm_guarded",
+                            "lot_page_gone"}, extra_counts
+    assert counts["lot_page_gone"] == 0, "the fixture carries no lot_page_gone"
     assert "available_by_exception_list" not in counts, "confirm mode promotes nothing"
     got = gen.golden_record(
         [{k: v for k, v in p.items() if k not in W18_PACKAGE_KEYS} for p in packages],

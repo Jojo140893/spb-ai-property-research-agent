@@ -810,6 +810,14 @@ class Tracer:
             return ("hidden: the source marks it %s (checked %s)"
                     % (detail.get("availability_status"),
                        row.get("date_checked") or "never"), "gate")
+        if gate == "lot_page_gone":
+            status = detail.get("lot_page_status") or "gone"
+            said = ("answered 'not found'" if status == "gone"
+                    else "says '%s'" % status)
+            return ("hidden: the builder's page for this lot %s (link_check.py, since %s; "
+                    "last read from the source %s)"
+                    % (said, detail.get("lot_page_gone") or "?",
+                       row.get("date_checked") or "never"), "gate")
         if gate == "availability_unstated":
             reason = detail.get("not_admitted")
             text = HIDDEN_BECAUSE.get(reason, reason or "availability not stated")

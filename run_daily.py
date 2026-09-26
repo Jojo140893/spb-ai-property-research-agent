@@ -377,6 +377,11 @@ def _chain(args) -> int:
         # is a row saying so, never a failed harvest. Every source the check cannot
         # reach reads "not checked" rather than being guessed at.
         ("6/7  Check each portal sign-in", ["portal_login.py", "--check"], True),
+        # BEFORE the build, which reads .sessions/link_status.json: a lot whose own page
+        # answers 404/410 is marked and left out of every search (Coleen, 26 Sep: the top
+        # of an SA search opened Kenekt's "page not found"). Optional for the same reason
+        # as the sign-in check -- a check that cannot run leaves the stock as it was.
+        ("6/7  Check each lot's own page still opens", ["link_check.py"], True),
         ("7/7  Build the deployed snapshot", ["build_web.py"], False),
         # REPLAY COLIN'S SEARCHES against what was just built, through the bundle that is
         # about to ship (vercel_site/api), on a read-only copy of the database. Part C,

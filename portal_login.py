@@ -322,6 +322,15 @@ _LOGGED_IN_JS = LOGGED_IN_JS
 def _open_login_form(page, name: str):
     """Click through to the actual email/password form so the operator lands on the
     fields directly instead of a signup modal. Navigation only — never fills them."""
+    if name == "e_agent":
+        # Exact matches, the same path as the nightly login. The substring steps below
+        # clicked "Log in with Google" on E-Agent's log-in panel (review, 26 Sep), opening
+        # a Google popup in front of whoever was signing in.
+        from sources.e_agent import open_members_form
+        try:
+            return open_members_form(page)[2]
+        except Exception:
+            return False
     steps = [
         "button:has-text('Already a member')", "button:has-text('Log In')",
         "a:has-text('Log In')", "button:has-text('Sign In')",

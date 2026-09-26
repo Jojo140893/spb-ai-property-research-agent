@@ -76,3 +76,5 @@ _harvest_partial
 # has a whole assertion (_assert_no_folder_capability_urls) devoted to keeping those out
 # of the published snapshot; they do not belong in git either.
 data/sheet_check.json
+# E-Agent login failure captures (sources/e_agent.py); uploaded as a run artifact, never committed
+logs/

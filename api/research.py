@@ -618,8 +618,8 @@ def _brief_used(brief_dict):
 # storey_unknown_and_binding is NOT here: it tags a row that is still scored, so counting
 # it too counted that row twice.
 FILTERED_COUNTS = (
-    "not_available", "availability_unstated", "price_unverified", "no_price",
-    "over_budget", "under_minimum", "no_suburb", "suburb_not_a_locality",
+    "not_available", "lot_page_gone", "availability_unstated", "price_unverified",
+    "no_price", "over_budget", "under_minimum", "no_suburb", "suburb_not_a_locality",
     "incomplete_facts", "other_product_type", "no_incentive",
     "truncated", "same_listing_collapsed", "duplicates_merged",
 )

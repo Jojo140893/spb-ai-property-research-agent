@@ -136,7 +136,11 @@ ALLOWED_VERDICTS = ("shortlist", "needs_confirming", "collapsed_into_visible",
                     # W11's email guard (critique #9), the same kind of sold-stock evidence
                     # as builder_documents_reread for a list sent by email.
                     "newer_list_from_sender",
-                    "price_unverified")
+                    "price_unverified",
+                    # The lot's own page answered 404/410 when link_check.py asked (26 Sep:
+                    # Coleen's SA search opened dead Kenekt pages). Sold-stock evidence the
+                    # database does not carry, so an "obvious" row can be hidden by it.
+                    "lot_page_gone")
 WARN_VERDICTS = ("no_suburb", "suburb_not_a_locality", "incomplete_facts",
                  # An office or a shop filed as a dwelling (release review: "Building A
                  # Ground Level Office", an Apartment row) -- the filing is the problem.

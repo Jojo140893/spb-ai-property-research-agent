@@ -58,7 +58,10 @@ NEW_PACKAGE_KEYS = W04_PACKAGE_KEYS + W11_PACKAGE_KEYS
 W04_COUNT_KEYS = ("counts_in_range", "admitted")
 W11_COUNT_KEYS = ("just_over", "stale_over_limit", "newer_capture_demoted",
                   "confirm_guarded", "unstated_not_admitted")
-NEW_COUNT_KEYS = W04_COUNT_KEYS + W11_COUNT_KEYS
+# 26 Sep: the lot's own page answering 404/410 (link_check.py) is a gate of its own. The
+# fixture's rows were cut before the check existed and carry no lot_page_gone, so it is 0.
+LINK_CHECK_COUNT_KEYS = ("lot_page_gone",)
+NEW_COUNT_KEYS = W04_COUNT_KEYS + W11_COUNT_KEYS + LINK_CHECK_COUNT_KEYS
 
 # Cells build_web derives at build time that the fixture did not carry when it was cut
 # (W07 price evidence, W11 emailed-list identity). `enrich` adds them to the SAME rows.
