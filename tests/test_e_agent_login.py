@@ -95,15 +95,24 @@ class _Page:
 
     def __init__(self):
         self.shots = []
+        self.events = []
 
     def title(self):
         return "e-agent"
 
+    def inner_text(self, selector, timeout=None):
+        return "Access Projects\n  Members only"
+
+    def evaluate(self, script):
+        self.events.append(("evaluate", script))
+
     def screenshot(self, path, full_page=False):
         Path(path).write_bytes(b"png")
         self.shots.append(path)
+        self.events.append(("screenshot", path))
 
     def content(self):
+        self.events.append(("content", None))
         return "<html>dialog</html>"
 
 
@@ -120,6 +129,48 @@ def test_a_failure_says_what_the_dialog_showed_and_keeps_a_copy(tmp_path, monkey
     assert (tmp_path / "logs" / "e_agent_login_failure.html").read_text(
         encoding="utf-8") == "<html>dialog</html>"
     assert "site layout may have changed" not in line, "the guess that was wrong on 24 Sep"
+
+
+def test_every_input_is_blanked_before_anything_is_captured(tmp_path, monkeypatch, caplog):
+    """After a submit the email and password are in the page; the capture must not be."""
+    monkeypatch.setattr(e_agent.config, "PROJECT_ROOT", tmp_path)
+    src = EAgentSource.__new__(EAgentSource)
+    page = _Page()
+    with caplog.at_level(logging.ERROR):
+        src._record_login_failure(page, _Dialog("Log In Wrong email or password"),
+                                  "the login dialog stayed open after the credentials "
+                                  "were submitted")
+    kinds = [k for k, _ in page.events]
+    assert kinds[0] == "evaluate", "blanked first"
+    assert "querySelectorAll('input, textarea')" in page.events[0][1]
+    assert kinds.index("evaluate") < kinds.index("screenshot") < kinds.index("content")
+    assert "the login dialog stayed open after the credentials were submitted" in caplog.text
+    assert "Wrong email or password" in caplog.text, "Wix's own reason reaches the log"
+    assert "page='Access Projects Members only'" in caplog.text
+
+
+def test_after_the_submit_the_login_waits_for_the_dialog_and_records_both_failures():
+    src = _login_source()
+    submit = src.index("get_by_role('button', name='Log In', exact=True).click(")
+    assert src.index("dialog.wait_for(state='hidden'", submit) > submit
+    assert "the login dialog stayed open after the credentials were submitted" in src
+    assert "signed in but no stocklist files are reachable" in src
+    assert src.count("_record_login_failure(") == 3, "form missing, dialog open, no files"
+
+
+def test_the_quick_check_uses_the_nightly_login_and_saves_no_session():
+    import e_agent_login_check as check
+    src = inspect.getsource(check)
+    assert "source._login(scraper)" in src
+    assert "read_only=True" in src
+    from sources.scraper_base import SESSION_DIR, PROFILE_DIR
+    assert not (SESSION_DIR / f"{check.SESSION_NAME}.json").exists()
+    assert not (PROFILE_DIR / check.SESSION_NAME).exists()
+    wf = (APP / ".github" / "workflows" / "e-agent-login-check.yml").read_text(
+        encoding="utf-8")
+    assert "workflow_dispatch:" in wf and "schedule:" not in wf, "by hand only"
+    assert "python e_agent_login_check.py" in wf
+    assert "path: logs/e_agent_login_failure.*" in wf
 
 
 def test_no_dialog_at_all_is_said_as_such(tmp_path, monkeypatch, caplog):

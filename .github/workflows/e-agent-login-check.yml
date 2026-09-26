@@ -1,0 +1,54 @@
+# Run only the E-Agent login on a GitHub runner, and keep what the page showed.
+#
+# WHY. The nightly harvest is the only other place this login runs, and it takes 85
+# minutes. On 26 Sep it reached E-Agent's form, submitted the credentials and then logged
+# "signed in but no stocklist files are reachable" with nothing else to go on. This runs
+# e_agent_login_check.py -- the nightly's own _login, in a fresh browser, writing no session
+# -- in about three minutes, and uploads the failure page (inputs blanked before capture).
+#
+# Started by hand only (Actions -> E-Agent login check -> Run workflow). Every run submits
+# the E-Agent credentials once, so it is not scheduled.
+
+name: E-Agent login check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    if: github.repository == 'Jojo140893/spb-ai-property-research-agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      E_AGENT_USERNAME: ${{ secrets.E_AGENT_USERNAME }}
+      E_AGENT_PASSWORD: ${{ secrets.E_AGENT_PASSWORD }}
+      TZ: Australia/Melbourne
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Install Chromium
+        run: |
+          timeout 300 python -m playwright install --with-deps chromium \
+            || timeout 300 python -m playwright install chromium
+
+      - name: Log in to E-Agent once
+        run: python e_agent_login_check.py
+
+      - name: Keep the E-Agent login failure page
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e-agent-login-check
+          path: logs/e_agent_login_failure.*
+          if-no-files-found: ignore
+          retention-days: 14
