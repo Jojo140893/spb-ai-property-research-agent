@@ -49,6 +49,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e-agent-login-check
-          path: logs/e_agent_login_failure.*
+          path: logs/e_agent_*
           if-no-files-found: ignore
           retention-days: 14

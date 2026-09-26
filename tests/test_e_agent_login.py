@@ -12,6 +12,7 @@ nothing typed (scratchpad eagent_login/reach_form.py); these tests hold the shap
 offline.
 """
 import inspect
+import pytest
 import logging
 import sys
 from pathlib import Path
@@ -170,7 +171,7 @@ def test_the_quick_check_uses_the_nightly_login_and_saves_no_session():
         encoding="utf-8")
     assert "workflow_dispatch:" in wf and "schedule:" not in wf, "by hand only"
     assert "python e_agent_login_check.py" in wf
-    assert "path: logs/e_agent_login_failure.*" in wf
+    assert "path: logs/e_agent_*" in wf, "the failure page and the surveyed pages"
 
 
 def test_no_dialog_at_all_is_said_as_such(tmp_path, monkeypatch, caplog):
@@ -186,3 +187,84 @@ def test_the_capture_is_never_committed_and_the_nightly_keeps_it():
     wf = (APP / ".github" / "workflows" / "daily-harvest.yml").read_text(encoding="utf-8")
     assert "path: logs/e_agent_login_failure.*" in wf
     assert "actions/upload-artifact@v4" in wf
+
+
+# ------------------------------------------------------------------ the members hub
+
+class _Button:
+    def __init__(self, href):
+        self._href = href
+
+    def count(self):
+        return 1 if self._href else 0
+
+    @property
+    def first(self):
+        return self
+
+    def get_attribute(self, name):
+        return self._href
+
+
+class _HubPage:
+    def __init__(self, href):
+        self.href, self.asked = href, []
+
+    def get_by_role(self, role, name=None):
+        self.asked.append((role, name.pattern if hasattr(name, "pattern") else name))
+        return _Button(self.href)
+
+
+class _HubScraper:
+    def __init__(self, href):
+        self.page, self.visited = _HubPage(href), []
+
+    def goto(self, url):
+        self.visited.append(url)
+
+
+def _source_with_files(monkeypatch, files_by_url):
+    src = EAgentSource.__new__(EAgentSource)
+    src.cfg = e_agent.EAGENT_CONFIG
+    monkeypatch.setattr(src, "_stocklist_links",
+                        lambda scraper: files_by_url.get(scraper.visited[-1], []))
+    return src
+
+
+HUB = e_agent.EAGENT_CONFIG.listings_url
+LISTINGS = "https://www.e-agent.com.au/copy-of-home"
+
+
+def test_the_stocklists_are_read_from_behind_the_hubs_access_listings_button(monkeypatch):
+    """26 Sep, e-agent-login-check.yml: signed in, and /access-projects was a hub with no
+    stocklist on it; its ACCESS LISTINGS button leads to /copy-of-home."""
+    src = _source_with_files(monkeypatch, {LISTINGS: [{"href": "f1"}, {"href": "f2"}]})
+    scraper = _HubScraper(LISTINGS)
+    assert src._goto_listings(scraper) == [{"href": "f1"}, {"href": "f2"}]
+    assert scraper.visited == [HUB, LISTINGS], "left on the page that holds them"
+    assert scraper.page.asked == [("link", r"^\s*access\s+listings\s*$")], "an exact match"
+    assert src._authenticated(scraper) is True
+
+
+def test_files_on_the_configured_page_are_read_there_without_following_anything(monkeypatch):
+    src = _source_with_files(monkeypatch, {HUB: [{"href": "f1"}]})
+    scraper = _HubScraper(LISTINGS)
+    assert src._goto_listings(scraper) == [{"href": "f1"}]
+    assert scraper.visited == [HUB] and scraper.page.asked == []
+
+
+@pytest.mark.parametrize("href", [None, HUB, HUB + "/"])
+def test_no_button_or_one_back_to_the_same_page_is_simply_no_files(monkeypatch, href):
+    src = _source_with_files(monkeypatch, {})
+    scraper = _HubScraper(href)
+    assert src._goto_listings(scraper) == []
+    assert scraper.visited == [HUB], "no loop, no guess"
+    assert src._authenticated(_HubScraper(href)) is False
+
+
+def test_every_visit_to_the_stocklists_goes_through_the_hub():
+    import re as _re
+    body = inspect.getsource(e_agent.EAgentSource)
+    direct = [m.start() for m in _re.finditer(r"scraper\.goto\(self\.cfg\.listings_url\)", body)]
+    helper = body.index("def _goto_listings")
+    assert len(direct) == 1 and direct[0] > helper, "only _goto_listings opens listings_url"
