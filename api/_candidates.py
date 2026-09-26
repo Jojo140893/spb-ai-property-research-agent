@@ -114,7 +114,16 @@ SNAPSHOT_FIELDS = [
     # later with a status saying gone is the lot gone -- see _newer_capture. The text
     # itself is not published.
     "line_key",
+    # THE DATE THE LOT'S OWN PAGE ANSWERED 404/410 (link_check.py via build_web), else "".
+    # The gate refuses such a row as lot_page_gone.
+    "lot_page_gone",
 ]
+
+# Build-time cells a snapshot DATABASE may predate and nothing in it can recompute: the
+# SQLite reader gives them their "not known" value instead of failing the read. A snapshot
+# built before link_check.py existed has no lot_page_gone, which means no page was found
+# gone -- exactly how the search behaved before the check.
+_OPTIONAL_SNAPSHOT_FIELDS = {"lot_page_gone": ""}
 
 # Build-time cells a purpose-built snapshot DATABASE may predate. The SQLite reader
 # computes them from the columns they derive from, exactly as build_web does, instead of
@@ -491,7 +500,8 @@ def _read_sqlite(path):
         # database written before they existed still reads; they are computed below from
         # the columns build_web computes them from.
         computed = [f for f in _COMPUTED_SNAPSHOT_FIELDS if f not in have]
-        cols = [f for f in SNAPSHOT_FIELDS if f not in computed]
+        absent = {f: v for f, v in _OPTIONAL_SNAPSHOT_FIELDS.items() if f not in have}
+        cols = [f for f in SNAPSHOT_FIELDS if f not in computed and f not in absent]
         inputs = ([f for f in _COMPUTE_INPUTS if f in have and f not in cols]
                   if computed else [])
         try:
@@ -515,6 +525,7 @@ def _read_sqlite(path):
             row.update({f: cells[f] for f in computed})
         for f in inputs:
             row.pop(f, None)
+        row.update(absent)
     return out
 
 
@@ -1913,8 +1924,8 @@ class _BriefContext:
 # pool, so explain_row reports it from the same pass build_packages makes.
 GATE_ORDER = (
     "superseded", "state_unknown", "other_state", "other_product_type", "no_incentive",
-    "price_unverified", "not_available", "availability_unstated", "no_price",
-    "over_budget", "under_minimum", "no_suburb", "suburb_not_a_locality",
+    "price_unverified", "not_available", "lot_page_gone", "availability_unstated",
+    "no_price", "over_budget", "under_minimum", "no_suburb", "suburb_not_a_locality",
     "incomplete_facts",
 )
 PASSED = "package"
@@ -2107,6 +2118,15 @@ def _gate(ctx, row, prepared, today):
     if avail in NOT_AVAILABLE:
         detail["availability_status"] = str(row.get("availability_status") or "")
         return GateResult("not_available", None, tags, detail)
+    # THE BUILDER HAS TAKEN THE LOT'S OWN PAGE DOWN. Coleen, 26 Sep 2026: the #1, #2 and #6
+    # results of "SA, any price" opened Kenekt's "unable to find the page" -- lots read from
+    # E-Agent on 24 Sep that had gone since. link_check.py asks every lot page each night;
+    # a 404/410 is the site saying the page no longer exists, so the lot is not offered,
+    # not even to confirm: a card whose own link is dead is not something to send a client.
+    # Never raised on a timeout or a 403 -- those are "could not tell", not "gone".
+    if str(row.get("lot_page_gone") or "").strip():
+        detail["lot_page_gone"] = str(row.get("lot_page_gone"))
+        return GateResult("lot_page_gone", None, tags, detail)
     by_the_sheet = False
     by_exception_list = False
     admitting = False
@@ -2519,7 +2539,8 @@ def _pass(brief_dict, rows, today=None, prepared=None, admit=(), only_admitted=F
 
     counts = {
         "snapshot_rows": len(rows), "other_state": 0, "state_unknown": 0,
-        "not_available": 0, "no_price": 0, "over_budget": 0, "under_minimum": 0,
+        "not_available": 0, "lot_page_gone": 0, "no_price": 0, "over_budget": 0,
+        "under_minimum": 0,
         "no_suburb": 0,
         "incomplete_facts": 0, "storey_unknown_and_binding": 0, "scored": 0,
         "truncated": 0, "stale_unverified": 0, "same_listing_collapsed": 0,
@@ -2941,6 +2962,12 @@ def coverage_sentence(counts, source_path, state):
             "catalogue record none, and excluding them would drop a third of the stock "
             "over a preference their source never contradicted."
             % counts["other_product_type"])
+    if counts.get("lot_page_gone"):
+        parts.append(
+            "%d listing(s) were left out because the builder has taken the lot's own page "
+            "down -- it answered \"page not found\" when checked. That usually means sold "
+            "or withdrawn, so they are not offered even to confirm."
+            % counts["lot_page_gone"])
     unstated = counts.get("unstated_but_scored") or {}
     if unstated:
         parts.append(

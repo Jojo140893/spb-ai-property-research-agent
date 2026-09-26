@@ -2430,6 +2430,12 @@ python state_sync.py push</pre>
                     title="${esc(label)} — opens the ${esc(opens)}${esc(term)}"
                     style="color:var(--accent-blue);">${esc(cellText)}</a></td>`;
             }
+            /* The lot's own page answered "not found" when link_check.py last asked (Coleen,
+               26 Sep: three E-Agent lots at the top of an SA search opened Kenekt's 404).
+               Say so instead of linking to a page that no longer exists; the search already
+               leaves these lots out (lot_page_gone). */
+            if (c.k === 'listing_url' && v && b.lot_page_gone)
+                return `<td style="color:var(--amber-yellow);" title="The builder's page for this lot answered 'page not found' on ${esc(b.lot_page_gone)}. Usually sold or withdrawn; left out of searches.">page gone ${esc(b.lot_page_gone)}</td>`;
             if (c.link) return `<td>${v ? `<a href="${esc(v)}" target="_blank" rel="noopener noreferrer"
                 style="color:var(--accent-blue);">${c.link}</a>` : ''}</td>`;
             if (c.pill) return `<td>${availPill(v)}</td>`;
@@ -4347,6 +4353,8 @@ python state_sync.py push</pre>
         scored: ['was scored against the brief', 'were scored against the brief'],
         not_available: ['is marked Sold, On Hold or otherwise not available',
                         'are marked Sold, On Hold or otherwise not available'],
+        lot_page_gone: ["has had its own page taken down by the builder (likely sold)",
+                        "have had their own page taken down by the builder (likely sold)"],
         availability_unstated: ["is on a list that doesn't say whether it's available",
                                 "are on lists that don't say whether they're available"],
         price_unverified: ["has a price we couldn't verify", "have a price we couldn't verify"],

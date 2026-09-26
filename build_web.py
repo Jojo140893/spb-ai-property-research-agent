@@ -88,6 +88,10 @@ BUILDING_FIELDS = [
 # "no such column: source_link_url", which is the build guard doing its job.
 BUILDING_DERIVED_FIELDS = ["source_link_url", "source_link_opens", "source_link_label",
                            "source_link_search",
+                           # The date the lot's own page (listing_url) answered 404/410
+                           # (link_check.py), else "". The search refuses such a row
+                           # (_candidates, lot_page_gone) and the stock table says so.
+                           "lot_page_gone",
                            # Why the suburb reads the way it does -- "stated by the
                            # source", "read from the composite", or the reason it is
                            # blank. A blank suburb with no reason beside it looks like
@@ -666,6 +670,8 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     import rea_link
     from rea_link import compare_link as _rea_link_for
     import suburb_quality
+    _gone_pages, _gone_date = _lot_pages_gone()
+    _lot_gone = 0
     _linked = 0
     _rea_linked = 0
     _resuburbed = 0
@@ -814,7 +820,15 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         _suburb_reasons[why] = _suburb_reasons.get(why, 0) + 1
         if b["suburb"] != before:
             _resuburbed += 1
-        link = _link_for(b)
+        # THE LOT'S OWN PAGE IS GONE (link_check.py, run just before this build). The row
+        # stays in the stock table, marked, and the search refuses it (_candidates,
+        # lot_page_gone). Its card and link fall back to the next thing that exists -- the
+        # price list, the portal -- instead of "Lot PDF -- opens this lot" opening a 404.
+        _gone = str(b.get("listing_url") or "").strip() in _gone_pages
+        b["lot_page_gone"] = _gone_date if _gone else ""
+        if _gone and not b.get("superseded_by"):
+            _lot_gone += 1
+        link = _published_link(b, _gone, _link_for)
         # A FOLDER capability is not publishable, even as the derived link. 2,027 rows
         # had primary_source_link hand back the shared-folder URL, because a folder is
         # all the provenance those rows have -- and that URL opens the whole folder to
@@ -1263,6 +1277,10 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         # coverage is a number in the build log rather than something a reader has to
         # infer from how many em-dashes they scroll past.
         "rea_linked": _rea_linked,
+        # Current rows whose own lot page answered 404/410 tonight (link_check.py), and
+        # the date it was checked -- None when the check did not run, which is not 0.
+        "lot_pages_gone": _lot_gone if _gone_date else None,
+        "lot_pages_checked": _gone_date or None,
         "rea_suburbs": len(_suburb_rows),
         "benchmarks": len(_bench_rows),
         "with_suburb": sum(1 for b in buildings if (b.get("suburb") or "").strip()),
@@ -1889,6 +1907,34 @@ def _norm_source(name) -> str:
     return re.sub(r"[^a-z0-9]", "", str(name or "").lower())
 
 
+def _published_link(row, page_gone, link_for):
+    """The one link a card and the stock table carry: the lot's own page, unless
+    link_check.py found it gone -- then the next thing that exists (the price list, the
+    email, the portal), so "opens this lot" never opens a 404."""
+    return link_for(dict(row, listing_url="") if page_gone else row)
+
+
+def _lot_pages_gone():
+    """({listing_url whose page answered 404/410}, 'dd/mm/yyyy' checked) from
+    .sessions/link_status.json, written by link_check.py just before this build.
+
+    Absent or unreadable -> (empty set, ''): nothing is marked and nothing is left out, which
+    is the build as it was before the check existed. A page the check could not judge (a
+    timeout, a 403, a host held back for going dark all at once) is not in the set.
+    """
+    path = config.PROJECT_ROOT / ".sessions" / "link_status.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set(), ""
+    urls = data.get("urls") if isinstance(data, dict) else None
+    if not isinstance(urls, dict):
+        return set(), ""
+    gone = {str(u).strip() for u, r in urls.items()
+            if isinstance(r, dict) and r.get("verdict") == "gone"}
+    return gone, str(data.get("date") or "").strip()
+
+
 def _login_status():
     """{normalised source name: login row} from .sessions/login_status.json.
 
@@ -2349,6 +2395,12 @@ if __name__ == "__main__":
     print(f"    Benchmarks: {m['benchmarks']:,} market comparable(s) stored · "
           f"{m['rea_linked']:,} listing(s) carry a realestate.com.au compare link · "
           f"{m['rea_suburbs']} suburb(s) on the Benchmarks tab")
+    if m.get("lot_pages_checked"):
+        print(f"    Lot pages checked {m['lot_pages_checked']}: {m['lot_pages_gone']:,} current "
+              "listing(s) whose own page is gone -- marked, and left out of every search")
+    else:
+        print("    Lot pages NOT checked (no .sessions/link_status.json): links shown as "
+              "stored, none left out")
     if m.get("relabelled"):
         print(f"    {m['relabelled']} row(s) re-labelled to one name per builder "
               f"(the database keeps its spellings — see _display_name_canonicaliser)")
