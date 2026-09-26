@@ -310,17 +310,20 @@ class EAgentSource(PropertySource):
         scraper.goto(self.cfg.listings_url)
         return bool(self._stocklist_links(scraper))
 
-    def _record_login_failure(self, page, dialog) -> None:
-        """Say WHAT the page showed when the login form did not appear, and keep a copy.
+    def _record_login_failure(self, page, dialog, stage="login form never appeared") -> None:
+        """Say WHAT the page showed when the login failed at `stage`, and keep a copy.
 
         Every earlier break of this login was diagnosed blind: the only record was "login
         form never appeared (site layout may have changed)", which on 24 Sep was not even
-        true -- the layout had not changed. The screenshot and HTML are taken before
-        anything is typed, so they hold no credentials; daily-harvest.yml uploads them as
-        a run artifact.
+        true -- the layout had not changed. On 26 Sep the form appeared, the credentials
+        were submitted, and the only record was "signed in but no stocklist files are
+        reachable" -- blind again, because this ran only before the submit. It now runs at
+        every stage. Every input on the page is blanked before the screenshot and the HTML
+        are taken, so they hold no credentials; daily-harvest.yml and
+        e-agent-login-check.yml upload them as a run artifact.
         """
         try:
-            seen = (dialog.inner_text(timeout=2000)[:200] if dialog.count()
+            seen = (dialog.inner_text(timeout=2000)[:300] if dialog.count()
                     else "(no members dialog)")
         except Exception:
             seen = "(dialog unreadable)"
@@ -328,8 +331,18 @@ class EAgentSource(PropertySource):
             title = page.title()
         except Exception:
             title = ""
-        logger.error("E-Agent: login form never appeared. url=%s title=%r dialog=%r",
-                     page.url, title, " ".join(seen.split()))
+        try:
+            body = page.inner_text("body", timeout=2000)[:300]
+        except Exception:
+            body = ""
+        logger.error("E-Agent: %s. url=%s title=%r dialog=%r page=%r", stage, page.url, title,
+                     " ".join(seen.split()), " ".join(body.split()))
+        try:
+            page.evaluate("() => document.querySelectorAll('input, textarea').forEach("
+                          "e => { try { e.value = ''; e.setAttribute('value', ''); } "
+                          "catch (x) {} })")
+        except Exception:
+            pass
         try:
             out = Path(config.PROJECT_ROOT) / "logs"
             out.mkdir(parents=True, exist_ok=True)
@@ -384,17 +397,38 @@ class EAgentSource(PropertySource):
             dialog.locator(self.cfg.email_selector).fill(self.username, timeout=10000)
             password.fill(self.password, timeout=10000)
             dialog.get_by_role("button", name="Log In", exact=True).click(timeout=10000)
-            page.wait_for_load_state("networkidle", timeout=20000)
+            # A LOGIN THAT WORKED CLOSES THE DIALOG. One that did not leaves it open with
+            # Wix's reason in it ("Wrong email or password", a captcha), which is the
+            # thing 26 Sep's run never recorded.
+            try:
+                dialog.wait_for(state="hidden", timeout=20000)
+                closed = True
+            except Exception:
+                closed = False
+            try:
+                page.wait_for_load_state("networkidle", timeout=20000)
+            except Exception:
+                pass
             scraper.throttle()
+            if not closed:
+                self._record_login_failure(page, dialog, "the login dialog stayed open "
+                                           "after the credentials were submitted")
+                return False
         except Exception as e:
             logger.error("E-Agent login interaction failed: %s", e)
             return False
         if not self._authenticated(scraper):
+            # One more look after a pause: the member session can land a moment after the
+            # dialog closes, and the stocklists are the only test of it.
+            page.wait_for_timeout(8000)
+            if self._authenticated(scraper):
+                logger.info("E-Agent: signed in (stocklist files reachable on a second look).")
+                return True
             # Reached only when the stocklists are still unreachable after a submit — a
             # real failure (wrong password, changed form, a challenge), not the marker
             # mismatch that made every night since mid-August read as one.
-            logger.error("E-Agent: signed in but no stocklist files are reachable — "
-                         "credentials may be wrong, or the site's layout has changed.")
+            self._record_login_failure(page, page.locator(MEMBERS_DIALOG),
+                                       "signed in but no stocklist files are reachable")
             return False
         logger.info("E-Agent: signed in (stocklist files reachable).")
         return True
