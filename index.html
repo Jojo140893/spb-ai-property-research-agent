@@ -2023,12 +2023,26 @@ python state_sync.py push</pre>
            "Package Price" heading — so the one figure the dashboard refuses to vouch for
            left the building looking confirmed, in the file most likely to be forwarded
            to a buyer. The warning travels with the number now. */
-        const columns = PICK_CSV_COLUMNS.concat([['__price_confirmed', 'Price Confirmed?']]);
+        /* A lot whose own page is gone (link_check.py, lot_page_gone) goes out the same way:
+           said, not hidden. Review, 26 Sep: "Mark all filtered" swept 41 such SA lots into
+           this file as "Available" with the Kenekt link that answers 404. The dead link is
+           replaced by the next thing that exists (source_link_url, the price list), and
+           the reason travels in its own column. */
+        const columns = PICK_CSV_COLUMNS.concat([['__price_confirmed', 'Price Confirmed?'],
+                                                 ['__lot_page', 'Lot Page Live?']]);
         const derive = (r, key) => key === '__price_confirmed'
             ? (PRICE_UNVERIFIED.has(String(r.source_channel || '').toLowerCase())
                 ? 'NO - this is the land price, not the package; awaiting re-harvest'
                 : 'yes')
+            : key === '__lot_page'
+            ? (r.lot_page_gone
+                ? `NO - the builder's page answered "not found" on ${r.lot_page_gone}; likely sold, confirm before sending`
+                : 'yes')
+            : key === 'listing_url' && r.lot_page_gone
+            ? (r.source_link_url || '')
             : r[key];
+        const gone = rows.filter(r => r.lot_page_gone).length;
+        if (gone && !confirm(`${gone} of the ${rows.length} marked listing(s) have had their own page taken down by the builder (likely sold). They will be exported with "Lot Page Live?" = NO. Export anyway?`)) return;
         const csv = [columns.map(c => cell(c[1])).join(',')]
             .concat(rows.map(r => columns.map(c => cell(derive(r, c[0]))).join(',')))
             .join('\r\n');

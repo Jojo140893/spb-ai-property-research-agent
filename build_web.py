@@ -2398,6 +2398,13 @@ if __name__ == "__main__":
     if m.get("lot_pages_checked"):
         print(f"    Lot pages checked {m['lot_pages_checked']}: {m['lot_pages_gone']:,} current "
               "listing(s) whose own page is gone -- marked, and left out of every search")
+        # AN EARLIER NIGHT'S VERDICTS ARE STILL APPLIED -- dropping them would put the dead
+        # links back -- but a build using them says so (review, 26 Sep: state_sync carries
+        # .sessions/*.json between runs, and deploy.ps1 builds without running the check).
+        from link_check import _today_melbourne
+        if m["lot_pages_checked"] != _today_melbourne():
+            print(f"    WARNING: those lot-page verdicts are from {m['lot_pages_checked']}; "
+                  "tonight's link_check.py did not run")
     else:
         print("    Lot pages NOT checked (no .sessions/link_status.json): links shown as "
               "stored, none left out")

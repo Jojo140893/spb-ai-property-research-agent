@@ -226,6 +226,36 @@ def _clean_banner(banner: str) -> str:
     return name
 
 
+MEMBERS_DIALOG = "[data-testid='siteMembersDialogLayout']"
+
+
+def open_members_form(page, password_selector="input[type=password]", seconds=30):
+    """(dialog, password locator, reached) -- click E-Agent's Wix members dialog through to
+    its email/password form. Navigation only: it never types anything.
+
+    EXACT MATCHES, INSIDE THE DIALOG. On the sign-up panel "Log In" is the switch to logging
+    in (data-testid signUp.switchToSignUp); "Log in with Email" then shows the fields. Either
+    panel reaches the form and neither can open Google: the old substring selector
+    "button:has-text('Log In')" matched "Log in with Google" on the log-in panel (26 Sep).
+    Shared by the nightly login (_login) and portal_login.py, so the two cannot drift.
+    """
+    dialog = page.locator(MEMBERS_DIALOG)
+    password = dialog.locator(password_selector)
+    to_login = dialog.locator("[data-testid='signUp.switchToSignUp']")
+    by_email = dialog.get_by_role("button", name="Log in with Email", exact=True)
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline and not password.is_visible():
+        try:
+            if to_login.is_visible():
+                to_login.click()
+            elif by_email.is_visible():
+                by_email.click()
+        except Exception:
+            pass
+        page.wait_for_timeout(1000)
+    return dialog, password, password.is_visible()
+
+
 class EAgentSource(PropertySource):
     def __init__(self, registry=None):
         self.cfg = EAGENT_CONFIG
@@ -331,31 +361,24 @@ class EAgentSource(PropertySource):
             # fresh browser: the form is still there, with the same fields. Only E-Agent's
             # cookies are cleared; the saved session is still written only after a proven
             # login (search()).
-            page.context.clear_cookies(domain=re.compile(r"(^|\.)e-agent\.com\.au$"))
-            try:
-                page.evaluate("() => { try { localStorage.clear(); sessionStorage.clear(); }"
-                              " catch (e) {} }")
-            except Exception:
-                pass
-            scraper.goto(self.cfg.login_url)
-            # EXACT MATCHES, INSIDE THE MEMBERS DIALOG. "Log In" on the sign-up panel is the
-            # switch to logging in (data-testid signUp.switchToSignUp); "Log in with Email"
-            # then shows the fields. Either panel reaches the form; neither can open Google.
-            dialog = page.locator("[data-testid='siteMembersDialogLayout']")
-            password = dialog.locator(self.cfg.password_selector)
-            to_login = dialog.locator("[data-testid='signUp.switchToSignUp']")
-            by_email = dialog.get_by_role("button", name="Log in with Email", exact=True)
-            deadline = time.monotonic() + 30
-            while time.monotonic() < deadline and not password.is_visible():
+            #
+            # NOT IN A PERSISTENT PROFILE. There, cookies are written straight to disk and
+            # save_session never runs, so clearing them would destroy a working profile
+            # session before any login had worked (review, 26 Sep; no e_agent profile
+            # exists today, only portal_proxima's).
+            if getattr(scraper, "_using_profile", False):
+                logger.warning("E-Agent: running in a saved browser profile; its cookies are "
+                               "left as they are for this login.")
+            else:
+                page.context.clear_cookies(domain=re.compile(r"(^|\.)e-agent\.com\.au$"))
                 try:
-                    if to_login.is_visible():
-                        to_login.click()
-                    elif by_email.is_visible():
-                        by_email.click()
+                    page.evaluate("() => { try { localStorage.clear(); sessionStorage.clear(); }"
+                                  " catch (e) {} }")
                 except Exception:
                     pass
-                page.wait_for_timeout(1000)
-            if not password.is_visible():
+            scraper.goto(self.cfg.login_url)
+            dialog, password, reached = open_members_form(page, self.cfg.password_selector)
+            if not reached:
                 self._record_login_failure(page, dialog)
                 return False
             dialog.locator(self.cfg.email_selector).fill(self.username, timeout=10000)

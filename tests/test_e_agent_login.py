@@ -23,28 +23,58 @@ from sources import e_agent  # noqa: E402
 from sources.e_agent import EAgentSource  # noqa: E402
 
 
+def _code(fn):
+    """A function's code without its comments and docstring, which quote the old selector,
+    re-printed by ast (so its quoting is ast's: double quotes become single)."""
+    import ast
+    import textwrap
+    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+    body = tree.body[0].body
+    if body and isinstance(body[0], ast.Expr) and isinstance(
+            getattr(body[0], "value", None), ast.Constant) and isinstance(body[0].value.value, str):
+        body.pop(0)
+    return ast.unparse(tree)
+
+
 def _login_source():
-    """_login's code with its comments removed: the comments quote the old selector."""
-    import io
-    import tokenize
-    src = inspect.getsource(EAgentSource._login)
-    toks = [t for t in tokenize.generate_tokens(io.StringIO(src).readline)
-            if t.type != tokenize.COMMENT]
-    return tokenize.untokenize(toks)
+    return _code(EAgentSource._login)
 
 
 def test_no_substring_button_match_can_pick_log_in_with_google():
+    login, form = _login_source(), _code(e_agent.open_members_form)
+    for src in (login, form):
+        assert "has-text('Log In')" not in src
+        assert "has-text(\"Log In\")" not in src
+    assert "get_by_role('button', name='Log In', exact=True)" in login, "the submit is exact"
+    assert "open_members_form(page, self.cfg.password_selector)" in login
+    assert "name='Log in with Email', exact=True" in form
+    assert "signUp.switchToSignUp" in form, "the sign-up panel's switch, by its test id"
+
+
+def test_the_manual_sign_in_takes_the_same_exact_path_for_e_agent():
+    import portal_login
+    src = _code(portal_login._open_login_form)
+    head = src[:src.index("steps = [")]
+    assert "if name == 'e_agent':" in head and "open_members_form(page)" in head, \
+        "E-Agent must never reach the substring steps below"
+
+
+def test_a_saved_browser_profile_keeps_its_cookies():
     src = _login_source()
-    assert "has-text('Log In')" not in src
-    assert "has-text(\"Log In\")" not in src
-    assert 'get_by_role("button", name="Log In", exact=True)' in src, "the submit is exact"
-    assert 'name="Log in with Email", exact=True' in src
-    assert "signUp.switchToSignUp" in src, "the sign-up panel's switch, by its test id"
+    guard = src.index("getattr(scraper, '_using_profile', False)")
+    assert guard < src.index("clear_cookies"), "the profile check comes first"
+    assert "else:" in src[guard:src.index("clear_cookies")]
 
 
 def test_the_login_starts_as_a_new_visitor_and_only_forgets_e_agent():
     src = _login_source()
-    assert "clear_cookies(domain=re.compile(r\"(^|\\.)e-agent\\.com\\.au$\"))" in src
+    at = src.index("clear_cookies(domain=re.compile(")
+    assert "e-agent" in src[at:at + 80], "only E-Agent's cookies"
+    import re
+    only_e_agent = re.compile(r"(^|\.)e-agent\.com\.au$")
+    assert only_e_agent.search(".www.e-agent.com.au")
+    assert not only_e_agent.search("note-agent.com.au")
+    assert not only_e_agent.search("portal.proxima.com.au")
     # Cleared AFTER the saved session was tried: a working session is never thrown away.
     assert src.index("self._authenticated(scraper)") < src.index("clear_cookies")
 

@@ -275,3 +275,21 @@ def test_the_field_is_published_and_never_selected():
     assert "lot_page_gone" in build_web.BUILDING_DERIVED_FIELDS
     assert "lot_page_gone" not in build_web.BUILDING_FIELDS, "it would reach the SELECT"
     build_web._check("buildings", build_web.BUILDING_FIELDS + build_web.BUILDING_DERIVED_FIELDS)
+
+
+# ------------------------------------------------------------------ review, 26 Sep
+
+def test_the_nightly_replay_accepts_a_gone_lot_as_rightly_hidden():
+    """search_regressions picks 'obvious' rows from the database, which has no
+    lot_page_gone column; without this a gone lot fails the replay and turns CI red."""
+    import search_regressions as SR
+    assert "lot_page_gone" in SR.ALLOWED_VERDICTS
+
+
+def test_the_tracer_says_why_in_words():
+    import trace_listing as T
+    tracer = T.Tracer.__new__(T.Tracer)
+    tracer.brief = {"state": "SA"}
+    text, kind = tracer._verdict(_row(), {"gate": "lot_page_gone", "package": None,
+                                          "detail": {"lot_page_gone": "26/09/2026"}}, 0)
+    assert kind == "gate" and "26/09/2026" in text and "not found" in text
