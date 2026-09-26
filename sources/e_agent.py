@@ -227,6 +227,9 @@ def _clean_banner(banner: str) -> str:
 
 
 MEMBERS_DIALOG = "[data-testid='siteMembersDialogLayout']"
+# How many per-builder category pages _authenticated may open to decide whether the
+# session is signed in, when no pooled stocklist exists (26 Sep 2026).
+AUTH_CATEGORY_PAGES = 2
 
 
 def open_members_form(page, password_selector="input[type=password]", seconds=30):
@@ -307,7 +310,21 @@ class EAgentSource(PropertySource):
         portals DO render a real marker, and weakening the shared check would trade this
         bug for a silent one where a failed login reads as success.
         """
-        return bool(self._goto_listings(scraper))
+        if self._goto_listings(scraper):
+            return True
+        # THE POOLED LISTS ARE GONE; THE BUILDERS' PAGES ARE NOT. The members' listings page
+        # (26 Sep, e-agent-login-check.yml) offers a new "H&L SEARCH" on a separate site
+        # (eagent.mekooflow.com, access through a BDM) and, under "Builders", per-state
+        # buttons to "branded stock lists and packages direct from the builder" -- the
+        # category pages this source already crawls. With no pooled stocklist left anywhere,
+        # judging sign-in by the pooled lists alone called every signed-in run "not signed
+        # in" and never reached those pages. Signed-out, they show the sign-up wall and no
+        # file, so this cannot read a failed login as success.
+        for category in list(self.cfg.category_pages or ())[:AUTH_CATEGORY_PAGES]:
+            scraper.goto(category.url)
+            if self._stocklist_links(scraper):
+                return True
+        return False
 
     # The members hub's button to the stocklists (26 Sep 2026: "Property Portal ... ACCESS
     # LISTINGS"), matched exactly, as the login buttons are.

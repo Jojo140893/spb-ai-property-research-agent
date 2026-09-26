@@ -268,3 +268,22 @@ def test_every_visit_to_the_stocklists_goes_through_the_hub():
     direct = [m.start() for m in _re.finditer(r"scraper\.goto\(self\.cfg\.listings_url\)", body)]
     helper = body.index("def _goto_listings")
     assert len(direct) == 1 and direct[0] > helper, "only _goto_listings opens listings_url"
+
+
+CATEGORY = e_agent.EAGENT_CONFIG.category_pages[0].url
+
+
+def test_signed_in_is_judged_on_the_builders_pages_once_the_pooled_lists_are_gone(monkeypatch):
+    """26 Sep: no pooled stocklist anywhere; the per-builder category pages hold them."""
+    src = _source_with_files(monkeypatch, {CATEGORY: [{"href": "live packages"}]})
+    scraper = _HubScraper(LISTINGS)
+    assert src._authenticated(scraper) is True
+    assert scraper.visited == [HUB, LISTINGS, CATEGORY]
+
+
+def test_signed_out_the_builders_pages_show_nothing_so_it_stays_signed_out(monkeypatch):
+    src = _source_with_files(monkeypatch, {})
+    scraper = _HubScraper(LISTINGS)
+    assert src._authenticated(scraper) is False
+    pages = [c.url for c in e_agent.EAGENT_CONFIG.category_pages[:e_agent.AUTH_CATEGORY_PAGES]]
+    assert scraper.visited == [HUB, LISTINGS] + pages, "a bounded look, not a crawl"

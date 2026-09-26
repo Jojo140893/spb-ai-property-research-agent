@@ -28,7 +28,7 @@ from sources.e_agent import MEMBERS_DIALOG, EAgentSource
 from sources.scraper_base import PlaywrightScraper
 
 SESSION_NAME = "e_agent_login_check"      # no .sessions file or profile by this name
-SURVEY_CATEGORY_PAGES = 3
+SURVEY_CATEGORY_PAGES = 4
 
 _BLANK_INPUTS = ("() => document.querySelectorAll('input, textarea').forEach("
                  "e => { try { e.value = ''; e.setAttribute('value', ''); } catch (x) {} })")
@@ -47,7 +47,7 @@ def survey(source, scraper, out_dir):
     except Exception as e:                                             # noqa: BLE001
         print(f"  (could not read the ACCESS LISTINGS button: {e})")
     for c in list(source.cfg.category_pages or ())[:SURVEY_CATEGORY_PAGES]:
-        targets.append((f"category {c.state} {c.category}", c.url))
+        targets.append((f"category {c.state} {c.product_type}", c.url))
     out_dir.mkdir(parents=True, exist_ok=True)
     for n, (label, url) in enumerate(targets, 1):
         try:
