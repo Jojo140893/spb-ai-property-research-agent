@@ -2898,6 +2898,7 @@ python state_sync.py push</pre>
     // HOT-LEADS-BEGIN
     let HOT_LEADS = [];
     let HOT_LEADS_STATE = 'idle';        // 'idle' | 'loading' | 'loaded'
+    let HL_LOAD_GEN = 0;                 // the newest loadHotLeads; an older one draws nothing
     // Which grades the list shows. Applied to the list already loaded, so switching it asks
     // the server nothing, and it survives a Refresh.
     let HOT_LEADS_FILTER = 'all';        // 'all' | 'hot' | 'warm' | 'nurture'
@@ -3909,13 +3910,20 @@ python state_sync.py push</pre>
     // hot lead; now a run of warm and nurture callers can fill the answer and leave an older
     // hot caller, not yet rung, off the tab with nothing to say so. So when the first answer
     // is cut off the tab asks again for hot callers only, and the list says what it holds.
+    //
+    // A LOCK WHILE A REFRESH IS OUT (28 Sep 2026, repair). Lock's reload returned at once when a
+    // load was already out, and that load's GET had gone with the unlock cookie: once it came
+    // back the locked tab showed every number and address in full. So a forced load while one
+    // is out (Lock, Unlock) is not skipped: it goes out itself, and the older one, when it lands,
+    // draws nothing and changes nothing -- it was asked under the cookie as it was before.
     async function loadHotLeads(force) {
-        if (HOT_LEADS_STATE === 'loading') return;
+        if (HOT_LEADS_STATE === 'loading' && !force) return;
         if (HOT_LEADS_STATE === 'loaded' && !force) return;
         const el = document.getElementById('hotLeadsContent');
         const badge = document.getElementById('hotLeadsBadge');
         const btn = document.getElementById('hotLeadsRefresh');
         if (!el) return;
+        const gen = ++HL_LOAD_GEN;
         HOT_LEADS_STATE = 'loading';
         if (btn) btn.disabled = true;
         // Before the cards are cleared: anything typed into one and not saved is carried
@@ -3929,6 +3937,7 @@ python state_sync.py push</pre>
         };
         try {
             const all = await hlAsk(hlLeadsUrl());
+            if (gen !== HL_LOAD_GEN) return;
             if (all.kind === 'unreachable') {
                 HOT_LEADS_STATE = 'idle';
                 if (badge) badge.textContent = 'unavailable';
@@ -3948,6 +3957,7 @@ python state_sync.py push</pre>
             const cover = { cut: all.cut, hotCut: false, hotFailed: '' };
             if (all.cut) {
                 const hot = await hlAsk(hlLeadsUrl('hot'));
+                if (gen !== HL_LOAD_GEN) return;
                 if (hot.kind === 'expired') { expired(); return; }
                 if (hot.kind === 'ok') {
                     hotLeads = hot.leads;
@@ -3997,7 +4007,7 @@ python state_sync.py push</pre>
             el.innerHTML = hlRenderLeads(HOT_LEADS, HOT_LEADS_FILTER, cover);
             arrived.forEach((text, i) => hlNoteSay(i, text, false));
         } finally {
-            if (btn) btn.disabled = false;
+            if (btn && gen === HL_LOAD_GEN) btn.disabled = false;
         }
     }
 
@@ -4272,59 +4282,134 @@ python state_sync.py push</pre>
     // out with a third id, and the hook stored "Package sent" twice after the page had said it
     // would not. So each draft keeps up to HL_REQ_KEEP of them -- (action, text) or (url,
     // label) -> requestId, the oldest forgotten first. One is dropped when its press is settled:
-    // confirmed saved, answered as a duplicate of one the hook already holds, or seen in the
-    // list on a Refresh (hlSettleDrafts). Kept past that, the same quick action saved again
-    // later that day was a "duplicate" the hook skipped while the page said "Saved.".
+    // confirmed saved, answered as a duplicate of one the hook already holds, or seen on a live
+    // note or link in any list the page is handed since (hlSettleDraft). Kept past that, the
+    // same quick action saved again later that day was a "duplicate" the hook skipped while the
+    // page said "Saved.".
+    //
+    // FORGOTTEN AFTER THE ANSWER, NOT BEFORE (28 Sep 2026, repair). The oldest was forgotten as
+    // soon as a press was added, so with ten kept, pressing an eleventh that was then confirmed
+    // pushed out a press still unconfirmed and forgot its own id as well: that one was stored
+    // twice. Now a press is added last (the one pressed again moves last too), and the oldest
+    // past HL_REQ_KEEP go only once the press is answered and its own id is settled or kept.
     const HL_REQ_KEEP = 10;
     function hlDraftRequestId(d, key, same) {
         const sig = JSON.stringify(same);
         const kept = d[key];
-        if (!kept.has(sig)) {
-            kept.set(sig, hlRequestId());
-            while (kept.size > HL_REQ_KEEP) kept.delete(kept.keys().next().value);
-        }
-        return kept.get(sig);
+        const rid = kept.get(sig) || hlRequestId();
+        kept.delete(sig);
+        kept.set(sig, rid);
+        return rid;
     }
-    const hlDraftForget = (d, key, same) => d[key].delete(JSON.stringify(same));
+    function hlDraftSettled(d, key, same, settled) {
+        const kept = d[key];
+        if (settled) kept.delete(JSON.stringify(same));
+        while (kept.size > HL_REQ_KEEP) kept.delete(kept.keys().next().value);
+    }
+    const hlDraftKept = (d, key, same) => d[key].has(JSON.stringify(same));
 
     // The (action, text) a press of Save would send from this draft, and the (url, label) of
     // Add link: read the way hlSaveNote and hlAddLink read their boxes, so a kept id is found.
     const hlNoteSame = d => [HL_NOTE_ACTIONS.includes(d.action) ? d.action : 'other', String(d.text ?? '').trim()];
     const hlLinkSame = d => [hlLinkRaw(d.url), String(d.label ?? '').trim()];
+    // What the draft holds now: the boxes on card j where they are drawn (they are what a press
+    // would send), the draft where they are not. j -1: the draft alone.
+    function hlDraftNow(d, j) {
+        const box = key => {
+            const b = j >= 0 ? document.getElementById(key + j) : null;
+            return (b && typeof b.value === 'string') ? b.value : null;
+        };
+        const text = box('hlNoteText-'), url = box('hlLinkUrl-'), label = box('hlLinkLabel-');
+        return { action: d.action, text: text ?? d.text, url: url ?? d.url, label: label ?? d.label };
+    }
+    // One kind of the draft emptied, and its boxes and chips on card j where they are drawn.
+    function hlDraftClear(d, j, what) {
+        const fields = what === 'note' ? ['text', 'action'] : ['url', 'label'];
+        fields.forEach(f => { d[f] = ''; });
+        if (j < 0) return;
+        (what === 'note' ? ['hlNoteText-'] : ['hlLinkUrl-', 'hlLinkLabel-']).forEach(key => {
+            const b = document.getElementById(key + j);
+            if (b) b.value = '';
+        });
+        if (what !== 'note') return;
+        HL_NOTE_ACTIONS.forEach(a => {
+            const b = document.getElementById(`hlAct-${j}-${a}`);
+            if (!b) return;
+            b.className = 'btn-ghost hl-act';
+            b.setAttribute('aria-pressed', 'false');
+        });
+    }
 
     // PRESSES A FRESH LIST SHOWS DID ARRIVE (28 Sep 2026, review). An unconfirmed press kept its
     // id for as long as the page was open, so a Refresh that showed the note had arrived changed
     // nothing: the chip stayed pressed, and the next "Follow-up required" went out with the old
     // id and was dropped by the hook as a repeat. The hook's notes now carry each add's requestId
-    // (lib/record.js noteEntryView / noteLinkView, live items only), so every answer settles
-    // them: a kept id seen on a live note or link is dropped, and when the draft still holds
-    // those very words they are cleared from it and the card says so. Called by loadHotLeads
-    // before it draws; returns card index -> what to say on that card.
+    // (lib/record.js noteEntryView / noteLinkView, live items only), so every list of a lead's
+    // notes the page is handed -- a Refresh's (hlSettleDrafts) and a save's (hlNotesPost) --
+    // settles them: a kept id seen on a live note or link is dropped, and when the draft still
+    // holds those very words they are cleared from it. Either way the card says it arrived, so
+    // the "Press Save again" said for it is not left standing. own: the press this answer is
+    // for, which its caller settles. -> [{ what: 'note' | 'link', current: the draft's words }].
+    //
+    // EVERY ANSWER, NOT ONLY A REFRESH (28 Sep 2026, repair). Settled on a Refresh alone, an
+    // unconfirmed "Follow-up required" that the next save's own answer listed stayed kept, and a
+    // deliberate second follow-up later went out with its id and was dropped as a repeat.
+    function hlSettleDraft(id, notes, own, j) {
+        const d = HL_DRAFTS.get(id);
+        if (!d || !notes) return [];
+        const now = hlDraftNow(d, j);
+        const settled = [];
+        [['noteReqs', notes.entries, hlNoteSame(now), 'note'], ['linkReqs', notes.links, hlLinkSame(now), 'link']]
+            .forEach(([key, items, same, what]) => {
+                const live = new Set((Array.isArray(items) ? items : []).map(x => x && x.requestId)
+                    .filter(r => typeof r === 'string' && r && r !== own));
+                const sig = JSON.stringify(same);
+                [...d[key]].forEach(([kept, rid]) => {
+                    if (!live.has(rid)) return;
+                    d[key].delete(kept);
+                    if (kept === sig) hlDraftClear(d, j, what);
+                    settled.push({ what, current: kept === sig });
+                });
+            });
+        return settled;
+    }
+    // What the card says about presses a list showed did arrive. shown: that list is drawn.
+    function hlArrivedText(settled, shown) {
+        if (!settled.length) return '';
+        const kinds = ['note', 'link'].filter(k => settled.some(x => x.what === k));
+        const both = kinds.length > 1;
+        const lead = settled.some(x => x.current)
+            ? (both ? 'The note and the link' : `The ${kinds[0]}`)
+            : (both ? 'An earlier note and link' : `An earlier ${kinds[0]}`);
+        return `${lead} that could not be confirmed did arrive`
+             + (shown ? (both ? ': they are in the lists below.' : ': it is in the list below.') : '.');
+    }
+    // Called by loadHotLeads before it draws; returns card index -> what to say on that card.
+    //
+    // NOT A PRESS STILL OUT (28 Sep 2026, repair). A Refresh while a slow Save was out saw that
+    // press's own id on the new note, called it "could not be confirmed ... did arrive", emptied
+    // the box and dropped the id -- then the Save's lost answer said "What you typed is still
+    // here" over an empty box, and pressing Save again, as it said, stored the note twice. A
+    // lead with a change out is left alone here: that change's answer settles it (hlNotesPost).
     function hlSettleDrafts() {
         const said = new Map();
         HOT_LEADS.forEach((lead, i) => {
             const id = hlCallId(lead);
-            if (!id || !HL_DRAFTS.has(id) || !HL_NOTES.has(id)) return;
-            const d = HL_DRAFTS.get(id), notes = HL_NOTES.get(id);
-            const arrived = [];
-            [['noteReqs', notes.entries, hlNoteSame(d), 'note'], ['linkReqs', notes.links, hlLinkSame(d), 'link']]
-                .forEach(([key, items, same, what]) => {
-                    const live = new Set(items.map(x => x.requestId).filter(r => typeof r === 'string' && r));
-                    const now = JSON.stringify(same);
-                    [...d[key]].forEach(([sig, rid]) => {
-                        if (!live.has(rid)) return;
-                        d[key].delete(sig);
-                        if (sig !== now) return;
-                        if (what === 'note') { d.text = ''; d.action = ''; } else { d.url = ''; d.label = ''; }
-                        arrived.push(what);
-                    });
-                });
-            if (!arrived.length) return;
-            said.set(i, arrived.length > 1
-                ? 'The note and the link that could not be confirmed did arrive: they are in the lists below.'
-                : `The ${arrived[0]} that could not be confirmed did arrive: it is in the list below.`);
+            if (!id || HL_NOTE_BUSY.has(id) || !HL_NOTES.has(id)) return;
+            const text = hlArrivedText(hlSettleDraft(id, HL_NOTES.get(id), '', -1), true);
+            if (text) said.set(i, text);
         });
         return said;
+    }
+
+    // Whether the list held now shows this change made: an add's requestId on a live note or
+    // link, or the removed item gone. For a removal only a list drawn after it was sent can say.
+    function hlListShows(id, body) {
+        const notes = HL_NOTES.get(id);
+        if (!notes) return false;
+        const all = [...notes.entries, ...notes.links];
+        return body.op === 'remove' ? !all.some(x => x.id === body.id)
+                                    : !!body.requestId && all.some(x => x.requestId === body.requestId);
     }
 
     // WHETHER A CHANGE THAT WAS NOT CONFIRMED MAY STILL HAVE BEEN MADE (28 Sep 2026). "Not
@@ -4354,14 +4439,21 @@ python state_sync.py push</pre>
     // removed (duplicateRemoved): then nothing is on the lead, and the consultant is told so,
     // not "Saved.". hidden: the answer's notes are not shown (the masked view could not hide
     // their contact details). stale: they were not drawn, because the list was drawn again
-    // while this was out (hlNotesPost).
-    function hlNotesDoneText(kind, data, hidden, stale) {
+    // while this was out (hlNotesPost). again: the press resent the requestId of an earlier one
+    // that could not be confirmed.
+    //
+    // "ALREADY SAVED." ONLY FOR A PRESS MADE BEFORE (28 Sep 2026, repair). A press whose first
+    // fetch dropped after the hook wrote is sent once more by hlNotesPost, and the hook retries
+    // inside one request too: both are answered duplicate, so one press of Save read "Already
+    // saved." as if someone had saved it earlier. A fresh requestId can only have been matched
+    // to its own press: that is "Saved.".
+    function hlNotesDoneText(kind, data, again, hidden, stale) {
         if (kind !== 'remove' && data.duplicateRemoved === true) {
             return `This ${kind === 'link' ? 'link' : 'note'} was saved earlier and has since been removed from `
                  + `the lead, so it was not added again. It is still here: press ${kind === 'link' ? 'Add link' : 'Save'}`
                  + ' to add it anew.';
         }
-        const done = kind === 'remove' ? 'Removed.' : (data.duplicate === true ? 'Already saved.' : 'Saved.');
+        const done = kind === 'remove' ? 'Removed.' : (data.duplicate === true && again ? 'Already saved.' : 'Saved.');
         if (stale) {
             return done + (kind === 'remove' ? ' Press Refresh to see the notes as they are now.'
                                              : ' Press Refresh to see it.');
@@ -4374,12 +4466,12 @@ python state_sync.py push</pre>
     // One change to a lead's notes, through the dashboard (api/lead_notes.py adds the service
     // key, so it never reaches the browser). The answer is the lead's notes as stored after
     // the change, and they are drawn from it. A failure leaves the typing where it is.
-    // kind: 'note' | 'link' | 'remove', for what the messages say.
+    // kind: 'note' | 'link' | 'remove', for what the messages say. again: see hlNotesDoneText.
     // -> 'made'  the change is on the lead (saved, removed, or already there): clear the draft
     //    'gone'  the hook matched it to one since removed, and added nothing: keep the text,
     //            but not its requestId, so the next press adds it anew
     //    ''      not made, or not known to be: keep both
-    async function hlNotesPost(i, body, kind) {
+    async function hlNotesPost(i, body, kind, again) {
         const id = body.callId;
         const kept = kind === 'remove' ? '' : ' What you typed is still here.';
         // Said when the answer leaves open whether the change was made: never "Not saved".
@@ -4389,6 +4481,18 @@ python state_sync.py push</pre>
             ? `Could not confirm the removal: ${why}. Press Refresh to check whether it is gone.`
             : `Could not confirm this was saved: ${why}. Press ${kind === 'link' ? 'Add link' : 'Save'} again:`
               + ' if it did arrive, it will not be saved twice.') + kept;
+        // AN ANSWER LOST OVER A LIST THAT SHOWS IT (28 Sep 2026, repair). A Refresh while the
+        // change was out may already have drawn it -- its requestId on a new note, or the removed
+        // item gone. Then it was made, whatever became of this answer.
+        const open = why => {
+            const j = hlIndexOf(id);
+            if ((body.op !== 'remove' || HL_DRAWN !== drawnAt) && hlListShows(id, body)) {
+                hlNoteSay(j, kind === 'remove' ? 'Removed.' : 'Saved.', false);
+                return 'made';
+            }
+            hlNoteSay(j, unsure(why), true);
+            return '';
+        };
         if (HL_NOTE_BUSY.has(id)) {
             hlNoteSay(i, 'Still saving the last change to this lead. Try again in a moment.', false);
             return '';
@@ -4422,10 +4526,7 @@ python state_sync.py push</pre>
                     res = null;
                 }
             }
-            if (!res) {
-                hlNoteSay(hlIndexOf(id), unsure('the dashboard could not be reached'), true);
-                return '';
-            }
+            if (!res) return open('the dashboard could not be reached');
             // The dashboard never answers 401 itself (api/lead_notes.py), so a 401 is the
             // sign-in in front of it, as everywhere else on this page.
             if (res.status === 401) {
@@ -4456,8 +4557,14 @@ python state_sync.py push</pre>
                     HL_NOTES_ERR.delete(id);
                     hlPaintNotes(j);
                 }
+                // Not drawn, but the list drawn since shows it: nothing to press Refresh for.
+                const shown = stale && hlListShows(id, body);
+                // The other presses this answer shows arrived: its requestIds are read, never
+                // its words, so a stale answer settles them too.
+                const arrived = hidden ? [] : hlSettleDraft(id, hlNotesOf(data.notes), body.requestId || '', j);
                 const gone = kind !== 'remove' && data.duplicateRemoved === true;
-                hlNoteSay(j, hlNotesDoneText(kind, data, hidden, stale), gone);
+                hlNoteSay(j, [hlNotesDoneText(kind, data, again === true, hidden && !stale, stale && !shown),
+                              hlArrivedText(arrived, !stale)].filter(Boolean).join(' '), gone);
                 return gone ? 'gone' : 'made';
             }
             // Two consultants saving to one lead at once: the hook retries, and this is what
@@ -4475,10 +4582,7 @@ python state_sync.py push</pre>
                 hlNoteSay(j, why.charAt(0).toUpperCase() + why.slice(1) + '.', false);
                 return 'made';
             }
-            if (hlMaybeMade(res.status, why)) {
-                hlNoteSay(j, unsure(why), true);
-                return '';
-            }
+            if (hlMaybeMade(res.status, why)) return open(why);
             hlNoteSay(j, (kind === 'remove' ? 'Not removed: ' : 'Not saved: ') + why + '.' + kept, true);
             return '';
         } finally {
@@ -4507,10 +4611,11 @@ python state_sync.py push</pre>
         const body = { callId: id, op: 'add_entry', action, text };
         if (by) body.by = by;
         const same = [action, text];
+        const again = hlDraftKept(d, 'noteReqs', same);
         body.requestId = hlDraftRequestId(d, 'noteReqs', same);
-        const outcome = await hlNotesPost(i, body, 'note');
+        const outcome = await hlNotesPost(i, body, 'note', again);
         // Settled either way ('made' or 'gone'): this press's id is not the one to send again.
-        if (outcome) hlDraftForget(d, 'noteReqs', same);
+        hlDraftSettled(d, 'noteReqs', same, !!outcome);
         if (outcome !== 'made') return false;
         // WHAT WAS TYPED WHILE IT SAVED STAYS (28 Sep 2026, review). The box is not disabled
         // while a save is out, and emptying it on success threw away anything added in that
@@ -4553,12 +4658,40 @@ python state_sync.py push</pre>
     // them, refuse a space) had nothing left to act on. A Drive link pasted from a chat app
     // with a trailing U+200B was stored as ".../abc%E2%80%8B" and opened nothing; two links
     // pasted together were stored as one "...abc%20https://..."; a leading U+200E was refused
-    // here as "not a web link". Now invisible characters are dropped first -- every format
-    // character and default-ignorable one: a link has no emoji to join -- a link with a space
-    // or a control character still inside it is refused, and the cleaned text is what is
-    // sent, so the hook decides what is stored. hlLinkToKeep still has to pass it.
-    const HL_LINK_INVISIBLE = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
-    const hlLinkRaw = v => String(v ?? '').replace(HL_LINK_INVISIBLE, '').trim();
+    // here as "not a web link". Now invisible characters are dropped first, a link with a
+    // space or a control character still inside it is refused, and the cleaned text is what
+    // is sent, so the hook decides what is stored. hlLinkToKeep still has to pass it.
+    //
+    // THE HOOK'S RULE, NOT A WIDER ONE (28 Sep 2026, repair). The first cut dropped every Cf and
+    // Default_Ignorable character, ZWNJ, ZWJ and the variation selectors with them. The hook
+    // keeps those after a letter of a script that needs them (a ZWNJ inside a Persian word in a
+    // Wikipedia path), so for such a link the page, not the hook, decided what was stored, and
+    // it stored another address. So exactly what cleanLinkUrl drops before it parses is dropped
+    // here: its DRAWS_NOTHING set, then dropLooseJoiners -- tag runs bar a subdivision flag, and
+    // a joiner or selector run at the start or after a plain character, bar the selector of a
+    // keycap. Keep the two in step: the checks hold the hook's own answers for a set of pastes.
+    const HL_LINK_DROP = new RegExp(String.raw`(?![\u{200C}\u{200D}\u{180E}\u{600}-\u{605}\u{6DD}\u{70F}\u{890}\u{891}\u{8E2}\u{110BD}\u{110CD}\u{E0020}-\u{E007F}])\p{Cf}|[\u{115F}\u{1160}\u{17B4}\u{17B5}\u{3164}\u{FFA0}]|(?=\p{Cn})\p{Default_Ignorable_Code_Point}`, 'gu');
+    const HL_LINK_JOINERS = /[\u{34F}\u{180B}-\u{180F}\u{200C}\u{200D}\u{FE00}-\u{FE0F}\u{E0100}-\u{E01EF}]+/gu;
+    const HL_LINK_PLAIN = /[\u{0}-\u{7F}\p{Nd}\p{Zs}\u{A0}\u{2010}-\u{2015}]|(?=\p{L})[\p{sc=Latin}\p{sc=Greek}\p{sc=Cyrillic}]/u;
+    const HL_LINK_TAGS = /(\u{1F3F4}[\u{E0061}-\u{E007A}]{2}[\u{E0030}-\u{E0039}\u{E0061}-\u{E007A}]{1,4}\u{E007F})|[\u{E0020}-\u{E007F}]+/gu;
+    // The character just before index k of s, whole (a surrogate pair is one), or '' at the start.
+    function hlCharBefore(s, k) {
+        if (k <= 0) return '';
+        const low = s.charCodeAt(k - 1);
+        const pair = k >= 2 && low >= 0xDC00 && low <= 0xDFFF && (s.charCodeAt(k - 2) & 0xFC00) === 0xD800;
+        return String.fromCodePoint(s.codePointAt(pair ? k - 2 : k - 1));
+    }
+    function hlLinkRaw(v) {
+        return String(v ?? '').replace(HL_LINK_DROP, '')
+            .replace(HL_LINK_TAGS, (run, flag) => flag || '')
+            .replace(HL_LINK_JOINERS, (run, at, whole) => {
+                const before = hlCharBefore(whole, at);
+                if (before !== '' && !HL_LINK_PLAIN.test(before)) return run;
+                const last = [...run].pop();
+                return whole.codePointAt(at + run.length) === 0x20E3 && /[\u{FE00}-\u{FE0F}]/u.test(last) ? last : '';
+            })
+            .trim();
+    }
 
     async function hlAddLink(i) {
         const lead = HOT_LEADS[i];
@@ -4591,9 +4724,10 @@ python state_sync.py push</pre>
         if (by) body.by = by;
         const d = hlDraft(id);
         const same = [raw, label];
+        const again = hlDraftKept(d, 'linkReqs', same);
         body.requestId = hlDraftRequestId(d, 'linkReqs', same);
-        const outcome = await hlNotesPost(i, body, 'link');
-        if (outcome) hlDraftForget(d, 'linkReqs', same);
+        const outcome = await hlNotesPost(i, body, 'link', again);
+        hlDraftSettled(d, 'linkReqs', same, !!outcome);
         if (outcome !== 'made') return false;
         // Each box emptied only if it still holds what was sent (see hlSaveNote).
         const j = hlIndexOf(id);

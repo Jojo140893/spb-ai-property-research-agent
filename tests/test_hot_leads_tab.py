@@ -311,7 +311,7 @@ MUTANTS = {
         "a lead written again keeps its place"),
     # A save that may have been made was called "Not saved", and was saved twice.
     "a save that may have been made is called not saved": (
-        "if (hlMaybeMade(res.status, why)) {", "if (false) {",
+        "if (hlMaybeMade(res.status, why)) return open(why);", "if (false) return open(why);",
         "may have saved, the hook's 502"),
     "a 502 is read as refused": (
         "(status >= 500 && status !== 503)", "(status === 500)",
@@ -325,8 +325,9 @@ MUTANTS = {
         "if (/\\bnothing was changed\\b/i.test(m)) return false;", "",
         "a 502 that says nothing was changed is 'Not saved'"),
     "a dropped connection is said to have changed nothing": (
-        "hlNoteSay(hlIndexOf(id), unsure('the dashboard could not be reached'), true);",
-        "hlNoteSay(hlIndexOf(id), 'Could not reach the dashboard, so nothing was changed.' + kept, true);",
+        "if (!res) return open('the dashboard could not be reached');",
+        "if (!res) { hlNoteSay(hlIndexOf(id), 'Could not reach the dashboard, so nothing was changed.' + kept, true);"
+        " return ''; }",
         "unreachable: could not confirm"),
     # (c) one requestId per press, the same one on the automatic retry.
     "no requestId is sent": (
@@ -334,13 +335,14 @@ MUTANTS = {
         "carries a requestId"),
     # 28 Sep review: "press Save again" after "could not confirm" must be the same request.
     "Save again after an unconfirmed save is a new request": (
-        "if (!kept.has(sig)) {", "if (true) {",
+        "const rid = kept.get(sig) || hlRequestId();", "const rid = hlRequestId();",
         "Save again after 'could not confirm': the same requestId"),
     "an edited note keeps the unconfirmed press's requestId": (
-        "const sig = JSON.stringify(same);", "const sig = '';",
+        "const sig = JSON.stringify(same);\n        const kept = d[key];\n        const rid",
+        "const sig = '';\n        const kept = d[key];\n        const rid",
         "an edited note after 'could not confirm' is a new request"),
     "a confirmed note's requestId is kept for the next one": (
-        "        if (outcome) hlDraftForget(d, 'noteReqs', same);\n", "",
+        "hlDraftSettled(d, 'noteReqs', same, !!outcome);", "hlDraftSettled(d, 'noteReqs', same, false);",
         "the same quick action saved twice is two requests"),
     # One lead the server could not mask is cut down alone (maskFailed, notesHidden).
     "a cut-down lead does not say why": (
@@ -388,14 +390,14 @@ MUTANTS = {
         "const arrived = hlSettleDrafts();", "const arrived = new Map();",
         "a Refresh that shows the unconfirmed press arrived"),
     "a press the hook already had is called Saved.": (
-        "(data.duplicate === true ? 'Already saved.' : 'Saved.')", "'Saved.'",
+        "(data.duplicate === true && again ? 'Already saved.' : 'Saved.')", "'Saved.'",
         "a press the hook already had: 'Already saved.'"),
     "a press matched to a removed note is called saved": (
         "if (kind !== 'remove' && data.duplicateRemoved === true) {", "if (false) {",
         "a press matched to a note since removed"),
     "a press matched to a removed note sends the same requestId again": (
-        "if (outcome) hlDraftForget(d, 'noteReqs', same);",
-        "if (outcome === 'made') hlDraftForget(d, 'noteReqs', same);",
+        "hlDraftSettled(d, 'noteReqs', same, !!outcome);",
+        "hlDraftSettled(d, 'noteReqs', same, outcome === 'made');",
         "the next press adds it anew"),
     # One slot per draft: X, then Y, then X again stored X twice.
     "one unconfirmed press is kept per draft": (
@@ -435,7 +437,7 @@ MUTANTS = {
         "a link box changed while the link saved keeps the new link"),
     # The tab sent URL.href, so the hook's own link rules never ran on a link from it.
     "invisible characters are sent in a link": (
-        ".replace(HL_LINK_INVISIBLE, '')", "",
+        "return String(v ?? '').replace(HL_LINK_DROP, '')", "return String(v ?? '')",
         "a trailing zero-width space"),
     "two links pasted together are sent as one": (
         "if (/[\\s\\u0000-\\u001F\\u007F]/.test(raw)) {", "if (false) {",
@@ -453,6 +455,58 @@ MUTANTS = {
     "a full answer is drawn onto a masked list": (
         " || (data.contact === 'full' && HL_ACCESS.contact !== 'full');", ";",
         "a full answer to a masked list, with no redraw between: not drawn"),
+
+    # --- 28 Sep repair round: what two verifiers found in the second review's fixes --------
+    # A Refresh while a slow Save was out settled that very press: the box emptied, then its lost
+    # answer said "What you typed is still here", and Save pressed again stored it twice.
+    "a Refresh settles a press still out": (
+        "if (!id || HL_NOTE_BUSY.has(id) || !HL_NOTES.has(id)) return;", "if (!id || !HL_NOTES.has(id)) return;",
+        "a Refresh while the save is out: that press is not called"),
+    "a lost answer over a list that shows it is 'could not confirm'": (
+        "if ((body.op !== 'remove' || HL_DRAWN !== drawnAt) && hlListShows(id, body)) {", "if (false) {",
+        "its answer then lost: the list drawn since shows it"),
+    "an answer the list drawn since already shows says to press Refresh": (
+        "const shown = stale && hlListShows(id, body);", "const shown = false;",
+        "then its answer: 'Saved.' -- the list drawn since shows it"),
+    # Settled on a Refresh alone, a press a save's own answer listed stayed kept, and a deliberate
+    # second follow-up went out with its requestId and was dropped as a repeat.
+    "a save's answer does not settle the other presses it shows": (
+        "const arrived = hidden ? [] : hlSettleDraft(id, hlNotesOf(data.notes), body.requestId || '', j);",
+        "const arrived = [];",
+        "a deliberate second follow-up later is a new note"),
+    "a press settled that is not the draft's words is not said": (
+        "settled.push({ what, current: kept === sig });", "if (kept === sig) settled.push({ what, current: true });",
+        "a save whose answer lists an earlier unconfirmed press"),
+    "a settled press's words are left in the box": (
+        "if (kept === sig) hlDraftClear(d, j, what);", "",
+        "a link's answer that shows the note still in its box arrived"),
+    # One press whose retry the hook answered duplicate read "Already saved.".
+    "a single press answered duplicate is called Already saved.": (
+        "(data.duplicate === true && again ? 'Already saved.' : 'Saved.')",
+        "(data.duplicate === true ? 'Already saved.' : 'Saved.')",
+        "one press whose first fetch dropped after the hook wrote"),
+    # The cap forgot the oldest as a press was added, before its own id was settled.
+    "the cap forgets an unconfirmed press before the answer": (
+        "        kept.set(sig, rid);\n        return rid;",
+        "        kept.set(sig, rid);\n        while (kept.size > HL_REQ_KEEP) kept.delete(kept.keys().next().value);\n"
+        "        return rid;",
+        "eleven presses unconfirmed, then the oldest confirmed"),
+    # The link box dropped every joiner and selector, where the hook keeps them after a letter.
+    "the link box drops a joiner the hook keeps": (
+        "if (before !== '' && !HL_LINK_PLAIN.test(before)) return run;", "",
+        "link box, as the hook: a ZWNJ inside a Persian word"),
+    "the link box keeps a joiner the hook drops": (
+        "return whole.codePointAt(at + run.length) === 0x20E3 && /[\\u{FE00}-\\u{FE0F}]/u.test(last) ? last : '';",
+        "return run;",
+        "link box, as the hook: a ZWJ after a Latin letter"),
+    # A Refresh sent while Lock was out was drawn in full after Lock.
+    "an older load draws over the newer one": (
+        "            const all = await hlAsk(hlLeadsUrl());\n            if (gen !== HL_LOAD_GEN) return;\n",
+        "            const all = await hlAsk(hlLeadsUrl());\n",
+        "a Refresh sent before Lock and answered after it"),
+    "a forced load while one is out is skipped": (
+        "if (HOT_LEADS_STATE === 'loading' && !force) return;", "if (HOT_LEADS_STATE === 'loading') return;",
+        "a Refresh sent before Lock and answered after it"),
 }
 
 
