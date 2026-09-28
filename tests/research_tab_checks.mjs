@@ -1534,5 +1534,29 @@ console.log("\n--- the card's date warning reads the row's own date (unchanged, 
   check("a row checked today does not warn", fresh.out.includes(`Last checked at the source ${today}.`) && !/days ago/.test(fresh.out));
 }
 
+// ------------------------------------------------------------------ the shared card (28 Sep)
+// Coleen, 28 Sep 2026: the Clare's Leads tab draws a lead's live results with this tab's own
+// card, so the template was lifted out of runResearchAgent into shortlistCardHtml. On THIS
+// tab nothing may change: the Research tab's tick and benchmark button, never the lead's.
+console.log("\n--- the shortlist card, now shared with the Clare's Leads tab ---");
+{
+  const { out } = await render(success({ shortlist: [prop(), prop({ content_hash: "v2:two", lot_address: "Lot 2" })] }));
+  check("the Research tab draws its own tick and benchmark button, never a lead's tick",
+    (out.match(/class="cmp-box"/g) || []).length === 2 && (out.match(/class="bench-btn"/g) || []).length === 2
+    && !out.includes("hl-cmp-box") && !out.includes("data-lead="));
+  // The closure threw on a row with no recommendation, scoring breakdown, inclusions or price,
+  // and the whole search printed "The results could not be displayed".
+  const partial = await render(success({ shortlist: [{ content_hash: "v2:bare", lot_address: "Lot 9 Bare St",
+    suburb: "Walloon", state: "QLD", score: 70 }], shortlist_count: 1 }));
+  // (The card's HTML comments mention "Full Turnkey Verified" themselves, so they are left out.)
+  const drawn = partial.out.replace(/<!--[\s\S]*?-->/g, "");
+  check("a shortlist row missing its breakdown, inclusions and price still paints",
+    drawn.includes("Rank #1: Lot 9 Bare St") && !drawn.includes("could not be displayed")
+    && !drawn.includes("(Full Turnkey Verified)") && !drawn.includes("score-section")
+    && !/undefined|NaN/.test(drawn), drawn.slice(0, 300));
+  check("... and its markup is only the renderer's own", markupProblems(partial.out).length === 0,
+    markupProblems(partial.out).slice(0, 3).join(" | "));
+}
+
 console.log(fail ? `\n${fail} of ${pass + fail} CHECKS FAILED` : `\nALL ${pass} CHECKS PASSED`);
 process.exit(fail ? 1 : 0);

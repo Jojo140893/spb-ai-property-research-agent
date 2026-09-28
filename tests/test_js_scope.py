@@ -75,6 +75,21 @@ SHARED = [
     "loadHotLeads",           # inline onclick on the nav button and Refresh: globals only
     "rerunHotLead",           # inline onclick on every lead card
     "hlSetFilter",            # inline onclick on the All / Hot / Warm / Nurture buttons
+    # Coleen, 28 Sep 2026: the Research tab's card and report on every lead, notes and links,
+    # and the contact-details unlock -- inline handlers on the lead cards, and the card
+    # template both tabs draw.
+    "shortlistCardHtml",
+    "leadPickBox",
+    "hlOpenReport",
+    "hlClearPicks",
+    "hlShowMore",
+    "hlPickAction",
+    "hlSaveNote",
+    "hlRemoveNote",
+    "hlAddLink",
+    "hlRemoveLink",
+    "hlUnlock",
+    "hlLock",
 ]
 
 
