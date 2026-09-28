@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 import config
 from brief_parser import coerce_number
+from state_resolver import postcode_is_lot_number
 
 logger = logging.getLogger("spb.db")
 
@@ -499,6 +500,23 @@ class ResearchDatabase:
         recovered = _reparse_recover(b)
         if recovered:
             b = {**b, **recovered}
+
+        # A LOT NUMBER IS NOT A POSTCODE (Coleen, 28 Sep 2026: a QLD search offered two
+        # "Jubilee, QLD" lots that are in Wyndham Vale, Victoria). "2-Part Detached SS West
+        # 4327 Jubilee Wyndhamvale ..." is lot 4327, and the row text parser also returned
+        # 4327 as its postcode -- a Queensland one. A number the row already holds as its
+        # lot cannot also be its postcode, so it is not stored as one. Decided here, after
+        # the recovery above has filled both fields, because this is the one door every
+        # channel writes through; postcode is fill-if-empty below, so a value kept out here
+        # stays out on every re-harvest. postcode is not a content_hash field, so dropping
+        # it changes no row's identity. NOT done by widening the compass-word guard in
+        # sources/feature_extract.parse_postcode -- its comment says why that guard is
+        # anchored to the start of the row. (Review, 28 Sep 2026: one door for the HARVEST.
+        # The maintenance tool reparse_from_source.py writes postcode with its own UPDATE and
+        # applies this same rule in its _postcode_fits; enrich_buildings clears any lot
+        # number already in the column.)
+        if postcode_is_lot_number(b.get("postcode"), b.get("lot_number")):
+            b = {**b, "postcode": None}
 
         h = b.get("content_hash") or building_content_hash(b)
         price = float(b.get("advertised_package_price") or b.get("price") or 0)

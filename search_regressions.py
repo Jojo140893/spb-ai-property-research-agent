@@ -38,6 +38,9 @@ WHAT IS CHECKED, for every brief:
     is taken out, same price -- that says the lot has gone (18491 vs 15953);
   * WARN only: a shortlisted row filed in its state from the suburb column alone, whose own
     text names a locality of one other state (14905: "Wollert");
+  * WARN only: a shortlisted or needs-confirming card whose database row was filed by a
+    state_source citing a postcode, and that postcode is its own lot number (Coleen,
+    28 Sep: "Jubilee, QLD" lots 4316/4317 that are in Wyndham Vale, VIC);
   * then the brief's own `expect`: must-not-appear hashes, Dawn needs confirming while its
     rows are unchanged, equal_to another brief, brief_adjustments / brief_used /
     location_resolution / record id rules, minimum counts, the funnel invariant
@@ -535,6 +538,7 @@ class Run:
         self.only = list(only or ())
         self.responses = {}
         self.warned_locality = set()
+        self.warned_lot_postcode = set()
         self.briefs = {b["id"]: b for b in spec["briefs"]}
         unknown = [i for i in self.only if i not in self.briefs]
         if unknown:
@@ -765,6 +769,7 @@ class Run:
                     if said.lower() in NOT_AVAILABLE:
                         self.report.fail(where, "%s %s is shown, but its row says %r"
                                          % (kind, name, said))
+                self.lot_number_postcode(where, kind, name, h, row)
                 if kind != "shortlisted":
                     continue
                 age = _age(card_date, self.today)
@@ -791,6 +796,39 @@ class Run:
                                                 "%s (%s)" % (name, row.get("state"),
                                                              row.get("state_source"), hit[0],
                                                              hit[1]))
+
+    def lot_number_postcode(self, where, kind, name, h, row):
+        """WARN when a card's state was read off its own lot number as a postcode.
+
+        Coleen, 28 Sep 2026: a QLD search under $800k offered two "Jubilee, QLD" lots that
+        are the Jubilee estate in Wyndham Vale, VIC -- "...SS West 4327 Jubilee
+        Wyndhamvale...", lot 4327, stored postcode 4327, state_source "suburb + postcode".
+        enrich now re-resolves such a row and database.record_building no longer stores
+        the number as a postcode, so a card of this shape means a path round both. A WARN,
+        not a FAIL: the row's state may still be right (lot 3155 in Clyde North happens to
+        be a VIC number), and the database is what is wrong, not the search.
+
+        Read from the card's DATABASE row (the snapshot's in --live, which has none). The
+        rule is stated here rather than imported from enrich_buildings, as FRESH_DAYS is:
+        the harness does not borrow the rule it is checking. Once per row a run.
+
+        The postcode is compared with each NUMBER in the lot, not with all its digits run
+        together (review, 28 Sep 2026): Geocon's lot "GRD-T2-601" is 2 and 601, and 2601
+        is its real Canberra postcode, not its lot number.
+        """
+        if row is None or h in self.warned_lot_postcode:
+            return
+        rec = self.catalogue.db_row(h) or row
+        signals = [p.strip() for p in str(rec.get("state_source") or "").split("+")]
+        postcode = re.sub(r"\D", "", str(rec.get("postcode") or "")).lstrip("0")
+        lot = {n.lstrip("0") for n in re.findall(r"\d+", str(rec.get("lot_number") or ""))}
+        if "postcode" not in signals or not postcode or postcode not in lot:
+            return
+        self.warned_lot_postcode.add(h)
+        self.report.warn(where, "lot number as postcode: %s %s is filed %s by %r, but its "
+                                "postcode %s is its own lot number"
+                         % (kind, name, rec.get("state") or row.get("state"),
+                            rec.get("state_source"), rec.get("postcode")))
 
     def never(self, where, listed, shortlist, confirming):
         for kind, entries in (("shortlist", shortlist), ("needs_confirming", confirming)):

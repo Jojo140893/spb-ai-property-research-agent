@@ -130,18 +130,30 @@ def _replaceable_suburb(value, state: str) -> bool:
     return not _GEO.resolve_locality(str(value), state or "")
 
 
-def _postcode_fits(value, state) -> bool:
-    """A postcode must belong to the row's own state.
+def _postcode_fits(value, state, lot_numbers=()) -> bool:
+    """A postcode must belong to the row's own state, and must not be its lot number.
 
     Today's audit found this column populated from lot numbers, unit numbers and floor
     areas, with 138 live rows carrying a postcode nothing supported — and on two of them
     the fake postcode had also set the wrong state. Writing more of those would deepen
     the problem, so a recovered postcode is only accepted when its range matches the
     state the row already has.
+
+    `lot_numbers`: the row's lot number(s). A recovered postcode that is one of them is
+    refused (review, 28 Sep 2026). This file writes postcode with its own UPDATE, round
+    the guard in database.record_building, and the state check above cannot catch it on
+    the rows that need it most: the Jubilee and Silkwood lots whose lot number had filed
+    them QLD / WA are BLANK now, and a blank state lets any postcode through, so an
+    --apply that re-read 4316, 4317, 4327, 4328 and 6053 off their lines would have put
+    them straight back (found by reading the code; this tool fetches live files, so it was
+    not run). Same rule as the resolver's (state_resolver.postcode_is_lot_number), so
+    "GRD-T2-601" still takes 2601.
     """
-    from state_resolver import state_from_postcode
+    from state_resolver import postcode_is_lot_number, state_from_postcode
     text = str(value or "").strip()
     if not re.fullmatch(r"\d{4}", text):
+        return False
+    if any(postcode_is_lot_number(text, lot) for lot in lot_numbers):
         return False
     st = str(state or "").strip().upper()
     return not st or state_from_postcode(text) == st
@@ -230,7 +242,10 @@ def main():
                 if col not in row:
                     continue
                 value = f.get(src)
-                if col == "postcode" and not _postcode_fits(value, row.get("state")):
+                # The stored lot number and the one this parse read: either being the
+                # "postcode" means it is not one.
+                if col == "postcode" and not _postcode_fits(
+                        value, row.get("state"), (row.get("lot_number"), f.get("lot_number"))):
                     continue
                 # No suburb branch any more: suburb is not written at all. It decides
                 # content_hash, and suburb_quality resolves it at read time instead.
