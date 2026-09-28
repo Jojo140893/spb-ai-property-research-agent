@@ -1924,28 +1924,26 @@ console.log("\n--- notes and links per lead ---");
       unsureSaid(msg.textContent) && !/Not saved/i.test(msg.textContent) && /err/.test(msg.className)
       && ta.value === "Maybe saved" && sent.length === k + 1, msg.textContent);
   }
-  // THE DASHBOARD SAID IT WAS SAVED (28 Sep 2026, second review). An older dashboard's 502 "the
-  // note was saved, but the notes could not be shown ..." was read as "could not confirm", and on
-  // a lead whose notes it can never mask that was every press: "Press Save again" forever, the
-  // text kept through every Refresh, and a reworded press stored a second copy. It was saved.
+  // THE DASHBOARD'S 502 FOR AN ANSWER IT DOES NOT KNOW (28 Sep 2026, integration). A masking
+  // failure is a 200 notesHidden now; what is left as a 502 is a hook answer of a shape nobody
+  // sends, which says nothing about whether the note was stored -- so it is "could not
+  // confirm", the words and their requestId kept, and pressing Save again is the same request.
+  // (The second review's page read an older dashboard's "the note was saved, but ..." as a
+  // save; that 502 is no longer sent by any dashboard this page ships with.)
   const nSaid = sent.length;
+  notesReply = () => reply(502, { status: "error",
+    message: "the lead-notes store answered in a shape the dashboard does not know (MaskError), so it cannot say whether the change was saved; press Refresh to check" });
+  await s.api.hlSaveNote(0);
+  check("the dashboard's 502 for an unknown answer: could not confirm, and the note is kept",
+    unsureSaid(msg.textContent) && ta.value === "Maybe saved" && sent.length === nSaid + 1, msg.textContent);
+  await s.api.hlSaveNote(0);
+  check("... and Save again resends the same request",
+    ridAt(nSaid + 1) !== null && ridAt(nSaid + 1) === ridAt(nSaid), JSON.stringify([ridAt(nSaid), ridAt(nSaid + 1)]));
   notesReply = () => reply(502, { status: "error",
     message: "the note was saved, but the notes could not be shown with their contact details hidden (MaskError); press Refresh" });
   await s.api.hlSaveNote(0);
-  check("a message that says the note was saved: saved for the draft -- the box emptied, never 'Press Save again'",
-    msg.textContent === "The note was saved, but the notes could not be shown with their contact details hidden "
-      + "(MaskError); press Refresh." && !/again/i.test(msg.textContent) && ta.value === "" && sent.length === nSaid + 1,
-    msg.textContent + " | box " + JSON.stringify(ta.value));
-  ta.value = "Maybe saved";
-  await s.api.hlSaveNote(0);
-  check("... and the same words pressed again are a new request, not the saved one's",
-    ridAt(nSaid + 1) !== null && ridAt(nSaid + 1) !== ridAt(nSaid), JSON.stringify([ridAt(nSaid), ridAt(nSaid + 1)]));
-  ta.value = "Maybe saved";
-  notesReply = () => reply(503, { status: "error", message: "the note was saved, but the list could not be read back" });
-  await s.api.hlSaveNote(0);
-  check("whatever the status, a message that says the note was saved is saved, not 'Not saved'",
-    !/Not saved|Could not confirm/i.test(msg.textContent) && msg.textContent.includes("The note was saved, but")
-    && ta.value === "", msg.textContent);
+  check("an old dashboard's 'was saved, but' 502 is read as could-not-confirm too, never as a save that empties the box",
+    unsureSaid(msg.textContent) && ta.value === "Maybe saved", msg.textContent);
   ta.value = "Maybe saved";
   notesReply = () => reply(502, { status: "error",
     message: "lead-notes store answered HTTP 502: the notes stored for this lead cannot be read, so nothing was changed" });
@@ -2179,7 +2177,7 @@ console.log("\n--- notes and links per lead ---");
     && !card1.includes("shown only with the contact-details password") && card1.includes("No notes yet."));
   auditMarkup("a cut-down lead: markup", h);
   // 28 Sep 2026, second review: the notice has an id, so a save can take it down again.
-  const HIDDEN_SAID = "The notes saved for this lead hold contact details that could not be hidden, so they are "
+  const HIDDEN_SAID = "The notes saved for this lead are held back with its contact details, so they are "
     + "shown only with the contact-details password.";
   check("... the hidden-notes notice is drawn with an id of its own",
     card0.includes(`id="hlNotesHidden-0">${HIDDEN_SAID}</div>`), card0.slice(card0.indexOf("hlNotesHidden-0") - 60, card0.indexOf("hlNotesHidden-0") + 200));
@@ -2426,7 +2424,7 @@ console.log("\n--- a masked save whose notes cannot be shown is a save ---");
   await s.api.hlSaveNote(1);
   check("a save that hides a lead's notes: its lists are emptied and the hidden-notes notice is drawn",
     vList.innerHTML === "" && vHidden.hidden === false
-    && vHidden.textContent === "The notes saved for this lead hold contact details that could not be hidden, so they "
+    && vHidden.textContent === "The notes saved for this lead are held back with its contact details, so they "
       + "are shown only with the contact-details password.", JSON.stringify([vList.innerHTML, vHidden.hidden, vHidden.textContent]));
   // No password set (contactUnlock "not-configured"): the same, without sending anyone for one.
   unlock = "not-configured";
@@ -2752,6 +2750,81 @@ console.log("\n--- a save's own answer settles the other presses it shows ---");
     hook.live().filter(y => y.text === "Package sent").length === 2 && msg.textContent === "Saved.", msg.textContent);
 }
 
+// ------------------------------------------------------------------ 28 Sep 2026, integration
+console.log("\n--- a Refresh while another press is out settles the presses it shows ---");
+{
+  const r = notesRig();
+  const { s, hook, sent, held } = r;
+  await s.api.loadHotLeads();
+  const ta = s.el("hlNoteText-0", { value: "" }), msg = s.el("hlNoteMsg-0");
+  // P0: a chip-only "Follow-up required", stored, its answer lost.
+  s.api.hlPickAction(0, "follow_up");
+  r.lose = true;
+  await s.api.hlSaveNote(0);
+  const r0 = rid(sent[sent.length - 1]);
+  // P1 out when a Refresh shows P0 live; P1's answer is lost too.
+  ta.value = "Rang Jo, no answer";
+  r.gate = true;
+  const p1 = s.api.hlSaveNote(0);
+  await new Promise(go => setImmediate(go));
+  await s.api.loadHotLeads(true);
+  held.shift()();
+  await p1;
+  r.gate = false; r.lose = false;
+  // A deliberate second chip-only follow-up.
+  s.api.hlPickAction(0, "follow_up");
+  ta.value = "";
+  await s.api.hlSaveNote(0);
+  const chipOnly = hook.live().filter(y => y.action === "follow_up" && y.text === "").length;
+  check("a Refresh while another press is out still settles the presses it shows: a second follow-up is a new note",
+    rid(sent[sent.length - 1]) !== r0 && chipOnly === 2 && msg.textContent === "Saved.",
+    JSON.stringify({ sentLast: rid(sent[sent.length - 1]) === r0, chipOnly, said: msg.textContent }));
+}
+
+console.log("\n--- several earlier presses arrived: said as a count ---");
+{
+  const r = notesRig();
+  const { s, sent } = r;
+  await s.api.loadHotLeads();
+  const ta = s.el("hlNoteText-0", { value: "" }), msg = s.el("hlNoteMsg-0");
+  r.lose = true;
+  ta.value = "first";
+  await s.api.hlSaveNote(0);
+  ta.value = "second";
+  await s.api.hlSaveNote(0);
+  r.lose = false;
+  ta.value = "third";
+  await s.api.hlSaveNote(0);
+  check("several earlier notes arrived: said as a count, in the plural",
+    msg.textContent === "Saved. 2 earlier notes that could not be confirmed did arrive: they are in the list below.",
+    msg.textContent + " " + JSON.stringify(sent.length));
+}
+
+console.log("\n--- a hidden lead's save answered after a Refresh does not send the consultant to Refresh ---");
+{
+  const s = sandbox(undefined, { localStorage: memoryStorage() });
+  s.el("hotLeadsContent"); s.el("hotLeadsBadge"); s.el("hotLeadsRefresh");
+  const held = [];
+  s.respond(async url => {
+    if (url === "/api/lead_notes") {
+      return new Promise(go => held.push(() => go(reply(200, { status: "success", callId: "call-h", notesHidden: true, contact: "masked" }))));
+    }
+    return reply(200, { status: "success", contact: "masked", contactUnlock: "password",
+                        leads: [clean({ callId: "call-h" })], notes: {}, notesHidden: ["call-h"] });
+  });
+  await s.api.loadHotLeads();
+  s.el("hlNoteText-0", { value: "Ring back Friday" });
+  const msg = s.el("hlNoteMsg-0");
+  const p = s.api.hlSaveNote(0);
+  await new Promise(go => setImmediate(go));
+  await s.api.loadHotLeads(true);
+  held.shift()();
+  await p;
+  check("a hidden lead's save answered after a Refresh: saved, and never 'Press Refresh to see it' (a Refresh would not show it)",
+    /^Saved\./.test(msg.textContent) && !/Press Refresh/.test(msg.textContent)
+    && msg.textContent.includes("contact-details password"), msg.textContent);
+}
+
 console.log("\n--- one press is 'Saved.', whichever retry the hook answered as a duplicate ---");
 {
   const r = notesRig();
@@ -2819,6 +2892,10 @@ console.log("\n--- the link box drops what the hook drops, and keeps what it kee
     ["a Hangul filler and a ZWJ (both dropped)", "https://example.com/x\u3164\u200D", "https://example.com/x"],
     ["a run of tag characters (dropped)", "https://example.com/x\u{E0041}\u{E0042}", "https://example.com/x"],
     ["soft hyphens and a BOM (dropped)", "\u00ADhttps://example.com/y\u00AD\uFEFF", "https://example.com/y"],
+    // A digit outside the BMP is two UTF-16 units: the joiner after it is judged by the whole
+    // character (hlCharBefore), as the hook judges it, not by half of it.
+    ["a ZWNJ after a 4-byte digit (dropped, as after any digit)",
+      "https://example.com/a\u{1D7CE}\u200Cb", "https://example.com/a\u{1D7CE}b"],
   ];
   for (const [label, paste, want] of HOOK) {
     url.value = paste;

@@ -173,6 +173,7 @@ _IGNORABLE = frozenset(
 _VS = "".join(chr(c) for c in range(0xFE00, 0xFE10))
 # The Braille blank draws a space and is not one to any rule: "0498", U+2800, "765" is a space.
 _BRAILLE_BLANK = chr(0x2800)
+_IDEOGRAPHIC_FULL_STOP = chr(0x3002)
 _REPLACEMENT = chr(0xFFFD)
 
 
@@ -212,14 +213,29 @@ def _read(ch):
 
 def _folded(ch):
     """`ch` once plain() has the compatibility form: a combining mark that composed with
-    nothing goes, a digit of any script is its ASCII digit, and the Braille blank a space."""
+    nothing goes, a digit of any script is its ASCII digit, and the Braille blank a space.
+
+    28 Sep 2026 (integration): the ideographic full stop U+3002 is a ".", which is what a
+    Chinese input method types for one -- "wang@163", U+3002, "com" was the lead's own address
+    shown whole (NFKC leaves U+3002 alone, and writes the half-width U+FF61 and U+FE12 as it).
+    And a digit is any character whose value is 0-9 as a number, not only one with a digit
+    value: the dingbat circled zeros U+1F10B and U+1F10C have neither a digit value nor an
+    NFKC form, and the lead's number written with them was shown whole. Only categories Nd
+    and No: a Chinese numeral is a letter (Lo), and "5" is not what a masked viewer should
+    read for it."""
     if ch < "\x80":
         return ch
     if ch == _BRAILLE_BLANK:
         return " "
-    if unicodedata.category(ch) in ("Mn", "Me"):
+    if ch == _IDEOGRAPHIC_FULL_STOP:
+        return "."
+    cat = unicodedata.category(ch)
+    if cat in ("Mn", "Me"):
         return ""
     d = unicodedata.digit(ch, None)
+    if d is None and cat == "No":
+        n = unicodedata.numeric(ch, None)
+        d = int(n) if n is not None and n == int(n) and 0 <= n <= 9 else None
     return ch if d is None else chr(0x30 + d)
 
 
@@ -482,7 +498,9 @@ _PHONE_SHAPED = re.compile(
 # stops at the "%", "+" or second ".", which are address characters too, so the second
 # address was inside a run and never tried. _emails_in tries _EMAIL_ANYWHERE once,
 # exactly where each address ends, which is where the scan before the lookbehind went on.
-_EMAIL_ANYWHERE = re.compile(r"[\w.%+\-]+@[\w\-]+(?:\.[\w\-]+)+")
+# And "%40" is an "@" (28 Sep 2026, integration): an address copied out of a link --
+# "mailto:?to=joseph.test%40example.com" -- was shown whole in a note's text.
+_EMAIL_ANYWHERE = re.compile(r"[\w.%+\-]+(?:@|%40)[\w\-]+(?:\.[\w\-]+)+")
 _EMAIL_SHAPED = re.compile(r"(?<![\w.%+\-])" + _EMAIL_ANYWHERE.pattern)
 # In a URL, only a number in an Australian phone's own shape: national (0X XXXX XXXX),
 # international (61X XXXX XXXX) or anything after a "+". A listing's id -- 9 digits on
@@ -534,7 +552,7 @@ def _said(before, then=""):
 # review): "liwei.buyer(a)gmail.com" and "[a]", the at sign drawn as a letter, walked the same
 # way; a bracket is required either side, or every "a" in a summary would be an at.
 _AT = (r"\s*(?:[\[({<]\s*a\s*[\])}>]"
-       r"|(?:[\[({<_\-]\s*)?(?:@|(?<![^\W_])at(?![^\W_]))(?:\s*[\])}>_\-])?)\s*")
+       r"|(?:[\[({<_\-]\s*)?(?:@|%40|(?<![^\W_])at(?![^\W_]))(?:\s*[\])}>_\-])?)\s*")
 
 
 def digits(value):
@@ -600,7 +618,7 @@ def _email_patterns(email):
                     + "".join(_said(w, at if i == last else "") + re.escape(w)
                               for i, w in enumerate(words) if i)
                     + at + tail + r"(?!\w)")
-    return [re.escape(e)], said
+    return [re.escape(local) + "(?:@|%40)" + re.escape(domain)], said
 
 
 def _compiled(patterns):
@@ -726,7 +744,7 @@ class Scrubber:
             if pattern and pattern.search(s):
                 return True
             low = s.lower()
-            if any(e in low for e in self.emails):
+            if any(e in low or e.replace("@", "%40") in low for e in self.emails):
                 return True
             if self._digits_leak(s):
                 return True

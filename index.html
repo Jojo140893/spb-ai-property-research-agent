@@ -3271,6 +3271,9 @@ python state_sync.py push</pre>
     let HL_LIVE = new Map();
     const HL_DRAFTS = new Map();
     const HL_NOTE_BUSY = new Set();
+    // callId -> the requestId of the change out on that lead ('' for a removal): the one press a
+    // list drawn meanwhile must not settle (hlSettleDrafts).
+    const HL_NOTE_OUT = new Map();
     let HL_PICKS = null;
 
     // The record's callId names it in the hook's store, its notes and its picks. A record
@@ -3504,8 +3507,10 @@ python state_sync.py push</pre>
         return {
             err: v.notesError ? 'The notes saved for this lead could not be read just now. They are '
                               + 'not lost: press Refresh to try again.' : '',
-            hidden: (v.notesHidden && !v.notes) ? 'The notes saved for this lead hold contact details that '
-                + 'could not be hidden, so they ' + (hlCanUnlock()
+            // Not "they hold contact details": a lead cut down for its summary has its notes held
+            // back with it, whatever they say (integration, 28 Sep 2026).
+            hidden: (v.notesHidden && !v.notes) ? 'The notes saved for this lead are held back with its '
+                + 'contact details, so they ' + (hlCanUnlock()
                     ? 'are shown only with the contact-details password.'
                     : `cannot be shown on this dashboard: ${HL_NO_PASSWORD}.`) : '',
         };
@@ -4378,6 +4383,11 @@ python state_sync.py push</pre>
         if (!settled.length) return '';
         const kinds = ['note', 'link'].filter(k => settled.some(x => x.what === k));
         const both = kinds.length > 1;
+        // More than one of a kind (28 Sep 2026, integration): said as a count, not as one.
+        if (kinds.some(k => settled.filter(x => x.what === k).length > 1)) {
+            return `${settled.length} earlier ${both ? 'notes and links' : kinds[0] + 's'} that could not be confirmed did arrive`
+                 + (shown ? `: they are in the list${both ? 's' : ''} below.` : '.');
+        }
         const lead = settled.some(x => x.current)
             ? (both ? 'The note and the link' : `The ${kinds[0]}`)
             : (both ? 'An earlier note and link' : `An earlier ${kinds[0]}`);
@@ -4391,12 +4401,18 @@ python state_sync.py push</pre>
     // the box and dropped the id -- then the Save's lost answer said "What you typed is still
     // here" over an empty box, and pressing Save again, as it said, stored the note twice. A
     // lead with a change out is left alone here: that change's answer settles it (hlNotesPost).
+    //
+    // ONLY THAT CHANGE (28 Sep 2026, integration). Leaving the whole lead alone also left the
+    // OTHER presses the list showed live: "Follow-up required" stored with its answer lost, then
+    // a second note out when Refresh showed the follow-up, then that note's answer lost too --
+    // the follow-up's id stayed kept, and a deliberate second follow-up went out with it and was
+    // dropped as a repeat. Now only the press still out is skipped (HL_NOTE_OUT).
     function hlSettleDrafts() {
         const said = new Map();
         HOT_LEADS.forEach((lead, i) => {
             const id = hlCallId(lead);
-            if (!id || HL_NOTE_BUSY.has(id) || !HL_NOTES.has(id)) return;
-            const text = hlArrivedText(hlSettleDraft(id, HL_NOTES.get(id), '', -1), true);
+            if (!id || !HL_NOTES.has(id)) return;
+            const text = hlArrivedText(hlSettleDraft(id, HL_NOTES.get(id), HL_NOTE_OUT.get(id) || '', -1), true);
             if (text) said.set(i, text);
         });
         return said;
@@ -4418,21 +4434,17 @@ python state_sync.py push</pre>
     // have written ("reload the lead to see whether the change was saved"); a 2xx that is not
     // the notes, a 500 or a 504 leaves it just as open. A 503 (a setting is missing) and every
     // 4xx are refused before anything is written, and so is an answer that says "nothing was
-    // changed" (the hook's own 502 for notes it could not read). An answer that says "the note
-    // was saved, but ..." is not open at all: see hlSavedAnyway.
+    // changed" (the hook's own 502 for notes it could not read).
+    //
+    // A masked answer whose notes cannot be hidden is a 200 notesHidden now, not the 502 "the
+    // note was saved, but ..." of before (28 Sep 2026, review); the page and api/ ship in one
+    // deployment, so that 502 no longer comes from any dashboard this page talks to, and the
+    // dashboard's 502 for an answer it does not know says it cannot tell (integration).
     function hlMaybeMade(status, message) {
         const m = String(message ?? '');
         if (/\bnothing was changed\b/i.test(m)) return false;
         return (status >= 200 && status < 300) || (status >= 500 && status !== 503);
     }
-    // THE DASHBOARD SAID IT WAS SAVED (28 Sep 2026, review). A dashboard from before this round
-    // answers 502 "the note was saved, but the notes could not be shown with their contact
-    // details hidden" when it cannot mask the answer, and on a lead whose notes it can never
-    // mask it says that to every press. Read as "could not confirm", the page told the
-    // consultant to press Save again forever, kept the text through every Refresh, and a
-    // reworded press stored a second copy. The server says it was saved, so it was: the draft
-    // is cleared, and "Press Save again" is never said beside it.
-    const hlSavedAnyway = message => /\bwas saved, but\b/i.test(String(message ?? ''));
 
     // What a settled change says. The hook answers a repeated requestId with the notes as they
     // stand, adding nothing (duplicate), and says when the note it matched has since been
@@ -4498,6 +4510,7 @@ python state_sync.py push</pre>
             return '';
         }
         HL_NOTE_BUSY.add(id);
+        HL_NOTE_OUT.set(id, body.requestId || '');
         hlNoteButtons(i, true);
         hlNoteSay(i, kind === 'remove' ? 'Removing…' : 'Saving…', false);
         // THE LIST THIS WAS SENT FROM (28 Sep 2026, review). Save, then Lock before the answer
@@ -4563,7 +4576,8 @@ python state_sync.py push</pre>
                 // its words, so a stale answer settles them too.
                 const arrived = hidden ? [] : hlSettleDraft(id, hlNotesOf(data.notes), body.requestId || '', j);
                 const gone = kind !== 'remove' && data.duplicateRemoved === true;
-                hlNoteSay(j, [hlNotesDoneText(kind, data, again === true, hidden && !stale, stale && !shown),
+                // Hidden notes are not shown by a Refresh either: never "press Refresh to see it".
+                hlNoteSay(j, [hlNotesDoneText(kind, data, again === true, hidden, stale && !shown && !hidden),
                               hlArrivedText(arrived, !stale)].filter(Boolean).join(' '), gone);
                 return gone ? 'gone' : 'made';
             }
@@ -4578,15 +4592,12 @@ python state_sync.py push</pre>
             }
             const why = ((data && data.message) ? String(data.message) : `the dashboard answered ${res.status}`)
                 .replace(/[\s.]+$/, '');
-            if (hlSavedAnyway(why)) {
-                hlNoteSay(j, why.charAt(0).toUpperCase() + why.slice(1) + '.', false);
-                return 'made';
-            }
             if (hlMaybeMade(res.status, why)) return open(why);
             hlNoteSay(j, (kind === 'remove' ? 'Not removed: ' : 'Not saved: ') + why + '.' + kept, true);
             return '';
         } finally {
             HL_NOTE_BUSY.delete(id);
+            HL_NOTE_OUT.delete(id);
             hlNoteButtons(hlIndexOf(id), false);
         }
     }

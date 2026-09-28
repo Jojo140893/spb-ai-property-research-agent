@@ -1464,6 +1464,14 @@ NBSP = chr(0xA0)
     "0498" + chr(0x202F) + "765" + chr(0x202F) + "432",      # narrow no-break space
     "0498" + chr(0x3000) + "765" + chr(0x3000) + "432",      # ideographic space
     "0498" + chr(0x2800) + "765" + chr(0x2800) + "432",      # the Braille blank
+    # Integration, 28 Sep 2026: the ideographic full stop a Chinese input method types for ".",
+    # and its half-width form; the dingbat circled zeros, which have no digit value; and "%40",
+    # an "@" copied out of a link.
+    "joseph" + chr(0x3002) + "test@example" + chr(0x3002) + "com",
+    "joseph.test@example" + chr(0xFF61) + "com",
+    chr(0x1F10B) + chr(0x2783) + chr(0x1F10B) + chr(0x1F10B) + " " + chr(0x2780) * 3 + " "
+    + chr(0x2785) + chr(0x2786) + chr(0x2787),
+    "joseph.test%40example.com", "partner%40elsewhere.net",
 ])
 def test_a_number_or_address_in_another_form_of_its_characters_is_hidden(monkeypatch, text):
     """plain() reads every string in its compatibility form (NFKC) with ASCII digits: the

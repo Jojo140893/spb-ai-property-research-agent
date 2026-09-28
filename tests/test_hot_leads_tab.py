@@ -316,11 +316,24 @@ MUTANTS = {
     "a 502 is read as refused": (
         "(status >= 500 && status !== 503)", "(status === 500)",
         "may have saved, a 502 with no message"),
-    # 28 Sep second review: the dashboard's "was saved, but" is a save, not "could not confirm".
-    "a message saying the note was saved is ignored": (
-        "const hlSavedAnyway = message => /\\bwas saved, but\\b/i.test(String(message ?? ''));",
-        "const hlSavedAnyway = message => false;",
-        "a message that says the note was saved: saved for the draft"),
+    # Integration, 28 Sep 2026: the second review's "was saved, but" shortcut is gone, and these
+    # guard what replaced it and the verifiers' last findings.
+    "a Refresh leaves a lead with a press out wholly unsettled": (
+        "if (!id || !HL_NOTES.has(id)) return;\n",
+        "if (!id || HL_NOTE_BUSY.has(id) || !HL_NOTES.has(id)) return;\n",
+        "a Refresh while another press is out still settles the presses it shows"),
+    "a Refresh settles the press still out": (
+        "HL_NOTE_OUT.get(id) || '', -1)", "'', -1)",
+        "a Refresh while the save is out: that press is not called 'could not be confirmed'"),
+    "the character before a joiner is read as half a surrogate pair": (
+        "const pair = k >= 2 && low >= 0xDC00", "const pair = false && low >= 0xDC00",
+        "a ZWNJ after a 4-byte digit"),
+    "a hidden lead's late save sends the consultant to Refresh": (
+        "stale && !shown && !hidden)", "stale && !shown)",
+        "a hidden lead's save answered after a Refresh"),
+    "several arrivals are said as one": (
+        "if (kinds.some(k => settled.filter(x => x.what === k).length > 1)) {", "if (false) {",
+        "several earlier notes arrived: said as a count"),
     "a message saying nothing was changed is ignored": (
         "if (/\\bnothing was changed\\b/i.test(m)) return false;", "",
         "a 502 that says nothing was changed is 'Not saved'"),
@@ -459,9 +472,6 @@ MUTANTS = {
     # --- 28 Sep repair round: what two verifiers found in the second review's fixes --------
     # A Refresh while a slow Save was out settled that very press: the box emptied, then its lost
     # answer said "What you typed is still here", and Save pressed again stored it twice.
-    "a Refresh settles a press still out": (
-        "if (!id || HL_NOTE_BUSY.has(id) || !HL_NOTES.has(id)) return;", "if (!id || !HL_NOTES.has(id)) return;",
-        "a Refresh while the save is out: that press is not called"),
     "a lost answer over a list that shows it is 'could not confirm'": (
         "if ((body.op !== 'remove' || HL_DRAWN !== drawnAt) && hlListShows(id, body)) {", "if (false) {",
         "its answer then lost: the list drawn since shows it"),

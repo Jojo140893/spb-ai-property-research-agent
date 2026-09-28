@@ -196,9 +196,13 @@ def view(raw, cookie_header):
             doc["contact"] = "masked"
         return 200, _hl._body(doc)
     except Exception as e:                                             # noqa: BLE001
-        return 502, _hl._error("the note was saved, but the notes could not be shown with "
-                               f"their contact details hidden ({type(e).__name__}); press "
-                               "Refresh")
+        # 28 Sep 2026 (integration): not "the note was saved, but ...". A masking failure is a
+        # 200 notesHidden answer now (above), so what lands here is an answer of a shape the
+        # hook does not send -- and nothing about it says whether the change was stored. The
+        # tab reads a 502 as "could not confirm" and keeps what was typed.
+        return 502, _hl._error("the lead-notes store answered in a shape the dashboard does "
+                               f"not know ({type(e).__name__}), so it cannot say whether the "
+                               "change was saved; press Refresh to check")
 
 
 def _request_body(headers, rfile):

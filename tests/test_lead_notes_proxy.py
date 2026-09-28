@@ -600,6 +600,9 @@ def test_an_answer_of_a_shape_the_hook_does_not_send_is_still_a_502(monkeypatch,
         status, _, body = _call(cookie=cookie)
         assert status == 502 and "Refresh" in _message(body)
         assert "0400 111 678" not in body.decode()
+        # 28 Sep 2026 (integration): nothing about such an answer says the change was stored,
+        # and the tab must read it as "could not confirm", not as a save that empties the box.
+        assert "was saved, but" not in _message(body) and "cannot say whether" in _message(body)
 
 
 # ------------------------------------------------------------------ hook failures
