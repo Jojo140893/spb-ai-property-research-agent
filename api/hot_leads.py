@@ -20,9 +20,27 @@ endpoint holds the key in the Vercel project environment, is reachable only thro
 site login, and sends it on one server-to-server request. The key is never returned, never
 logged, and never reaches the page.
 
-WHAT COMES BACK. On success, the hook's JSON byte for byte: the tab and the hook share one
-record format, and a second copy of that shape here would be a second thing to keep in
-step. On a failure, a message that says what went wrong, under one of two statuses:
+WHAT COMES BACK. On success, the hook's JSON -- the tab and the hook share one record format,
+and a second copy of that shape here would be a second thing to keep in step -- in one of two
+views, and the top level says which:
+  contact: "full"    the request carries a valid spb_contact cookie (api/contact_unlock.py):
+                     the hook's JSON untouched, with contact and contactUnlock added (and a
+                     lead's notes the hook sent as null -- could not be read -- left out and
+                     named in notesErrors, as in the masked view).
+  contact: "masked"  everyone else. Coleen, 28 Sep 2026: "Please only display the last 3
+                     digits of the customer's mobile number ... Not everyone on the team
+                     should have access to the customer's full email address or phone
+                     number." Each lead's customer.email and customer.phone are "", with
+                     phoneLast3, hasEmail and hasPhone instead; recordingUrl is ""; and every
+                     free-text string, notes included, is scrubbed of email addresses and phone
+                     numbers. The rules are in api/_contact.py. A body that cannot be masked
+                     is a 502, never the raw leads.
+  contactUnlock: "password" when SPB_CONTACT_PASSWORD is set here, "not-configured" when not,
+  so the tab can say which of "enter the password" and "ask for one to be set" applies.
+Both views send Vary: Cookie beside Cache-Control: no-store, so no cache can hand one person's
+full view to another.
+
+On a failure, a message that says what went wrong, under one of two statuses:
   503  a setting is missing, and refreshing will not fix it: no SPB_SERVICE_KEY here, or
        the hook answered that it lacks one of its own settings or that the keys disagree.
        The message names the project to fix.
@@ -38,6 +56,15 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler
+
+# The contact-details rules live beside this file (build_web.py bundles api/_contact.py with
+# every function that imports it). The directory goes on sys.path the way research.py puts
+# it there for _bootstrap: on Vercel the function's folder is not guaranteed to be.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+import _contact  # noqa: E402
 
 DEFAULT_URL = "https://vapi-kommo-hook.vercel.app/api/hot-leads"
 TIMEOUT = 20
@@ -244,6 +271,41 @@ def fetch(limit=None, include_test=False, grade=None):
     return 200, raw
 
 
+def view(raw, cookie_header):
+    """(http_status, body_bytes): the hook's 200 answer in the view this request may see.
+
+    FAILS CLOSED. Anything that goes wrong while masking -- a body that is not an object, a
+    lead that is not one, a lead's own number still found after the masking -- is a 502 that
+    says the leads were not shown, never the raw body: the tab says "could not load" and
+    nobody reads a number they were not meant to. The full view needs only the cookie; the
+    masked one needs every lead to pass through api/_contact.py.
+    """
+    try:
+        doc = json.loads(raw.decode("utf-8"))
+        if not isinstance(doc, dict):
+            raise _contact.MaskError("the answer is not an object")
+        # 28 Sep 2026: an older hook marks a lead's unreadable notes with notes[callId] = null.
+        # Read as absent (and named in notesErrors) in both views, so the tab gets one shape.
+        doc = _contact.unreadable_notes_absent(doc)
+        if _contact.authorised(cookie_header):
+            doc["contact"] = "full"
+            doc["contactUnlock"] = "password"
+        else:
+            doc = _contact.mask_hot_leads(doc)
+            doc["contact"] = "masked"
+            doc["contactUnlock"] = "password" if _contact.configured() else "not-configured"
+        return 200, json.dumps(doc, ensure_ascii=False).encode("utf-8")
+    except Exception as e:                                             # noqa: BLE001
+        return 502, _error("the leads were not shown: their contact details could not be "
+                           f"hidden ({type(e).__name__})")
+
+
+def _cookie_header(headers):
+    """Every Cookie header the request carried, as one (HTTP/2 may send several)."""
+    got = headers.get_all("Cookie") if hasattr(headers, "get_all") else None
+    return "; ".join(got or [])
+
+
 class handler(BaseHTTPRequestHandler):
     """Vercel Python runtime entrypoint (a BaseHTTPRequestHandler named `handler`).
 
@@ -258,6 +320,9 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         # Leads are names, phone numbers and appointments: never a CDN or browser copy.
         self.send_header("Cache-Control", "no-store")
+        # The answer depends on the spb_contact cookie (masked or full), so nothing that
+        # keeps copies may ever answer one request with another's.
+        self.send_header("Vary", "Cookie")
         for name, value in extra:
             self.send_header(name, value)
         self.end_headers()
@@ -267,6 +332,8 @@ class handler(BaseHTTPRequestHandler):
         try:
             code, body = fetch(limit_from(self.path), include_test_from(self.path),
                                grade_from(self.path))
+            if code == 200:
+                code, body = view(body, _cookie_header(self.headers))
         except Exception as e:                                         # noqa: BLE001
             code, body = 500, _error(f"api/hot_leads failed ({type(e).__name__})")
         self._reply(code, body)
