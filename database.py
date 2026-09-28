@@ -511,7 +511,10 @@ class ResearchDatabase:
         # stays out on every re-harvest. postcode is not a content_hash field, so dropping
         # it changes no row's identity. NOT done by widening the compass-word guard in
         # sources/feature_extract.parse_postcode -- its comment says why that guard is
-        # anchored to the start of the row.
+        # anchored to the start of the row. (Review, 28 Sep 2026: one door for the HARVEST.
+        # The maintenance tool reparse_from_source.py writes postcode with its own UPDATE and
+        # applies this same rule in its _postcode_fits; enrich_buildings clears any lot
+        # number already in the column.)
         if postcode_is_lot_number(b.get("postcode"), b.get("lot_number")):
             b = {**b, "postcode": None}
 

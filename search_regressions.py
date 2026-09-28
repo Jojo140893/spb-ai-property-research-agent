@@ -811,14 +811,18 @@ class Run:
         Read from the card's DATABASE row (the snapshot's in --live, which has none). The
         rule is stated here rather than imported from enrich_buildings, as FRESH_DAYS is:
         the harness does not borrow the rule it is checking. Once per row a run.
+
+        The postcode is compared with each NUMBER in the lot, not with all its digits run
+        together (review, 28 Sep 2026): Geocon's lot "GRD-T2-601" is 2 and 601, and 2601
+        is its real Canberra postcode, not its lot number.
         """
         if row is None or h in self.warned_lot_postcode:
             return
         rec = self.catalogue.db_row(h) or row
         signals = [p.strip() for p in str(rec.get("state_source") or "").split("+")]
-        postcode = re.sub(r"\D", "", str(rec.get("postcode") or ""))
-        lot = re.sub(r"\D", "", str(rec.get("lot_number") or ""))
-        if "postcode" not in signals or not postcode or postcode != lot:
+        postcode = re.sub(r"\D", "", str(rec.get("postcode") or "")).lstrip("0")
+        lot = {n.lstrip("0") for n in re.findall(r"\d+", str(rec.get("lot_number") or ""))}
+        if "postcode" not in signals or not postcode or postcode not in lot:
             return
         self.warned_lot_postcode.add(h)
         self.report.warn(where, "lot number as postcode: %s %s is filed %s by %r, but its "

@@ -64,6 +64,23 @@ not settled: the postcode is cleared and the state resolved again with it ignore
 rests_on_its_lot_number. Every such row is printed with its old and new state and the
 number, which is the whole record needed to undo it by hand -- the postcode column is
 cleared, so no SQL can find these rows afterwards.
+
+A LOT NUMBER IN THE POSTCODE COLUMN OF ANY LIVE ROW IS CLEARED (review, 28 Sep 2026), not
+only on the rows re-resolved above. The resolver already ignores it, so no state moves;
+but the column is shown to Coleen and goes out in the pick CSV, and once the re-resolve
+above had run over a copy of the 28 Sep nightly, 94 live rows still showed their lot
+there -- 39 of them a number from another state's range, like 11847 "7608 Sugar Maple
+Cct, Aintree", VIC, postcode 7608 (a TAS number).
+Printed with a count line, id by id, for the same reason as above.
+
+KNOWN EDGE, left as it is: Hattan 5375-5377 and 8359 ("Available Clyde North Q3 2026
+Townhouse 3673 ... | Ceduna") carry the house design "Ceduna" -- a South Australian
+place -- in their suburb column. Their lot numbers 3673-3677 happen to be VIC postcodes,
+which used to cancel that SA vote to a blank; with the lot numbers ignored, the suburb
+column is the only vote left, and they come out VIC only because the text-locality check
+above reads "Clyde North" in their line. With SPB_TEXT_LOCALITY_OVERRULE=0, or after
+--rollback-text-locality (they carry that check's state_source), resolve_state files all
+four SA by "suburb". Anyone switching that check off should re-check these four.
 """
 
 import argparse
@@ -79,7 +96,8 @@ import config
 from database import ResearchDatabase
 from geo import SuburbGeoIndex
 from state_resolver import (TEXT_LOCALITY_SOURCE, disagreement, file_is_national, own_state,
-                            postcode_is_lot_number, resolve_state, text_locality_elsewhere)
+                            postcode_is_lot_number, resolve_state, state_from_postcode,
+                            text_locality_elsewhere)
 
 STATE_RE = re.compile(r"\b(VIC|NSW|QLD|SA|WA|NT|ACT|TAS)\b", re.I)
 
@@ -299,6 +317,9 @@ def main(argv=None):
     # Settled states that rested on the row's own lot number read as a postcode, each
     # re-resolved with its postcode cleared (rests_on_its_lot_number).
     lot_postcodes: List[tuple] = []
+    # Every other live row whose postcode is its own lot number: postcode cleared, state
+    # not touched (the resolver already ignores that number).
+    lot_numbers_cleared: List[tuple] = []
 
     # Constructing the database applies the column migration, so a newly declared field
     # (state_source) exists before the raw sqlite3 connection below tries to write it.
@@ -517,6 +538,19 @@ def main(argv=None):
                 lot_postcodes.append((rid, r["postcode"], was[0], was[1], state,
                                       signal if state else ""))
 
+        # A LOT NUMBER LEFT IN THE POSTCODE COLUMN of a live row comes out too, whatever the
+        # row's state rests on (review, 28 Sep 2026). The re-open above only reached rows
+        # whose settled state CITED the postcode, which left 94 live rows showing their lot
+        # as a postcode -- 39 of them another state's number, e.g. 11847, VIC, 7608 (TAS).
+        # Done after the state is decided and changes no input to it: own_state,
+        # resolve_state and disagreement all ignore this number already, so the next run
+        # resolves the row exactly as this one did. Live rows only; the re-open above has
+        # already cleared its own rows, superseded or not.
+        if not reopened and not r["superseded_by"] \
+                and postcode_is_lot_number(r["postcode"], r["lot_number"]):
+            _write(conn, rid, postcode=None)
+            lot_numbers_cleared.append((rid, r["postcode"], state))
+
         if not state:
             still_no_state += 1
         if not builder:
@@ -555,6 +589,14 @@ def main(argv=None):
     for rid, pc, was, was_src, now, now_src in lot_postcodes:
         print(f"            id {rid:<7} {was or '-':<3} -> {now or '-':<3}  lot/postcode {pc}  "
               f"was {was_src!r}, now {now_src or 'blank'!r}")
+    # Zero on a healthy night too. Each row is printed with the number, because the column
+    # is cleared and the log is then the only record of what it held; the number's own
+    # range is shown so the ones that named another state can be picked out by eye.
+    print(f"  postcode cleared, it was the live row's own lot number (state unchanged): "
+          f"{len(lot_numbers_cleared)}")
+    for rid, pc, st in lot_numbers_cleared:
+        print(f"            id {rid:<7} {st or '-':<3}  lot/postcode {pc} "
+              f"({state_from_postcode(pc) or 'no'} range)")
     if national:
         # The file, not the row, is what was wrong. Printed in full because each one is a
         # decision to stop trusting a whole file, and a human should be able to check it.

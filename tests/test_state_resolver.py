@@ -366,13 +366,38 @@ _JUBILEE_19094 = ("2-Part Detached SS West 4327 Jubilee Wyndhamvale 263 $338,000
 
 
 def test_a_postcode_that_is_the_lot_number_is_recognised():
-    """Same digits, whatever surrounds them; nothing to compare means no match."""
+    """One of the lot's numbers, whatever surrounds it; nothing to compare means no match."""
     assert postcode_is_lot_number("4327", "4327")
     assert postcode_is_lot_number(" 4327 ", "Lot 4327")
     assert postcode_is_lot_number("4327", "4327A")
+    # each run of digits is one number, and leading zeros do not make a different one
+    assert postcode_is_lot_number("4327", "Stage 2 Lot 4327")
+    assert postcode_is_lot_number("0810", "Lot 810")
     for pc, lot in (("4327", "4328"), ("3024", "4327"), ("4327", None), (None, "4327"),
                     ("", ""), (None, None), ("4327", "")):
         assert not postcode_is_lot_number(pc, lot), (pc, lot)
+
+
+# Review, 28 Sep 2026: Geocon id 21209. Its lot is GRD-T2-601 -- tower 2, apartment 601 --
+# and 2601 is its real Canberra postcode. Joining every digit in the lot spelt "2601", so
+# the first version of the rule threw the real postcode away.
+_GEOCON_21209 = "Lot GRD-T2-601 Unit 149, 70 Allara Street, CANBERRA, ACT, 2601"
+
+
+def test_a_real_postcode_is_not_mistaken_for_a_lot_whose_digits_spell_it():
+    """GRD-T2-601 is the numbers 2 and 601, not 2601."""
+    assert not postcode_is_lot_number("2601", "GRD-T2-601")
+    assert not postcode_is_lot_number("2601", "GRD-T3-303")
+    assert postcode_is_lot_number("601", "GRD-T2-601"), "601 IS one of its numbers"
+    # and so the resolver still reads the row's real postcode. The line itself says "ACT",
+    # which answers first ("listing text"), so the postcode is shown counting without it.
+    assert own_state(postcode="2601", suburb="Canberra", estate="The Grande",
+                     address=_GEOCON_21209, geo=_GEO,
+                     lot_number="GRD-T2-601") == ("ACT", "listing text")
+    assert own_state(postcode="2601", suburb="Canberra", geo=_GEO,
+                     lot_number="GRD-T2-601") == ("ACT", "suburb + postcode")
+    assert resolve_state(postcode="2601", geo=_GEO,
+                         lot_number="GRD-T2-601") == ("ACT", "postcode")
 
 
 def test_own_state_does_not_prove_a_state_from_the_rows_own_lot_number():
@@ -451,6 +476,8 @@ def run_all():
         ("named state outranks the page", test_a_named_state_outranks_the_page_it_came_from),
         ("a national file is recognised", test_a_national_file_is_recognised_from_its_own_rows),
         ("a lot number postcode is recognised", test_a_postcode_that_is_the_lot_number_is_recognised),
+        ("a real postcode is not a spelt-out lot",
+         test_a_real_postcode_is_not_mistaken_for_a_lot_whose_digits_spell_it),
         ("own_state ignores the lot number", test_own_state_does_not_prove_a_state_from_the_rows_own_lot_number),
         ("resolve_state ignores the lot number", test_resolve_state_gives_a_lot_number_no_vote),
         ("a lot number is no disagreement", test_a_lot_number_is_no_disagreement_with_the_page),

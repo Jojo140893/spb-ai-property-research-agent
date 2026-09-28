@@ -572,7 +572,11 @@ def test_a_card_filed_by_its_own_lot_number_read_as_a_postcode_warns():
     confirm = _row("v2:jubilee1", lot_number="4317", lot_address="Jubilee Wyndhamvale 337")
     stated = _row("v2:stated00", lot_number="2324", lot_address="2324 Carrera Cres, South")
     real = _row("v2:realpc00", lot_number="12", lot_address="Lot 12 Example Street 4207")
-    rows = [jubilee, confirm, stated, real]
+    # Review, 28 Sep 2026: Geocon 21209's lot GRD-T2-601 is 2 and 601, not 2601 -- 2601 is
+    # its real Canberra postcode, so a state read from it is no lot-number state.
+    geocon = _row("v2:geocon00", lot_number="GRD-T2-601",
+                  lot_address="Lot GRD-T2-601 Unit 149, 70 Allara Street, CANBERRA, ACT, 2601")
+    rows = [jubilee, confirm, stated, real, geocon]
     db = [{"id": 20541, "content_hash": "v2:jubilee0", "date_checked": "15/09/2026",
            "state": "QLD", "state_source": "suburb + postcode", "postcode": "4316",
            "lot_number": "4316"},
@@ -586,10 +590,13 @@ def test_a_card_filed_by_its_own_lot_number_read_as_a_postcode_warns():
           # the state came from a postcode, and it is a real one
           {"id": 7, "content_hash": "v2:realpc00", "date_checked": "15/09/2026",
            "state": "QLD", "state_source": "postcode", "postcode": "4207",
-           "lot_number": "12"}]
+           "lot_number": "12"},
+          {"id": 21209, "content_hash": "v2:geocon00", "date_checked": "15/09/2026",
+           "state": "ACT", "state_source": "suburb + postcode", "postcode": "2601",
+           "lot_number": "GRD-T2-601"}]
 
     def answers(body):
-        return _response([_card(jubilee), _card(stated), _card(real)],
+        return _response([_card(jubilee), _card(stated), _card(real), _card(geocon)],
                          confirming=[_card(confirm), _card(jubilee)])
 
     report, out, _posted = _run([{"id": "b", "client_brief": {}},
@@ -601,6 +608,7 @@ def test_a_card_filed_by_its_own_lot_number_read_as_a_postcode_warns():
     # once per row a run, though the row is on two briefs and in both lists of one
     assert report.warnings == 2, out
     assert "v2:stated00" not in out and "v2:realpc00" not in out
+    assert "v2:geocon00" not in out
 
 
 def test_a_fresher_capture_of_the_same_line_that_says_gone_fails_the_older_one():

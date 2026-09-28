@@ -122,15 +122,33 @@ def state_from_postcode(postcode: Any) -> str:
 # number the row already uses as its lot cannot also be its postcode, so it is ignored
 # before any state is read from it. Stated once here and taken by all three functions
 # below, so no caller can pass the lot number to one and forget the others.
-def postcode_is_lot_number(postcode: Any, lot_number: Any) -> bool:
-    """True when the stored postcode is the row's own lot number: the same digits.
+#
+# COMPARED NUMBER BY NUMBER, not as one run of digits (review, 28 Sep 2026). The first
+# version stripped every non-digit out of the lot and compared what was left, so Geocon's
+# "GRD-T2-601" became "2601" -- and id 21209, "Lot GRD-T2-601 Unit 149, 70 Allara Street,
+# CANBERRA, ACT, 2601", had its REAL Canberra postcode thrown away: without its line's
+# own "ACT", own_state answered ('', '') instead of ACT by "suburb + postcode", and
+# record_building would not store 2601 at all. 241 rows carry lots of that GRD-T9-999
+# shape, every one of them on postcode 2601; T2-601 is the one whose digits happen to
+# spell it. Each run of digits in the lot is one of its numbers ("GRD-T2-601" is 2 and
+# 601; "Lot 4327" and "4327A" are 4327), and the postcode is the lot number only when it
+# IS one of them. Leading zeros are dropped on both sides, so "0810" and a lot "810" are
+# the same number.
+def _number(digits: str) -> str:
+    return digits.lstrip("0") or "0"
 
-    Digits only, so "Lot 4327" / "4327A" / " 4327 " all match a stored 4327. A row with no
-    lot number (or no postcode) never matches -- there is nothing to compare.
+
+def postcode_is_lot_number(postcode: Any, lot_number: Any) -> bool:
+    """True when the stored postcode is one of the numbers in the row's own lot number.
+
+    "Lot 4327" / "4327A" / " 4327 " all match a stored 4327; "GRD-T2-601" does not match
+    2601 (its numbers are 2 and 601). A row with no lot number (or no postcode) never
+    matches -- there is nothing to compare.
     """
     pc = re.sub(r"\D", "", str(postcode or ""))
-    lot = re.sub(r"\D", "", str(lot_number or ""))
-    return bool(pc) and pc == lot
+    if not pc:
+        return False
+    return _number(pc) in {_number(n) for n in re.findall(r"\d+", str(lot_number or ""))}
 
 
 def _unless_lot_number(postcode: Any, lot_number: Any) -> Any:
