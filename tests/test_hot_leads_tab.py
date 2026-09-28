@@ -277,7 +277,7 @@ MUTANTS = {
         "HL_NOTES.set(id, hlNotesOf(data.notes));", "",
         "the list is redrawn from the answer"),
     "the notes in /api/hot_leads are ignored": (
-        "if (!HL_NOTES.has(id)) HL_NOTES.set(id, hlNotesOf(a.notes[id]));", "",
+        "if (!HL_NOTES.has(id)) HL_NOTES.set(id, hlNotesOf(raw));", "",
         "notes from /api/hot_leads are drawn"),
     "unreadable notes are not said": (
         "(v.notesError ? ", "(false ? ",
@@ -288,6 +288,71 @@ MUTANTS = {
     "the consultant's name is not remembered": (
         "try { if (by) localStorage.setItem(HL_BY_STORE, by); }", "try { }",
         "the name is remembered"),
+
+    # --- the 28 Sep review of the above ---
+    # Three escapes that no check needed: removing any of them passed every check.
+    "the typed link draft is not escaped": (
+        'value="${esc(hlText(d.url))}"', 'value="${hlText(d.url)}"',
+        "a hostile draft link survives a reload, escaped"),
+    "a link with no URL prints its label unescaped": (
+        "(hlExtLink(url, label, url) || `<span class=\"hl-nolink\">${esc(label)} (link unavailable)</span>`)",
+        "(hlExtLink(url, label, url) || `<span class=\"hl-nolink\">${label} (link unavailable)</span>`)",
+        "a link with no URL: its label is text"),
+    "the remembered name is not escaped": (
+        'value="${esc(hlByStored())}"', 'value="${hlByStored()}"',
+        "a remembered name is escaped back into its box"),
+    # Two dashboard tabs: writing the page's whole map back dropped the other tab's picks.
+    "a pick save writes this page's whole map back": (
+        "const stored = hlPicksStored() || [];",
+        "const stored = [...hlPicksLoad()].map(([k, m]) => [k, [...m.values()]]);",
+        "two tabs: a pick ticked in one tab is not dropped"),
+    "a lead written again moves to the end of the store": (
+        "pairs.splice(at < 0 ? pairs.length : at, 0,", "pairs.splice(pairs.length, 0,",
+        "a lead written again keeps its place"),
+    # A save that may have been made was called "Not saved", and was saved twice.
+    "a save that may have been made is called not saved": (
+        "if (hlMaybeMade(res.status, why)) {", "if (false) {",
+        "may have saved, the hook's 502"),
+    "a 502 is read as refused": (
+        "(status >= 500 && status !== 503)", "(status === 500)",
+        "may have saved, a 502 with no message"),
+    "a message saying the note was saved is ignored": (
+        "if (/\\bwas saved, but\\b/i.test(m)) return true;", "",
+        "a message that says the note was saved"),
+    "a message saying nothing was changed is ignored": (
+        "if (/\\bnothing was changed\\b/i.test(m)) return false;", "",
+        "a 502 that says nothing was changed is 'Not saved'"),
+    "a dropped connection is said to have changed nothing": (
+        "hlNoteSay(hlIndexOf(id), unsure('the dashboard could not be reached'), true);",
+        "hlNoteSay(hlIndexOf(id), 'Could not reach the dashboard, so nothing was changed.' + kept, true);",
+        "unreachable: could not confirm"),
+    # (c) one requestId per press, the same one on the automatic retry.
+    "no requestId is sent": (
+        "body.requestId = hlRequestId();", "",
+        "carries a requestId"),
+    "every press sends the same requestId": (
+        "return Array.from(bytes, x => x.toString(16).padStart(2, '0')).join('');", "return 'r1';",
+        "a fresh requestId for every press of Save"),
+    "a dropped connection is not retried": (
+        "for (let tries = body.requestId ? 2 : 1;", "for (let tries = 1;",
+        "unreachable: sent once more, automatically"),
+    "the retry carries a new requestId": (
+        "body: sent\n", "body: JSON.stringify({ ...body, requestId: hlRequestId() })\n",
+        "with the same requestId"),
+    # notes[callId] === null (the hook's word for unreadable before 28 Sep) is not "no notes".
+    "a null notes value is drawn as no notes": (
+        "if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { HL_NOTES_ERR.add(id); return; }", "",
+        "a null notes value is said to be unreadable"),
+    "unreadable notes also say there are none": (
+        "const unread = !!v.notesError && !v.notes;", "const unread = false;",
+        "none says it has no notes"),
+    # The server's half of the same finding, had it been the page's: a masked answer with
+    # notesErrors taken as a failed answer loses every lead.
+    "a masked answer naming unreadable notes is treated as a failure": (
+        "if (!res.ok || !data || data.status !== 'success') {\n            return { kind: 'failed'",
+        "if (!res.ok || !data || data.status !== 'success' || (data.contact !== 'full'"
+        " && Array.isArray(data.notesErrors) && data.notesErrors.length)) {\n            return { kind: 'failed'",
+        "masked, with notes that could not be read: every lead is listed"),
 }
 
 

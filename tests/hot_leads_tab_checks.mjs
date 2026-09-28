@@ -1460,6 +1460,43 @@ console.log("\n--- each lead keeps its own picks, and none reach the Research ta
   check("blocked storage: the pick still counts for this page view, and the card says it was not kept",
     s.api.hlPicksFor("call-a").size === 1 && /would not keep the pick/.test(msg.textContent));
 }
+{
+  // TWO DASHBOARD TABS IN ONE BROWSER (28 Sep review): both drawn before either ticked
+  // anything, so each read the store while it was empty. A save that wrote the page's whole
+  // map back made the second tab's tick wipe the first tab's.
+  const store = memoryStorage();
+  store.setItem("spb.leadcompare.v1", JSON.stringify([["call-old", [{ content_hash: "h-old" }]]]));
+  const leads = [clean({ callId: "call-x", recommendations: [rec({ content_hash: "hx" })] }),
+                 clean({ callId: "call-y", createdAt: "2026-09-14T00:00:00Z", recommendations: [rec({ content_hash: "hy" })] })];
+  const tabs = [sandbox(undefined, { localStorage: store }), sandbox(undefined, { localStorage: store })];
+  for (const t of tabs) {
+    t.el("hotLeadsContent"); t.el("hotLeadsBadge"); t.el("hotLeadsRefresh");
+    t.respond(async () => reply(200, { status: "success", leads }));
+    await t.api.loadHotLeads();
+  }
+  const kept = () => {
+    let pairs = [];
+    try { pairs = JSON.parse(store.getItem("spb.leadcompare.v1") || "[]"); } catch (e) { pairs = []; }
+    return new Map(pairs.map(p => [p[0], p[1].map(r => r.content_hash).join()]));
+  };
+  tabs[0].change(tickEvent("call-x", "hx", true));
+  tabs[1].change(tickEvent("call-y", "hy", true));
+  check("two tabs: a pick ticked in one tab is not dropped when the other saves its own",
+    kept().get("call-x") === "hx" && kept().get("call-y") === "hy" && kept().get("call-old") === "h-old",
+    store.getItem("spb.leadcompare.v1"));
+  tabs[1].api.hlClearPicks(1);
+  check("two tabs: Clear in one tab forgets only its own lead's picks",
+    kept().get("call-x") === "hx" && !kept().has("call-y") && kept().get("call-old") === "h-old",
+    store.getItem("spb.leadcompare.v1"));
+  tabs[0].change(tickEvent("call-x", "hx", false));
+  check("two tabs: unticking a lead's last pick takes only that lead out of the store",
+    !kept().has("call-x") && kept().get("call-old") === "h-old" && kept().size === 1, store.getItem("spb.leadcompare.v1"));
+  tabs[1].change(tickEvent("call-y", "hy", true));
+  tabs[0].change(tickEvent("call-x", "hx", true));
+  tabs[1].change(tickEvent("call-y", "hy", true));
+  check("two tabs: a lead written again keeps its place in the store, and nothing else moves",
+    [...kept().keys()].join() === "call-old,call-y,call-x", store.getItem("spb.leadcompare.v1"));
+}
 
 console.log("\n--- Open Report: the Research tab's report, for this lead, with no contact details ---");
 {
@@ -1775,10 +1812,19 @@ console.log("\n--- notes and links per lead ---");
                   links: notes["call-n"].links, rev: "4" };
   notesReply = () => reply(200, { status: "success", callId: "call-n", notes: fresh });
   await s.api.hlSaveNote(0);
-  check("Save note POSTs {callId, op:add_entry, action, text, by} to /api/lead_notes",
-    JSON.stringify(sent[0]) === JSON.stringify({ callId: "call-n", op: "add_entry", action: "follow_up",
-                                                 text: "Wants Ripley options <b>asap</b>", by: "Coleen Smith" })
+  // 28 Sep: every Save and every Add carries a requestId of its own (the hook's
+  // [A-Za-z0-9_-]{1,64}), so an automatic retry of that press can never store it twice.
+  const noRid = o => { const { requestId, ...rest } = o || {}; return rest; };
+  const RID = /^[A-Za-z0-9_-]{1,64}$/;
+  // The requestId of the k-th body sent, or null when there is none in the hook's pattern.
+  const ridAt = k => (sent[k] && typeof sent[k].requestId === "string" && RID.test(sent[k].requestId))
+    ? sent[k].requestId : null;
+  check("Save note POSTs {callId, op:add_entry, action, text, by, requestId} to /api/lead_notes",
+    JSON.stringify(noRid(sent[0])) === JSON.stringify({ callId: "call-n", op: "add_entry", action: "follow_up",
+                                                        text: "Wants Ripley options <b>asap</b>", by: "Coleen Smith" })
     && s.calls.fetch[s.calls.fetch.length - 1].opts.method === "POST", JSON.stringify(sent[0]));
+  check("Save note carries a requestId, last, in the hook's pattern",
+    ridAt(0) !== null && Object.keys(sent[0] || {}).pop() === "requestId", JSON.stringify(sent[0]));
   check("the list is redrawn from the answer, newest first, the note escaped",
     list.innerHTML.includes("Wants Ripley options &lt;b&gt;asap&lt;/b&gt;")
     && list.innerHTML.indexOf("Wants Ripley") < list.innerHTML.indexOf("Sent the QLD package."));
@@ -1789,6 +1835,8 @@ console.log("\n--- notes and links per lead ---");
   ta.value = "Just a note";
   await s.api.hlSaveNote(0);
   check("text alone is saved as action 'other'", sent[1] && sent[1].action === "other" && sent[1].text === "Just a note");
+  check("a fresh requestId for every press of Save",
+    ridAt(1) !== null && ridAt(1) !== ridAt(0), JSON.stringify([ridAt(0), ridAt(1)]));
   ta.value = "x".repeat(2001);
   const n1 = s.calls.fetch.length;
   await s.api.hlSaveNote(0);
@@ -1802,13 +1850,75 @@ console.log("\n--- notes and links per lead ---");
   await s.api.hlSaveNote(0);
   check("503 shows the server's message and keeps the note",
     msg.textContent.includes("SPB_SERVICE_KEY is not set") && ta.value === "Second consultant typed this" && s.calls.expired === 0);
+  check("503 is 'Not saved': a missing setting is refused before anything is written",
+    msg.textContent === "Not saved: SPB_SERVICE_KEY is not set on the dashboard project. What you typed is still here.",
+    msg.textContent);
   notesReply = () => reply(404, { status: "error", message: "No such lead." });
   await s.api.hlSaveNote(0);
   check("404 shows the server's message", msg.textContent.includes("No such lead."));
+  // A DROPPED CONNECTION (28 Sep). fetch throwing does not say the note never arrived, so the
+  // page sends it once more by itself -- the same bytes, the same requestId, which the hook
+  // adds at most once -- and, if that drops too, says it could not confirm, never "not saved".
   notesReply = () => { throw new TypeError("Failed to fetch"); };
+  const n6 = sent.length;
   await s.api.hlSaveNote(0);
-  check("unreachable: nothing was changed, and the note is kept",
-    /Could not reach the dashboard/.test(msg.textContent) && ta.value === "Second consultant typed this");
+  check("unreachable: sent once more, automatically, with the same requestId",
+    sent.length === n6 + 2 && ridAt(n6) !== null
+    && JSON.stringify(sent[n6]) === JSON.stringify(sent[n6 + 1]), JSON.stringify(sent.slice(n6)));
+  check("unreachable: could not confirm, press Refresh to check, and the note is kept",
+    msg.textContent === "Could not confirm this was saved: the dashboard could not be reached. Press Refresh to check "
+      + "before saving it again. What you typed is still here."
+    && /err/.test(msg.className) && ta.value === "Second consultant typed this" && save.disabled === false, msg.textContent);
+  let drops = 1;
+  notesReply = () => {
+    if (drops-- > 0) throw new TypeError("Failed to fetch");
+    return reply(200, { status: "success", notes: fresh });
+  };
+  ta.value = "Dropped once";
+  const n7 = sent.length;
+  await s.api.hlSaveNote(0);
+  check("a connection that drops once: the retry, with the same requestId, is what saves it",
+    sent.length === n7 + 2 && ridAt(n7) !== null && ridAt(n7) === ridAt(n7 + 1) && sent[n7].text === "Dropped once"
+    && msg.textContent === "Saved." && ta.value === "", JSON.stringify(sent.slice(n7)) + " " + msg.textContent);
+  ta.value = "Next press";
+  await s.api.hlSaveNote(0);
+  check("the press after it has a requestId of its own",
+    sent.length === n7 + 3 && sent[n7 + 2].text === "Next press" && ridAt(n7 + 2) !== null
+    && ridAt(n7 + 2) !== ridAt(n7), JSON.stringify(sent.slice(n7)));
+
+  // AN ANSWER THAT LEAVES IT OPEN (28 Sep). "Not saved" here sent the consultant to Save again
+  // over a note that was stored, and it was stored twice. None of these is retried: the
+  // server answered, and what it said is shown.
+  const unsureSaid = t => /^Could not confirm this was saved: .+[^.]\. Press Refresh to check before saving it again\. What you typed is still here\.$/.test(t);
+  ta.value = "Maybe saved";
+  for (const [label, answer] of [
+    ["the hook's 502 (reload the lead to see whether it was saved)", () => reply(502, { status: "error",
+      message: "lead-notes store answered HTTP 502: the lead-notes store did not answer properly; reload the lead to see whether the change was saved" })],
+    ["the dashboard's 502 'the note was saved, but'", () => reply(502, { status: "error",
+      message: "the note was saved, but the notes could not be shown with their contact details hidden (MaskError); press Refresh" })],
+    ["a 502 with no message", () => reply(502, new Error("not JSON"))],
+    ["a 504 from in front of the dashboard", () => reply(504, new Error("not JSON"))],
+    ["a 500", () => reply(500, { status: "error", message: "api/lead_notes failed (KeyError)" })],
+    ["a 200 that is not the notes", () => reply(200, new Error("not JSON"))],
+  ]) {
+    notesReply = answer;
+    const k = sent.length;
+    await s.api.hlSaveNote(0);
+    check("may have saved, " + label + ": could not confirm, press Refresh -- never 'Not saved' -- and the note is kept",
+      unsureSaid(msg.textContent) && !/Not saved/i.test(msg.textContent) && /err/.test(msg.className)
+      && ta.value === "Maybe saved" && sent.length === k + 1, msg.textContent);
+  }
+  notesReply = () => reply(503, { status: "error", message: "the note was saved, but the list could not be read back" });
+  await s.api.hlSaveNote(0);
+  check("whatever the status, a message that says the note was saved is not 'Not saved'",
+    unsureSaid(msg.textContent) && msg.textContent.includes("the note was saved, but"), msg.textContent);
+  notesReply = () => reply(502, { status: "error",
+    message: "lead-notes store answered HTTP 502: the notes stored for this lead cannot be read, so nothing was changed" });
+  await s.api.hlSaveNote(0);
+  check("a 502 that says nothing was changed is 'Not saved', and the note is kept",
+    msg.textContent === "Not saved: lead-notes store answered HTTP 502: the notes stored for this lead cannot be read, "
+      + "so nothing was changed. What you typed is still here." && ta.value === "Maybe saved", msg.textContent);
+  ta.value = "Second consultant typed this";
   notesReply = () => reply(401, { error: "auth_required" });
   await s.api.hlSaveNote(0);
   check("401 on a note is the sign-in expiring", s.calls.expired === 1);
@@ -1843,11 +1953,15 @@ console.log("\n--- notes and links per lead ---");
   url.value = " https://drive.google.com/drive/folders/xyz?usp=sharing ";
   notesReply = b => reply(200, { status: "success", notes: { entries: fresh.entries,
     links: [link({ id: "l9", at: "2026-09-28T03:00:00Z", url: b.url, label: b.label }), ...fresh.links] } });
+  const nLink = sent.length;
   await s.api.hlAddLink(0);
-  check("Add link POSTs {callId, op:add_link, url, label, by}",
-    JSON.stringify(sent[sent.length - 1]) === JSON.stringify({ callId: "call-n", op: "add_link",
+  check("Add link POSTs {callId, op:add_link, url, label, by, requestId}",
+    JSON.stringify(noRid(sent[sent.length - 1])) === JSON.stringify({ callId: "call-n", op: "add_link",
       url: "https://drive.google.com/drive/folders/xyz?usp=sharing", label: "Folder", by: "Coleen Smith" }),
     JSON.stringify(sent[sent.length - 1]));
+  check("Add link carries a requestId of its own press",
+    sent.length === nLink + 1 && ridAt(nLink) !== null
+    && sent.slice(0, nLink).every(x => x.requestId !== ridAt(nLink)), JSON.stringify(sent[nLink]));
   check("the new link is drawn, and the boxes are emptied",
     links.innerHTML.includes('href="https://drive.google.com/drive/folders/xyz?usp=sharing"') && url.value === "" && lab.value === "");
   check("hlLinkToKeep: http(s) only, no credentials",
@@ -1879,6 +1993,16 @@ console.log("\n--- notes and links per lead ---");
   await s.api.hlRemoveNote(0, -1);
   await s.api.hlRemoveLink(1, 0);
   check("a position with nothing drawn there sends nothing", s.calls.fetch.length === n5);
+  notesReply = () => { throw new TypeError("Failed to fetch"); };
+  const n8 = sent.length;
+  await s.api.hlRemoveNote(0, 0);
+  check("a Remove that could not reach the dashboard: sent once, no requestId, and not said to be undone",
+    sent.length === n8 + 1 && !("requestId" in sent[n8])
+    && msg.textContent === "Could not confirm the removal: the dashboard could not be reached. Press Refresh to check "
+      + "whether it is gone.", msg.textContent);
+  notesReply = () => reply(404, { status: "error", message: "No such lead." });
+  await s.api.hlRemoveNote(0, 0);
+  check("a Remove that was refused says 'Not removed'", msg.textContent === "Not removed: No such lead.", msg.textContent);
 
   // Typed and not saved, then the list reloads (Refresh, or an Unlock): nothing is lost.
   ta.value = "Typed, not saved <i>";
@@ -1891,6 +2015,17 @@ console.log("\n--- notes and links per lead ---");
     h2.includes(">Typed, not saved &lt;i&gt;</textarea>") && h2.includes('value="https://example.com/draft"')
     && h2.includes('value="Draft label"') && /id="hlAct-0-drive_link" aria-pressed="true"/.test(h2));
   auditMarkup("a reload with drafts: markup", h2);
+  // The link box's draft goes back into a value="..." attribute, so a quote typed or pasted
+  // into it must not end the attribute when the list is drawn again.
+  url.value = 'https://example.com/"><script>alert(1)</script>';
+  lab.value = '"><b onmouseover="x">label</b>';
+  await s.api.loadHotLeads(true);
+  const h3 = content.innerHTML;
+  check("a hostile draft link survives a reload, escaped",
+    h3.includes('value="https://example.com/&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;"')
+    && h3.includes('value="&quot;&gt;&lt;b onmouseover=&quot;x&quot;&gt;label&lt;/b&gt;"') && !/<script/i.test(h3),
+    (h3.match(/id="hlLinkUrl-0"[^>]*>/) || [""])[0]);
+  auditMarkup("a reload with a hostile draft link: markup", h3);
   const everything = JSON.stringify([...store._map]);
   check("nothing about the customer is in localStorage",
     !everything.includes("jo.citizen@example.com") && !everything.includes("412345678") && !everything.includes("Jo Citizen")
@@ -1900,6 +2035,87 @@ console.log("\n--- notes and links per lead ---");
   out = api.hlLeadCard(clean({ callId: undefined }), 0, false, { contact: "masked" });
   check("a record with no call id says notes cannot be kept, and draws no note box",
     out.includes("has no call id") && !out.includes("hlNoteText-0"));
+
+  // A stored link with no address at all: hlExtLink draws nothing, and the fallback beside it
+  // prints the label -- which a consultant typed.
+  const noUrl = api.hlLinksListHtml({ links: [link({ id: "nourl", url: "", label: EVIL }),
+                                              link({ id: "nourl2", at: "2026-09-26T00:00:00Z", url: "", label: "" })] }, 0);
+  check("a link with no URL: its label is text, marked unavailable",
+    noUrl.includes(`<span class="hl-nolink">${EVIL_TEXT} (link unavailable)</span>`) && !/<script/i.test(noUrl), noUrl.slice(0, 300));
+  check("a link with no URL and no label is 'Link (link unavailable)'",
+    noUrl.includes('<span class="hl-nolink">Link (link unavailable)</span>'));
+  auditMarkup("links with no URL: markup", noUrl);
+}
+{
+  // The name remembered in this browser goes back into the box's value="..." attribute.
+  const store = memoryStorage();
+  store.setItem("spb.leadnotes.by.v1", '"><script>alert(1)</script>');
+  const s = sandbox(undefined, { localStorage: store });
+  const content = s.el("hotLeadsContent"); s.el("hotLeadsBadge"); s.el("hotLeadsRefresh");
+  s.respond(async () => reply(200, { status: "success", contact: "masked", contactUnlock: "password", leads: [clean()] }));
+  await s.api.loadHotLeads();
+  const h = content.innerHTML;
+  check("a remembered name is escaped back into its box",
+    h.includes('id="hlBy" maxlength="40" autocomplete="off" value="&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;"')
+    && !/<script/i.test(h), (h.match(/id="hlBy"[^>]*>/) || [""])[0]);
+  auditMarkup("a hostile remembered name: markup", h);
+}
+{
+  // FINDING, 28 Sep: one unreadable notes object took the whole tab away from everyone
+  // without the password (the server could not mask a null). The page's half: masked, with
+  // every lead's notes unreadable -- the shape a failed listing of the notes store sends --
+  // every lead is still listed, each says its notes could not be read, and nothing is unmasked.
+  const s = sandbox(undefined, { localStorage: memoryStorage() });
+  const content = s.el("hotLeadsContent"), badge = s.el("hotLeadsBadge"); s.el("hotLeadsRefresh");
+  const leads = [clean({ callId: "call-p" }),
+                 clean({ callId: "call-q", createdAt: "2026-09-14T00:00:00Z", grade: "warm", appointment: null }),
+                 clean({ callId: "wa-54494433", channel: "whatsapp", createdAt: "2026-09-13T00:00:00Z" })];
+  s.respond(async () => reply(200, { status: "success", contact: "masked", contactUnlock: "password", leads,
+                                     notes: { "call-p": null }, notesErrors: ["call-p", "call-q", "wa-54494433"] }));
+  let threw = null;
+  try { await s.api.loadHotLeads(); } catch (e) { threw = e; }
+  const h = content.innerHTML;
+  check("masked, with notes that could not be read: every lead is listed",
+    !threw && [0, 1, 2].every(i => h.includes(`id="hlCard-${i}"`)) && /^3 leads/.test(badge.textContent),
+    threw ? "threw " + threw : badge.textContent + " " + h.slice(0, 200));
+  check("... each says its notes could not be read, and none says it has no notes",
+    (h.match(/could not be read just now/g) || []).length === 3 && !h.includes("No notes yet."));
+  check("... and nothing is unmasked", !h.includes("mailto:") && !h.includes("tel:") && !h.includes("jo.citizen@example.com"));
+  auditMarkup("masked list with unreadable notes: markup", h);
+
+  // notes[callId] === null is how the hook said "unreadable" before 28 Sep: it is that notice
+  // even with notesErrors missing, never "No notes yet."
+  s.respond(async () => reply(200, { status: "success", contact: "masked", leads: [clean({ callId: "call-p" })],
+                                     notes: { "call-p": null } }));
+  await s.api.loadHotLeads(true);
+  check("a null notes value is said to be unreadable, not 'No notes yet.'",
+    content.innerHTML.includes("could not be read just now") && !content.innerHTML.includes("No notes yet."));
+  s.respond(async () => reply(200, { status: "success", contact: "masked", leads: [clean({ callId: "call-p" })],
+                                     notes: { "call-p": [] }, notesErrors: "call-p" }));
+  await s.api.loadHotLeads(true);
+  check("notes that are not an object, and a notesErrors that is not a list, do not throw or draw an empty list",
+    content.innerHTML.includes('id="hlCard-0"') && content.innerHTML.includes("could not be read just now")
+    && !content.innerHTML.includes("No notes yet."));
+}
+{
+  // The requestId comes from the browser's crypto when it has one (the sandbox above has none,
+  // so it used the fallback): the same shape either way.
+  const s = sandbox(undefined, { localStorage: memoryStorage(), crypto: globalThis.crypto });
+  s.el("hotLeadsContent"); s.el("hotLeadsBadge"); s.el("hotLeadsRefresh");
+  const sent = [];
+  s.respond(async (url, opts) => {
+    if (url === "/api/lead_notes") { sent.push(JSON.parse(opts.body)); return reply(200, { status: "success", notes: {} }); }
+    return reply(200, { status: "success", contact: "masked", leads: [clean({ callId: "call-c" })] });
+  });
+  await s.api.loadHotLeads();
+  const ta = s.el("hlNoteText-0", { value: "one" });
+  s.el("hlNoteMsg-0");
+  await s.api.hlSaveNote(0);
+  ta.value = "two";
+  await s.api.hlSaveNote(0);
+  check("with crypto: a 32-hex requestId, fresh for each press",
+    sent.length === 2 && sent.every(x => /^[0-9a-f]{32}$/.test(x.requestId)) && sent[0].requestId !== sent[1].requestId,
+    JSON.stringify(sent.map(x => x.requestId)));
 }
 
 // ------------------------------------------------------------------ the page itself

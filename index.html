@@ -3307,28 +3307,43 @@ python state_sync.py push</pre>
     // callId can never be "__proto__" on anything, and the order a consultant ticked in is
     // the order the report lists them. Each record is slim() -- only what the comparison
     // document draws, the same as the Research tab's selection.
+    // The pairs as stored right now, or null when the store cannot be read (blocked, or not JSON).
+    function hlPicksStored() {
+        try {
+            const raw = JSON.parse(localStorage.getItem(HL_PICK_STORE) || 'null');
+            return Array.isArray(raw) ? raw : [];
+        } catch (e) { return null; }
+    }
+    const hlPickPairOf = (pair, id) => Array.isArray(pair) && typeof pair[0] === 'string' && pair[0] === id;
     function hlPicksLoad() {
         if (HL_PICKS) return HL_PICKS;
         HL_PICKS = new Map();
-        try {
-            const raw = JSON.parse(localStorage.getItem(HL_PICK_STORE) || 'null');
-            (Array.isArray(raw) ? raw : []).forEach(pair => {
-                if (!Array.isArray(pair) || typeof pair[0] !== 'string' || !pair[0] || !Array.isArray(pair[1])) return;
-                const mine = new Map();
-                pair[1].forEach(r => {
-                    if (r && typeof r === 'object' && typeof r.content_hash === 'string' && r.content_hash) {
-                        mine.set(r.content_hash, r);
-                    }
-                });
-                if (mine.size) HL_PICKS.set(pair[0], mine);
+        (hlPicksStored() || []).forEach(pair => {
+            if (!Array.isArray(pair) || typeof pair[0] !== 'string' || !pair[0] || !Array.isArray(pair[1])) return;
+            const mine = new Map();
+            pair[1].forEach(r => {
+                if (r && typeof r === 'object' && typeof r.content_hash === 'string' && r.content_hash) {
+                    mine.set(r.content_hash, r);
+                }
             });
-        } catch (e) { /* blocked or unreadable storage: start with no picks */ }
+            if (mine.size) HL_PICKS.set(pair[0], mine);
+        });
         return HL_PICKS;
     }
-    function hlPicksSave() {
+    // ONE LEAD'S PICKS WRITTEN, EVERY OTHER LEAD'S LEFT AS THE STORE HOLDS THEM (28 Sep 2026).
+    // This page read the store once, when it first needed it; a second dashboard tab may have
+    // written since. Writing this page's whole map back dropped whatever that tab had ticked
+    // for its leads. So the store is read again here and only lead id's pair changes: replaced
+    // in its place, added at the end, or taken out when nothing is ticked.
+    function hlPicksSave(id) {
+        if (typeof id !== 'string' || !id) return false;
+        const mine = hlPicksLoad().get(id);
+        const stored = hlPicksStored() || [];
+        const at = stored.findIndex(p => hlPickPairOf(p, id));
+        const pairs = stored.filter(p => !hlPickPairOf(p, id));
+        if (mine && mine.size) pairs.splice(at < 0 ? pairs.length : at, 0, [id, [...mine.values()]]);
         try {
-            localStorage.setItem(HL_PICK_STORE, JSON.stringify(
-                [...hlPicksLoad()].map(([id, mine]) => [id, [...mine.values()]])));
+            localStorage.setItem(HL_PICK_STORE, JSON.stringify(pairs));
             return true;
         } catch (e) { return false; }
     }
@@ -3472,6 +3487,8 @@ python state_sync.py push</pre>
                  + 'has no call id, so notes and links cannot be kept against it.</div></div>';
         }
         const d = (v.draft && typeof v.draft === 'object') ? v.draft : {};
+        // Notes that could not be read are not "No notes yet.": the notice says what is known.
+        const unread = !!v.notesError && !v.notes;
         const action = HL_NOTE_ACTIONS.includes(d.action) ? d.action : '';
         const chips = HL_NOTE_ACTIONS.map(a => {
             const on = a === action;
@@ -3488,9 +3505,9 @@ python state_sync.py push</pre>
              + `<div class="hl-note-row"><button type="button" class="btn-ghost" id="hlNoteSave-${n}"`
              + ` onclick="hlSaveNote(${n})">Save note</button></div>`
              + `<div class="hl-msg" id="hlNoteMsg-${n}" role="status" aria-live="polite"></div>`
-             + `<div class="hl-note-list" id="hlNoteList-${n}">${hlNotesListHtml(v.notes, n)}</div>`
+             + `<div class="hl-note-list" id="hlNoteList-${n}">${unread ? '' : hlNotesListHtml(v.notes, n)}</div>`
              + '<div class="hl-links-title">Links</div>'
-             + `<div class="hl-note-list" id="hlLinkList-${n}">${hlLinksListHtml(v.notes, n)}</div>`
+             + `<div class="hl-note-list" id="hlLinkList-${n}">${unread ? '' : hlLinksListHtml(v.notes, n)}</div>`
              + '<div class="hl-link-add">'
              + `<input type="url" id="hlLinkUrl-${n}" maxlength="${HL_LINK_MAX}" aria-label="Link to keep for this lead"`
              + ` placeholder="Google Drive or property link (https://...)" value="${esc(hlText(d.url))}">`
@@ -3900,9 +3917,15 @@ python state_sync.py push</pre>
                           unlock: all.unlock };
             HL_NOTES = new Map();
             HL_NOTES_ERR = new Set();
+            // A lead's notes that are there but are not a notes object (null is how the hook
+            // said "could not be read" before 28 Sep; it now leaves the lead out of notes and
+            // names it in notesErrors alone) are that same unreadable notice, never "No notes
+            // yet.": its notes exist, and an empty list would say they do not.
             answers.forEach(a => {
                 Object.keys(a.notes).forEach(id => {
-                    if (!HL_NOTES.has(id)) HL_NOTES.set(id, hlNotesOf(a.notes[id]));
+                    const raw = a.notes[id];
+                    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { HL_NOTES_ERR.add(id); return; }
+                    if (!HL_NOTES.has(id)) HL_NOTES.set(id, hlNotesOf(raw));
                 });
                 a.notesErrors.forEach(id => HL_NOTES_ERR.add(id));
             });
@@ -4026,7 +4049,7 @@ python state_sync.py push</pre>
             mine.delete(h);
         }
         if (mine.size) picks.set(id, mine); else picks.delete(id);
-        const saved = hlPicksSave();
+        const saved = hlPicksSave(id);
         hlPaintReportBar(i);
         if (!saved) {
             hlSay(i, 'This browser would not keep the pick (its storage is full or blocked), so it lasts '
@@ -4060,7 +4083,7 @@ python state_sync.py push</pre>
         const id = hlCallId(HOT_LEADS[i]);
         if (!id) return;
         hlPicksLoad().delete(id);
-        hlPicksSave();
+        hlPicksSave(id);
         hlRepaintRecs(i);
         hlPaintReportBar(i);
     }
@@ -4158,6 +4181,33 @@ python state_sync.py push</pre>
         return by;
     }
 
+    // ONE PRESS OF SAVE OR ADD, ONE requestId (28 Sep 2026). The hook keeps it on the note or
+    // link it adds and, sent the same one again for that lead, answers with the notes as they
+    // stand and adds nothing. So the automatic retry in hlNotesPost cannot store one note
+    // twice, while a second press is a second note, as it should be. 32 hex characters: inside
+    // the hook's [A-Za-z0-9_-]{1,64}.
+    function hlRequestId() {
+        const bytes = new Uint8Array(16);
+        try { crypto.getRandomValues(bytes); }
+        catch (e) { for (let k = 0; k < bytes.length; k++) bytes[k] = Math.floor(Math.random() * 256); }
+        return Array.from(bytes, x => x.toString(16).padStart(2, '0')).join('');
+    }
+
+    // WHETHER A CHANGE THAT WAS NOT CONFIRMED MAY STILL HAVE BEEN MADE (28 Sep 2026). "Not
+    // saved" over a note that was saved sent the consultant to press Save again, and the note
+    // was stored twice. The dashboard's 502 is the hook timing out or failing after it may
+    // have written ("reload the lead to see whether the change was saved"), and one of its
+    // answers says outright "the note was saved, but ..."; a 2xx that is not the notes, a
+    // 500 or a 504 leaves it just as open. A 503 (a setting is missing) and every 4xx are
+    // refused before anything is written, and so is an answer that says "nothing was changed"
+    // (the hook's own 502 for notes it could not read).
+    function hlMaybeMade(status, message) {
+        const m = String(message ?? '');
+        if (/\bnothing was changed\b/i.test(m)) return false;
+        if (/\bwas saved, but\b/i.test(m)) return true;
+        return (status >= 200 && status < 300) || (status >= 500 && status !== 503);
+    }
+
     // One change to a lead's notes, through the dashboard (api/lead_notes.py adds the service
     // key, so it never reaches the browser). The answer is the lead's notes as stored after
     // the change, and they are drawn from it. A failure leaves the typing where it is.
@@ -4165,6 +4215,10 @@ python state_sync.py push</pre>
     async function hlNotesPost(i, body, kind) {
         const id = body.callId;
         const kept = kind === 'remove' ? '' : ' What you typed is still here.';
+        // Said when the answer leaves open whether the change was made: never "Not saved".
+        const unsure = why => (kind === 'remove'
+            ? `Could not confirm the removal: ${why}. Press Refresh to check whether it is gone.`
+            : `Could not confirm this was saved: ${why}. Press Refresh to check before saving it again.`) + kept;
         if (HL_NOTE_BUSY.has(id)) {
             hlNoteSay(i, 'Still saving the last change to this lead. Try again in a moment.', false);
             return false;
@@ -4173,15 +4227,25 @@ python state_sync.py push</pre>
         hlNoteButtons(i, true);
         hlNoteSay(i, kind === 'remove' ? 'Removing…' : 'Saving…', false);
         try {
-            let res;
-            try {
-                res = await fetch('/api/lead_notes', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body)
-                });
-            } catch (e) {
-                hlNoteSay(hlIndexOf(id), 'Could not reach the dashboard, so nothing was changed.' + kept, true);
+            // A dropped connection (fetch throws) may have dropped after the change arrived.
+            // A write carrying a requestId is sent ONCE MORE, automatically, as the same bytes
+            // -- the same requestId -- so the hook adds it at most once and answers with the
+            // notes either way. Nothing else is retried: every other answer is the server's.
+            const sent = JSON.stringify(body);
+            let res = null;
+            for (let tries = body.requestId ? 2 : 1; tries > 0 && !res; tries--) {
+                try {
+                    res = await fetch('/api/lead_notes', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: sent
+                    });
+                } catch (e) {
+                    res = null;
+                }
+            }
+            if (!res) {
+                hlNoteSay(hlIndexOf(id), unsure('the dashboard could not be reached'), true);
                 return false;
             }
             // The dashboard never answers 401 itself (api/lead_notes.py), so a 401 is the
@@ -4212,8 +4276,13 @@ python state_sync.py push</pre>
                           true);
                 return false;
             }
-            const why = (data && data.message) ? String(data.message) : `the dashboard answered ${res.status}`;
-            hlNoteSay(j, `Not saved: ${why}.` + kept, true);
+            const why = ((data && data.message) ? String(data.message) : `the dashboard answered ${res.status}`)
+                .replace(/[\s.]+$/, '');
+            if (hlMaybeMade(res.status, why)) {
+                hlNoteSay(j, unsure(why), true);
+                return false;
+            }
+            hlNoteSay(j, (kind === 'remove' ? 'Not removed: ' : 'Not saved: ') + why + '.' + kept, true);
             return false;
         } finally {
             HL_NOTE_BUSY.delete(id);
@@ -4240,6 +4309,7 @@ python state_sync.py push</pre>
         const by = hlByRead();
         const body = { callId: id, op: 'add_entry', action, text };
         if (by) body.by = by;
+        body.requestId = hlRequestId();          // this press's own: see hlRequestId
         if (!await hlNotesPost(i, body, 'note')) return false;
         d.text = '';
         d.action = '';
@@ -4288,6 +4358,7 @@ python state_sync.py push</pre>
         const body = { callId: id, op: 'add_link', url };
         if (label) body.label = label;
         if (by) body.by = by;
+        body.requestId = hlRequestId();          // this press's own: see hlRequestId
         if (!await hlNotesPost(i, body, 'link')) return false;
         const d = hlDraft(id);
         d.url = '';
