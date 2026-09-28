@@ -1334,11 +1334,14 @@ def test_the_other_characters_that_draw_nothing_do_not_walk_past_the_masking(mon
 
 
 def test_an_emojis_variation_selector_is_kept(monkeypatch):
-    """U+FE0F makes U+2764 the red heart, and a keycap needs it: kept, except between two
-    ASCII characters."""
+    """U+FE0F makes U+2764 the red heart, and a keycap needs it: kept in what a masked viewer
+    is sent. Since 28 Sep 2026 (third review) the rules' own form of the text (plain) reads
+    without it everywhere, the keycap mark too: what is sent is the text as it came."""
     text = "Loved Lot 12 " + chr(0x2764) + VS16 + ", keen on 3" + VS16 + chr(0x20E3) + " beds"
-    assert H._contact.plain(text) == text
     assert H._contact.Scrubber([(EMAIL, PHONE)]).free(text) == text
+    status, _, body = _masked(monkeypatch, _one(copy.deepcopy(CONTACT_LEAD), _note(text)))
+    assert status == 200 and _note_text(body) == text
+    assert H._contact.plain(text) == "Loved Lot 12 " + chr(0x2764) + ", keen on 3 beds"
     assert H._contact.plain("a" + VS16 + "b") == "ab"
 
 
@@ -1545,9 +1548,12 @@ def test_a_joiner_inside_the_leads_own_idn_address_does_not_walk_it_past(monkeyp
     "#" + VS16 + chr(0x20E3),                                                # a keycap
 ])
 def test_an_emoji_keeps_its_joiners_and_selectors(monkeypatch, emoji):
+    """In what is sent. The rules read the text without them (plain), since the third review,
+    so the emoji is kept beside a number hidden in the same string too."""
     text = f"Keen {emoji} call after 5"
-    assert H._contact.plain(text) == text
     assert H._contact.Scrubber([(EMAIL, PHONE)]).free(text) == text
+    assert (H._contact.Scrubber([(EMAIL, PHONE)]).free(f"Keen {emoji}0411 222 333")
+            == f"Keen {emoji}[hidden]")
     status, _, body = _masked(monkeypatch, _one(copy.deepcopy(CONTACT_LEAD), _note(text)))
     assert status == 200 and _note_text(body) == text
 
@@ -1686,6 +1692,266 @@ def test_a_lead_whose_rules_cannot_be_built_is_only_its_call_id(monkeypatch):
         "customer": {"name": "[hidden]", "email": "", "phone": "", "phoneLast3": "",
                      "hasEmail": False, "hasPhone": False}}
     assert "maskFailed" not in doc["leads"][1] and doc["notesHidden"] == ["call-678"]
+
+
+# ---- the third review, 28 Sep 2026. Each of these fails on the code before it (run against
+# a copy of api/ as it was at 6a1581d).
+
+def _shown(monkeypatch, text, email=EMAIL):
+    """(summary, note text) as the masked GET shows `text` in a lead's summary and in a note
+    of it, for a lead with the address `email` -- neither cut down nor left out."""
+    lead = copy.deepcopy(CONTACT_LEAD)
+    lead["customer"]["email"] = email
+    lead["summary"] = text
+    status, _, body = _masked(monkeypatch, _one(lead, _note(text)))
+    assert status == 200, body[:300]
+    doc = json.loads(body)
+    assert "maskFailed" not in doc["leads"][0] and "notesHidden" not in doc, ascii(text)
+    return doc["leads"][0]["summary"], _note_text(body)
+
+
+@pytest.mark.parametrize("text", [
+    "joseph.test(a)example.com", "joseph.test[a]example.com", "joseph.test{a}example.com",
+    "joseph.test<a>example.com", "joseph.test ( A ) example.com",
+    "joseph test (a) example dot com",
+])
+def test_the_at_sign_written_as_a_bracketed_a_is_hidden(monkeypatch, text):
+    """"(a)" or "[a]" for the "@" walked the lead's own address past the masking and the
+    second look, as "{at}" and "<at>" did before the second review."""
+    assert _shown(monkeypatch, "Sent to " + text) == ("Sent to [hidden]",) * 2
+
+
+def test_a_bracketed_a_that_is_not_an_at_is_left_alone():
+    for text in ("Plan (a) for Lot 12, then (b)", "joseph test (a) the office", "a [a] b"):
+        assert H._contact.Scrubber([(EMAIL, PHONE)]).free(text) == text
+
+
+def _dingbat(text, one):
+    """`text` with each digit 1-9 from the dingbat block whose "1" is `one`, and 0 as the
+    negative circled zero (U+24FF)."""
+    return "".join((chr(0x24FF) if c == "0" else chr(one + int(c) - 1)) if c.isdigit() else c
+                   for c in text)
+
+
+@pytest.mark.parametrize("one", [0x2776, 0x2780, 0x278A])
+def test_a_number_in_dingbat_digits_is_hidden(monkeypatch, one):
+    """The negative circled and circled sans-serif digits are digits (unicodedata.digit) that
+    NFKC leaves alone, and plain() wrote only the decimal ones as ASCII: the lead's number
+    written in them was shown whole, and so was anyone's."""
+    assert _shown(monkeypatch, "Call " + _dingbat("0400 111 678", one)) == ("Call [hidden]",) * 2
+    assert _shown(monkeypatch, "wife " + _dingbat("0498 765 432", one)) == ("wife [hidden]",) * 2
+
+
+ACUTE, UNDERLINE, KEYCAP = chr(0x0301), chr(0x0332), chr(0x20E3)
+
+
+@pytest.mark.parametrize("sep", [
+    ACUTE + " ", ACUTE, KEYCAP,                               # a mark on the group's last digit
+    chr(0x2212), chr(0x02D7),                                 # minus signs
+    chr(0xB7), chr(0x2022), chr(0x2027), chr(0x30FB),         # middle dots and bullets
+    chr(0x2E3A), chr(0x30FC),                                 # a two-em dash, the long-vowel mark
+    chr(0x1680),                                              # the ogham space, which NFKC keeps
+])
+def test_someone_elses_number_with_a_mark_or_another_dash_between_its_groups_is_hidden(
+        monkeypatch, sep):
+    text = "wife 0498" + sep + "765" + sep + "432"
+    assert _shown(monkeypatch, text) == ("wife [hidden]",) * 2
+
+
+@pytest.mark.parametrize("text", [
+    "budget 750000~800000", "budget 750000" + chr(0xFF5E) + "800000",
+    "budget 750000" + chr(0x301C) + "800000",                 # the wave dash: a range too
+])
+def test_a_range_is_still_not_a_number_to_hide(text):
+    assert H._contact.Scrubber([(EMAIL, PHONE)]).free(text) == text
+
+
+@pytest.mark.parametrize("text", [
+    "joseph.test" + ACUTE + "@example.com",
+    "".join(ch + UNDERLINE for ch in EMAIL),                  # underlined: a mark on every letter
+    "".join(ch + chr(0x0336) for ch in EMAIL),                # struck through
+])
+def test_the_leads_own_address_with_a_mark_on_its_letters_is_hidden(monkeypatch, text):
+    """NFKC composes a letter and a mark it has a precomposed form with; the rest stayed, and
+    split the address for every rule and the second look."""
+    assert _shown(monkeypatch, "Sent to " + text) == ("Sent to [hidden]",) * 2
+
+
+@pytest.mark.parametrize("email,said", [
+    ("dot.henderson@gmail.com", "dot henderson at gmail dot com"),
+    ("dot.henderson@gmail.com", "Dot dot Henderson at Gmail"),
+    ("dash.jones@outlook.com", "dash jones at outlook dot com"),
+    ("dash_jones@outlook.com", "dash underscore jones at outlook"),
+    ("matt.at.home@gmail.com", "matt dot at dot home at gmail dot com"),
+    ("matt.at.home@gmail.com", "matt at home at gmail"),
+    ("john.dot@gmail.com", "john dot dot at gmail dot com"),
+    ("john.dot@gmail.com", "john dot at gmail dot com"),
+    ("matt.at@gmail.com", "matt dot at at gmail dot com"),
+    ("matt.at@gmail.com", "matt at at gmail dot com"),       # the last "at" is the "@"
+    ("plus.one@example.com", "plus one at example dot com"),
+])
+def test_an_address_with_a_spoken_separator_for_a_word_is_hidden_said_aloud(monkeypatch, email,
+                                                                           said):
+    """The second review gave such an address no said-aloud rule at all -- Dot and Dash are
+    names people have -- and the address said aloud was shown whole, with nothing to flag it:
+    the second look reads with the same rules."""
+    assert _shown(monkeypatch, "Her email is " + said, email) == ("Her email is [hidden]",) * 2
+
+
+def test_a_name_that_is_a_spoken_separator_is_still_shown(monkeypatch):
+    lead = copy.deepcopy(CONTACT_LEAD)
+    lead["customer"].update(email="dot.henderson@gmail.com", name="Dot Henderson")
+    lead["summary"] = "Dot Henderson wants a house; call after 5"
+    status, _, body = _masked(monkeypatch, _one(lead))
+    got = json.loads(body)["leads"][0]
+    assert status == 200 and got["customer"]["name"] == "Dot Henderson"
+    assert got["summary"] == lead["summary"]
+
+
+@pytest.mark.parametrize("word", ["at", "dot"])
+def test_an_address_of_twelve_spoken_words_is_masked_in_time(word):
+    """An address of 12 "at"s (the most words that get a said-aloud rule) in 15,000
+    characters of "at at ...": with every gap free to read the next "at" either way, 13 s.
+    The gap now decides by looking ahead (_said)."""
+    import time as _t
+    email = ".".join([word] * 12) + "@example.com"
+    scrub = H._contact.Scrubber([(email, PHONE)])
+    text = " ".join([word] * 7500)
+    start = _t.perf_counter()
+    scrub.free(text)
+    scrub.leaked({"x": text})
+    assert _t.perf_counter() - start < 0.5
+    assert scrub.free("Email " + email) == "Email [hidden]"
+
+
+HALF, SQUARED, TM = chr(0xBD), chr(0xB2), chr(0x2122)
+
+
+@pytest.mark.parametrize("text", [
+    "Wants 3" + HALF + " bedrooms on 450m" + SQUARED,
+    "Land 450m" + SQUARED + ", 3" + HALF + " baths, 2" + chr(0xBC) + " acres, " + chr(0x2116)
+    + " 12, keen" + chr(0x2026),
+    "Plan " + chr(0x2461) + " " + HALF, "Deal " + TM + VS16 + " and " + chr(0x203C) + VS16,
+    "Sri Lanka: " + chr(0x0DC1) + chr(0x0DCA) + ZWJ + chr(0x0DBB) + chr(0x0DD3),  # ZWJ in a word
+    "Keen " + chr(0xFF01) + chr(0xFF1F),                     # full-width punctuation
+])
+def test_what_the_rules_do_not_hide_is_sent_as_it_came(monkeypatch, text):
+    """The rules read every string in its compatibility form (plain), and a masked viewer was
+    sent that form: "3" and one half became "31", U+2044, "2" -- it reads as 31/2 -- m squared
+    became m2, the trade mark emoji "TM", and a Sinhala word lost its joiner."""
+    assert H._contact.Scrubber([(EMAIL, PHONE)]).free(text) == text
+    assert _shown(monkeypatch, text) == (text,) * 2
+
+
+def test_a_string_with_something_hidden_keeps_the_rest_as_it_came(monkeypatch):
+    """Around a "[hidden]", the parts the rules left are sent as stored too."""
+    cases = [
+        ("Wants 3" + HALF + " beds, call 0400 111 678, " + chr(0x2764) + VS16,
+         "Wants 3" + HALF + " beds, call [hidden], " + chr(0x2764) + VS16),
+        # A CJK note with the number in full-width digits: one run of characters, no ASCII.
+        (chr(0x8BF7) + _digits_from("0400 111 678", FULLWIDTH).replace(" ", chr(0x3000))
+         + chr(0xFF0C) + chr(0x8C22) + chr(0x8C22),
+         chr(0x8BF7) + "[hidden]" + chr(0xFF0C) + chr(0x8C22) + chr(0x8C22)),
+        ("mail " + "".join(ch + UNDERLINE for ch in EMAIL) + " " + HALF,
+         "mail [hidden] " + HALF),
+    ]
+    for text, want in cases:
+        assert _shown(monkeypatch, text) == (want,) * 2, ascii(text)
+
+
+def test_a_kept_link_is_sent_as_it_was_saved(monkeypatch):
+    """_scrub_url returned the link in the rules' form: a full-width letter or a circled digit
+    in its path made it a different link."""
+    url = "https://example.com/" + "".join(chr(0xFF41 + ord(c) - ord("a")) for c in "full") \
+        + "/" + chr(0x2460)
+    notes = {"entries": [], "links": [{"id": "l1", "at": "2026-09-28T02:05:00.000Z",
+                                       "by": "Coleen", "url": url, "label": "Plan"}], "rev": 1}
+    status, _, body = _masked(monkeypatch, _one(copy.deepcopy(CONTACT_LEAD), notes))
+    assert status == 200
+    assert json.loads(body)["notes"]["call-678"]["links"][0]["url"] == url
+    assert H._contact._scrub_url(url + ZWSP, H._contact.Scrubber([(EMAIL, PHONE)])) == url
+
+
+def test_a_bidi_control_is_still_not_sent(monkeypatch):
+    """What is sent as it came still loses the characters that draw nothing: kept, a
+    right-to-left override could draw a run the rules read backwards the right way round."""
+    rlo = chr(0x202E)
+    text = "Reversed " + rlo + "moc tod elpmaxe ta tset hpesoj" + chr(0x202C) + " ok"
+    summary, note = _shown(monkeypatch, text)
+    assert rlo not in summary and rlo not in note and chr(0x202C) not in summary
+
+
+@pytest.mark.parametrize("joiner", [ZWJ, VS16])
+def test_a_joiner_between_a_letter_and_its_accent_does_not_split_an_address(monkeypatch,
+                                                                           joiner):
+    """The joiner went after NFKC, so "u", a joiner, U+0308 never composed to u-umlaut, and
+    U+0308 split someone's address for every rule (plain() read it differently a second time)."""
+    text = "Also sam@mu" + joiner + chr(0x0308) + "ller.de"
+    assert H._contact.plain(H._contact.plain(text)) == H._contact.plain(text)
+    assert _shown(monkeypatch, text) == ("Also [hidden]",) * 2
+
+
+_UNICODE_BITS = list("ab.@%+-_ x.com0123456789()/") + [chr(c) for c in (
+    0xA0, 0x200D, 0xFE0F, 0x20E3, 0x0301, 0x0308, 0x0332, 0x200B, 0x202E, 0xFF20, 0xFF10,
+    0xFF14, 0x0660, 0x0664, 0x2776, 0x2780, 0xBD, 0xB2, 0x2122, 0x1F468, 0x1F3FD, 0x2764,
+    0x3164, 0x2800, 0x2009, 0x3000, 0x2212, 0xB7, 0x30FC, 0xE4, 0xFC, 0x1100, 0x1161, 0x3131,
+    0x314F, 0xFF76, 0xFF9E, 0x0915, 0x093F, 0x094D, 0xAC00, 0x11A8, 0xD83D, 0xA8, 0x24D0,
+    0x2460, 0x2469, 0x1D7CE, 0x0B47, 0x0B3E)] + [
+    " joseph.test@example.com ", " 0400 111 678", " a@b.com", "+c@d.org", " 0411 222 333 ",
+    "joseph dot test at example dot com"]
+
+
+def test_an_answer_nested_past_what_json_can_read_is_a_502_not_a_500(monkeypatch):
+    """From some 3,000 deep, json.loads itself raises RecursionError, before any masking;
+    fetch caught only ValueError, and do_GET answered 500 for everyone, in both views."""
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    monkeypatch.setenv("SPB_CONTACT_PASSWORD", CONTACT_PASSWORD)
+    deep = b"[" * 100000 + b"]" * 100000
+    raw = b'{"status": "success", "count": 1, "leads": [{"callId": "c", "summary": ' + deep + b"}]}"
+    _install(monkeypatch, lambda req: _Resp(raw))
+    for cookie in (None, _unlocked()):
+        status, _, body = _call("GET", cookie=cookie)
+        assert status == 502 and "nested too deep" in _message(body), body[:200]
+
+
+def test_what_is_sent_reads_as_the_chain_of_rules_would_have_written_it():
+    """A seeded differential. The rules still run as a chain of re.sub on plain(text) would --
+    each on the text the one before left, "[hidden]" and all -- and what is sent, read back
+    through plain(), is exactly what that chain writes: nothing the rules found is sent, and
+    the parts sent as they came read as the rules read them. plain() reads its own output
+    the same way again. Shown able to fail: with the map from the chain's text back to plain
+    text switched off, the same strings differ."""
+    import random
+    c = H._contact
+    scrub = c.Scrubber([(EMAIL, PHONE)])
+
+    def chain(p, rules):
+        for rule in rules:                   # re.sub(rule, "[hidden]", p), one after another
+            out, pos = [], 0
+            for m in rule(p):
+                out += [p[pos:m.start()], "[hidden]"]
+                pos = m.end()
+            p = "".join(out) + p[pos:]
+        return p
+
+    def differs(n):
+        rng, bad = random.Random(20260928), 0
+        for _ in range(n):
+            text = "".join(rng.choice(_UNICODE_BITS) for _ in range(rng.randint(0, 30)))
+            p = c.plain(text)
+            assert c.plain(p) == p, ascii(text)
+            for view, rules in (("free", scrub._for_free), ("own", scrub._for_own),
+                                ("name", scrub._for_name)):
+                bad += c.plain(getattr(scrub, view)(text)) != chain(p, rules)
+        return bad
+
+    assert differs(4000) == 0
+    real = c._in_p
+    try:
+        c._in_p = lambda at, marks, x, end: x
+        assert differs(1000) > 0, "no string here needs the map: the test is blind"
+    finally:
+        c._in_p = real
 
 
 # ------------------------------------------------------------------ methods and logs

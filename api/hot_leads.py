@@ -101,7 +101,8 @@ _LONE_SURROGATE = re.compile("[" + chr(0xD800) + "-" + chr(0xDFFF) + "]")
 
 
 def _body(doc):
-    """`doc` as the UTF-8 JSON of a 200, in either view (this file's and api/lead_notes.py's).
+    """`doc` as the UTF-8 JSON of a 200, in either view (this file's and api/lead_notes.py's),
+    and of the note api/lead_notes.py forwards to the hook.
 
     28 Sep 2026 (second review): one lone surrogate anywhere in the hook's answer -- a
     summary, a note, a callId -- failed the encode, and the whole answer was a 502 in both
@@ -288,6 +289,13 @@ def fetch(limit=None, include_test=False, grade=None):
         # A 200 that is not JSON is a login or error page served in the hook's place, and
         # passing it on would hand the tab HTML where it expected leads.
         return 502, _error(f"hot-lead store answered HTTP {status} with a body that is not JSON")
+    except RecursionError:
+        # 28 Sep 2026 (third review): a value nested some 3,000 deep (a hand-edited record) is
+        # more than json.loads can read, and this raised past every except here: a 500 for
+        # everyone, in both views. Nothing of such an answer can be shown, so it is a 502 like
+        # any other answer that cannot be read.
+        return 502, _error(f"hot-lead store answered HTTP {status} with JSON nested too deep "
+                           "to read")
     return 200, raw
 
 

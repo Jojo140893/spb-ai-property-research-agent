@@ -161,6 +161,9 @@ def send(body):
     except ValueError:
         return 502, _hl._error(f"lead-notes store answered HTTP {status} with a body that is "
                                "not JSON")
+    except RecursionError:                   # nested past json.loads: see api/hot_leads.py
+        return 502, _hl._error(f"lead-notes store answered HTTP {status} with JSON nested too "
+                               "deep to read")
     return 200, raw
 
 
@@ -215,14 +218,24 @@ def _request_body(headers, rfile):
         payload = json.loads(rfile.read(length).decode("utf-8"))
     except ValueError:
         return 400, _hl._error("That request is not JSON.")
+    except RecursionError:
+        # 16 KB of "[" is nested some 16,000 deep, past what json.loads can read: a 500 before
+        # the third review (28 Sep 2026). It is not a note, whatever else it is.
+        return 400, _hl._error('Send a JSON object: {"callId": ..., "op": ...}.')
     if not isinstance(payload, dict):
         return 400, _hl._error('Send a JSON object: {"callId": ..., "op": ...}.')
     # Re-serialised, so what reaches the hook is JSON this function parsed, never the bytes
     # as they arrived. Every field goes on, requestId included (28 Sep 2026: the tab's random
     # id per Save or Add click, so the hook can tell a retried click from a second note): the
     # hook is what checks each field, and a list kept here too would be a second thing to
-    # keep in step.
-    return None, json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    # keep in step. Written by _hl._body (28 Sep 2026, third review): a note whose text holds
+    # half a surrogate pair -- a browser's JSON.stringify writes one as "\\ud83d" when a
+    # .slice() cuts an emoji in half -- failed the UTF-8 encode here, a 500 with the note
+    # unsaved; it goes to the hook as U+FFFD, what the tab draws for it anyway.
+    try:
+        return None, _hl._body(payload)
+    except RecursionError:
+        return 400, _hl._error('Send a JSON object: {"callId": ..., "op": ...}.')
 
 
 class handler(BaseHTTPRequestHandler):

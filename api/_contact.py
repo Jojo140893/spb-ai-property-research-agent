@@ -45,12 +45,16 @@ leads with it.
     appointment) lose only the lead's own email and phone. The generic digit rule would break
     them: a Kommo lead id is 8 digits and an ISO timestamp is 8 digits with dashes.
   * A saved link is kept whole or hidden whole (see _scrub_url).
-  * Before any of it, every string loses the characters that draw nothing, and is read in its
-    compatibility form with ASCII digits (see plain()), so a zero-width space or a Hangul
-    filler pasted into a number or an address, a full-width "@" or Arabic-Indic digits cannot
-    walk it past the rules.
+  * Before any of it, every string is read without the characters that draw nothing and the
+    combining marks nothing composes with, in its compatibility form, with ASCII digits (see
+    plain()), so a zero-width space or a Hangul filler pasted into a number or an address, a
+    full-width "@", Arabic-Indic digits or an accent between two groups cannot walk it past
+    the rules. That form is for the rules to read: what they leave is sent as it was stored,
+    less only what draws nothing (see _hide).
 """
 import base64
+import bisect
+import functools
 import hashlib
 import hmac
 import os
@@ -149,41 +153,53 @@ def authorised(cookie_header, now=None):
 # every string before any pattern here sees it, so a record stored before the hook's rule is
 # masked the same way.
 _ZWJ = chr(0x200D)                    # kept ASCII: see _SEP_CHARS
-# The one format character kept: the zero-width joiner holds an emoji together (a family, a
-# flag) and a note may carry one. Anywhere else it joins nothing a note needs, so there it
-# goes too: "joseph.test@exam", a U+200D, "ple.com" looks exactly like the address and would
-# match none of the rules (_on_an_emoji, below).
+# The zero-width joiner holds an emoji together (a family, a flag) and the variation
+# selectors U+FE00-FE0F make one ("red heart" is U+2764 U+FE0F), so a note may carry either:
+# they are SENT as they came (_sent). The rules never READ them (plain): between two digits or
+# two letters of an address they join nothing, and "joseph.test@exam", a U+200D, "ple.com"
+# looks exactly like the address and would match none of the rules. (28 Sep 2026, third
+# review: the second review kept them in the one form both read and sent, and only next to a
+# pictograph, which still let one split "sam@mu" + U+200D + U+0308 + "ller.de", and took the
+# joiner out of a Sinhala or Devanagari word. With two forms, neither has to guess.)
 # The other characters Unicode says draw nothing (Default_Ignorable_Code_Point) that are not
 # format characters, so the rule above let them through (28 Sep 2026, review): the combining
 # grapheme joiner, the Hangul fillers -- which are LETTERS, so "0400", U+3164, "111" was two
 # numbers to every rule here -- the Khmer inherent vowels, the Mongolian variation selectors,
 # and the unassigned ranges kept for more of the same. Written as ranges, not a category:
-# Python's unicodedata has no Default_Ignorable property. The variation selectors U+FE00-FE0F
-# are kept, as the joiner is, because an emoji needs one ("red heart" is U+2764 U+FE0F); and,
-# as the joiner, only on an emoji.
+# Python's unicodedata has no Default_Ignorable property.
 _IGNORABLE = frozenset(
     [0x034F, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x180B, 0x180C, 0x180D, 0x180F, 0x2065, 0x3164,
      0xFFA0] + list(range(0xFFF0, 0xFFF9)) + list(range(0xE0000, 0xE1000)))
 _VS = "".join(chr(c) for c in range(0xFE00, 0xFE10))
-# 28 Sep 2026 (second review): ONLY ON AN EMOJI. The joiner and the selectors were kept
-# wherever one neighbour was not ASCII, so one between a no-break space and a digit ("0413",
-# NBSP, U+200D, "222"), after an accented letter in an address ("jo@ex" + a-umlaut + U+200D
-# + "mple.com") or between two Arabic-Indic digits split the number or the address for every
-# rule here, and drew nothing. They are kept now only where an emoji needs them: after a
-# pictograph (a symbol, a skin tone, anything from U+1F000 up), before the keycap mark
-# (a selector: "3", U+FE0F, U+20E3), or before a pictograph (the joiner: the rainbow flag is
-# U+1F3F3 U+FE0F U+200D U+1F308, so its joiner follows a selector).
-_JOINERS = re.compile("[" + _ZWJ + _VS + "]")
-_KEYCAP = chr(0x20E3)
-# The Braille blank draws a space and is not one to any rule (a symbol, category So, which
-# the joiner rule above would also read as a pictograph): "0498", U+2800, "765" is a space.
+# The Braille blank draws a space and is not one to any rule: "0498", U+2800, "765" is a space.
 _BRAILLE_BLANK = chr(0x2800)
 _REPLACEMENT = chr(0xFFFD)
-_OTHER_DIGIT = re.compile(r"(?![0-9])\d")    # a decimal digit (category Nd) that is not ASCII
 
 
-def _drawn(ch):
-    """`ch`, or "" for a character that draws nothing, or U+FFFD for half a surrogate pair.
+class _PerChar(dict):
+    """A str.translate table that works out what `how` makes of each character the first time
+    it is seen, and looks it up after that: a 16 KB summary in Chinese is a few hundred
+    different characters, and a Python call for every one of them made the masked view three
+    times as slow. Emptied at 50,000 entries, so a long-lived function never grows it far."""
+
+    def __init__(self, how):
+        super().__init__()
+        self.how = how
+
+    def __missing__(self, o):
+        if len(self) > 50000:
+            self.clear()
+        ch = chr(o)
+        out = self.how(ch)
+        out = o if out == ch else (out or None)      # None: str.translate drops it
+        self[o] = out
+        return out
+
+
+def _read(ch):
+    """`ch` as plain() takes it in: "" for a character that draws nothing -- a format
+    character, the joiner included, a variation selector, or the rest of
+    Default_Ignorable_Code_Point -- and U+FFFD for half a surrogate pair.
 
     28 Sep 2026 (second review): a lone surrogate -- JSON.stringify writes one as "\\ud83d"
     when a .slice() cuts an emoji in half -- parses, but cannot be written as UTF-8, and one in
@@ -191,33 +207,29 @@ def _drawn(ch):
     cat = unicodedata.category(ch)
     if cat == "Cs":
         return _REPLACEMENT
-    if ch == _ZWJ or ch in _VS:
-        return ch                            # decided by its neighbours: see _on_an_emoji
-    return "" if cat == "Cf" or ord(ch) in _IGNORABLE else ch
+    return "" if cat == "Cf" or ch in _VS or ord(ch) in _IGNORABLE else ch
 
 
-def _pictograph(ch):
-    return ch > "\x7f" and (ord(ch) >= 0x1F000 or unicodedata.category(ch) in ("So", "Sk"))
-
-
-def _on_an_emoji(m):
-    """A joiner or a selector, kept only where an emoji needs it (_JOINERS, above)."""
-    text, i, ch = m.string, m.start(), m.group()
-    after = text[i + 1:i + 2]
-    if _pictograph(text[i - 1:i]) or (after == _KEYCAP if ch in _VS else _pictograph(after)):
+def _folded(ch):
+    """`ch` once plain() has the compatibility form: a combining mark that composed with
+    nothing goes, a digit of any script is its ASCII digit, and the Braille blank a space."""
+    if ch < "\x80":
         return ch
-    return ""
+    if ch == _BRAILLE_BLANK:
+        return " "
+    if unicodedata.category(ch) in ("Mn", "Me"):
+        return ""
+    d = unicodedata.digit(ch, None)
+    return ch if d is None else chr(0x30 + d)
 
 
-def _ascii_digit(m):
-    return str(unicodedata.decimal(m.group()))
+_READ, _FOLD = _PerChar(_read), _PerChar(_folded)
 
 
 def plain(text):
-    """`text` as the rules below read it: without the characters that draw nothing (Unicode
-    format characters, category Cf, and the rest of Default_Ignorable_Code_Point, except an
-    emoji's joiner and variation selectors), in its compatibility form (NFKC), and with every
-    decimal digit written as an ASCII one.
+    """`text` as the rules below read it: without the characters that draw nothing (_read), in
+    its compatibility form (NFKC), without the combining marks left over, and with every digit
+    written as an ASCII one.
 
     28 Sep 2026 (second review): NFKC and the digits. Typed in a CJK input method's
     full-width mode, or pasted from WeChat, the lead's own address is "liwei.buyer", U+FF20,
@@ -226,14 +238,206 @@ def plain(text):
     space (U+202F) or an ideographic one (U+3000). Every rule here, and the second look
     behind them, read those as something else, and showed them whole. NFKC writes each as the
     character it stands for (an "@", a digit, a space). It leaves Arabic-Indic and the other
-    scripts' digits alone, so those are written as ASCII digits after it (unicodedata.decimal),
-    and the Braille blank, which NFKC keeps, becomes a space. A masked viewer is sent the
-    text in this form; the full view is the hook's text untouched."""
+    scripts' digits alone, so those are written as ASCII digits after it, and the Braille
+    blank, which NFKC keeps, becomes a space.
+
+    28 Sep 2026 (third review): every digit, not only the decimal ones -- the dingbat circled
+    digits (U+2776 on, U+2780 on) are digits NFKC leaves alone, and the lead's own number
+    written in them was shown whole -- and no combining marks. An accent or a keycap mark
+    (U+0301, U+20E3) between the groups of a number, or under each letter of an address (the
+    underline U+0332), drew the number or the address with a mark on it and split it for every
+    rule. NFKC composes a letter and its accent first ("u" and U+0308 are u-umlaut), so only
+    the marks nothing composes with go -- and then NFKC once more, for a letter and a later
+    mark that the one left out stood between. The joiners and selectors go BEFORE NFKC, for
+    the same reason: "u", a U+200D, U+0308 would not compose, and "sam@mu" + U+200D + U+0308
+    + "ller.de" was someone's address the rules read in two.
+
+    Only the rules read this form. A masked viewer is sent what they did not hide as the hook
+    stored it (_hide); the full view is the hook's text untouched."""
     if text.isascii():
         return text                          # none of it applies to ASCII: the usual case
-    text = unicodedata.normalize("NFKC", "".join(_drawn(ch) for ch in text))
-    text = _OTHER_DIGIT.sub(_ascii_digit, text).replace(_BRAILLE_BLANK, " ")
-    return _JOINERS.sub(_on_an_emoji, text) if _JOINERS.search(text) else text
+    text = unicodedata.normalize("NFKC", text.translate(_READ))
+    if text.isascii():
+        return text
+    out = text.translate(_FOLD)
+    return unicodedata.normalize("NFKC", out) if len(out) < len(text) else out
+
+
+# 28 Sep 2026 (third review): WHAT THE RULES READ IS NOT WHAT IS SENT. Until now a masked
+# viewer was sent the text in the form plain() gives the rules, so "3", U+00BD (one half),
+# " bedrooms" arrived as "31", U+2044, "2 bedrooms" -- it reads as 31/2 -- "450m", U+00B2 as
+# "450m2", U+2122 U+FE0F (the trade mark emoji) as "TM", and a saved link with a full-width
+# letter in its path as a different link. Now what the rules did not hide is sent as the hook
+# stored it, less only the characters that draw nothing (_sent): _hide remembers which part
+# of plain()'s text each "[hidden]" stands for, and _pieces which part of the stored text each
+# part of plain()'s came from.
+def _sent_char(ch):
+    cat = unicodedata.category(ch)
+    if cat == "Cs":
+        return _REPLACEMENT
+    if ch == _ZWJ:
+        return ch                            # an emoji's joiner: see _ZWJ
+    return "" if cat == "Cf" or ord(ch) in _IGNORABLE else ch
+
+
+_SENT = _PerChar(_sent_char)
+
+
+def _sent(text):
+    """`text` as a masked viewer is sent the parts the rules did not hide: as the hook stored
+    it, without the characters that draw nothing -- an emoji's joiner and selectors stay -- and
+    with half a surrogate pair as U+FFFD. A bidi control goes too: kept, it could draw a run
+    the rules read backwards ("moc tod liamg ...") the right way round."""
+    return text if text.isascii() else text.translate(_SENT)
+
+
+_NOT_ASCII = re.compile(r"[^\x00-\x7f]+")
+# Hangul jamo compose with the jamo in front of them, and NFKC turns the half-width voiced
+# marks into combining ones: plain() must read each with what comes before it.
+_JAMO = ((0x1100, 0x11FF), (0x3130, 0x318F), (0xA960, 0xA97F), (0xD7B0, 0xD7FF),
+         (0xFF9E, 0xFFDC))
+
+
+@functools.lru_cache(maxsize=50000)
+def _starts(ch):
+    """True for a character plain() reads the same whatever comes before it."""
+    cat = unicodedata.category(ch)
+    if cat[0] == "M" or cat == "Cf" or ord(ch) in _IGNORABLE:
+        return False
+    return not any(lo <= ord(ch) <= hi for lo, hi in _JAMO)
+
+
+def _pieces(text, runs=False):
+    """`text` cut where plain() reads each side on its own: a run of ASCII is one piece (no
+    ASCII character composes with anything before it), and so is each run of other
+    characters -- a mark at the start of one stays with the ASCII letter in front of it, which
+    it may compose with. With runs=True, a run of other characters is cut too, before each of
+    them that starts afresh (_starts)."""
+    pieces, pos = [], 0
+    for m in _NOT_ASCII.finditer(text):
+        i = m.start()
+        cut = i if _starts(text[i]) else i - 1
+        if cut > pos:
+            pieces.append(text[pos:cut])
+            pos = cut
+        for j in range(i + 1, m.end()) if runs else ():
+            if _starts(text[j]):
+                pieces.append(text[pos:j])
+                pos = j
+        pieces.append(text[pos:m.end()])
+        pos = m.end()
+    if pos < len(text):
+        pieces.append(text[pos:])
+    return pieces
+
+
+def _read_pieces(text, read, runs=False):
+    """[(piece, plain(piece))] for _pieces(text, runs), or None when they do not read, joined,
+    as `read` = plain(text) -- never seen; the caller then sends plain()'s form."""
+    out = [(x, plain(x)) for x in _pieces(text, runs)]
+    return out if "".join(r for _, r in out) == read else None
+
+
+def _merged(spans):
+    """Sorted, with any two that overlap as one. Two that only touch stay two, as two
+    matches side by side are "[hidden][hidden]" after a sub."""
+    out = []
+    for a, b in sorted(spans):
+        if out and a < out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out
+
+
+def _written_out(p, spans):
+    """`p` with each span as HIDDEN, and where each HIDDEN is: (start in the result, and the
+    start and end in `p` of what it stands for)."""
+    out, marks, n, pos = [], [], 0, 0
+    for a, b in spans:
+        out.append(p[pos:a])
+        n += a - pos
+        marks.append((n, a, b))
+        out.append(HIDDEN)
+        n += len(HIDDEN)
+        pos = b
+    out.append(p[pos:])
+    return "".join(out), marks
+
+
+def _in_p(at, marks, x, end):
+    """Position `x` of the text with `marks` written in, as a position in plain text. No rule
+    starts or ends a match inside a "[hidden]" (none matches "[" or "]"); were one to, it would
+    take all of what that "[hidden]" stands for."""
+    i = (bisect.bisect_left(at, x) if end else bisect.bisect_right(at, x)) - 1
+    if i < 0:
+        return x
+    ms, pa, pb = marks[i]
+    if x < ms + len(HIDDEN):
+        return pb if end else pa
+    return pb + (x - ms - len(HIDDEN))
+
+
+def _spans(p, finders):
+    """(spans, s): the parts of `p` that `finders` hid, and `p` with each as HIDDEN.
+
+    Each finder returns the matches in a string (a compiled pattern's finditer, _emails_in)
+    and runs on the text the ones before it left -- "[hidden]" and all, as a chain of re.sub
+    calls runs them -- so `s` is exactly what that chain would write, and each match is read
+    back to the part of `p` it covers."""
+    spans, s, marks = [], p, []
+    for find in finders:
+        found = [m.span() for m in find(s)]
+        if any(a < b for a, b in found):
+            at = [mark[0] for mark in marks]
+            spans = _merged(spans + [(_in_p(at, marks, a, False), _in_p(at, marks, b, True))
+                                     for a, b in found if a < b])
+            s, marks = _written_out(p, spans)
+    return spans, s
+
+
+def _rebuilt(text, p, spans):
+    """`text` with the parts of p = plain(text) in `spans` as HIDDEN, and each piece of it
+    (_pieces) that no span touches sent as it came (_sent). A run a span starts or ends
+    inside is cut into its characters (runs=True), and a piece a span still cuts is sent,
+    either side of the HIDDEN, as plain() reads it. None when the pieces do not read as `p`
+    -- never seen, and then _hide sends plain()'s form."""
+    coarse = _read_pieces(text, p)
+    if coarse is None:
+        return None
+    edges = sorted({e for span in spans for e in span})
+    pieces, at = [], 0
+    for x, r in coarse:
+        end = at + len(r)
+        i = bisect.bisect_right(edges, at)
+        fine = (_read_pieces(x, r, runs=True) if i < len(edges) and edges[i] < end
+                and not x.isascii() else None)
+        pieces += fine or [(x, r)]
+        at = end
+    out, k, at, pos = [], 0, 0, 0             # piece k starts at `at` in p
+    for a, b in spans + [(len(p), len(p))]:
+        while pos < a:
+            x, r = pieces[k]
+            end = at + len(r)
+            if end > pos:
+                whole = at >= pos and end <= a
+                out.append(_sent(x) if whole else p[pos:min(a, end)])
+                pos = min(a, end)
+            if end <= pos:
+                at, k = end, k + 1
+        if a < b:
+            out.append(HIDDEN)
+        pos = b
+    return "".join(out)
+
+
+def _hide(text, finders):
+    """`text` with what `finders` find in plain(text) as HIDDEN, and the rest as it came."""
+    p = plain(text)
+    spans, s = _spans(p, finders)
+    if not spans:
+        return _sent(text)
+    return _rebuilt(text, p, spans) or s
 
 
 # Between two digits of a phone number: a space (a no-break one too), a dash (any of the
@@ -241,7 +445,18 @@ def plain(text):
 # of them ("(03) 9123 4567", "0400-111-678", "+61 (0)400 111 678"). Not "/" or ",": a
 # date written 14/09/2026 and a price written 750,000 are not phone numbers. Built with chr()
 # so the source stays ASCII: an invisible no-break space in a regex is a trap for the next edit.
-_SEP_CHARS = r" \t" + chr(0xA0) + r"\-.()" + "".join(chr(c) for c in range(0x2010, 0x2016))
+# 28 Sep 2026 (third review): and what else stands between a number's groups when it was not
+# typed on a phone -- every other dash (Unicode category Pd: the long dashes U+2E3A-2E3B, the
+# double hyphens), the minus signs (U+2212, U+02D7), the middle dots and bullets (U+00B7,
+# U+2022, U+2027, U+2219, U+22C5, U+30FB), the Japanese long-vowel mark written as a dash
+# (U+30FC) and the ogham space (U+1680), the one space NFKC does not make a " ". Each one
+# showed someone else's number whole. Still not the wave dashes or "~" (U+301C, U+3030,
+# U+FF5E, which NFKC makes a "~"): "750000~800000" is a range, as 750,000 is a price.
+_OTHER_SEPS = (0x00B7, 0x02D7, 0x058A, 0x05BE, 0x1400, 0x1680, 0x1806, 0x2022, 0x2027, 0x2043,
+               0x2212, 0x2219, 0x22C5, 0x2E17, 0x2E1A, 0x2E3A, 0x2E3B, 0x2E40, 0x2E5D, 0x30A0,
+               0x30FB, 0x30FC)
+_SEP_CHARS = (r" \t" + chr(0xA0) + r"\-.()" + "".join(chr(c) for c in range(0x2010, 0x2016))
+              + "".join(chr(c) for c in _OTHER_SEPS))
 _SEP = "[" + _SEP_CHARS + "]{0,3}"
 # Between the digits of the LEAD'S OWN number (28 Sep 2026, review): anything that is not a
 # letter or a digit, up to 10 of it -- "0400/111/678", "0400,111,678", the groups on separate
@@ -265,7 +480,7 @@ _PHONE_SHAPED = re.compile(
 # after another address (28 Sep 2026, second review): "sam@law.com.au%2Cmary@gmail.com"
 # (a mailto list pasted in), "a@b.com+c@d.com" or "a@b.com..c@d.com" -- the first address
 # stops at the "%", "+" or second ".", which are address characters too, so the second
-# address was inside a run and never tried. _emails_hidden tries _EMAIL_ANYWHERE once,
+# address was inside a run and never tried. _emails_in tries _EMAIL_ANYWHERE once,
 # exactly where each address ends, which is where the scan before the lookbehind went on.
 _EMAIL_ANYWHERE = re.compile(r"[\w.%+\-]+@[\w\-]+(?:\.[\w\-]+)+")
 _EMAIL_SHAPED = re.compile(r"(?<![\w.%+\-])" + _EMAIL_ANYWHERE.pattern)
@@ -273,9 +488,38 @@ _EMAIL_SHAPED = re.compile(r"(?<![\w.%+\-])" + _EMAIL_ANYWHERE.pattern)
 # international (61X XXXX XXXX) or anything after a "+". A listing's id -- 9 digits on
 # realestate.com.au, 10 starting 20 on domain.com.au -- and a Drive id's digits are not.
 _URL_PHONE = re.compile(r"(?<!\d)(?:\+\d{8,15}|0[2-9]\d{8}|61[2-9]\d{8})(?!\d)")
-# Between the parts of an email said aloud: "joseph dot test at example dot com".
-_SAID = (r"(?:\s*(?:[.@_+\-]|\bdot\b|\bat\b|\bunderscore\b|\bdash\b|\bhyphen\b|\bplus\b)\s*"
-         r"|\s+)?")
+# The words said aloud for the punctuation between an address's parts.
+_SPOKEN = ("dot", "at", "underscore", "dash", "hyphen", "plus")
+
+
+def _said(before, then=""):
+    """What may stand between two parts of an email said aloud ("joseph dot test at example
+    dot com"), in front of the part `before`: one written or spoken separator, spaces, or
+    nothing. `then` is what must follow that part: the "at" and the domain's first label, after
+    the last word of the local part.
+
+    28 Sep 2026 (third review): ONE WAY TO READ A RUN. In front of a part that is itself one
+    of the spoken words -- dot.henderson@gmail.com, dash.jones@outlook.com,
+    matt.at.home@gmail.com -- a "dot" could be the separator or the part, and a run of them
+    could be shared out between the gaps and the parts in every way: an address of 21 "at"s
+    took 46 s in a summary of 60 "at"s. The last round gave such an address no said-aloud rule
+    at all, and "dot henderson at gmail dot com" was shown whole. Now the gap decides by
+    looking ahead, never by trying both: it takes the part's own word as its separator only
+    where that word comes twice ("john dot dot at gmail" for john.dot@gmail.com) and what must
+    follow the part follows the second, and otherwise leaves the word for the part. Checked
+    against the rule that tried both ways, on 189,000 spellings of such addresses said aloud:
+    it hides all it hid. What it gives up is an address with one spoken word twice in a row in
+    it (dot.dot@...), which said aloud with every separator can be read too short; as written,
+    it is hidden like any other."""
+    word = before.lower()
+    others = "|".join(r"\b" + w + r"\b" for w in _SPOKEN if w != word)
+    gap = r"(?:\s*(?:[.@_+\-]|" + others + r")\s*|\s+)?"
+    if word not in _SPOKEN:
+        return gap
+    twice = r"\s*\b" + word + r"\b\s*(?=" + word + then + ")"
+    return "(?:" + twice + "|(?!" + twice + ")" + gap + ")"
+
+
 # Between the address's local part and its domain, said aloud: an explicit "at" or "@",
 # bracketed or not ("joseph (at) example"). REQUIRED since 28 Sep 2026 (review): while it was
 # optional, the address joseph@shahid.com.au read its owner's own name, "Joseph Shahid", as
@@ -286,8 +530,11 @@ _SAID = (r"(?:\s*(?:[.@_+\-]|\bdot\b|\bat\b|\bunderscore\b|\bdash\b|\bhyphen\b|\
 # and a hyphen or an underscore, around the "at" (28 Sep 2026, second review): "{at}",
 # "<at>", "-at-" and "_at_" are the obfuscations people type, and each walked the lead's own
 # address past this rule and the second look. The "at" is a word of its own with "_" as a
-# boundary too, which "\b" does not treat as one.
-_AT = (r"\s*(?:[\[({<_\-]\s*)?(?:@|(?<![^\W_])at(?![^\W_]))(?:\s*[\])}>_\-])?\s*")
+# boundary too, which "\b" does not treat as one. And an "a" in brackets (28 Sep 2026, third
+# review): "liwei.buyer(a)gmail.com" and "[a]", the at sign drawn as a letter, walked the same
+# way; a bracket is required either side, or every "a" in a summary would be an at.
+_AT = (r"\s*(?:[\[({<]\s*a\s*[\])}>]"
+       r"|(?:[\[({<_\-]\s*)?(?:@|(?<![^\W_])at(?![^\W_]))(?:\s*[\])}>_\-])?)\s*")
 
 
 def digits(value):
@@ -325,10 +572,6 @@ def _is_address(email):
     return "@" in email and len(email) >= 3
 
 
-# The words _SAID reads as the punctuation between an address's parts.
-_SPOKEN = frozenset({"at", "dot", "underscore", "dash", "hyphen", "plus"})
-
-
 def _email_patterns(email):
     """(written, said): the address as written, and as said aloud or with its punctuation lost."""
     e = str(email or "").strip()
@@ -343,18 +586,20 @@ def _email_patterns(email):
     # with an explicit "at" and at least the domain's first label after it (_AT).
     # And only for an address a person could say (28 Sep 2026, second review): at most 254
     # characters (the most an address can have), 12 words before the "@" and 10 labels after
-    # it, and none of those words one of the words _SAID reads as punctuation. An address
-    # of 21 "at"s took 46 s to look for in a summary of 60 "at"s, every gap able to read the
-    # next "at" either way; one of 500 labels nested too deep for re to compile, a 502 for
-    # the whole tab. The address as written is still hidden, whatever it is.
+    # it. One of 500 labels nested too deep for re to compile, a 502 for the whole tab. (A
+    # word that is itself a spoken separator is read by _said, since the third review.) The
+    # address as written is still hidden, whatever it is.
     if (len(e) <= 254 and len(words) <= 12 and len(labels) <= 10
-            and not any(w.lower() in _SPOKEN for w in words)
             and words and labels and len("".join(words) + labels[0]) >= 8):
         tail = ""
         for label in reversed(labels[1:]):   # "... at gmail" hides as surely as "gmail.com"
-            tail = "(?:" + _SAID + re.escape(label) + tail + ")?"
-        said.append(r"(?<!\w)" + _SAID.join(re.escape(w) for w in words) + _AT
-                    + re.escape(labels[0]) + tail + r"(?!\w)")
+            tail = "(?:" + _said(label) + re.escape(label) + tail + ")?"
+        at = _AT + re.escape(labels[0])      # what must follow the local part's last word
+        last = len(words) - 1
+        said.append(r"(?<!\w)" + re.escape(words[0])
+                    + "".join(_said(w, at if i == last else "") + re.escape(w)
+                              for i, w in enumerate(words) if i)
+                    + at + tail + r"(?!\w)")
     return [re.escape(e)], said
 
 
@@ -362,25 +607,22 @@ def _compiled(patterns):
     return re.compile("|".join(f"(?:{p})" for p in patterns), re.IGNORECASE) if patterns else None
 
 
-def _emails_hidden(text):
-    """Every email-shaped token in `text` as HIDDEN: the same tokens a plain
-    _EMAIL_ANYWHERE.sub finds, in time that grows with the text's length (_EMAIL_SHAPED).
+def _emails_in(text):
+    """Every email-shaped token in `text`: the same matches _EMAIL_ANYWHERE.finditer gives,
+    in time that grows with the text's length (_EMAIL_SHAPED).
 
     Where one address ends, the next can start at once ("a@b.com+c@d.com"), which the
     lookbehind refuses, so that one place is tried unanchored first. Anywhere else a match
     the lookbehind refuses has an address character before it, and the match could start
     one character earlier -- so the leftmost match past that place is one it allows."""
-    out, pos, m = [], 0, _EMAIL_SHAPED.search(text)
+    m = _EMAIL_SHAPED.search(text)
     while m:
-        out += [text[pos:m.start()], HIDDEN]
-        pos = m.end()
-        m = _EMAIL_ANYWHERE.match(text, pos) or _EMAIL_SHAPED.search(text, pos)
-    return "".join(out) + text[pos:] if out else text
+        yield m
+        m = _EMAIL_ANYWHERE.match(text, m.end()) or _EMAIL_SHAPED.search(text, m.end())
 
 
-def _anyones(text):
-    """Any email-shaped token and any 8+ digit phone-shaped run, whoever's they are."""
-    return _PHONE_SHAPED.sub(HIDDEN, _emails_hidden(text))
+# Anyone's email-shaped token, then anyone's 8+ digit phone-shaped run, in that order.
+_ANYONES = (_emails_in, _PHONE_SHAPED.finditer)
 
 
 def _strings(value):
@@ -422,15 +664,18 @@ class Scrubber:
                 self.cores.append(core)
         self._own = _compiled(written + said)
         self._written = _compiled(written)   # without the said-aloud spellings: see name()
+        # What each view of a field runs, in order, on plain() of it (_hide).
+        own = (self._own.finditer,) if self._own else ()
+        self._for_own, self._for_free = own, own + _ANYONES
+        self._for_name = ((self._written.finditer,) if self._written else ()) + _ANYONES
 
     def own(self, text):
         """The lead's own email and phone, in every spelling. For machine-written fields."""
-        text = plain(text)
-        return self._own.sub(HIDDEN, text) if self._own else text
+        return _hide(text, self._for_own)
 
     def free(self, text):
         """own(), then any email-shaped token and any 8+ digit phone-shaped run."""
-        return _anyones(self.own(text))
+        return _hide(text, self._for_free)
 
     def name(self, text):
         """free() without the address's said-aloud spellings. For customer.name and
@@ -439,10 +684,11 @@ class Scrubber:
         viewer tells two callers apart by. The address as written, the lead's number in any
         spelling, and anyone's address or number still go -- Kommo often names a WhatsApp
         contact by their number."""
-        text = plain(text)
-        if self._written:
-            text = self._written.sub(HIDDEN, text)
-        return _anyones(text)
+        return _hide(text, self._for_name)
+
+    def finds_own(self, text):
+        """True when `text`, already plain(), carries the lead's own email or phone."""
+        return bool(self._own and self._own.search(text))
 
     def number(self, n):
         """A number that spells the lead's phone (a record that stored it as an int)."""
@@ -522,14 +768,18 @@ def _scrub_url(url, scrub):
     it carries the lead's own email or phone, any email address, or a number in an Australian
     phone's shape (_URL_PHONE). Format characters go first (plain), from the decoded form too:
     "%E2%80%8B" is a zero-width space.
+
+    A link that is kept is sent as it was saved, less the characters that draw nothing
+    (_sent), not in the form the rules read (28 Sep 2026, third review): "/", a full-width
+    "f", "ull/" and a circled 1 read as "/full/1", a different link.
     """
     if not isinstance(url, str):
         return ""
-    url = plain(url)
-    both = plain(url + " " + urllib.parse.unquote(url))
-    if (scrub.own(both) != both or _EMAIL_SHAPED.search(both) or _URL_PHONE.search(both)):
+    read = plain(url)
+    both = plain(read + " " + urllib.parse.unquote(read))
+    if scrub.finds_own(both) or _EMAIL_SHAPED.search(both) or _URL_PHONE.search(both):
         return HIDDEN
-    return url
+    return _sent(url)
 
 
 # The lead record's machine-written keys (vapi-kommo-hook lib/record.js). They lose only the

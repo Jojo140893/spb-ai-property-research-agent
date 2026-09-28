@@ -456,6 +456,93 @@ def test_half_a_surrogate_pair_in_a_note_is_not_a_502_in_either_view(monkeypatch
         assert doc["notes"]["entries"][0]["text"] == "Keen " + chr(0xFFFD), view
 
 
+# ---- the third review, 28 Sep 2026. Each of these fails on the code before it (run against
+# a copy of api/ as it was at 6a1581d).
+
+def _dingbat(text):
+    """`text` in the negative circled digits (U+2776 on; 0 is U+24FF)."""
+    return "".join((chr(0x24FF) if c == "0" else chr(0x2775 + int(c))) if c.isdigit() else c
+                   for c in text)
+
+
+def test_a_masked_save_hides_the_newer_spellings_of_the_leads_own_details(monkeypatch):
+    """The same rules as GET on this path too: the address with "(a)" or "[a]" for its "@"
+    or a mark under each letter, and the number in dingbat digits."""
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    texts = ["Sent to joseph.shahid(a)example.com", "Sent to joseph.shahid[a]example.com",
+             "Sent to " + "".join(ch + chr(0x0332) for ch in LEAD_CONTACT["email"]),
+             "Call " + _dingbat("0400 111 678")]
+    notes = dict(OWN_NOTES, entries=[dict(OWN_NOTES["entries"][0], id=f"e{i}", text=text)
+                                     for i, text in enumerate(texts)])
+    _ok(monkeypatch, dict(WITH_CONTACT, notes=notes))
+    status, _, body = _call()
+    assert status == 200, body
+    doc = json.loads(body)
+    assert "notesHidden" not in doc, "hidden by the masking, not by the second look"
+    assert [e["text"] for e in doc["notes"]["entries"]] == [
+        "Sent to [hidden]", "Sent to [hidden]", "Sent to [hidden]", "Call [hidden]"]
+    assert doc["notes"] == _get_view(notes), "saving shows no more than reading"
+
+
+def test_a_masked_save_hides_an_address_whose_word_is_a_spoken_separator(monkeypatch):
+    """dot.henderson@gmail.com got no said-aloud rule in the second review: said aloud, it
+    was shown whole in the answer to a save."""
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    notes = dict(OWN_NOTES, entries=[dict(OWN_NOTES["entries"][0],
+                                          text="Emailed dot henderson at gmail dot com")])
+    _ok(monkeypatch, dict(WITH_CONTACT, notes=notes,
+                          contact={"email": "dot.henderson@gmail.com", "phone": ""}))
+    status, _, body = _call()
+    assert status == 200, body
+    assert json.loads(body)["notes"]["entries"][0]["text"] == "Emailed [hidden]"
+
+
+def test_a_masked_save_sends_what_the_rules_left_as_it_was_written(monkeypatch):
+    """The answer to a save was in the form the rules read: "3" and one half as "31", U+2044,
+    "2", and a saved link with a full-width letter in it as a different link."""
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    half = chr(0xBD)
+    url = "https://example.com/" + chr(0xFF46) + "ull/" + chr(0x2460)
+    notes = dict(OWN_NOTES, entries=[dict(OWN_NOTES["entries"][0],
+                                          text="Wants 3" + half + " beds, call 0400 111 678")],
+                 links=[dict(OWN_NOTES["links"][0], url=url, label="Plan " + half)])
+    _ok(monkeypatch, dict(WITH_CONTACT, notes=notes))
+    status, _, body = _call()
+    assert status == 200, body
+    doc = json.loads(body)
+    assert doc["notes"]["entries"][0]["text"] == "Wants 3" + half + " beds, call [hidden]"
+    assert doc["notes"]["links"][0] == dict(OWN_NOTES["links"][0], url=url, label="Plan " + half)
+
+
+def test_a_note_holding_half_a_surrogate_pair_reaches_the_hook(monkeypatch):
+    """The body was re-encoded with a plain .encode("utf-8"): a note whose text held "\\ud83d"
+    (a browser's JSON.stringify writes one for an emoji a .slice() cut in half) was a 500,
+    and the note unsaved. It goes to the hook with U+FFFD in its place."""
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    up = _ok(monkeypatch)
+    status, _, body = _call(raw=json.dumps(dict(ADD, text="Keen " + chr(0xD83D))).encode())
+    assert status == 200, body
+    assert json.loads(up.calls[-1][0].data)["text"] == "Keen " + chr(0xFFFD)
+
+
+def test_a_request_nested_past_what_json_can_read_is_a_400(monkeypatch):
+    """16 KB of "[" is some 16,000 deep: json.loads raised RecursionError, which only
+    ValueError was caught for -- a 500."""
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    up = _ok(monkeypatch)
+    status, _, body = _call(raw=b"[" * 16000)
+    assert status == 400 and up.calls == [], body
+
+
+def test_an_answer_nested_past_what_json_can_read_is_a_502(monkeypatch):
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    deep = b"[" * 100000 + b"]" * 100000
+    raw = b'{"status": "success", "callId": "call-678", "notes": ' + deep + b"}"
+    _install(monkeypatch, lambda req: _Resp(raw))
+    status, _, body = _call()
+    assert status == 502 and "nested too deep" in _message(body)
+
+
 def test_a_request_id_goes_to_the_hook_as_the_tab_sent_it(monkeypatch):
     """The tab's random id per Save or Add click, reused on a retry of the same click: the
     hook needs it to tell a retry from a second note, so the body check passes it on."""
