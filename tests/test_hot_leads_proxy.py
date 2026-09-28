@@ -739,16 +739,70 @@ def test_the_absence_check_sees_a_leak_when_the_masking_is_switched_off(monkeypa
     assert "0400 111 678" in found and "joseph.test@example.com" in found and RECORDING in found
 
 
-def test_a_number_the_masking_walk_misses_is_a_502_not_a_leak(monkeypatch):
+def test_a_number_the_masking_walk_misses_cuts_the_lead_down_not_a_leak(monkeypatch):
     """The second look (Scrubber.leaked): if a future change stops the walk scrubbing a
-    field, the answer fails closed instead of publishing the number."""
+    field, each lead fails closed on its own -- cut down to what cannot carry a contact
+    detail (hard_masked) -- and its notes are left out, instead of publishing the number."""
     monkeypatch.setattr(H._contact.Scrubber, "own", lambda self, text: text)
     monkeypatch.setattr(H._contact.Scrubber, "free", lambda self, text: text)
     status, headers, body = _masked(monkeypatch)
-    assert status == 502
-    assert "not shown" in _message(body)
+    assert status == 200
     assert _leaks(body) == []
     assert headers["cache-control"] == "no-store"
+    doc = json.loads(body)
+    # The WhatsApp lead's number is only in its two name fields, which Scrubber.name masks
+    # (not switched off here): it passes the second look and is shown.
+    assert doc["leads"][0]["maskFailed"] is True and "maskFailed" not in doc["leads"][1]
+    assert doc["notes"] == {} and doc["notesHidden"] == ["call-678"]
+
+
+def test_a_cut_down_lead_keeps_only_what_cannot_carry_a_contact_detail(monkeypatch):
+    lead = copy.deepcopy(CONTACT_LEAD)
+    lead["summary"] = "Joseph said to " + EVADED
+    lead["kommo"] = {"contactId": 7, "leadId": 21345678,
+                     "leadUrl": "https://spb.kommo.com/leads/detail/21345678"}
+    status, _, body = _masked(monkeypatch, _one(lead, _note("Package sent")))
+    assert status == 200 and _leaks(body) == [] and "then 678" not in body.decode()
+    doc = json.loads(body)
+    assert doc["leads"] == [{
+        "callId": "call-678", "channel": "vapi", "grade": "hot",
+        "createdAt": "2026-09-28T01:02:03.000Z",
+        "kommo": {"leadUrl": "https://spb.kommo.com/leads/detail/21345678"},
+        "customer": {"name": "[hidden]", "email": "", "phone": "", "phoneLast3": "678",
+                     "hasEmail": True, "hasPhone": True},
+        "maskFailed": True}]
+    assert doc["notes"] == {} and doc["notesHidden"] == ["call-678"], "its notes go with it"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("grade", "0400 111 678"), ("channel", "0400111678"), ("createdAt", "0400111678"),
+    ("kommo", {"leadUrl": "https://spb.kommo.com/leads/detail/0400111678x"}),
+    ("kommo", {"leadUrl": "javascript:alert(1)//kommo.com/leads/detail/1"}),
+])
+def test_a_cut_down_lead_drops_a_kept_field_of_a_shape_it_does_not_know(monkeypatch, field,
+                                                                       value):
+    lead = copy.deepcopy(CONTACT_LEAD)
+    lead["summary"] = EVADED
+    lead[field] = value
+    status, _, body = _masked(monkeypatch, _one(lead))
+    assert status == 200 and _leaks(body) == [] and "0400111678" not in body.decode()
+    got = json.loads(body)["leads"][0]
+    assert got["maskFailed"] is True
+    assert got.get(field) in (None, ""), got
+
+
+def test_one_lead_cut_down_leaves_the_others_as_they_were(monkeypatch):
+    bad = copy.deepcopy(CONTACT_LEAD)
+    bad["summary"] = EVADED
+    upstream = {"status": "success", "count": 2, "leads": [bad, WA_LEAD],
+                "notes": {"call-678": NOTES}, "notesErrors": []}
+    status, _, body = _masked(monkeypatch, upstream)
+    assert status == 200 and _leaks(body) == []
+    doc = json.loads(body)
+    assert doc["leads"][0]["maskFailed"] is True
+    wa = doc["leads"][1]
+    assert "maskFailed" not in wa and wa["grade"] == "warm" and wa["brief"]["state"] == "QLD"
+    assert wa["customer"]["phoneLast3"] == "321" and doc["notesHidden"] == ["call-678"]
 
 
 @pytest.mark.parametrize("upstream", [
@@ -756,17 +810,53 @@ def test_a_number_the_masking_walk_misses_is_a_502_not_a_leak(monkeypatch):
     {"status": "success", "leads": "call-678 0400 111 678"},
     {"status": "success"},                                      # no leads at all
     {"status": "success", "leads": ["0400 111 678"]},
-    {"status": "success", "leads": [{"customer": "0400 111 678"}]},
     {"status": "success", "leads": [CONTACT_LEAD], "notes": "0400 111 678"},
-    {"status": "success", "leads": [CONTACT_LEAD], "notes": {"call-678": {"entries": "x"}}},
-    {"status": "success", "leads": [CONTACT_LEAD],
-     "notes": {"call-678": {"entries": ["0400 111 678"], "links": []}}},
 ])
 def test_an_answer_that_cannot_be_masked_is_a_502_never_the_raw_body(monkeypatch, upstream):
     status, _, body = _masked(monkeypatch, upstream)
     assert status == 502, body[:200]
     assert "could not be hidden" in _message(body)
     assert _leaks(body) == []
+
+
+def test_a_lead_whose_customer_is_not_an_object_is_cut_down_alone(monkeypatch):
+    upstream = {"status": "success", "leads": [
+        {"callId": "c-odd", "customer": "0400 111 678", "grade": "warm"}, WA_LEAD],
+        "notes": {"c-odd": _note("Rang 0400 111 678")}}
+    status, _, body = _masked(monkeypatch, upstream)
+    assert status == 200 and _leaks(body) == [], body[:300]
+    doc = json.loads(body)
+    odd = doc["leads"][0]
+    assert odd["maskFailed"] is True and odd["grade"] == "warm"
+    assert odd["customer"] == {"name": "[hidden]", "email": "", "phone": "", "phoneLast3": "",
+                               "hasEmail": False, "hasPhone": False}
+    assert doc["notes"] == {} and doc["notesHidden"] == ["c-odd"]
+    assert "maskFailed" not in doc["leads"][1]
+
+
+@pytest.mark.parametrize("notes", [{"entries": "x"}, {"entries": ["0400 111 678"], "links": []}])
+def test_one_leads_notes_that_cannot_be_masked_are_left_out_not_a_502(monkeypatch, notes):
+    status, _, body = _masked(monkeypatch, {"status": "success", "leads": [CONTACT_LEAD],
+                                            "notes": {"call-678": notes}})
+    assert status == 200 and _leaks(body) == [], body[:300]
+    doc = json.loads(body)
+    assert doc["notes"] == {} and doc["notesHidden"] == ["call-678"]
+    assert "maskFailed" not in doc["leads"][0], "the lead itself is fine"
+
+
+def test_the_hook_cannot_name_notes_hidden_itself(monkeypatch):
+    """notesHidden is this file's to say: one sent by the hook is dropped, not passed on."""
+    status, _, body = _masked(monkeypatch, dict(copy.deepcopy(CONTACT_LEADS),
+                                                notesHidden=["0400 111 678"]))
+    assert status == 200 and _leaks(body) == [] and "notesHidden" not in json.loads(body)
+
+
+def test_a_notes_key_that_is_the_leads_number_is_never_sent(monkeypatch):
+    upstream = copy.deepcopy(CONTACT_LEADS)
+    upstream["notes"]["0400111678"] = _note("x")
+    status, _, body = _masked(monkeypatch, upstream)
+    assert status == 200 and _leaks(body) == []
+    assert list(json.loads(body)["notes"]) == ["call-678"]
 
 
 def test_the_callers_own_number_is_hidden_even_in_machine_written_fields(monkeypatch):
@@ -1003,21 +1093,23 @@ def test_the_same_punctuation_leaves_other_numbers_alone():
 EVADED = "ring 0400 or 111 then 678"
 
 
-def test_the_number_written_past_every_pattern_in_a_note_is_a_502(monkeypatch):
+def test_the_number_written_past_every_pattern_in_a_note_leaves_the_notes_out(monkeypatch):
     """The NOTES-level second look (mask_notes), by its digit half: every non-digit removed,
-    "0400 or 111 then 678" is 0400111678."""
+    "0400 or 111 then 678" is 0400111678. That lead's notes are left out; the lead is not."""
     status, _, body = _masked(monkeypatch, _one(copy.deepcopy(CONTACT_LEAD), _note(EVADED)))
-    assert status == 502 and "could not be hidden" in _message(body)
-    assert "then 678" not in body.decode()
+    assert status == 200 and "then 678" not in body.decode()
+    doc = json.loads(body)
+    assert doc["notes"] == {} and doc["notesHidden"] == ["call-678"]
+    assert "maskFailed" not in doc["leads"][0]
 
 
-def test_the_number_written_past_every_pattern_in_a_lead_is_a_502(monkeypatch):
+def test_the_number_written_past_every_pattern_in_a_lead_cuts_the_lead_down(monkeypatch):
     """The LEAD-level second look (mask_lead), by the same digit half."""
     lead = copy.deepcopy(CONTACT_LEAD)
     lead["summary"] = "Joseph said to " + EVADED
     status, _, body = _masked(monkeypatch, _one(lead))
-    assert status == 502 and "could not be hidden" in _message(body)
-    assert "then 678" not in body.decode()
+    assert status == 200 and "then 678" not in body.decode()
+    assert json.loads(body)["leads"][0]["maskFailed"] is True
 
 
 def test_a_short_stored_number_is_not_found_in_a_note_of_dates_and_prices(monkeypatch):
@@ -1119,7 +1211,8 @@ def test_the_second_look_sees_through_an_invisible_character_too(monkeypatch):
     lead.update(callId="call-678", customer={"name": "J", "email": EMAIL, "phone": ""})
     status, _, body = _masked(monkeypatch, _one(lead, _note("joseph.test@exa" + ZWSP
                                                             + "mple.com")))
-    assert status == 502 and "exa" + ZWSP not in body.decode()
+    assert status == 200 and "exa" + ZWSP not in body.decode()
+    assert json.loads(body)["notesHidden"] == ["call-678"]
 
 
 def test_a_stored_address_with_an_invisible_character_is_still_the_leads_address(monkeypatch):
@@ -1168,6 +1261,117 @@ def test_a_request_id_is_kept_as_the_hook_stored_it(monkeypatch):
                                                 _note("Package sent", requestId=rid)))
     assert status == 200
     assert json.loads(body)["notes"]["call-678"]["entries"][0]["requestId"] == rid
+
+
+# ---- the integration review, 28 Sep 2026. Each of these fails on the code before it.
+
+@pytest.mark.parametrize("text", [
+    "joseph test" + " " * 20000 + "x",                      # the said-aloud rule's "at"
+    "joseph test at" + " " * 20000 + "x",
+    "joseph test (" + " " * 20000 + "x",
+    "a" * 20000,                                            # an address with no "@"
+    "a." * 10000,
+    "0400 " * 4000,
+])
+def test_a_long_run_is_masked_in_time_that_grows_with_its_length_not_its_square(text):
+    """"joseph test" and 6,000 spaces took 0.54 s, and 20,000 about six: two "\\s*" with only
+    an optional bracket between them split the spaces every way. A 16 KB run of letters with
+    no "@" was tried as an address from each of its characters."""
+    import time as _t
+    scrub = H._contact.Scrubber([(EMAIL, PHONE)])
+    start = _t.perf_counter()
+    scrub.free(text)
+    scrub.leaked({"x": text})
+    assert _t.perf_counter() - start < 0.5
+
+
+def test_the_address_is_still_found_where_it_was():
+    """The faster forms match what the slower ones did."""
+    scrub = H._contact.Scrubber([(EMAIL, PHONE)])
+    for text, want in [
+        ("Email joseph.test@example.com now", "Email [hidden] now"),
+        ("joseph test (at) example dot com", "[hidden]"),
+        ("joseph test [ at ] example", "[hidden]"),
+        ("joseph test @ example", "[hidden]"),
+        ("mail:-partner@elsewhere.net.", "mail:[hidden]."),
+        ("x" * 50 + "@example.com", "[hidden]"),
+    ]:
+        assert scrub.free(text) == want, text
+
+
+@pytest.mark.parametrize("text", [
+    "joseph test at noon", "joseph test at 5", "Joseph Test at the office", "joseph test at",
+])
+def test_said_aloud_needs_the_domain_after_its_at(text):
+    """"at" and then anything is not the address: the domain's first label must follow."""
+    assert H._contact.Scrubber([(EMAIL, PHONE)]).free(text) == text
+
+
+HF, HHF, CGJ, MVS, VS16 = chr(0x3164), chr(0xFFA0), chr(0x034F), chr(0x180B), chr(0xFE0F)
+
+
+@pytest.mark.parametrize("text", [
+    "0400" + HF + "111" + HF + "678",                        # a Hangul filler is a LETTER
+    "0400" + HHF + "111 678",
+    "04" + chr(0x115F) + "00 111 678",
+    "0400" + CGJ + "111" + CGJ + "678",
+    "0400 1" + MVS + "11 678",
+    "0400" + VS16 + "111" + VS16 + "678",                    # a variation selector on a digit
+    "joseph" + HF + ".test@example.com",
+    "joseph.test@exa" + CGJ + "mple.com",
+    "0411" + HF + "222" + HF + "333",                        # someone else's: the generic rule
+])
+def test_the_other_characters_that_draw_nothing_do_not_walk_past_the_masking(monkeypatch, text):
+    """Default_Ignorable_Code_Point, beyond the format characters: the Hangul fillers are
+    letters, so the digits either side were two numbers to every rule."""
+    assert H._contact.Scrubber([(EMAIL, PHONE)]).free(text) == "[hidden]", repr(text)
+    status, _, body = _masked(monkeypatch, _one(copy.deepcopy(CONTACT_LEAD),
+                                                _note("Sent " + text)))
+    assert status == 200, body[:300]
+    assert _note_text(body) == "Sent [hidden]"
+
+
+def test_an_emojis_variation_selector_is_kept(monkeypatch):
+    """U+FE0F makes U+2764 the red heart, and a keycap needs it: kept, except between two
+    ASCII characters."""
+    text = "Loved Lot 12 " + chr(0x2764) + VS16 + ", keen on 3" + VS16 + chr(0x20E3) + " beds"
+    assert H._contact.plain(text) == text
+    assert H._contact.Scrubber([(EMAIL, PHONE)]).free(text) == text
+    assert H._contact.plain("a" + VS16 + "b") == "ab"
+
+
+@pytest.mark.parametrize("text", [
+    "joseph.test@exa" + chr(0x202E) + "mple.com",            # right-to-left override
+    chr(0x2066) + "joseph.test@example.com" + chr(0x2069),   # an isolate around it
+    "joseph.test" + chr(0x061C) + "@example.com",            # the Arabic letter mark
+    "0400" + chr(0x2067) + "111" + chr(0x2069) + "678",
+])
+def test_a_bidi_control_inside_an_address_or_number_does_not_hide_it(text):
+    assert H._contact.Scrubber([(EMAIL, PHONE)]).free(text) == "[hidden]", repr(text)
+
+
+def test_the_name_fields_lose_invisible_characters_before_their_rules(monkeypatch):
+    """customer.name and brief.client_name have rules of their own (Scrubber.name): they
+    too see the text without its zero-width characters."""
+    lead = copy.deepcopy(CONTACT_LEAD)
+    lead["customer"]["name"] = "0400" + ZWSP + "111" + ZWSP + "678"
+    lead["brief"]["client_name"] = "joseph.test@exa" + HF + "mple.com"
+    status, _, body = _masked(monkeypatch, _one(lead))
+    assert status == 200 and _leaks(body) == []
+    got = json.loads(body)["leads"][0]
+    assert "maskFailed" not in got
+    assert got["customer"]["name"] == "[hidden]" and got["brief"]["client_name"] == "[hidden]"
+
+
+def test_the_second_look_checks_the_name_fields_too(monkeypatch):
+    """The name half of the second look (leaked(names, said=False)): were Scrubber.name ever
+    to stop hiding the number, the lead is cut down rather than showing it."""
+    monkeypatch.setattr(H._contact.Scrubber, "name", lambda self, text: text)
+    lead = copy.deepcopy(CONTACT_LEAD)
+    lead["customer"]["name"] = "Joseph 0400 111 678"
+    status, _, body = _masked(monkeypatch, _one(lead))
+    assert status == 200 and _leaks(body) == []
+    assert json.loads(body)["leads"][0]["maskFailed"] is True
 
 
 @pytest.mark.parametrize("stale_before", [1, 3])

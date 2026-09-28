@@ -1865,10 +1865,28 @@ console.log("\n--- notes and links per lead ---");
   check("unreachable: sent once more, automatically, with the same requestId",
     sent.length === n6 + 2 && ridAt(n6) !== null
     && JSON.stringify(sent[n6]) === JSON.stringify(sent[n6 + 1]), JSON.stringify(sent.slice(n6)));
-  check("unreachable: could not confirm, press Refresh to check, and the note is kept",
-    msg.textContent === "Could not confirm this was saved: the dashboard could not be reached. Press Refresh to check "
-      + "before saving it again. What you typed is still here."
+  check("unreachable: could not confirm, press Save again, and the note is kept",
+    msg.textContent === "Could not confirm this was saved: the dashboard could not be reached. Press Save again: "
+      + "if it did arrive, it will not be saved twice. What you typed is still here."
     && /err/.test(msg.className) && ta.value === "Second consultant typed this" && save.disabled === false, msg.textContent);
+  // 28 Sep review: "press Save again" is only safe if it is the same request. The same words
+  // pressed again carry the id of the press that could not be confirmed; changed words do not.
+  const n6b = sent.length;
+  await s.api.hlSaveNote(0);
+  check("Save again after 'could not confirm': the same requestId as the press before",
+    sent.length === n6b + 2 && ridAt(n6b) === ridAt(n6) && ridAt(n6b + 1) === ridAt(n6),
+    JSON.stringify(sent.slice(n6).map(x => x.requestId)));
+  ta.value = "Second consultant typed this, edited";
+  const n6c = sent.length;
+  await s.api.hlSaveNote(0);
+  check("an edited note after 'could not confirm' is a new request",
+    ridAt(n6c) !== null && ridAt(n6c) !== ridAt(n6), JSON.stringify([ridAt(n6), ridAt(n6c)]));
+  s.api.hlPickAction(0, "package_sent");
+  const n6d = sent.length;
+  await s.api.hlSaveNote(0);
+  check("the same words with another action are a new request too",
+    ridAt(n6d) !== null && ridAt(n6d) !== ridAt(n6c), JSON.stringify([ridAt(n6c), ridAt(n6d)]));
+  s.api.hlPickAction(0, "package_sent");
   let drops = 1;
   notesReply = () => {
     if (drops-- > 0) throw new TypeError("Failed to fetch");
@@ -1889,7 +1907,7 @@ console.log("\n--- notes and links per lead ---");
   // AN ANSWER THAT LEAVES IT OPEN (28 Sep). "Not saved" here sent the consultant to Save again
   // over a note that was stored, and it was stored twice. None of these is retried: the
   // server answered, and what it said is shown.
-  const unsureSaid = t => /^Could not confirm this was saved: .+[^.]\. Press Refresh to check before saving it again\. What you typed is still here\.$/.test(t);
+  const unsureSaid = t => /^Could not confirm this was saved: .+[^.]\. Press Save again: if it did arrive, it will not be saved twice\. What you typed is still here\.$/.test(t);
   ta.value = "Maybe saved";
   for (const [label, answer] of [
     ["the hook's 502 (reload the lead to see whether it was saved)", () => reply(502, { status: "error",
@@ -1904,7 +1922,7 @@ console.log("\n--- notes and links per lead ---");
     notesReply = answer;
     const k = sent.length;
     await s.api.hlSaveNote(0);
-    check("may have saved, " + label + ": could not confirm, press Refresh -- never 'Not saved' -- and the note is kept",
+    check("may have saved, " + label + ": could not confirm, press Save again -- never 'Not saved' -- and the note is kept",
       unsureSaid(msg.textContent) && !/Not saved/i.test(msg.textContent) && /err/.test(msg.className)
       && ta.value === "Maybe saved" && sent.length === k + 1, msg.textContent);
   }
@@ -1964,6 +1982,19 @@ console.log("\n--- notes and links per lead ---");
     && sent.slice(0, nLink).every(x => x.requestId !== ridAt(nLink)), JSON.stringify(sent[nLink]));
   check("the new link is drawn, and the boxes are emptied",
     links.innerHTML.includes('href="https://drive.google.com/drive/folders/xyz?usp=sharing"') && url.value === "" && lab.value === "");
+  url.value = "https://drive.google.com/drive/folders/abc";
+  notesReply = () => { throw new TypeError("Failed to fetch"); };
+  const nL2 = sent.length;
+  await s.api.hlAddLink(0);
+  check("a link that could not be confirmed: press Add link again, and the link is kept",
+    msg.textContent === "Could not confirm this was saved: the dashboard could not be reached. Press Add link again: "
+      + "if it did arrive, it will not be saved twice. What you typed is still here."
+    && url.value === "https://drive.google.com/drive/folders/abc", msg.textContent);
+  await s.api.hlAddLink(0);
+  check("Add link again after 'could not confirm': the same requestId",
+    sent.length === nL2 + 4 && ridAt(nL2) !== null && ridAt(nL2 + 2) === ridAt(nL2) && ridAt(nL2) !== ridAt(nLink),
+    JSON.stringify(sent.slice(nL2).map(x => x.requestId)));
+  url.value = "";
   check("hlLinkToKeep: http(s) only, no credentials",
     api.hlLinkToKeep("https://a.example/x") === "https://a.example/x" && api.hlLinkToKeep("data:text/html,x") === ""
     && api.hlLinkToKeep("https://a:b@a.example/") === "" && api.hlLinkToKeep("https://a@a.example/") === "");
@@ -2098,6 +2129,52 @@ console.log("\n--- notes and links per lead ---");
     && !content.innerHTML.includes("No notes yet."));
 }
 {
+  // 28 Sep integration review: ONE lead the server could not mask is cut down on its own
+  // (api/_contact.py hard_masked: maskFailed) and its notes left out (notesHidden), instead of
+  // a 502 that took the whole tab away. The page says what is missing and why, for that lead
+  // only; every other lead is drawn as usual.
+  const s = sandbox(undefined, { localStorage: memoryStorage() });
+  const content = s.el("hotLeadsContent"), badge = s.el("hotLeadsBadge"); s.el("hotLeadsRefresh");
+  const cut = { callId: "call-cut", channel: "vapi", grade: "hot", createdAt: "2026-09-28T01:02:03.000Z",
+                kommo: { leadUrl: "https://spb.kommo.com/leads/detail/21345678" },
+                customer: { name: "[hidden]", email: "", phone: "", phoneLast3: "678", hasEmail: true, hasPhone: true },
+                maskFailed: true };
+  const ok = clean({ callId: "call-ok", createdAt: "2026-09-14T00:00:00Z",
+                     customer: { name: "Jo Citizen", email: "", phone: "", phoneLast3: "678", hasEmail: true, hasPhone: true } });
+  s.respond(async () => reply(200, { status: "success", contact: "masked", contactUnlock: "password",
+    leads: [cut, ok], notes: {}, notesErrors: [], notesHidden: ["call-cut"] }));
+  let threw = null;
+  try { await s.api.loadHotLeads(); } catch (e) { threw = e; }
+  const h = content.innerHTML;
+  const card0 = h.slice(h.indexOf('id="hlCard-0"'), h.indexOf('id="hlCard-1"'));
+  const card1 = h.slice(h.indexOf('id="hlCard-1"'));
+  check("a cut-down lead: both leads are listed", !threw && /^2 leads/.test(badge.textContent) && card0 && card1,
+    threw ? "threw " + threw : badge.textContent);
+  check("... the cut-down one says why most of it is missing, and keeps what it has",
+    card0.includes("could not be shown with its contact details hidden") && card0.includes("Mobile ending 678")
+    && card0.includes("Open in Kommo") && card0.includes("&#91;hidden&#93;") === false && card0.includes("[hidden]"),
+    card0.slice(0, 600));
+  check("... its notes are said to need the password, not to be missing or unreadable",
+    card0.includes("shown only with the contact-details password") && !card0.includes("No notes yet.")
+    && !card0.includes("could not be read just now"));
+  check("... and the other lead says neither",
+    !card1.includes("could not be shown with its contact details hidden")
+    && !card1.includes("shown only with the contact-details password") && card1.includes("No notes yet."));
+  auditMarkup("a cut-down lead: markup", h);
+  // A save on that lead that comes back masked and whole: its notes are shown from then on.
+  s.respond(async (url) => url === "/api/lead_notes"
+    ? reply(200, { status: "success", callId: "call-cut", notes: { links: [], entries: [
+        { id: "n9", at: "2026-09-28T02:00:00Z", by: "Coleen", action: "package_sent", text: "Package sent" }] } })
+    : reply(200, { status: "success", contact: "masked", leads: [cut, ok] }));
+  s.el("hlNoteText-0", { value: "Package sent" }); s.el("hlNoteMsg-0");
+  const list0 = s.el("hlNoteList-0");
+  await s.api.hlSaveNote(0);
+  check("a masked answer to a save shows that lead's notes", list0.innerHTML.includes("Package sent"), list0.innerHTML.slice(0, 200));
+  // The notice belongs to the masked view: the full view never says it, whatever a record holds.
+  out = api.hlLeadCard(cut, 0, false, { contact: "full" });
+  check("the full view never draws the cut-down notice", !out.includes("could not be shown with its contact details hidden"));
+}
+{
   // The requestId comes from the browser's crypto when it has one (the sandbox above has none,
   // so it used the fallback): the same shape either way.
   const s = sandbox(undefined, { localStorage: memoryStorage(), crypto: globalThis.crypto });
@@ -2116,6 +2193,16 @@ console.log("\n--- notes and links per lead ---");
   check("with crypto: a 32-hex requestId, fresh for each press",
     sent.length === 2 && sent.every(x => /^[0-9a-f]{32}$/.test(x.requestId)) && sent[0].requestId !== sent[1].requestId,
     JSON.stringify(sent.map(x => x.requestId)));
+  // "Package sent" twice, a week apart, is two notes: once one is confirmed its id is dropped,
+  // so the same action pressed again is a new request, not a duplicate the hook would skip.
+  ta.value = "";
+  s.api.hlPickAction(0, "package_sent");
+  await s.api.hlSaveNote(0);
+  s.api.hlPickAction(0, "package_sent");
+  await s.api.hlSaveNote(0);
+  check("the same quick action saved twice is two requests",
+    sent.length === 4 && sent[2].action === "package_sent" && sent[3].action === "package_sent"
+    && sent[2].requestId !== sent[3].requestId, JSON.stringify(sent.slice(2)));
 }
 
 // ------------------------------------------------------------------ the page itself

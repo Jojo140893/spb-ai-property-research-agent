@@ -28,7 +28,9 @@ THE UNLOCK COOKIE, spb_contact=<exp>.<b64url HMAC-SHA256(SPB_CONTACT_PASSWORD, "
     so with no password there is nothing to unlock with and everyone gets the masked view.
 
 WHAT THE MASKED VIEW HIDES (mask_hot_leads, mask_notes_answer). Fail closed throughout: a shape
-this file does not recognise is an error the caller turns into a 502, never the raw body.
+this file does not recognise is an error the caller turns into a 502, never the raw body; ONE
+lead, or one lead's notes, that cannot be made safe is cut down or left out on its own
+(hard_masked, notesHidden), so it never takes the other leads with it.
   * customer.email and customer.phone become "", with phoneLast3 (the last 3 digits, only when
     the number has at least 6) and hasEmail / hasPhone in their place.
   * recordingUrl becomes "": the recording is the caller saying their own number.
@@ -42,8 +44,9 @@ this file does not recognise is an error the caller turns into a 502, never the 
     appointment) lose only the lead's own email and phone. The generic digit rule would break
     them: a Kommo lead id is 8 digits and an ISO timestamp is 8 digits with dashes.
   * A saved link is kept whole or hidden whole (see _scrub_url).
-  * Before any of it, every string loses its invisible format characters (see plain()), so a
-    zero-width space pasted into a number or an address cannot walk it past the rules.
+  * Before any of it, every string loses the characters that draw nothing (see plain()), so a
+    zero-width space or a Hangul filler pasted into a number or an address cannot walk it past
+    the rules.
 """
 import base64
 import hashlib
@@ -143,20 +146,35 @@ def authorised(cookie_header, now=None):
 # it stores -- the rule the two projects share -- and this is the server's copy of it, run on
 # every string before any pattern here sees it, so a record stored before the hook's rule is
 # masked the same way.
-_ZWJ = "‍"
+_ZWJ = chr(0x200D)                    # kept ASCII: see _SEP_CHARS
 # The one format character kept: the zero-width joiner holds an emoji together (a family, a
 # flag) and a note may carry one. Between two ASCII characters it joins nothing any script
 # uses, so there it goes too: "joseph.test@exam", a U+200D, "ple.com" looks exactly like the
-# address and would match none of the rules.
-_ASCII_ZWJ = re.compile(r"(?<=[\x00-\x7f])" + _ZWJ + r"+(?=[\x00-\x7f])")
+# address and would match none of the rules (_ASCII_KEPT, below).
+# The other characters Unicode says draw nothing (Default_Ignorable_Code_Point) that are not
+# format characters, so the rule above let them through (28 Sep 2026, review): the combining
+# grapheme joiner, the Hangul fillers -- which are LETTERS, so "0400", U+3164, "111" was two
+# numbers to every rule here -- the Khmer inherent vowels, the Mongolian variation selectors,
+# and the unassigned ranges kept for more of the same. Written as ranges, not a category:
+# Python's unicodedata has no Default_Ignorable property. The variation selectors U+FE00-FE0F
+# are kept, as the joiner is, because an emoji needs one ("red heart" is U+2764 U+FE0F); and,
+# as the joiner, not between two ASCII characters, where they select nothing.
+_IGNORABLE = frozenset(
+    [0x034F, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x180B, 0x180C, 0x180D, 0x180F, 0x2065, 0x3164,
+     0xFFA0] + list(range(0xFFF0, 0xFFF9)) + list(range(0xE0000, 0xE1000)))
+_VS = "".join(chr(c) for c in range(0xFE00, 0xFE10))
+_ASCII_KEPT = re.compile(r"(?<=[\x00-\x7f])[" + _ZWJ + _VS + r"]+(?=[\x00-\x7f])")
 
 
 def plain(text):
-    """`text` without Unicode format characters (category Cf), except an emoji's joiner."""
+    """`text` without the characters that draw nothing: Unicode format characters (category
+    Cf) and the rest of Default_Ignorable_Code_Point, except an emoji's joiner and variation
+    selectors -- and those too between two ASCII characters."""
     if text.isascii():
-        return text                          # no format character is ASCII: the usual case
-    kept = "".join(ch for ch in text if ch == _ZWJ or unicodedata.category(ch) != "Cf")
-    return _ASCII_ZWJ.sub("", kept) if _ZWJ in kept else kept
+        return text                          # none of them is ASCII: the usual case
+    kept = "".join(ch for ch in text if ch == _ZWJ or ch in _VS
+                   or (unicodedata.category(ch) != "Cf" and ord(ch) not in _IGNORABLE))
+    return _ASCII_KEPT.sub("", kept) if (_ZWJ in kept or any(v in kept for v in _VS)) else kept
 
 
 # Between two digits of a phone number: a space (a no-break one too), a dash (any of the
@@ -181,7 +199,11 @@ _OWN_SEP = r"[\W_]{0,10}"
 _PHONE_SHAPED = re.compile(
     r"(?<![\d$])(?<![\d$][" + _SEP_CHARS + r"])(?!\d{4}-[01]\d-[0-3]\d(?!\d))\+?\d(?:"
     + _SEP + r"\d){7,}")
-_EMAIL_SHAPED = re.compile(r"[\w.%+\-]+@[\w\-]+(?:\.[\w\-]+)+")
+# Tried only at the start of a run of address characters (28 Sep 2026, review): a match that
+# starts inside a run can always start at the run's first character instead, so this finds
+# the same addresses -- but without it, a 16 KB run with no "@" in it was tried from every
+# one of its characters, and the time grew with the square of its length.
+_EMAIL_SHAPED = re.compile(r"(?<![\w.%+\-])[\w.%+\-]+@[\w\-]+(?:\.[\w\-]+)+")
 # In a URL, only a number in an Australian phone's own shape: national (0X XXXX XXXX),
 # international (61X XXXX XXXX) or anything after a "+". A listing's id -- 9 digits on
 # realestate.com.au, 10 starting 20 on domain.com.au -- and a Drive id's digits are not.
@@ -193,8 +215,10 @@ _SAID = (r"(?:\s*(?:[.@_+\-]|\bdot\b|\bat\b|\bunderscore\b|\bdash\b|\bhyphen\b|\
 # bracketed or not ("joseph (at) example"). REQUIRED since 28 Sep 2026 (review): while it was
 # optional, the address joseph@shahid.com.au read its owner's own name, "Joseph Shahid", as
 # the address said aloud, and hid the name -- the one thing a masked viewer tells two callers
-# apart by.
-_AT = r"\s*[\[(]?\s*(?:@|\bat\b)\s*[\])]?\s*"
+# apart by. Never two "\s*" side by side with only an optional bracket between them (28 Sep
+# 2026, review): "joseph test" and 6,000 spaces took half a second, growing with the square
+# of the run, because the spaces could be split between the two in every way.
+_AT = r"\s*(?:[\[(]\s*)?(?:@|\bat\b)(?:\s*[\])])?\s*"
 
 
 def digits(value):
@@ -345,10 +369,10 @@ class Scrubber:
         """True when the lead's own email or phone is still anywhere in `value`.
 
         The walk above is the masking; this is a second, independent look at the result, so a
-        field the walk ever misses is a 502 rather than a published number. Every string under
-        `value` (keys too) and every number is looked at on its own, after plain(), three
-        ways: the patterns the masking uses, the address as a plain substring, and the
-        DIGITS (_digits_leak). said=False leaves out the address's said-aloud spellings, for
+        field the walk ever misses cuts that lead down (hard_masked) rather than publishing a
+        number. Every string under `value` (keys too) and every number is looked at on its
+        own, after plain(), three ways: the patterns the masking uses, the address as a plain
+        substring, and the DIGITS (_digits_leak). said=False leaves out the address's said-aloud spellings, for
         the two name fields that are masked without them (Scrubber.name).
         """
         pattern = self._own if said else self._written
@@ -371,8 +395,8 @@ class Scrubber:
         it. A full number's core is its 9-digit national number without the 0, and its 11-digit
         61 form contains it, so one look covers both. A core shorter than 9 digits (a number
         stored cut short) is looked for only as an unbroken run of digits: 6 given digits in
-        order turn up by chance in a note full of dates and prices, and a false match here is a
-        502 for the whole tab.
+        order turn up by chance in a note full of dates and prices, and a false match here cuts
+        a lead down for nothing.
         """
         if not self.cores:
             return False
@@ -456,7 +480,7 @@ def mask_lead(lead, scrub):
         raise MaskError("a lead is not an object")
     out = {}
     for k, v in lead.items():
-        if k == "callId":
+        if k == "callId" and isinstance(v, str):
             out[k] = v                        # the key the notes and the page hang on
         elif k == "customer":
             out[k] = _mask_customer(v, scrub)
@@ -476,14 +500,60 @@ def mask_lead(lead, scrub):
             out[scrub.free(k)] = scrub.tree(v, scrub.free)
     # The second look. The name fields are set aside and looked at without the said-aloud
     # spellings they were masked without, or "Joseph at Shahid Realty" -- a name kept on
-    # purpose -- would fail the whole tab.
-    body, names = {k: v for k, v in out.items() if k != "callId"}, []
+    # purpose -- would cut the lead down.
+    body = {k: v for k, v in out.items() if not (k == "callId" and isinstance(v, str))}
+    names = []
     for part, key in _NAMES:
         if isinstance(body.get(part), dict) and key in body[part]:
             body[part] = dict(body[part])
             names.append(body[part].pop(key))
     if scrub.leaked(body) or scrub.leaked(names, said=False):
         raise MaskError("a lead's own contact details survived the masking")
+    return out
+
+
+# 28 Sep 2026 (review): ONE LEAD, NOT THE TAB. A lead the masking could not make safe -- its
+# own number still found by the second look (a spelling no rule lists, "0400 or 111 then
+# 678"), or a customer that is not an object -- was a 502 for the whole answer, so one odd
+# record took the Leads tab away from everyone without the password. Now that lead alone is
+# cut down to the fields below, each kept only when its value is one this file knows the
+# whole shape of, and says so (maskFailed); every other lead is shown as usual. Its notes are
+# not sent either (notesHidden): they would be masked with details that could not be trusted.
+_GRADES = frozenset({"hot", "warm", "nurture"})
+_CHANNELS = frozenset({"vapi", "whatsapp"})
+_ISO_TIME = re.compile(r"\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d(?:\.\d{1,6})?"
+                       r"(?:Z|[+-][0-2]\d:[0-5]\d)?")
+_KOMMO_LEAD_URL = re.compile(r"https://[a-z0-9-]+\.kommo\.com/leads/detail/\d{1,12}")
+
+
+def hard_masked(lead, contact):
+    """What is left of a lead the masking could not make safe. `contact` is its (email,
+    phone), or None when even that could not be read."""
+    email, phone = contact if contact is not None else ("", "")
+    scrub = Scrubber([contact] if contact is not None else [])
+    out = {}
+    if isinstance(lead.get("callId"), str):
+        out["callId"] = lead["callId"]
+    kept = {}
+    if lead.get("channel") in _CHANNELS:
+        kept["channel"] = lead["channel"]
+    if "grade" in lead:                       # an absent grade is an old hot call: stays absent
+        kept["grade"] = lead["grade"] if lead["grade"] in _GRADES else ""
+    if lead.get("test") is True:
+        kept["test"] = True
+    created = lead.get("createdAt")
+    if isinstance(created, str) and _ISO_TIME.fullmatch(created):
+        kept["createdAt"] = created
+    kommo = lead.get("kommo")
+    url = kommo.get("leadUrl") if isinstance(kommo, dict) else None
+    if isinstance(url, str) and _KOMMO_LEAD_URL.fullmatch(url):
+        kept["kommo"] = {"leadUrl": url}      # Coleen can still open the lead in Kommo
+    # Their shapes hold no letters, but the digits of a date or an id could, by chance, be
+    # the lead's 9: each is looked at once more on its own.
+    out.update({k: v for k, v in kept.items() if not scrub.leaked(v)})
+    out["customer"] = {"name": HIDDEN, "email": "", "phone": "", "phoneLast3": last3(phone),
+                       "hasEmail": bool(email.strip()), "hasPhone": bool(digits(phone))}
+    out["maskFailed"] = True
     return out
 
 
@@ -553,20 +623,37 @@ def mask_hot_leads(doc):
     leads = doc.get("leads")
     if not isinstance(leads, list):
         raise MaskError("the answer has no list of leads")
-    per_lead, everyone = {}, []
+    contacts = []
     for lead in leads:
         if not isinstance(lead, dict):
             raise MaskError("a lead is not an object")
-        contact = _lead_contact(lead)
-        everyone.append(contact)
-        cid = lead.get("callId")
-        if isinstance(cid, str):
+        try:
+            contacts.append(_lead_contact(lead))
+        except MaskError:
+            contacts.append(None)             # a customer that is not an object: hard_masked
+    anyone = Scrubber([c for c in contacts if c is not None])
+    # Each lead on its own (hard_masked). A callId any of whose leads was cut down is
+    # "untrusted": its notes are not sent.
+    masked, per_lead, untrusted = [], {}, set()
+    for lead, contact in zip(leads, contacts):
+        cid = lead.get("callId") if isinstance(lead.get("callId"), str) else None
+        one = None
+        if contact is not None:
+            try:
+                one = mask_lead(lead, Scrubber([contact]))
+            except MaskError:
+                one = None
+        if one is None:
+            one = hard_masked(lead, contact)
+            if cid is not None:
+                untrusted.add(cid)
+        elif cid is not None:
             per_lead.setdefault(cid, []).append(contact)
-    anyone = Scrubber(everyone)
-    out = {}
+        masked.append(one)
+    out, hidden = {}, []
     for k, v in doc.items():
         if k == "leads":
-            out[k] = [mask_lead(lead, Scrubber([_lead_contact(lead)])) for lead in v]
+            out[k] = masked
         elif k == "notes":
             if v is None:
                 out[k] = None
@@ -575,13 +662,29 @@ def mask_hot_leads(doc):
                 raise MaskError("notes is not an object")
             # A note is masked with ITS lead's details; notes for a lead not on this page
             # (the hook should never send one) with every returned lead's. A null -- the
-            # old hook's "could not read" -- is already gone (unreadable_notes_absent).
-            out[k] = {cid: mask_notes(n, Scrubber(per_lead[cid]) if cid in per_lead else anyone)
-                      for cid, n in v.items()}
+            # old hook's "could not read" -- is already gone (unreadable_notes_absent). One
+            # lead's notes that cannot be masked are left out and named in notesHidden, as
+            # a lead is cut down alone: never a 502 for everyone.
+            out[k] = {}
+            for cid, n in v.items():
+                if anyone.leaked(cid):
+                    continue                  # a key that is a contact detail is no callId
+                if cid in untrusted:
+                    hidden.append(cid)
+                    continue
+                try:
+                    out[k][cid] = mask_notes(n, Scrubber(per_lead[cid]) if cid in per_lead
+                                             else anyone)
+                except MaskError:
+                    hidden.append(cid)
         elif k in ("status", "count", "notesErrors"):
             out[k] = anyone.tree(v, anyone.own)
+        elif k == "notesHidden":
+            continue                          # this file's to say, never the hook's
         else:
             out[anyone.free(k)] = anyone.tree(v, anyone.free)
+    if hidden:
+        out["notesHidden"] = hidden
     return out
 
 

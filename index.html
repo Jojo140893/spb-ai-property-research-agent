@@ -3260,6 +3260,9 @@ python state_sync.py push</pre>
     let HL_ACCESS = { contact: 'masked', unlock: 'not-configured' };
     let HL_NOTES = new Map();
     let HL_NOTES_ERR = new Set();
+    // callIds whose notes the server left out of the masked view: they held a contact detail
+    // it could not hide (api/_contact.py notesHidden). Not "could not be read", not "none".
+    let HL_NOTES_HIDDEN = new Set();
     let HL_LIVE = new Map();
     const HL_DRAFTS = new Map();
     const HL_NOTE_BUSY = new Set();
@@ -3488,7 +3491,7 @@ python state_sync.py push</pre>
         }
         const d = (v.draft && typeof v.draft === 'object') ? v.draft : {};
         // Notes that could not be read are not "No notes yet.": the notice says what is known.
-        const unread = !!v.notesError && !v.notes;
+        const unread = (!!v.notesError || !!v.notesHidden) && !v.notes;
         const action = HL_NOTE_ACTIONS.includes(d.action) ? d.action : '';
         const chips = HL_NOTE_ACTIONS.map(a => {
             const on = a === action;
@@ -3498,6 +3501,9 @@ python state_sync.py push</pre>
         return `<div class="hl-notes" id="hlNotes-${n}">${head}`
              + (v.notesError ? '<div class="hl-notice hl-notes-err">The notes saved for this lead could '
                  + 'not be read just now. They are not lost: press Refresh to try again.</div>' : '')
+             + (v.notesHidden && !v.notes ? '<div class="hl-notice hl-notes-err">The notes saved for this '
+                 + 'lead hold contact details that could not be hidden, so they are shown only with the '
+                 + 'contact-details password.</div>' : '')
              + `<div class="hl-acts" role="group" aria-label="What was done">${chips}</div>`
              + `<textarea class="hl-note-input" id="hlNoteText-${n}" rows="2" maxlength="${HL_NOTE_MAX}"`
              + ` aria-label="Note for this lead" placeholder="What was done, or what happens next">`
@@ -3524,6 +3530,7 @@ python state_sync.py push</pre>
             contact: HL_ACCESS.contact === 'full' ? 'full' : 'masked',
             notes: (id && HL_NOTES.has(id)) ? HL_NOTES.get(id) : null,
             notesError: !!id && HL_NOTES_ERR.has(id),
+            notesHidden: !!id && HL_NOTES_HIDDEN.has(id),
             draft: (id && HL_DRAFTS.has(id)) ? HL_DRAFTS.get(id) : null,
         };
     }
@@ -3612,6 +3619,9 @@ python state_sync.py push</pre>
                 ${when ? `<span class="hl-when">${ch === 'whatsapp' ? 'Qualified' : 'Called'} ${esc(when)}</span>` : ''}
             </div>
             <div class="hl-contact">${contact}</div>
+            ${!full && L.maskFailed === true ? '<div class="hl-notice hl-mask-failed">Part of this lead could not '
+                + 'be shown with its contact details hidden, so only its grade, date and Kommo link are here. '
+                + 'The contact-details password shows the rest.</div>' : ''}
             ${reason ? `<div class="hl-reason"><strong>${g ? 'Why ' + g : 'Grade reason'}:</strong> ${esc(reason)}</div>` : ''}
             ${hlAppointment(L.appointment, g)}
             ${hlBriefChips(L.brief)}
@@ -3831,6 +3841,8 @@ python state_sync.py push</pre>
                  unlock: data.contactUnlock === 'password' ? 'password' : 'not-configured',
                  notes: (data.notes && typeof data.notes === 'object' && !Array.isArray(data.notes)) ? data.notes : {},
                  notesErrors: (Array.isArray(data.notesErrors) ? data.notesErrors : [])
+                     .filter(x => typeof x === 'string' && x),
+                 notesHidden: (Array.isArray(data.notesHidden) ? data.notesHidden : [])
                      .filter(x => typeof x === 'string' && x) };
     }
 
@@ -3917,6 +3929,7 @@ python state_sync.py push</pre>
                           unlock: all.unlock };
             HL_NOTES = new Map();
             HL_NOTES_ERR = new Set();
+            HL_NOTES_HIDDEN = new Set();
             // A lead's notes that are there but are not a notes object (null is how the hook
             // said "could not be read" before 28 Sep; it now leaves the lead out of notes and
             // names it in notesErrors alone) are that same unreadable notice, never "No notes
@@ -3928,6 +3941,7 @@ python state_sync.py push</pre>
                     if (!HL_NOTES.has(id)) HL_NOTES.set(id, hlNotesOf(raw));
                 });
                 a.notesErrors.forEach(id => HL_NOTES_ERR.add(id));
+                a.notesHidden.forEach(id => HL_NOTES_HIDDEN.add(id));
             });
             HL_LIVE = new Map();
             HOT_LEADS_STATE = 'loaded';
@@ -4184,13 +4198,24 @@ python state_sync.py push</pre>
     // ONE PRESS OF SAVE OR ADD, ONE requestId (28 Sep 2026). The hook keeps it on the note or
     // link it adds and, sent the same one again for that lead, answers with the notes as they
     // stand and adds nothing. So the automatic retry in hlNotesPost cannot store one note
-    // twice, while a second press is a second note, as it should be. 32 hex characters: inside
-    // the hook's [A-Za-z0-9_-]{1,64}.
+    // twice, and neither can pressing Save again after "Could not confirm" (hlDraftRequestId);
+    // a note typed after one is saved is a new note. 32 hex characters: inside the hook's
+    // [A-Za-z0-9_-]{1,64}.
     function hlRequestId() {
         const bytes = new Uint8Array(16);
         try { crypto.getRandomValues(bytes); }
         catch (e) { for (let k = 0; k < bytes.length; k++) bytes[k] = Math.floor(Math.random() * 256); }
         return Array.from(bytes, x => x.toString(16).padStart(2, '0')).join('');
+    }
+    // ONE NOTE, ONE requestId UNTIL IT IS CONFIRMED (28 Sep 2026, review). A press whose answer
+    // left it open ("Could not confirm") keeps its id with the draft, so pressing Save again on
+    // the same words is the same request to the hook, which stores it at most once -- which is
+    // what makes "press Save again" safe to say. Change the note, its action or the link and it
+    // is a different one, with an id of its own; once one is confirmed saved, its id is dropped.
+    function hlDraftRequestId(d, key, same) {
+        const sig = JSON.stringify(same);
+        if (!d[key] || d[key].sig !== sig) d[key] = { rid: hlRequestId(), sig };
+        return d[key].rid;
     }
 
     // WHETHER A CHANGE THAT WAS NOT CONFIRMED MAY STILL HAVE BEEN MADE (28 Sep 2026). "Not
@@ -4216,9 +4241,12 @@ python state_sync.py push</pre>
         const id = body.callId;
         const kept = kind === 'remove' ? '' : ' What you typed is still here.';
         // Said when the answer leaves open whether the change was made: never "Not saved".
+        // Pressing Save or Add again resends this press's requestId (hlDraftRequestId), so a
+        // change that did arrive is not stored twice.
         const unsure = why => (kind === 'remove'
             ? `Could not confirm the removal: ${why}. Press Refresh to check whether it is gone.`
-            : `Could not confirm this was saved: ${why}. Press Refresh to check before saving it again.`) + kept;
+            : `Could not confirm this was saved: ${why}. Press ${kind === 'link' ? 'Add link' : 'Save'} again:`
+              + ' if it did arrive, it will not be saved twice.') + kept;
         if (HL_NOTE_BUSY.has(id)) {
             hlNoteSay(i, 'Still saving the last change to this lead. Try again in a moment.', false);
             return false;
@@ -4263,6 +4291,7 @@ python state_sync.py push</pre>
             if (res.ok && data && data.status === 'success' && data.notes && typeof data.notes === 'object') {
                 HL_NOTES.set(id, hlNotesOf(data.notes));
                 HL_NOTES_ERR.delete(id);
+                HL_NOTES_HIDDEN.delete(id);          // the answer was masked and passed: shown
                 hlPaintNotes(j);
                 hlNoteSay(j, kind === 'remove' ? 'Removed.' : 'Saved.', false);
                 return true;
@@ -4309,8 +4338,9 @@ python state_sync.py push</pre>
         const by = hlByRead();
         const body = { callId: id, op: 'add_entry', action, text };
         if (by) body.by = by;
-        body.requestId = hlRequestId();          // this press's own: see hlRequestId
+        body.requestId = hlDraftRequestId(d, 'noteReq', [action, text]);
         if (!await hlNotesPost(i, body, 'note')) return false;
+        d.noteReq = null;
         d.text = '';
         d.action = '';
         const j = hlIndexOf(id);
@@ -4358,9 +4388,10 @@ python state_sync.py push</pre>
         const body = { callId: id, op: 'add_link', url };
         if (label) body.label = label;
         if (by) body.by = by;
-        body.requestId = hlRequestId();          // this press's own: see hlRequestId
-        if (!await hlNotesPost(i, body, 'link')) return false;
         const d = hlDraft(id);
+        body.requestId = hlDraftRequestId(d, 'linkReq', [url, label]);
+        if (!await hlNotesPost(i, body, 'link')) return false;
+        d.linkReq = null;
         d.url = '';
         d.label = '';
         const j = hlIndexOf(id);

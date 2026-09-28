@@ -328,8 +328,32 @@ MUTANTS = {
         "unreachable: could not confirm"),
     # (c) one requestId per press, the same one on the automatic retry.
     "no requestId is sent": (
-        "body.requestId = hlRequestId();", "",
+        "body.requestId = hlDraftRequestId(d, 'noteReq', [action, text]);", "",
         "carries a requestId"),
+    # 28 Sep review: "press Save again" after "could not confirm" must be the same request.
+    "Save again after an unconfirmed save is a new request": (
+        "if (!d[key] || d[key].sig !== sig) d[key] =", "d[key] =",
+        "Save again after 'could not confirm': the same requestId"),
+    "an edited note keeps the unconfirmed press's requestId": (
+        "if (!d[key] || d[key].sig !== sig) d[key] =", "if (!d[key]) d[key] =",
+        "an edited note after 'could not confirm' is a new request"),
+    "a confirmed note's requestId is kept for the next one": (
+        "        d.noteReq = null;\n", "",
+        "the same quick action saved twice is two requests"),
+    # One lead the server could not mask is cut down alone (maskFailed, notesHidden).
+    "a cut-down lead does not say why": (
+        "${!full && L.maskFailed === true ?", "${false ?",
+        "the cut-down one says why most of it is missing"),
+    "notes left out are drawn as no notes": (
+        "const unread = (!!v.notesError || !!v.notesHidden) && !v.notes;",
+        "const unread = !!v.notesError && !v.notes;",
+        "its notes are said to need the password"),
+    "notesHidden is not read from the answer": (
+        "a.notesHidden.forEach(id => HL_NOTES_HIDDEN.add(id));", "",
+        "its notes are said to need the password"),
+    "the unconfirmed wording sends the consultant to Refresh": (
+        "Press ${kind === 'link' ? 'Add link' : 'Save'} again:`", "Press Refresh to check before saving it again:`",
+        "unreachable: could not confirm, press Save again"),
     "every press sends the same requestId": (
         "return Array.from(bytes, x => x.toString(16).padStart(2, '0')).join('');", "return 'r1';",
         "a fresh requestId for every press of Save"),
@@ -344,7 +368,7 @@ MUTANTS = {
         "if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { HL_NOTES_ERR.add(id); return; }", "",
         "a null notes value is said to be unreadable"),
     "unreadable notes also say there are none": (
-        "const unread = !!v.notesError && !v.notes;", "const unread = false;",
+        "const unread = (!!v.notesError || !!v.notesHidden) && !v.notes;", "const unread = false;",
         "none says it has no notes"),
     # The server's half of the same finding, had it been the page's: a masked answer with
     # notesErrors taken as a failed answer loses every lead.

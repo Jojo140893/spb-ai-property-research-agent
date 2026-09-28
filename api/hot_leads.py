@@ -274,11 +274,12 @@ def fetch(limit=None, include_test=False, grade=None):
 def view(raw, cookie_header):
     """(http_status, body_bytes): the hook's 200 answer in the view this request may see.
 
-    FAILS CLOSED. Anything that goes wrong while masking -- a body that is not an object, a
-    lead that is not one, a lead's own number still found after the masking -- is a 502 that
-    says the leads were not shown, never the raw body: the tab says "could not load" and
-    nobody reads a number they were not meant to. The full view needs only the cookie; the
-    masked one needs every lead to pass through api/_contact.py.
+    FAILS CLOSED. An answer whose shape the masking does not know -- a body that is not an
+    object, no list of leads, a lead that is not an object -- is a 502 that says the leads
+    were not shown, never the raw body. ONE lead whose own number is still found after the
+    masking is cut down on its own (api/_contact.py hard_masked: grade, date and Kommo link,
+    maskFailed) and its notes left out (notesHidden), so it cannot take the others with it
+    (28 Sep 2026, review). The full view needs only the cookie.
     """
     try:
         doc = json.loads(raw.decode("utf-8"))
