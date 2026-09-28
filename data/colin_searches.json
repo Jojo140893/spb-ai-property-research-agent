@@ -2,7 +2,8 @@
   "about": [
     "Colin's searches, replayed every night after build_web and against the live API by search_regressions.py.",
     "Part C, 16 Sep 2026: Colin searched 'QLD under $750k' and was shown a Victorian lot filed as Queensland and a lot a later read said was On Hold, while three real Shape Homes lots in Walloon sat hidden. Each brief below is one of his searches or one of the form slips that turned a search into 0 results; 'expect' is what must hold for it.",
-    "Plan section 5 numbers the briefs (#1-#14); critique #20(d) adds QLD <= $800k. Critique #12 replaces #13's brief. No links, no client details: hashes are content_hash prefixes, the Dawn lots are named by estate, lot and price (critique #3: either twin may survive)."
+    "Plan section 5 numbers the briefs (#1-#14); critique #20(d) adds QLD <= $800k. Critique #12 replaces #13's brief. No links, no client details: hashes are content_hash prefixes, the Dawn lots are named by estate, lot and price (critique #3: either twin may survive).",
+    "28 Sep 2026: v2:43802e2d (18491, Howard lot 21, 'Available') is no longer in never_in_a_qld_search. It was listed because on 16/09 a LATER read of the same line (v2:d9553ad6, 15953) said On Hold -- a fact about the order of two reads, which the replay's sibling invariant checks from the data every night. G Developments' own list then read the lot 'Available' on 27/09 and 28/09, and the On Hold line was last seen 24/09, so the fixed entry failed 30 checks a night on a lot that is for sale again. 15953 stays listed: that capture is On Hold."
   ],
   "version": 1,
   "form": {
@@ -25,7 +26,6 @@
   },
   "never_in_a_qld_search": {
     "v2:1c5ca48e": "14905 Hattan lot 618: Wollert VIC filed QLD",
-    "v2:43802e2d": "18491 Howard lot 21: a later read says On Hold",
     "v2:d9553ad6": "15953 Howard lot 21: On Hold",
     "v2:d32b17a9": "9568 Windermere Mambourin: VIC, On Hold",
     "v2:50cabe9b": "9569 Windermere Mambourin: VIC, On Hold",

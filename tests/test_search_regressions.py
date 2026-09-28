@@ -171,9 +171,13 @@ def test_on_the_data_colin_searched_it_fails_naming_the_on_hold_lot(site):
     assert code == 1, out + err
     assert ("[FAIL] #1 qld_750k: sibling: shortlisted v2:43802e2d (id 18491) says 'Available' "
             "(15/09/2026), but v2:d9553ad6 (id 15953)") in out, out + err
-    for h, rid in (("v2:1c5ca48e", 14905), ("v2:43802e2d", 18491)):
-        assert "[FAIL] #1 qld_750k: %s (id %d) must never appear, and is in shortlist" % (
-            h, rid) in out, out
+    assert "[FAIL] #1 qld_750k: v2:1c5ca48e (id 14905) must never appear, and is in " \
+           "shortlist" in out, out
+    # 18491 is caught by the sibling invariant above -- the order of the two reads, checked
+    # from the data -- and no longer by a fixed entry in data/colin_searches.json: on 27/09
+    # and 28/09 the builder's list read it Available again, after the On Hold line was
+    # last seen on 24/09, and the fixed entry failed 30 checks a night on a lot for sale.
+    assert "v2:43802e2d (id 18491) must never appear" not in out, out
     warnings = [line for line in out.splitlines() if line.startswith("[WARN]")]
     assert any("v2:1c5ca48e (id 14905)" in w and "Wollert (VIC)" in w for w in warnings), out
     assert not any("v2:1c5ca48e" in line and "sibling" in line for line in out.splitlines())
