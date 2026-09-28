@@ -728,6 +728,59 @@
         .hl-recs-note { font-size: 0.82rem; color: var(--text-muted); margin: 0.2rem 0 0.5rem; }
         .hl-msg { font-size: 0.8rem; margin-top: 0.4rem; }
         .hl-msg-err { color: var(--rose-red); }
+        /* Coleen, 28 Sep 2026: contact details hidden until unlocked, the Research tab's
+           cards, ticks and report on every lead, and a lead's own notes and links. Every
+           row wraps, as above: a pasted Drive link is one long word. */
+        .hl-access { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem;
+                     margin: 0 0 0.9rem; padding: 0.6rem 0.8rem; border: 1px solid var(--border-light);
+                     border-radius: 8px; background: var(--bg-page); font-size: 0.84rem; }
+        .hl-access-state { color: var(--text-body); }
+        .hl-unlock { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin: 0; }
+        .hl-unlock input, .hl-by input, .hl-link-add input, .hl-note-input {
+            font: inherit; font-size: 0.84rem; padding: 0.4rem 0.55rem; min-width: 0; max-width: 100%;
+            border: 1px solid var(--border-strong); border-radius: 6px;
+            background: var(--surface-white); color: var(--text-body); }
+        .hl-unlock input { width: 14rem; }
+        .hl-by { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin-left: auto;
+                 color: var(--text-muted); }
+        .hl-by input { width: 11rem; }
+        .hl-access .hl-msg { flex-basis: 100%; margin-top: 0; }
+        .hl-access .hl-msg:empty, .hl-notes .hl-msg:empty { display: none; }
+        .hl-masked { color: var(--text-body); }
+        .hl-contact a.hl-mail-client { font-weight: 600; }
+        .hl-report-bar { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0 0 0.5rem; }
+        .hl-report-btn { border-color: var(--accent-blue); color: var(--accent-blue); font-weight: 600; }
+        .hl-report-bar [hidden] { display: none; }
+        .hl-pick { display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.78rem;
+                   color: var(--text-muted); cursor: pointer; }
+        .hl-rec-pick { margin: 0 0 0.25rem; }
+        .hl-live { display: flex; flex-direction: column; gap: 0.8rem; }
+        .hl-live-card { margin: 0; box-shadow: none; min-width: 0; overflow-wrap: anywhere; }
+        .hl-notes { margin: 0.9rem 0 0; padding-top: 0.8rem; border-top: 1px solid var(--border-light); }
+        .hl-notes-head { margin: 0 0 0.5rem; }
+        .hl-acts { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0 0 0.45rem; }
+        .hl-act { font-size: 0.78rem; padding: 0.3rem 0.65rem; border-radius: 999px; }
+        .hl-act.is-active { border-color: var(--accent-blue); background: var(--blue-light);
+                            color: var(--accent-blue); font-weight: 600; }
+        .hl-note-input { display: block; width: 100%; resize: vertical; }
+        .hl-note-row { margin-top: 0.4rem; }
+        .hl-note-list { display: flex; flex-direction: column; gap: 0.4rem; margin: 0.5rem 0; }
+        .hl-note { border: 1px solid var(--border-light); border-radius: 7px; padding: 0.45rem 0.6rem;
+                   font-size: 0.82rem; background: var(--bg-page); min-width: 0; }
+        .hl-note-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.6rem;
+                        color: var(--text-muted); font-size: 0.76rem; overflow-wrap: anywhere; }
+        .hl-note-action { font-weight: 700; color: var(--text-heading); }
+        .hl-note-text { margin-top: 0.25rem; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-body); }
+        .hl-note-link a { color: var(--accent-blue); font-weight: 600; font-size: 0.82rem; overflow-wrap: anywhere; }
+        .hl-note-x { margin-left: auto; background: none; border: 0; padding: 0; font: inherit;
+                     font-size: 0.76rem; color: var(--text-muted); text-decoration: underline; cursor: pointer; }
+        .hl-note-x:hover { color: var(--rose-red); }
+        .hl-notes-empty { font-size: 0.8rem; color: var(--text-muted); }
+        .hl-links-title { font-size: 0.72rem; font-weight: 700; text-transform: uppercase;
+                          color: var(--text-heading); margin-top: 0.6rem; }
+        .hl-link-add { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+        .hl-link-add input[type=url] { flex: 2 1 240px; }
+        .hl-link-add input[type=text] { flex: 1 1 150px; }
 
         .json-code {
             font-family: 'JetBrains Mono', monospace;
@@ -1105,6 +1158,15 @@
             Qualified <strong>WhatsApp</strong> leads from Kommo are listed in their own group,
             above Clare's callers; they are answered in chat, so there is no call recording
             and no summary to read.
+        </p>
+        <!-- Coleen, 28 Sep 2026: the Research tab's selection and report on every lead, notes
+             and links per lead, and contact details only for whoever holds the password. -->
+        <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">
+            Tick <strong>compare</strong> on a lead's buildings, saved or from a re-run, and
+            <strong>Open Report</strong> builds the same client report as Research &amp; Scoring,
+            for that client. Each lead keeps its own notes and links, which the whole team sees.
+            Contact details show only the last 3 digits of a mobile until they are unlocked
+            with the contact-details password.
         </p>
         <div id="hotLeadsContent" style="font-size:0.9rem;">Loading leads…</div>
     </div>
@@ -2971,8 +3033,14 @@ python state_sync.py push</pre>
 
     // One building, compact. The same fields a shortlist card carries, minus the scoring
     // matrix: this is a list to open a phone call with, not the research itself.
-    function hlRecCard(rec) {
+    //
+    // opts.lead (the lead's callId) adds the lead's own compare tick (Coleen, 28 Sep 2026:
+    // the Research tab's "property selection and reporting functionality" on every tab).
+    // These are the buildings the research picked ON THE DAY OF THE CALL; the same tick is
+    // on the full, live list a Re-run draws (hlLiveBlock), and both feed one report.
+    function hlRecCard(rec, opts) {
         const r = (rec && typeof rec === 'object') ? rec : {};
+        const pickFor = (opts && typeof opts === 'object' && typeof opts.lead === 'string') ? opts.lead : null;
         const txt = v => String(v ?? '').trim();
         const title = [txt(r.builder_name), txt(r.house_design)].filter(Boolean).join(' – ')
             || 'Builder not stated';
@@ -3007,6 +3075,7 @@ python state_sync.py push</pre>
         const pill = /condition/i.test(verdict) ? 'pill-conditions' : 'pill-recommend';
         const link = (r.source_link && typeof r.source_link === 'object') ? r.source_link : null;
         return `<div class="hl-rec">
+            ${pickFor === null ? '' : `<div class="hl-rec-pick">${leadPickBox(pickFor, r.content_hash, hlPicked(pickFor, r.content_hash))}</div>`}
             <div class="hl-rec-title">${esc(title)}</div>
             <div class="hl-rec-sub">${esc(txt(r.lot_address) || 'Address not stated')}${place ? ' &middot; ' + esc(place) : ''}</div>
             <div>${price
@@ -3025,7 +3094,9 @@ python state_sync.py push</pre>
         </div>`;
     }
 
-    function hlRecsBlock(recs, research) {
+    // opts.lead: drawn on a lead's card, so each building carries that lead's compare tick
+    // and the line saying these are the day-of-call picks (see hlRecCard).
+    function hlRecsBlock(recs, research, opts) {
         const list = (Array.isArray(recs) ? recs : []).slice(0, 3);
         const rs = (research && typeof research === 'object') ? research : {};
         const widened = String(rs.widened ?? '').trim();
@@ -3034,24 +3105,55 @@ python state_sync.py push</pre>
             return `<div class="hl-recs-note">${esc(message || 'No buildings were recommended for this brief.')}`
                  + (widened ? `<br>The search was widened: ${esc(widened)}` : '') + '</div>';
         }
+        const lead = (opts && typeof opts === 'object' && typeof opts.lead === 'string') ? opts.lead : null;
         return (widened ? `<div class="hl-recs-note">To find these the search was widened: ${esc(widened)}</div>` : '')
-             + `<div class="hl-recs">${list.map(r => hlRecCard(r)).join('')}</div>`;
+             + (lead === null ? '' : '<div class="hl-recs-note hl-daypicks">Picked from the stock on the day of '
+                 + 'the call. Tick &ldquo;compare&rdquo; on any of them for this client&#39;s report, or re-run '
+                 + 'with today&#39;s stock for the full list.</div>')
+             + `<div class="hl-recs">${list.map(r => hlRecCard(r, lead === null ? undefined : { lead })).join('')}</div>`;
     }
 
     // Today's shortlist for the same brief. Labelled as not saved because it is not: the
     // record still holds what was recommended at the time of the call.
-    function hlLiveBlock(data) {
+    //
+    // THE WHOLE SHORTLIST, AS THE RESEARCH TAB DRAWS IT (Coleen, 28 Sep 2026: "match and
+    // mirror the first page/tab"). This showed the top 3 as compact cards, so a consultant
+    // wanting the fourth option for a client had to run the same search again on the
+    // Research tab -- the thing she said "defeats the purpose of having separate tabs". Now
+    // it is the Research tab's own card (shortlistCardHtml, in lead mode: this lead's tick,
+    // no benchmark button), painted 25 at a time for the same reason the Research tab pages:
+    // a search can return hundreds. opts: { n: the card's index, lead: its callId, shown }.
+    const HL_LIVE_PAGE = 25;
+    function hlLiveBlock(data, opts) {
         const d = (data && typeof data === 'object') ? data : {};
+        const o = (opts && typeof opts === 'object') ? opts : {};
         const shortlist = Array.isArray(d.shortlist) ? d.shortlist : [];
         const found = (d.shortlist_count !== null && Number.isFinite(Number(d.shortlist_count)))
             ? Number(d.shortlist_count) : shortlist.length;
-        const top = Math.min(3, shortlist.length);
-        return `<div class="hl-recs-note"><span class="pill pill-conditions">Live results &mdash; not saved</span>
-                ${top ? `Top ${top} of ${esc(found)} from today's stock.` : ''}
-                Press Refresh above to go back to the saved recommendations.</div>`
-             + hlRecsBlock(shortlist, {
-                   message: String(d.message ?? '').trim() || "Nothing in today's stock matches this brief."
-               });
+        const n = (Number.isInteger(o.n) && o.n >= 0) ? o.n : 0;
+        const lead = typeof o.lead === 'string' ? o.lead : '';
+        const shown = Math.min(shortlist.length,
+            (Number.isInteger(o.shown) && o.shown > 0) ? o.shown : HL_LIVE_PAGE);
+        const head = `<div class="hl-recs-note"><span class="pill pill-conditions">Live results &mdash; not saved</span>
+                ${shown ? `Showing ${shown} of ${esc(found)} from today's stock, best first. Tick
+                &ldquo;compare&rdquo; on any of them for this client's report.` : ''}
+                Press Refresh above to go back to the saved recommendations.</div>`;
+        if (!shown) {
+            return head + hlRecsBlock([], {
+                message: String(d.message ?? '').trim() || "Nothing in today's stock matches this brief."
+            });
+        }
+        const left = shortlist.length - shown;
+        return head
+             + '<div class="hl-live">' + shortlist.slice(0, shown).map((p, k) => {
+                   const hash = (p && typeof p.content_hash === 'string') ? p.content_hash : '';
+                   return `<div class="prop-card hl-live-card${k === 0 ? ' rank-1' : ''}">`
+                        + shortlistCardHtml(p, k, { lead, picked: hlPicked(lead, hash) }) + '</div>';
+               }).join('') + '</div>'
+             + (left > 0
+                 ? `<button type="button" class="btn-ghost btn-more" id="hlMore-${n}" onclick="hlShowMore(${n})">`
+                   + `Show ${Math.min(left, HL_LIVE_PAGE)} more (${left} remaining of ${shortlist.length})</button>`
+                 : '');
     }
 
     // Booking stayed HOT ONLY when research widened to every grade (15 Sep). So a warm or
@@ -3131,10 +3233,346 @@ python state_sync.py push</pre>
             + said.join('; '))}</div>`;
     }
 
+    /* ------------------------------------------------------------ Coleen, 28 Sep 2026
+     *
+     * Her email after the Joseph Shahid test lead: each tab must have "the same property
+     * selection and reporting functionality as Tab 1" (the Research tab), every lead needs
+     * "dedicated spaces for Notes and Links", and "Not everyone on the team should have
+     * access to the customer's full email address or phone number."
+     *
+     * What the tab keeps, and where:
+     *   HL_ACCESS   'masked' | 'full', from the last /api/hot_leads answer. Anything the
+     *               server did not say is masked: the lock fails closed.
+     *   HL_NOTES    callId -> { entries, links } from that answer's top-level "notes", and
+     *               from every /api/lead_notes answer since. Stored on the hook
+     *               (lead-notes/<callId>.json), so every consultant sees the same notes.
+     *   HL_PICKS    callId -> the buildings ticked for THAT lead's report, in this browser
+     *               (localStorage "spb.leadcompare.v1"). Never the Research tab's SELECTED:
+     *               that is one selection for whoever is being researched, and a lead's
+     *               picks in it would reach another client's report.
+     *   HL_LIVE     card index -> today's shortlist from a Re-run, so "Show more", a tick and
+     *               the report can find it. Forgotten on every reload, as the results are.
+     *   HL_DRAFTS   callId -> a note or link typed but not saved, carried across a reload
+     *               (Refresh, Unlock) so nothing typed is lost to one.
+     * No customer detail is ever written to localStorage: the picks are listings, the
+     * other key is the consultant's own name.
+     */
+    let HL_ACCESS = { contact: 'masked', unlock: 'not-configured' };
+    let HL_NOTES = new Map();
+    let HL_NOTES_ERR = new Set();
+    let HL_LIVE = new Map();
+    const HL_DRAFTS = new Map();
+    const HL_NOTE_BUSY = new Set();
+    let HL_PICKS = null;
+
+    // The record's callId names it in the hook's store, its notes and its picks. A record
+    // without one (none are written that way) is listed, but nothing can be kept against it.
+    const hlCallId = lead => (lead && typeof lead === 'object' && typeof lead.callId === 'string')
+        ? lead.callId : '';
+    const hlIndexOf = id => id ? HOT_LEADS.findIndex(l => hlCallId(l) === id) : -1;
+    const hlText = v => (typeof v === 'string' || typeof v === 'number') ? String(v).trim() : '';
+
+    // "Email this client" (point 4: "add the customer's email as a clickable link, so I can
+    // click it and send the report/information directly to the client"). The subject and
+    // body are fixed words written here, never the record's text, so nothing a caller said
+    // can reach the message's headers; the address itself has passed hlMailHref.
+    const HL_MAIL_SUBJECT = 'Your property options from Smart Property Buying';
+    const HL_MAIL_BODY = 'Hi,\n\nAs discussed, here are the property options we have put together for you.'
+        + '\n\n[Paste the report link here, or attach the PDF]\n\nKind regards,\nSmart Property Buying';
+    const HL_MAIL_QUERY = '?subject=' + encodeURIComponent(HL_MAIL_SUBJECT)
+        + '&body=' + encodeURIComponent(HL_MAIL_BODY);
+
+    // THE MASKED CONTACT LINE (point 3: "only display the last 3 digits of the customer's
+    // mobile number for identification purposes"). No link of any kind, and no part of
+    // the address. The server sends phone and email blank with phoneLast3 / hasEmail /
+    // hasPhone beside them; a record that still carried the full values (a server that
+    // did not mask) is read the same way, so it does not show them either.
+    function hlMaskedContact(customer) {
+        const c = (customer && typeof customer === 'object') ? customer : {};
+        const digits = String(c.phone ?? '').replace(/\D/g, '');
+        const given = String(c.phoneLast3 ?? '');
+        const last3 = /^\d{3}$/.test(given) ? given : (digits.length >= 6 ? digits.slice(-3) : '');
+        const hasPhone = !!last3 || c.hasPhone === true || digits.length > 0;
+        const hasEmail = c.hasEmail === true || !!String(c.email ?? '').trim();
+        const muted = t => `<span style="color:var(--text-muted);">${t}</span>`;
+        return (hasEmail ? '<span class="hl-masked">Email on file</span>' : muted('No email captured'))
+             + (last3 ? `<span class="hl-masked">Mobile ending ${esc(last3)}</span>`
+                : (hasPhone ? '<span class="hl-masked">Phone on file</span>' : muted('No phone captured')));
+    }
+
+    // ---- the lead's own picks (point 1: "Each state tab should have the same property
+    // selection and reporting functionality as Tab 1")
+    const HL_PICK_STORE = 'spb.leadcompare.v1';
+    // Stored as [[callId, [record, ...]], ...]: pairs, not an object keyed by callId, so a
+    // callId can never be "__proto__" on anything, and the order a consultant ticked in is
+    // the order the report lists them. Each record is slim() -- only what the comparison
+    // document draws, the same as the Research tab's selection.
+    // The pairs as stored right now, or null when the store cannot be read (blocked, or not JSON).
+    function hlPicksStored() {
+        try {
+            const raw = JSON.parse(localStorage.getItem(HL_PICK_STORE) || 'null');
+            return Array.isArray(raw) ? raw : [];
+        } catch (e) { return null; }
+    }
+    const hlPickPairOf = (pair, id) => Array.isArray(pair) && typeof pair[0] === 'string' && pair[0] === id;
+    function hlPicksLoad() {
+        if (HL_PICKS) return HL_PICKS;
+        HL_PICKS = new Map();
+        (hlPicksStored() || []).forEach(pair => {
+            if (!Array.isArray(pair) || typeof pair[0] !== 'string' || !pair[0] || !Array.isArray(pair[1])) return;
+            const mine = new Map();
+            pair[1].forEach(r => {
+                if (r && typeof r === 'object' && typeof r.content_hash === 'string' && r.content_hash) {
+                    mine.set(r.content_hash, r);
+                }
+            });
+            if (mine.size) HL_PICKS.set(pair[0], mine);
+        });
+        return HL_PICKS;
+    }
+    // ONE LEAD'S PICKS WRITTEN, EVERY OTHER LEAD'S LEFT AS THE STORE HOLDS THEM (28 Sep 2026).
+    // This page read the store once, when it first needed it; a second dashboard tab may have
+    // written since. Writing this page's whole map back dropped whatever that tab had ticked
+    // for its leads. So the store is read again here and only lead id's pair changes: replaced
+    // in its place, added at the end, or taken out when nothing is ticked.
+    function hlPicksSave(id) {
+        if (typeof id !== 'string' || !id) return false;
+        const mine = hlPicksLoad().get(id);
+        const stored = hlPicksStored() || [];
+        const at = stored.findIndex(p => hlPickPairOf(p, id));
+        const pairs = stored.filter(p => !hlPickPairOf(p, id));
+        if (mine && mine.size) pairs.splice(at < 0 ? pairs.length : at, 0, [id, [...mine.values()]]);
+        try {
+            localStorage.setItem(HL_PICK_STORE, JSON.stringify(pairs));
+            return true;
+        } catch (e) { return false; }
+    }
+    const hlPicksFor = id => (id && hlPicksLoad().get(id)) || new Map();
+    const hlPicked = (id, hash) => !!id && typeof hash === 'string' && !!hash && hlPicksFor(id).has(hash);
+
+    // WHO THE REPORT IS FOR, from the lead instead of the Research tab's form. That form
+    // holds whatever was searched last -- another client, or the page-load search -- and a
+    // report built from it named the wrong person, suburb and budget. The name, the
+    // suburbs and state, the budget: nothing else of the lead, and never its email or phone
+    // (hlNoContact takes out anything shaped like one, in case a caller spoke theirs where
+    // a name was asked for). budget_max is the lead's own figure or nothing: the hook stores
+    // null for "no budget", and a caller's brief can still carry Number.MAX_SAFE_INTEGER,
+    // the research's "no ceiling", which must never print as a target budget.
+    function hlReportBrief(lead) {
+        const L = (lead && typeof lead === 'object') ? lead : {};
+        const c = (L.customer && typeof L.customer === 'object') ? L.customer : {};
+        const b = (L.brief && typeof L.brief === 'object' && !Array.isArray(L.brief)) ? L.brief : {};
+        const subs = (Array.isArray(b.primary_suburbs) ? b.primary_suburbs : [b.primary_suburbs])
+            .map(hlText).filter(Boolean);
+        const bm = Number(b.budget_max);
+        return {
+            client: hlNoContact(hlText(c.name) || hlText(b.client_name), c),
+            pref: hlNoContact([subs.join(', '), hlText(b.state)].filter(Boolean).join(', '), c),
+            budget: (b.budget_max !== null && b.budget_max !== '' && Number.isFinite(bm)
+                     && bm > 0 && bm < Number.MAX_SAFE_INTEGER) ? bm : 0,
+        };
+    }
+    function hlNoContact(text, customer) {
+        const c = (customer && typeof customer === 'object') ? customer : {};
+        let s = String(text ?? '');
+        const email = String(c.email ?? '').trim();
+        if (email) s = s.split(email).join(' ');
+        s = s.replace(/[^\s@,;:<>()"']+@[^\s@,;:<>()"']+/g, ' ')         // anything shaped like an address
+             .replace(/\+?\d(?:[\s().-]*\d){7,}/g, ' ');                   // a run of 8 or more digits
+        return s.replace(/\s+/g, ' ').replace(/^[\s,]+|[\s,]+$/g, '').replace(/\s+,/g, ',');
+    }
+
+    // Open Report / Clear, one pair per lead. The wording says WHICH options the report
+    // will cover, as on the Research tab (paintCompareBar): the ticked ones, or the top 3
+    // of what the card shows.
+    const hlReportLabel = k => k ? `Open Report (${k} selected)` : 'Open Report (top 3)';
+    const hlReportTitle = k => k
+        ? `One client-facing report comparing the ${k} option(s) ticked for this lead.`
+        : 'One client-facing report over the top 3 options shown for this lead. Tick "compare" on '
+          + 'the options you want and it will cover those instead.';
+    function hlReportBar(lead, n) {
+        const k = hlPicksFor(hlCallId(lead)).size;
+        return `<div class="hl-report-bar">`
+             + `<button type="button" class="btn-ghost hl-report-btn" id="hlReport-${n}" onclick="hlOpenReport(${n})"`
+             + ` title="${esc(hlReportTitle(k))}">${esc(hlReportLabel(k))}</button>`
+             + `<button type="button" class="btn-ghost" id="hlClear-${n}" onclick="hlClearPicks(${n})"`
+             + ` title="Forget the options ticked for this lead"${k ? '' : ' hidden'}>Clear</button>`
+             + '</div>';
+    }
+
+    // ---- notes and links (point 2: "a free-text area where we can record what action has
+    // been taken on each lead", and "a field where we can paste a Google Drive link or other
+    // relevant property link"). The five actions she listed are one click each; anything
+    // else is the text. The store is the hook's (POST /api/lead_notes, through the
+    // dashboard), so the whole team sees one set of notes per lead.
+    const HL_NOTE_ACTIONS = ['package_sent', 'call_booked', 'follow_up', 'drive_link', 'property_saved'];
+    const HL_NOTE_ACTION_LABEL = {
+        package_sent: 'Package sent', call_booked: 'Call booked with customer',
+        follow_up: 'Follow-up required', drive_link: 'Google Drive link added',
+        property_saved: 'Property saved for the customer',
+    };
+    const HL_NOTE_MAX = 2000, HL_LINK_MAX = 2048, HL_LABEL_MAX = 120, HL_BY_MAX = 40;
+    const HL_BY_STORE = 'spb.leadnotes.by.v1';
+
+    // The notes object as the hook sends it, reduced to what can be drawn. A removed item
+    // is kept on the hook (flagged) but never sent; dropped here too if one ever is.
+    function hlNotesOf(raw) {
+        const o = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+        const keep = list => (Array.isArray(list) ? list : [])
+            .filter(x => x && typeof x === 'object' && !Array.isArray(x) && x.removed !== true);
+        return { entries: keep(o.entries), links: keep(o.links), rev: o.rev };
+    }
+    // Newest first. The hook sends them that way; sorted again so the order on screen does
+    // not depend on it, and so the position a Remove button carries is the one drawn.
+    function hlNewest(list) {
+        const at = x => { const t = Date.parse(x.at); return Number.isFinite(t) ? t : -Infinity; };
+        return list.map((x, k) => ({ x, k }))
+            .sort((a, b) => (at(b.x) - at(a.x)) || (a.k - b.k)).map(p => p.x);
+    }
+    const hlNoteEntries = notes => hlNewest(hlNotesOf(notes).entries);
+    const hlNoteLinks = notes => hlNewest(hlNotesOf(notes).links);
+    const hlNoteMeta = x => {
+        const by = hlText(x.by).slice(0, HL_BY_MAX);
+        return [hlWhen(x.at), by ? 'by ' + by : ''].filter(Boolean).join(' · ');
+    };
+
+    // Every word here was typed by a consultant, and the hook stores what it is sent: all
+    // of it is text. A Remove button carries the card's index and the item's position,
+    // never the item's id -- the id is looked up from what was drawn (hlRemoveNote).
+    function hlNotesListHtml(notes, n) {
+        const list = hlNoteEntries(notes);
+        if (!list.length) return '<div class="hl-notes-empty">No notes yet.</div>';
+        return list.map((x, k) => {
+            const action = HL_NOTE_ACTIONS.includes(x.action) ? HL_NOTE_ACTION_LABEL[x.action] : '';
+            const text = hlText(x.text);
+            const meta = hlNoteMeta(x);
+            return '<div class="hl-note"><div class="hl-note-meta">'
+                 + (action ? `<span class="hl-note-action">${esc(action)}</span>` : '')
+                 + (meta ? `<span>${esc(meta)}</span>` : '')
+                 + `<button type="button" class="hl-note-x" onclick="hlRemoveNote(${n}, ${k})"`
+                 + ' title="Remove this note">Remove</button></div>'
+                 + (text ? `<div class="hl-note-text">${esc(text)}</div>` : '')
+                 + '</div>';
+        }).join('');
+    }
+    // A link is drawn through hlExtLink, like every other link on this tab: only http(s)
+    // becomes an href, and anything else shows its label with "(link unavailable)".
+    function hlLinksListHtml(notes, n) {
+        const list = hlNoteLinks(notes);
+        if (!list.length) return '<div class="hl-notes-empty">No links yet.</div>';
+        return list.map((x, k) => {
+            const url = hlText(x.url);
+            let label = hlText(x.label).slice(0, HL_LABEL_MAX);
+            if (!label) {
+                const safe = hlSafeUrl(url);
+                let short = '';
+                try { const p = new URL(safe); short = p.host + (p.pathname === '/' ? '' : p.pathname); } catch (e) { short = ''; }
+                label = short ? (short.length > 60 ? short.slice(0, 59) + '…' : short) : 'Link';
+            }
+            const meta = hlNoteMeta(x);
+            return '<div class="hl-note hl-note-link"><div class="hl-note-meta">'
+                 + (hlExtLink(url, label, url) || `<span class="hl-nolink">${esc(label)} (link unavailable)</span>`)
+                 + (meta ? `<span>${esc(meta)}</span>` : '')
+                 + `<button type="button" class="hl-note-x" onclick="hlRemoveLink(${n}, ${k})"`
+                 + ' title="Remove this link">Remove</button></div></div>';
+        }).join('');
+    }
+
+    function hlNotesBlock(lead, n, view) {
+        const id = hlCallId(lead);
+        const v = (view && typeof view === 'object') ? view : {};
+        const head = '<div class="hl-notes-head"><span class="hl-recs-title">Notes &amp; links</span></div>';
+        if (!id) {
+            return `<div class="hl-notes" id="hlNotes-${n}">${head}<div class="hl-notes-empty">This record `
+                 + 'has no call id, so notes and links cannot be kept against it.</div></div>';
+        }
+        const d = (v.draft && typeof v.draft === 'object') ? v.draft : {};
+        // Notes that could not be read are not "No notes yet.": the notice says what is known.
+        const unread = !!v.notesError && !v.notes;
+        const action = HL_NOTE_ACTIONS.includes(d.action) ? d.action : '';
+        const chips = HL_NOTE_ACTIONS.map(a => {
+            const on = a === action;
+            return `<button type="button" class="btn-ghost hl-act${on ? ' is-active' : ''}" id="hlAct-${n}-${a}"`
+                 + ` aria-pressed="${on}" onclick="hlPickAction(${n}, '${a}')">${esc(HL_NOTE_ACTION_LABEL[a])}</button>`;
+        }).join('');
+        return `<div class="hl-notes" id="hlNotes-${n}">${head}`
+             + (v.notesError ? '<div class="hl-notice hl-notes-err">The notes saved for this lead could '
+                 + 'not be read just now. They are not lost: press Refresh to try again.</div>' : '')
+             + `<div class="hl-acts" role="group" aria-label="What was done">${chips}</div>`
+             + `<textarea class="hl-note-input" id="hlNoteText-${n}" rows="2" maxlength="${HL_NOTE_MAX}"`
+             + ` aria-label="Note for this lead" placeholder="What was done, or what happens next">`
+             + `${esc(hlText(d.text))}</textarea>`
+             + `<div class="hl-note-row"><button type="button" class="btn-ghost" id="hlNoteSave-${n}"`
+             + ` onclick="hlSaveNote(${n})">Save note</button></div>`
+             + `<div class="hl-msg" id="hlNoteMsg-${n}" role="status" aria-live="polite"></div>`
+             + `<div class="hl-note-list" id="hlNoteList-${n}">${unread ? '' : hlNotesListHtml(v.notes, n)}</div>`
+             + '<div class="hl-links-title">Links</div>'
+             + `<div class="hl-note-list" id="hlLinkList-${n}">${unread ? '' : hlLinksListHtml(v.notes, n)}</div>`
+             + '<div class="hl-link-add">'
+             + `<input type="url" id="hlLinkUrl-${n}" maxlength="${HL_LINK_MAX}" aria-label="Link to keep for this lead"`
+             + ` placeholder="Google Drive or property link (https://...)" value="${esc(hlText(d.url))}">`
+             + `<input type="text" id="hlLinkLabel-${n}" maxlength="${HL_LABEL_MAX}" aria-label="What the link is"`
+             + ` placeholder="What it is (optional)" value="${esc(hlText(d.label))}">`
+             + `<button type="button" class="btn-ghost" id="hlLinkSave-${n}" onclick="hlAddLink(${n})">Add link</button>`
+             + '</div></div>';
+    }
+
+    // What a card draws from the last answer, when the caller did not say.
+    function hlViewFor(lead) {
+        const id = hlCallId(lead);
+        return {
+            contact: HL_ACCESS.contact === 'full' ? 'full' : 'masked',
+            notes: (id && HL_NOTES.has(id)) ? HL_NOTES.get(id) : null,
+            notesError: !!id && HL_NOTES_ERR.has(id),
+            draft: (id && HL_DRAFTS.has(id)) ? HL_DRAFTS.get(id) : null,
+        };
+    }
+
+    // The consultant's own name for the notes they save ("by"), remembered in this browser.
+    // Self-declared, so it says who wrote a note, not who is allowed to.
+    function hlByStored() {
+        try { return String(localStorage.getItem(HL_BY_STORE) || '').trim().slice(0, HL_BY_MAX); }
+        catch (e) { return ''; }
+    }
+
+    // ABOVE THE LIST: whether contact details are showing, how to unlock or lock them, and
+    // the name notes are saved under. The unlock is a password the owner sets on the
+    // dashboard (SPB_CONTACT_PASSWORD): whoever knows it sees full contact details on this
+    // browser for four hours (an HttpOnly cookie the page cannot read). Nothing here holds
+    // the password after it is sent.
+    function hlAccessBar() {
+        const full = HL_ACCESS.contact === 'full';
+        let lock;
+        if (full) {
+            lock = '<span class="hl-access-state"><strong>Full contact details are showing</strong> on this browser.</span>'
+                 + '<button type="button" class="btn-ghost" id="hlLockBtn" onclick="hlLock()">Lock contact details</button>';
+        } else if (HL_ACCESS.unlock === 'password') {
+            lock = '<span class="hl-access-state">Contact details are hidden: each lead shows only the last 3 '
+                 + 'digits of the mobile.</span>'
+                 + '<form class="hl-unlock" onsubmit="hlUnlock(); return false;">'
+                 + '<input type="password" id="hlUnlockPass" autocomplete="off" maxlength="200"'
+                 + ' aria-label="Contact-details password" placeholder="Contact-details password">'
+                 + '<button type="submit" class="btn-ghost" id="hlUnlockBtn">Unlock contact details</button></form>';
+        } else {
+            lock = '<span class="hl-access-state">Contact details are hidden: each lead shows only the last 3 '
+                 + 'digits of the mobile. No contact-details password is set on this dashboard, so they '
+                 + 'cannot be unlocked here.</span>';
+        }
+        return `<div class="hl-access" id="hlAccess">${lock}`
+             + '<label class="hl-by">Your name, for notes'
+             + ` <input type="text" id="hlBy" maxlength="${HL_BY_MAX}" autocomplete="off" value="${esc(hlByStored())}"></label>`
+             + '<div class="hl-msg" id="hlAccessMsg" role="status" aria-live="polite"></div></div>';
+    }
+
     // hidden: the card is rendered but out of the current filter (see hlSetFilter).
-    function hlLeadCard(lead, i, hidden) {
+    // view: { contact, notes, notesError, draft } -- what hlViewFor reads from the last
+    // /api/hot_leads answer when it is not given. Contact details are full ONLY when view
+    // says contact 'full'; anything else, including no view at all, is masked.
+    function hlLeadCard(lead, i, hidden, view) {
         const n = (Number.isInteger(i) && i >= 0) ? i : 0;
         const L = (lead && typeof lead === 'object') ? lead : {};
+        const v = (view && typeof view === 'object') ? view : hlViewFor(L);
+        const full = v.contact === 'full';
         const g = hlGrade(L);
         const ch = hlChannel(L);
         const c = (L.customer && typeof L.customer === 'object') ? L.customer : {};
@@ -3145,12 +3583,23 @@ python state_sync.py push</pre>
         const mail = hlMailHref(email), tel = hlTelHref(phone);
         const when = hlWhen(L.createdAt);
         const muted = t => `<span style="color:var(--text-muted);">${t}</span>`;
-        const contact =
-            (email ? (mail ? `<a href="${esc(mail)}">${esc(email)}</a>` : `<span>${esc(email)}</span>`)
-                   : muted('No email captured'))
-          + (phone ? (tel ? `<a href="${esc(tel)}">${esc(phone)}</a>` : `<span>${esc(phone)}</span>`)
-                   : muted('No phone captured'));
-        const links = [hlExtLink(k.leadUrl, 'Open in Kommo'), hlExtLink(L.recordingUrl, 'Call recording')]
+        // MASKED UNLESS UNLOCKED (Coleen, 28 Sep 2026: "only display the last 3 digits of
+        // the customer's mobile number ... The full customer contact details should remain
+        // restricted to authorised users only"). The server blanks them before they leave
+        // (api/hot_leads.py); this is the second lock, so a record that still carried them
+        // would not show them either. Unlocked, the email is a link, with "Email this
+        // client" beside it (her point 4) -- still only for an address hlMailHref accepts.
+        const contact = full
+            ? (email ? (mail ? `<a href="${esc(mail)}">${esc(email)}</a>`
+                              + `<a class="hl-mail-client" href="${esc(mail + HL_MAIL_QUERY)}">Email this client</a>`
+                             : `<span>${esc(email)}</span>`)
+                     : muted('No email captured'))
+              + (phone ? (tel ? `<a href="${esc(tel)}">${esc(phone)}</a>` : `<span>${esc(phone)}</span>`)
+                       : muted('No phone captured'))
+            : hlMaskedContact(c);
+        // The recording is the caller's own voice giving their details, so it is contact
+        // detail too: the server sends it only when unlocked, and it is only linked then.
+        const links = [hlExtLink(k.leadUrl, 'Open in Kommo'), full ? hlExtLink(L.recordingUrl, 'Call recording') : '']
             .filter(Boolean).join('');
         const reason = String(L.gradeReason ?? '').trim();
         const summary = String(L.summary ?? '').trim();
@@ -3170,13 +3619,15 @@ python state_sync.py push</pre>
             ${hlUnresolvedNote(L.research)}
             ${links ? `<div class="hl-links">${links}</div>` : ''}
             ${summary ? `<details class="hl-summary"><summary>Call summary</summary><p>${esc(summary)}</p></details>` : ''}
+            ${hlNotesBlock(L, n, v)}
             <div class="hl-recs-head">
                 <span class="hl-recs-title">Recommended buildings</span>
                 <button type="button" class="btn-ghost" id="hlRerun-${n}" onclick="rerunHotLead(${n})"
                     ${hasBrief ? '' : 'disabled title="No brief was captured on this call"'}>Re-run with today's stock</button>
             </div>
+            ${hlReportBar(L, n)}
             <div class="hl-msg" id="hlMsg-${n}"></div>
-            <div id="hlRecs-${n}">${hlRecsBlock(L.recommendations, L.research)}</div>
+            <div id="hlRecs-${n}">${hlRecsBlock(L.recommendations, L.research, { lead: hlCallId(L) })}</div>
         </div>`;
     }
 
@@ -3238,7 +3689,7 @@ python state_sync.py push</pre>
         // filtered list instead would re-run the wrong caller's brief. The groups below
         // only change the ORDER the cards are printed in, never the index they carry.
         const entries = list.map((lead, i) => ({ lead, i }));
-        return note + hlFilterBar(list, f)
+        return note + hlAccessBar() + hlFilterBar(list, f)
              + `<div class="hl-notice" id="hlFilterEmpty"${shown ? ' hidden' : ''}>${hlFilterEmptyText(f)}</div>`
              + `<div class="hl-groups">`
              + HL_CHANNELS.map(ch =>
@@ -3354,6 +3805,10 @@ python state_sync.py push</pre>
     //   { kind: 'failed', status, message }   message is '' when the server gave none
     //   { kind: 'ok', leads, cut }            cut: the answer is as long as HL_LIMIT, so
     //                                         there may be more the hook did not send
+    //   ... and, since 28 Sep, contact / unlock / notes / notesErrors: whether the answer's
+    //   contact details are masked, whether they can be unlocked here, and each returned
+    //   lead's notes (see the Coleen, 28 Sep 2026 section above). Anything but exactly
+    //   contact:"full" is masked.
     async function hlAsk(url) {
         let res;
         try {
@@ -3371,7 +3826,12 @@ python state_sync.py push</pre>
                      message: (data && data.message) ? String(data.message) : '' };
         }
         const leads = Array.isArray(data.leads) ? data.leads : [];
-        return { kind: 'ok', leads, cut: leads.length >= HL_LIMIT };
+        return { kind: 'ok', leads, cut: leads.length >= HL_LIMIT,
+                 contact: data.contact === 'full' ? 'full' : 'masked',
+                 unlock: data.contactUnlock === 'password' ? 'password' : 'not-configured',
+                 notes: (data.notes && typeof data.notes === 'object' && !Array.isArray(data.notes)) ? data.notes : {},
+                 notesErrors: (Array.isArray(data.notesErrors) ? data.notesErrors : [])
+                     .filter(x => typeof x === 'string' && x) };
     }
 
     // The two answers as one list. A caller in both is listed once: callId names the record
@@ -3408,6 +3868,9 @@ python state_sync.py push</pre>
         if (!el) return;
         HOT_LEADS_STATE = 'loading';
         if (btn) btn.disabled = true;
+        // Before the cards are cleared: anything typed into one and not saved is carried
+        // into the redraw (HL_DRAFTS), so a Refresh or an Unlock does not throw it away.
+        hlCaptureDrafts();
         el.innerHTML = '<p style="color:var(--text-muted);">Loading leads…</p>';
         const expired = () => {
             HOT_LEADS_STATE = 'idle';
@@ -3431,6 +3894,7 @@ python state_sync.py push</pre>
                 return;
             }
             let hotLeads = [];
+            const answers = [all];
             const cover = { cut: all.cut, hotCut: false, hotFailed: '' };
             if (all.cut) {
                 const hot = await hlAsk(hlLeadsUrl('hot'));
@@ -3438,6 +3902,7 @@ python state_sync.py push</pre>
                 if (hot.kind === 'ok') {
                     hotLeads = hot.leads;
                     cover.hotCut = hot.cut;
+                    answers.push(hot);
                 } else {
                     // The first answer is still worth showing, but not as if it were whole.
                     cover.hotFailed = hot.kind === 'unreachable'
@@ -3446,6 +3911,25 @@ python state_sync.py push</pre>
                 }
             }
             HOT_LEADS = hlSortNewest(hlMergeLeads(all.leads, hotLeads));
+            // Full contact details only when EVERY answer drawn from said so: the two reads
+            // are the same request, but a list half masked is not a masked list.
+            HL_ACCESS = { contact: answers.every(a => a.contact === 'full') ? 'full' : 'masked',
+                          unlock: all.unlock };
+            HL_NOTES = new Map();
+            HL_NOTES_ERR = new Set();
+            // A lead's notes that are there but are not a notes object (null is how the hook
+            // said "could not be read" before 28 Sep; it now leaves the lead out of notes and
+            // names it in notesErrors alone) are that same unreadable notice, never "No notes
+            // yet.": its notes exist, and an empty list would say they do not.
+            answers.forEach(a => {
+                Object.keys(a.notes).forEach(id => {
+                    const raw = a.notes[id];
+                    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { HL_NOTES_ERR.add(id); return; }
+                    if (!HL_NOTES.has(id)) HL_NOTES.set(id, hlNotesOf(raw));
+                });
+                a.notesErrors.forEach(id => HL_NOTES_ERR.add(id));
+            });
+            HL_LIVE = new Map();
             HOT_LEADS_STATE = 'loaded';
             // "5 leads · 2 hot": the whole list, and how many of it are the calls to make today.
             // A "+" on either count when there may be more than the tab was sent.
@@ -3499,7 +3983,11 @@ python state_sync.py push</pre>
             if (!res.ok || !data || data.status !== 'success') {
                 failure = (data && data.message) ? String(data.message) : `the server answered ${res.status}`;
             } else {
-                box.innerHTML = hlLiveBlock(data);
+                // Kept by card index, for "Show more", the ticks and Open Report (HL_LIVE).
+                const live = { lead, data, shown: HL_LIVE_PAGE };
+                HL_LIVE.set(i, live);
+                box.innerHTML = hlLiveBlock(data, { n: i, lead: hlCallId(lead), shown: live.shown });
+                hlPaintReportBar(i);
                 say('', false);
             }
         } catch (e) {
@@ -3511,6 +3999,451 @@ python state_sync.py push</pre>
         if (failure) {
             say(`The re-run did not complete: ${failure}. The saved recommendations below are unchanged.`, true);
         }
+    }
+
+    // ------------------------------------------------ picks and the report (Coleen, 28 Sep 2026)
+    // A line under a card's buttons, as text: it can carry a server's message.
+    function hlSay(i, text, isError) {
+        const msg = document.getElementById('hlMsg-' + i);
+        if (!msg) return;
+        msg.className = 'hl-msg' + (isError ? ' hl-msg-err' : '');
+        msg.textContent = text;
+    }
+
+    function hlPaintReportBar(i) {
+        const k = hlPicksFor(hlCallId(HOT_LEADS[i])).size;
+        const rep = document.getElementById('hlReport-' + i);
+        if (rep) { rep.textContent = hlReportLabel(k); rep.title = hlReportTitle(k); }
+        const clear = document.getElementById('hlClear-' + i);
+        if (clear) clear.hidden = !k;
+    }
+
+    // What card i shows: today's shortlist after a Re-run, otherwise the day-of-call picks
+    // (the first 3, as hlRecsBlock draws them).
+    function hlShown(i) {
+        const lead = HOT_LEADS[i];
+        if (!lead || typeof lead !== 'object') return [];
+        const live = HL_LIVE.get(i);
+        const list = (live && live.lead === lead)
+            ? (Array.isArray(live.data && live.data.shortlist) ? live.data.shortlist : [])
+            : (Array.isArray(lead.recommendations) ? lead.recommendations.slice(0, 3) : []);
+        return list.filter(p => p && typeof p === 'object');
+    }
+
+    // A tick changed. The record is found among what that lead's card shows -- never in
+    // LAST_SHORTLIST, which is the Research tab's -- and kept against that lead only.
+    // Unticking something no longer on screen still forgets it; ticking something that
+    // is not there is refused. Returns whether anything changed.
+    function hlTogglePick(callId, hash, checked) {
+        const id = typeof callId === 'string' ? callId : '';
+        const h = typeof hash === 'string' ? hash : '';
+        const i = hlIndexOf(id);
+        if (!id || !h || i < 0) return false;
+        const picks = hlPicksLoad();
+        const mine = picks.get(id) || new Map();
+        if (checked) {
+            const rec = hlShown(i).find(p => p.content_hash === h);
+            if (rec) mine.set(h, slim(rec));
+            else if (!mine.has(h)) return false;
+        } else {
+            mine.delete(h);
+        }
+        if (mine.size) picks.set(id, mine); else picks.delete(id);
+        const saved = hlPicksSave(id);
+        hlPaintReportBar(i);
+        if (!saved) {
+            hlSay(i, 'This browser would not keep the pick (its storage is full or blocked), so it lasts '
+                   + 'only until the page is reloaded.', true);
+        }
+        return true;
+    }
+    // One listener for every lead's ticks: the cards are redrawn on every load, and a
+    // handler bound to a box would go with it. .hl-cmp-box only -- the Research tab's
+    // .cmp-box has its own listener, and neither reads the other's boxes.
+    function hlOnPickChange(e) {
+        const box = e && e.target;
+        if (!box || !box.classList || !box.classList.contains('hl-cmp-box')) return;
+        const d = box.dataset || {};
+        if (!hlTogglePick(d.lead || '', d.hash || '', !!box.checked) && box.checked) box.checked = false;
+    }
+    document.addEventListener('change', hlOnPickChange);
+
+    // The card's buildings again, from what is held: after Clear, and for "Show more".
+    function hlRepaintRecs(i) {
+        const lead = HOT_LEADS[i];
+        const box = document.getElementById('hlRecs-' + i);
+        if (!lead || typeof lead !== 'object' || !box) return;
+        const live = HL_LIVE.get(i);
+        box.innerHTML = (live && live.lead === lead)
+            ? hlLiveBlock(live.data, { n: i, lead: hlCallId(lead), shown: live.shown })
+            : hlRecsBlock(lead.recommendations, lead.research, { lead: hlCallId(lead) });
+    }
+
+    function hlClearPicks(i) {
+        const id = hlCallId(HOT_LEADS[i]);
+        if (!id) return;
+        hlPicksLoad().delete(id);
+        hlPicksSave(id);
+        hlRepaintRecs(i);
+        hlPaintReportBar(i);
+    }
+
+    function hlShowMore(i) {
+        const live = HL_LIVE.get(i);
+        if (!live || HOT_LEADS[i] !== live.lead) return;
+        live.shown += HL_LIVE_PAGE;
+        hlRepaintRecs(i);
+        // The button pressed was redrawn; focus goes to its replacement, when there is one.
+        const more = document.getElementById('hlMore-' + i);
+        if (more && typeof more.focus === 'function') more.focus();
+    }
+
+    // THE SAME REPORT AS THE RESEARCH TAB (comparisonDocument, through openGeneratedReport),
+    // for this lead: the options ticked on this card, or the top 3 it shows. Called straight
+    // from the click, with no await before it, because openGeneratedReport opens its window
+    // first and a window opened after an await is blocked as a popup.
+    function hlOpenReport(i) {
+        const lead = HOT_LEADS[i];
+        if (!lead || typeof lead !== 'object') return undefined;
+        const picks = [...hlPicksFor(hlCallId(lead)).values()];
+        const props = picks.length ? picks : hlShown(i).slice(0, 3).map(slim);
+        if (!props.length) {
+            hlSay(i, "There are no buildings to put in a report yet. Re-run with today's stock first.", true);
+            return undefined;
+        }
+        return openGeneratedReport('compare', props, comparisonDocument, hlReportBrief(lead));
+    }
+
+    // ------------------------------------------------ notes and links (Coleen, 28 Sep 2026)
+    const hlDraft = id => {
+        if (!HL_DRAFTS.has(id)) HL_DRAFTS.set(id, { text: '', url: '', label: '', action: '' });
+        return HL_DRAFTS.get(id);
+    };
+    function hlCaptureDrafts() {
+        HOT_LEADS.forEach((lead, i) => {
+            const id = hlCallId(lead);
+            if (!id) return;
+            const read = key => {
+                const box = document.getElementById(key + i);
+                return (box && typeof box.value === 'string') ? box.value : null;
+            };
+            const text = read('hlNoteText-'), url = read('hlLinkUrl-'), label = read('hlLinkLabel-');
+            if (text === null && url === null && label === null) return;
+            const d = hlDraft(id);
+            if (text !== null) d.text = text;
+            if (url !== null) d.url = url;
+            if (label !== null) d.label = label;
+        });
+    }
+
+    // A quick action is chosen, or chosen again to un-choose it. One at a time: a note says
+    // one thing was done, and its text says the rest.
+    function hlPickAction(i, action) {
+        const id = hlCallId(HOT_LEADS[i]);
+        if (!id || !HL_NOTE_ACTIONS.includes(action)) return;
+        const d = hlDraft(id);
+        d.action = d.action === action ? '' : action;
+        HL_NOTE_ACTIONS.forEach(a => {
+            const b = document.getElementById(`hlAct-${i}-${a}`);
+            if (!b) return;
+            b.className = 'btn-ghost hl-act' + (a === d.action ? ' is-active' : '');
+            b.setAttribute('aria-pressed', String(a === d.action));
+        });
+    }
+
+    function hlNoteSay(i, text, isError) {
+        const msg = document.getElementById('hlNoteMsg-' + i);
+        if (!msg) return;
+        msg.className = 'hl-msg' + (isError ? ' hl-msg-err' : '');
+        msg.textContent = text;              // text, never markup: it can carry a server message
+    }
+    function hlNoteButtons(i, busy) {
+        ['hlNoteSave-', 'hlLinkSave-'].forEach(key => {
+            const b = document.getElementById(key + i);
+            if (b) b.disabled = busy;
+        });
+    }
+    function hlPaintNotes(i) {
+        const id = hlCallId(HOT_LEADS[i]);
+        if (!id) return;
+        const notes = HL_NOTES.get(id) || null;
+        const list = document.getElementById('hlNoteList-' + i);
+        if (list) list.innerHTML = hlNotesListHtml(notes, i);
+        const links = document.getElementById('hlLinkList-' + i);
+        if (links) links.innerHTML = hlLinksListHtml(notes, i);
+    }
+    // The name typed above the list, remembered for next time. Nothing else goes there.
+    function hlByRead() {
+        const box = document.getElementById('hlBy');
+        const by = String(((box && typeof box.value === 'string') ? box.value : hlByStored()) || '')
+            .trim().slice(0, HL_BY_MAX);
+        try { if (by) localStorage.setItem(HL_BY_STORE, by); } catch (e) { /* not remembered, still sent */ }
+        return by;
+    }
+
+    // ONE PRESS OF SAVE OR ADD, ONE requestId (28 Sep 2026). The hook keeps it on the note or
+    // link it adds and, sent the same one again for that lead, answers with the notes as they
+    // stand and adds nothing. So the automatic retry in hlNotesPost cannot store one note
+    // twice, while a second press is a second note, as it should be. 32 hex characters: inside
+    // the hook's [A-Za-z0-9_-]{1,64}.
+    function hlRequestId() {
+        const bytes = new Uint8Array(16);
+        try { crypto.getRandomValues(bytes); }
+        catch (e) { for (let k = 0; k < bytes.length; k++) bytes[k] = Math.floor(Math.random() * 256); }
+        return Array.from(bytes, x => x.toString(16).padStart(2, '0')).join('');
+    }
+
+    // WHETHER A CHANGE THAT WAS NOT CONFIRMED MAY STILL HAVE BEEN MADE (28 Sep 2026). "Not
+    // saved" over a note that was saved sent the consultant to press Save again, and the note
+    // was stored twice. The dashboard's 502 is the hook timing out or failing after it may
+    // have written ("reload the lead to see whether the change was saved"), and one of its
+    // answers says outright "the note was saved, but ..."; a 2xx that is not the notes, a
+    // 500 or a 504 leaves it just as open. A 503 (a setting is missing) and every 4xx are
+    // refused before anything is written, and so is an answer that says "nothing was changed"
+    // (the hook's own 502 for notes it could not read).
+    function hlMaybeMade(status, message) {
+        const m = String(message ?? '');
+        if (/\bnothing was changed\b/i.test(m)) return false;
+        if (/\bwas saved, but\b/i.test(m)) return true;
+        return (status >= 200 && status < 300) || (status >= 500 && status !== 503);
+    }
+
+    // One change to a lead's notes, through the dashboard (api/lead_notes.py adds the service
+    // key, so it never reaches the browser). The answer is the lead's notes as stored after
+    // the change, and they are drawn from it. A failure leaves the typing where it is.
+    // kind: 'note' | 'link' | 'remove', for what the messages say.
+    async function hlNotesPost(i, body, kind) {
+        const id = body.callId;
+        const kept = kind === 'remove' ? '' : ' What you typed is still here.';
+        // Said when the answer leaves open whether the change was made: never "Not saved".
+        const unsure = why => (kind === 'remove'
+            ? `Could not confirm the removal: ${why}. Press Refresh to check whether it is gone.`
+            : `Could not confirm this was saved: ${why}. Press Refresh to check before saving it again.`) + kept;
+        if (HL_NOTE_BUSY.has(id)) {
+            hlNoteSay(i, 'Still saving the last change to this lead. Try again in a moment.', false);
+            return false;
+        }
+        HL_NOTE_BUSY.add(id);
+        hlNoteButtons(i, true);
+        hlNoteSay(i, kind === 'remove' ? 'Removing…' : 'Saving…', false);
+        try {
+            // A dropped connection (fetch throws) may have dropped after the change arrived.
+            // A write carrying a requestId is sent ONCE MORE, automatically, as the same bytes
+            // -- the same requestId -- so the hook adds it at most once and answers with the
+            // notes either way. Nothing else is retried: every other answer is the server's.
+            const sent = JSON.stringify(body);
+            let res = null;
+            for (let tries = body.requestId ? 2 : 1; tries > 0 && !res; tries--) {
+                try {
+                    res = await fetch('/api/lead_notes', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: sent
+                    });
+                } catch (e) {
+                    res = null;
+                }
+            }
+            if (!res) {
+                hlNoteSay(hlIndexOf(id), unsure('the dashboard could not be reached'), true);
+                return false;
+            }
+            // The dashboard never answers 401 itself (api/lead_notes.py), so a 401 is the
+            // sign-in in front of it, as everywhere else on this page.
+            if (res.status === 401) {
+                hlNoteSay(hlIndexOf(id), 'Your sign-in has expired. Opening the sign-in page…', false);
+                sessionExpired();
+                return false;
+            }
+            let data = null;
+            try { data = await res.json(); } catch (e) { data = null; }
+            // The list may have been refreshed while this was out: draw on whichever card
+            // holds this lead now.
+            const j = hlIndexOf(id);
+            if (res.ok && data && data.status === 'success' && data.notes && typeof data.notes === 'object') {
+                HL_NOTES.set(id, hlNotesOf(data.notes));
+                HL_NOTES_ERR.delete(id);
+                hlPaintNotes(j);
+                hlNoteSay(j, kind === 'remove' ? 'Removed.' : 'Saved.', false);
+                return true;
+            }
+            // Two consultants saving to one lead at once: the hook retries, and this is what
+            // is left when it still could not. Nothing was lost but this change, which is
+            // still in the box.
+            if (res.status === 409) {
+                hlNoteSay(j, 'Someone else changed this lead\'s notes at the same moment, so this was not saved.'
+                           + (kind === 'remove' ? ' Press Remove again.' : ' It is still here: press the button again.'),
+                          true);
+                return false;
+            }
+            const why = ((data && data.message) ? String(data.message) : `the dashboard answered ${res.status}`)
+                .replace(/[\s.]+$/, '');
+            if (hlMaybeMade(res.status, why)) {
+                hlNoteSay(j, unsure(why), true);
+                return false;
+            }
+            hlNoteSay(j, (kind === 'remove' ? 'Not removed: ' : 'Not saved: ') + why + '.' + kept, true);
+            return false;
+        } finally {
+            HL_NOTE_BUSY.delete(id);
+            hlNoteButtons(hlIndexOf(id), false);
+        }
+    }
+
+    async function hlSaveNote(i) {
+        const lead = HOT_LEADS[i];
+        const id = hlCallId(lead);
+        if (!id) return false;
+        const box = document.getElementById('hlNoteText-' + i);
+        const text = String((box && typeof box.value === 'string') ? box.value : '').trim();
+        const d = hlDraft(id);
+        const action = HL_NOTE_ACTIONS.includes(d.action) ? d.action : 'other';
+        if (action === 'other' && !text) {
+            hlNoteSay(i, 'Choose what was done, or type a note, before saving.', true);
+            return false;
+        }
+        if (text.length > HL_NOTE_MAX) {
+            hlNoteSay(i, `This note is ${text.length.toLocaleString('en-AU')} characters; a note holds at most 2,000.`, true);
+            return false;
+        }
+        const by = hlByRead();
+        const body = { callId: id, op: 'add_entry', action, text };
+        if (by) body.by = by;
+        body.requestId = hlRequestId();          // this press's own: see hlRequestId
+        if (!await hlNotesPost(i, body, 'note')) return false;
+        d.text = '';
+        d.action = '';
+        const j = hlIndexOf(id);
+        const now = document.getElementById('hlNoteText-' + j);
+        if (now) now.value = '';
+        HL_NOTE_ACTIONS.forEach(a => {
+            const b = document.getElementById(`hlAct-${j}-${a}`);
+            if (!b) return;
+            b.className = 'btn-ghost hl-act';
+            b.setAttribute('aria-pressed', 'false');
+        });
+        return true;
+    }
+
+    // Only a web address, and never one carrying a user name or password: that is a
+    // credential, and these notes are read by the whole team. The hook checks again.
+    function hlLinkToKeep(u) {
+        const safe = hlSafeUrl(u);
+        if (!safe) return '';
+        try {
+            const p = new URL(safe);
+            if (p.username || p.password) return '';
+        } catch (e) { return ''; }
+        return safe;
+    }
+
+    async function hlAddLink(i) {
+        const lead = HOT_LEADS[i];
+        const id = hlCallId(lead);
+        if (!id) return false;
+        const urlBox = document.getElementById('hlLinkUrl-' + i);
+        const labelBox = document.getElementById('hlLinkLabel-' + i);
+        const raw = String((urlBox && typeof urlBox.value === 'string') ? urlBox.value : '').trim();
+        const label = String((labelBox && typeof labelBox.value === 'string') ? labelBox.value : '').trim();
+        if (!raw) { hlNoteSay(i, 'Paste the link first.', true); return false; }
+        const url = hlLinkToKeep(raw);
+        if (!url) {
+            hlNoteSay(i, 'Only a web link starting http:// or https:// can be kept here, with no user '
+                       + 'name or password in it.', true);
+            return false;
+        }
+        if (url.length > HL_LINK_MAX) { hlNoteSay(i, 'That link is too long to keep (2,048 characters at most).', true); return false; }
+        if (label.length > HL_LABEL_MAX) { hlNoteSay(i, 'Keep what the link is to 120 characters.', true); return false; }
+        const by = hlByRead();
+        const body = { callId: id, op: 'add_link', url };
+        if (label) body.label = label;
+        if (by) body.by = by;
+        body.requestId = hlRequestId();          // this press's own: see hlRequestId
+        if (!await hlNotesPost(i, body, 'link')) return false;
+        const d = hlDraft(id);
+        d.url = '';
+        d.label = '';
+        const j = hlIndexOf(id);
+        ['hlLinkUrl-', 'hlLinkLabel-'].forEach(key => {
+            const b = document.getElementById(key + j);
+            if (b) b.value = '';
+        });
+        return true;
+    }
+
+    // k is the item's position as drawn, newest first; its id is looked up here, from the
+    // same list, so no id from the store is ever written into the page's markup.
+    async function hlRemoveItem(i, k, pick, what) {
+        const id = hlCallId(HOT_LEADS[i]);
+        if (!id || !Number.isInteger(k) || k < 0) return false;
+        const x = pick(HL_NOTES.get(id))[k];
+        if (!x || typeof x.id !== 'string' || !x.id) return false;
+        if (typeof confirm === 'function' && !confirm(`Remove this ${what} from the lead?`)) return false;
+        return hlNotesPost(i, { callId: id, op: 'remove', id: x.id }, 'remove');
+    }
+    function hlRemoveNote(i, k) {
+        return hlRemoveItem(i, k, hlNoteEntries, 'note');
+    }
+    function hlRemoveLink(i, k) {
+        return hlRemoveItem(i, k, hlNoteLinks, 'link');
+    }
+
+    // ------------------------------------------------ contact details (Coleen, 28 Sep 2026)
+    function hlAccessSay(text, isError) {
+        const msg = document.getElementById('hlAccessMsg');
+        if (!msg) return;
+        msg.className = 'hl-msg' + (isError ? ' hl-msg-err' : '');
+        msg.textContent = text;
+    }
+    // POST /api/contact_unlock, then the list again: whether contact details show is the
+    // server's answer (a cookie it set), never something this page decides. A wrong
+    // password is 403, NOT 401 -- 401 on this page means the sign-in expired.
+    async function hlAccessPost(body, btn) {
+        if (btn) btn.disabled = true;
+        hlAccessSay(body.lock ? 'Locking…' : 'Checking the password…', false);
+        let res = null;
+        try {
+            res = await fetch('/api/contact_unlock', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+        } catch (e) {
+            res = null;
+        }
+        if (!res) {
+            if (btn) btn.disabled = false;
+            hlAccessSay('Could not reach the dashboard. Check the connection and try again.', true);
+            return false;
+        }
+        if (res.status === 401) {
+            hlAccessSay('Your sign-in has expired. Opening the sign-in page…', false);
+            sessionExpired();
+            return false;
+        }
+        let data = null;
+        try { data = await res.json(); } catch (e) { data = null; }
+        if (res.ok && data && data.status === 'success' && data.contact === (body.lock ? 'masked' : 'full')) {
+            await loadHotLeads(true);
+            return true;
+        }
+        if (btn) btn.disabled = false;
+        hlAccessSay((data && data.message) ? String(data.message) : `The dashboard answered ${res.status}.`, true);
+        return false;
+    }
+    function hlUnlock() {
+        const box = document.getElementById('hlUnlockPass');
+        const password = (box && typeof box.value === 'string') ? box.value : '';
+        // Out of the page before anything is sent, right or wrong.
+        if (box) box.value = '';
+        if (!password) {
+            hlAccessSay('Type the contact-details password first.', true);
+            return Promise.resolve(false);
+        }
+        return hlAccessPost({ password }, document.getElementById('hlUnlockBtn'));
+    }
+    function hlLock() {
+        return hlAccessPost({ lock: true }, document.getElementById('hlLockBtn'));
     }
     // HOT-LEADS-END
 
@@ -3719,6 +4652,11 @@ python state_sync.py push</pre>
      * goes into HTML without esc().
      */
     // RESEARCH-TAB-BEGIN
+    /* SHORTLIST-CARD-BEGIN .. SHORTLIST-CARD-END: one shortlist card and the rows it is built
+     * from. The Clare's Leads tab draws a lead's live results with the same card (Coleen,
+     * 28 Sep 2026: "match and mirror the first page/tab"), so tests/hot_leads_tab_checks.mjs
+     * slices this part out as well. Keep it free of anything but the card. */
+    // SHORTLIST-CARD-BEGIN
     /* Colin, 5 Aug: "The idea is to avoid all that extra, because then I have to go back
        and start looking for it. If there's a URL that I can click..." He spent eight
        minutes of that call hunting one Rouse Hill lot.
@@ -3767,12 +4705,16 @@ python state_sync.py push</pre>
               + (c.as_at ? ` · ${esc(c.as_at)}` : '')
               + (c.n_excluded_no_price ? ` · ${c.n_excluded_no_price} with no price shown` : '')
             : '';
+        // A web address or no link, as sourceLinkRow below (Coleen, 28 Sep 2026: this card
+        // now draws on the Clare's Leads tab too, and that tab refuses any link that is not
+        // http(s)). esc() keeps a URL inside href="", not a javascript: URL from running.
+        const cheapest = /^https?:\/\//i.test(String(c.cheapest_url || '').trim()) ? c.cheapest_url : '';
         if (c.verdict === 'flag') {
             return `<div style="margin-top:.4rem; padding:.4rem .55rem; border-radius:6px;
                  background:#fef2f2; border:1px solid #fecaca;">
                  <strong style="color:#b91c1c;">Comparable stock is cheaper</strong>
                  <div style="font-size:.8rem;">${esc(c.note || '')}</div>
-                 ${c.cheapest_url ? `<a href="${esc(c.cheapest_url)}" target="_blank"
+                 ${cheapest ? `<a href="${esc(c.cheapest_url)}" target="_blank"
                     rel="noopener" style="font-size:.8rem; color:var(--accent-blue);">
                     View the cheaper comparable</a>` : ''}
                  <div style="font-size:.72rem; color:var(--text-muted);">${meta}</div></div>`;
@@ -3825,6 +4767,201 @@ python state_sync.py push</pre>
             <span class="copied-flag" style="color:#15803d; font-weight:600;
                   display:none;">copied</span></div>`;
     };
+
+    // Moved up from below the copy-term listener, unchanged, so the card block holds
+    // everything the card is built from.
+    const sqm = v => (v === null || v === undefined || v === '' || Number(v) === 0)
+        ? NOT_STATED : `${Number(v).toLocaleString()}m²`;
+    const spec = (v, unit) => (v === null || v === undefined || v === '')
+        ? `${unit}: ${NOT_STATED}` : `${v} ${unit}`;
+
+    /* The Clare's Leads tab's compare tick (Coleen, 28 Sep 2026: "Each state tab should have
+       the same property selection and reporting functionality as Tab 1"). NOT .cmp-box:
+       that class's change handler writes the Research tab's SELECTED -- one selection for
+       whoever is being researched -- and a lead's picks landing in it would put one
+       client's buildings into another client's report. This tick names its lead
+       (data-lead), and the Leads tab keeps each lead's picks apart (hlTogglePick).
+       Everything in it is escaped: the call id and the hash both came from a record. */
+    function leadPickBox(callId, hash, picked) {
+        const id = typeof callId === 'string' ? callId : '';
+        const h = typeof hash === 'string' ? hash : '';
+        const why = !id ? 'This lead has no call id, so a pick cannot be kept for it.'
+            : (!h ? 'This listing has no stable identifier, so it cannot be kept as a pick.' : '');
+        return '<label class="cmp-pick hl-pick" title="Tick the options to put in this '
+             + 'client&#39;s report. Kept for this lead only.">'
+             + `<input type="checkbox" class="hl-cmp-box" data-lead="${esc(id)}" data-hash="${esc(h)}"`
+             + (picked === true && !why ? ' checked' : '')
+             + (why ? ` disabled title="${esc(why)}"` : '')
+             + '> compare</label>';
+    }
+
+    /* ONE SHORTLIST CARD, as markup. Coleen, 28 Sep 2026: "Please use the first page/tab as
+       the template and replicate its layout, property selection, reporting and
+       functionality across the other tabs." This was an inner closure of
+       runResearchAgent, so the Clare's Leads tab could only show a lead's buildings as the
+       compact hlRecCard, with nothing to tick and no report to build. It is the same
+       template, lifted out whole: the Research tab still draws every card through it
+       (renderShortlistCard), and a full record comes out byte for byte as before.
+
+       NULL-SAFE, because the Leads tab can hand it a record that is not a full shortlist
+       row, and the closure threw on one (a missing scoring_details, missing_inclusions or
+       price, or recommendation). No breakdown omits the matrix rather than printing
+       "undefined / 20"; an unknown missing_inclusions never claims Full Turnkey Verified;
+       no advertised price says not stated. None of that changes a full record's card.
+
+       LEAD MODE: opts.lead is the lead's callId (a string, even ''). The tick is the
+       lead's own (leadPickBox; opts.picked says whether this lead ticked it) and there is
+       no "Check the benchmark" button: it finds its property by position in
+       LAST_SHORTLIST, which is the Research tab's last search, not this lead's.
+
+       The template keeps the indentation it had inside runResearchAgent on purpose: the
+       whitespace inside a template literal is part of the card's markup. */
+    function shortlistCardHtml(prop, idx, opts) {
+        if (!prop || typeof prop !== 'object') prop = {};
+        const o = (opts && typeof opts === 'object') ? opts : {};
+        const leadMode = typeof o.lead === 'string';
+        const pillStyle = String(prop.recommendation ?? '').includes('Conditions') ? 'pill-conditions' : 'pill-recommend';
+        const sd = (prop.scoring_details && typeof prop.scoring_details === 'object') ? prop.scoring_details : null;
+        const price = prop.advertised_package_price;
+        return `
+                        <div class="card-top-row">
+                            <div>
+                                <div class="prop-title-text">
+                                  ${leadMode ? leadPickBox(o.lead, prop.content_hash, o.picked === true) : `<label class="cmp-pick" title="Tick any number of options — from this search or an earlier one — then use 'Compare selected' to build one report.">
+                                    <input type="checkbox" class="cmp-box" data-hash="${esc(prop.content_hash || '')}"
+                                           ${prop.content_hash && SELECTED.has(prop.content_hash) ? 'checked' : ''}
+                                           ${prop.content_hash ? '' : 'disabled title="This listing has no stable identifier, so it cannot be carried between searches."'}> compare
+                                  </label>`}
+                                  Rank #${idx+1}: ${esc(prop.lot_address)}</div>
+                                <div class="prop-subtitle-text">${esc(prop.suburb)}, ${esc(prop.state)} | Builder: <strong>${esc(prop.builder_name || NOT_STATED)}</strong>${prop.house_design ? ` (${esc(prop.house_design)})` : ''}</div>
+                                ${prop.availability_by_the_sheet === true
+                                    ? '<div class="sheet-badge">Confirm availability: this list has no status column</div>'
+                                    : prop.availability_by_exception_list === true
+                                    ? '<div class="sheet-badge">Confirm availability: this list marks only sold lots</div>'
+                                    : ''}
+                            </div>
+                            <div class="score-badge">
+                                <div class="score-number">${esc(prop.score)} <span style="font-size:0.85rem; color:var(--text-muted);">/ 100</span></div>
+                                <span class="pill ${pillStyle}">${esc(prop.recommendation)}</span>
+                            </div>
+                        </div>
+
+                        <div class="metrics-grid">
+                            <div class="metric-item"><span>Bed / Bath / Car</span><strong>${esc(spec(prop.bedrooms, 'Bed'))} | ${esc(spec(prop.bathrooms, 'Bath'))} | ${esc(spec(prop.car_spaces, 'Car'))}</strong></div>
+                            <div class="metric-item"><span>Land / House SQM</span><strong>${sqm(prop.land_size_sqm)} / ${sqm(prop.house_size_sqm)}</strong></div>
+                            <!-- ADVERTISED PRICE IS THE PRICE. A second figure beside it
+                                 ("Realistic Cost" — advertised plus our allowance for
+                                 unclear inclusions) was removed on request 9 Aug: two
+                                 prices on one card makes a consultant decide which to
+                                 quote, and the one the builder actually advertises is the
+                                 one a client will see. The allowance has not been hidden —
+                                 it is stated on the Turnkey Classification line directly
+                                 below, where it reads as what it is: an estimate we added,
+                                 not a price anyone is charging. -->
+                            <div class="metric-item"><span>Advertised Price</span><strong style="color:var(--accent-blue);">${price === null || price === undefined ? NOT_STATED : '$' + esc(price.toLocaleString())}</strong></div>
+                        </div>
+
+                        <div style="font-size:0.86rem; margin-bottom:1rem;">
+                            <!-- "(Allowance Added: +$15,000)" was here and was removed on
+                                 request 12 Aug. It is OUR estimate for inclusions the
+                                 stocklist does not mention, and beside the builder's own
+                                 advertised price it read as part of the quote — a second
+                                 number on a card that is now deliberately down to one.
+                                 Same reason "Realistic Cost" came off on 9 Aug.
+                                 The estimate itself still exists on the property and still
+                                 feeds the client report and the comparison; what is gone is
+                                 a figure a consultant could accidentally quote as a price.
+                                 "Full Turnkey Verified" stays — it states what IS confirmed
+                                 rather than adding a cost. -->
+                            <strong>Turnkey Classification:</strong> ${esc(prop.turnkey_status)}
+                            ${Array.isArray(prop.missing_inclusions) && prop.missing_inclusions.length === 0 ? '<span style="color:var(--emerald-green); font-weight:600;">(Full Turnkey Verified)</span>' : ''}
+                        </div>
+
+                        <div style="font-size:0.86rem; margin-bottom:1rem;">
+                            <strong>${prop.benchmark && prop.benchmark.basis === 'internal'
+                                ? 'Price vs comparable stock' : 'Market Benchmark (SOP Step 7)'}:</strong>
+                            ${prop.benchmark && prop.benchmark.benchmarked
+                                ? `<span style="font-weight:600; color:${prop.benchmark.variance_pct <= 5 ? 'var(--emerald-green)' : 'var(--amber-yellow)'};">${esc(prop.benchmark.classification)}</span>
+                                   &mdash; ${prop.benchmark.basis === 'internal' ? 'median of comparable listings' : 'avg market'} $${Number(prop.benchmark.avg_market_price).toLocaleString()} (${prop.benchmark.variance_pct > 0 ? '+' : ''}${esc(prop.benchmark.variance_pct)}%)`
+                                : `<span style="color:var(--amber-yellow); font-weight:600;">${esc(prop.benchmark ? prop.benchmark.classification : 'Unbenchmarked')}</span>`}
+                            ${prop.benchmark && prop.benchmark.needs_manual_benchmark ? `<div style="color:${prop.benchmark.basis === 'internal' ? 'var(--text-muted, #64748b)' : 'var(--amber-yellow)'}; font-size:0.78rem; margin-top:0.2rem;">${esc(prop.benchmark.data_note || '')}</div>` : ''}
+                            ${prop.distance_km_from_target ? `<div style="font-size:0.8rem; margin-top:0.2rem;"><strong>Distance:</strong> ${esc(prop.distance_km_from_target)} km from target suburb</div>` : ''}
+                            ${competitiveRow(prop.competitive)}
+                            ${sourceLinkRow(prop.source_link)}
+                            ${capturedRow(prop.date_checked)}
+                        </div>
+
+                        ${sd ? `<div class="score-section">
+                            <div style="font-size:0.75rem; font-weight:700; color:var(--text-heading); text-transform:uppercase; margin-bottom:0.5rem;">SOP Step 11 Scoring Matrix Breakdown</div>
+                            <div class="bar-item">
+                                <div class="bar-info"><span>Budget Fit (Max 20)</span><span>${esc(sd.budget_fit)} / 20</span></div>
+                                <div class="bar-bg"><div class="bar-fill" style="width:${(sd.budget_fit/20)*100}%"></div></div>
+                            </div>
+                            <div class="bar-item">
+                                <div class="bar-info"><span>Requirement Match (Max 20)</span><span>${esc(sd.requirement_match)} / 20</span></div>
+                                <div class="bar-bg"><div class="bar-fill" style="width:${(sd.requirement_match/20)*100}%"></div></div>
+                            </div>
+                            <div class="bar-item">
+                                <div class="bar-info"><span>Location & Amenities (Max 15)</span><span>${esc(sd.location_amenity)} / 15</span></div>
+                                <div class="bar-bg"><div class="bar-fill" style="width:${(sd.location_amenity/15)*100}%"></div></div>
+                            </div>
+                            <!-- The breakdown used to stop here, showing 55 of the 100
+                                 points next to a headline out of 100: three bars adding
+                                 to 51.3 beside a score of 87.8. The four missing
+                                 categories were being scored all along, just never
+                                 shown, so the matrix looked wrong to anyone who added
+                                 it up. -->
+                            <div class="bar-item">
+                                <div class="bar-info"><span>Value Competitiveness (Max 15)</span><span>${esc(sd.value_competitiveness)} / 15</span></div>
+                                <div class="bar-bg"><div class="bar-fill" style="width:${(sd.value_competitiveness/15)*100}%"></div></div>
+                            </div>
+                            <div class="bar-item">
+                                <div class="bar-info"><span>Builder Confidence (Max 10)</span><span>${esc(sd.builder_confidence)} / 10</span></div>
+                                <div class="bar-bg"><div class="bar-fill" style="width:${(sd.builder_confidence/10)*100}%"></div></div>
+                            </div>
+                            <div class="bar-item">
+                                <div class="bar-info"><span>Suitability (Max 10)</span><span>${esc(sd.suitability_score)} / 10</span></div>
+                                <div class="bar-bg"><div class="bar-fill" style="width:${(sd.suitability_score/10)*100}%"></div></div>
+                            </div>
+                            <div class="bar-item">
+                                <div class="bar-info"><span>Risk (Max 10)</span><span>${esc(sd.risk_score)} / 10</span></div>
+                                <div class="bar-bg"><div class="bar-fill" style="width:${(sd.risk_score/10)*100}%"></div></div>
+                            </div>
+                            <div class="bar-info" style="margin-top:0.4rem; font-weight:700; border-top:1px solid var(--border-strong); padding-top:0.4rem;">
+                                <span>Total</span><span>${esc(prop.score)} / 100</span>
+                            </div>
+                        </div>` : ''}
+
+                        <div style="font-size:0.85rem; margin-top:1rem; color:var(--text-body);">
+                            <strong>Executive Reasoning:</strong> ${esc(prop.recommendation_reason)}
+                        </div>
+                        ${String(prop.advisories || '').trim() ? `
+                        <div style="font-size:0.82rem; margin-top:0.5rem; color:var(--amber-yellow);">
+                            <strong>Confirm before presenting:</strong> ${esc(prop.advisories)}
+                        </div>` : ''}
+
+                        <!-- Colin, 9 Aug: a button under each researched property that asks
+                             whether realestate.com.au holds a better one for this client.
+                             Deliberately NOT run automatically with the search: it is a
+                             question the consultant asks about a specific lot, and firing it
+                             for every result would put a market claim on cards nobody looked
+                             at. -->
+                        ${leadMode ? '' : `<div style="margin-top:0.9rem; padding-top:0.75rem; border-top:1px solid var(--border-color,#e2e8f0);">
+                            <button type="button" class="bench-btn" data-idx="${idx}"
+                                style="padding:0.5rem 0.9rem; border:1px solid var(--accent-blue);
+                                       background:transparent; color:var(--accent-blue);
+                                       border-radius:6px; font-weight:600; cursor:pointer;
+                                       font-size:0.85rem;">
+                                Check the benchmark
+                            </button>
+                            <span style="margin-left:0.5rem; color:var(--text-muted); font-size:0.8rem;">
+                                is there a better one on realestate.com.au?
+                            </span>
+                            <div id="benchOut${idx}" style="margin-top:0.6rem; font-size:0.85rem;"></div>
+                        </div>`}
+                    `;
+    }
+    // SHORTLIST-CARD-END
 
     /* ---------------------------------------------------- suburb autocomplete
        Coleen asked for this twice on 3 Aug, and tied it to correctness rather than
@@ -3975,10 +5112,6 @@ python state_sync.py push</pre>
             try { document.execCommand('copy'); done(); } catch (e) { /* selected anyway */ }
         }
     });
-    const sqm = v => (v === null || v === undefined || v === '' || Number(v) === 0)
-        ? NOT_STATED : `${Number(v).toLocaleString()}m²`;
-    const spec = (v, unit) => (v === null || v === undefined || v === '')
-        ? `${unit}: ${NOT_STATED}` : `${v} ${unit}`;
 
     const numField = (id, fallback) => {
         const el = document.getElementById(id);
@@ -4966,148 +6099,12 @@ python state_sync.py push</pre>
 
                 const renderShortlistCard = (prop, idx) => {
                     const isRank1 = idx === 0;
-                    const pillStyle = prop.recommendation.includes('Conditions') ? 'pill-conditions' : 'pill-recommend';
-
                     const card = document.createElement('div');
                     card.className = `prop-card ${isRank1 ? 'rank-1' : ''}`;
-
-                    card.innerHTML = `
-                        <div class="card-top-row">
-                            <div>
-                                <div class="prop-title-text">
-                                  <label class="cmp-pick" title="Tick any number of options — from this search or an earlier one — then use 'Compare selected' to build one report.">
-                                    <input type="checkbox" class="cmp-box" data-hash="${esc(prop.content_hash || '')}"
-                                           ${prop.content_hash && SELECTED.has(prop.content_hash) ? 'checked' : ''}
-                                           ${prop.content_hash ? '' : 'disabled title="This listing has no stable identifier, so it cannot be carried between searches."'}> compare
-                                  </label>
-                                  Rank #${idx+1}: ${esc(prop.lot_address)}</div>
-                                <div class="prop-subtitle-text">${esc(prop.suburb)}, ${esc(prop.state)} | Builder: <strong>${esc(prop.builder_name || NOT_STATED)}</strong>${prop.house_design ? ` (${esc(prop.house_design)})` : ''}</div>
-                                ${prop.availability_by_the_sheet === true
-                                    ? '<div class="sheet-badge">Confirm availability: this list has no status column</div>'
-                                    : prop.availability_by_exception_list === true
-                                    ? '<div class="sheet-badge">Confirm availability: this list marks only sold lots</div>'
-                                    : ''}
-                            </div>
-                            <div class="score-badge">
-                                <div class="score-number">${esc(prop.score)} <span style="font-size:0.85rem; color:var(--text-muted);">/ 100</span></div>
-                                <span class="pill ${pillStyle}">${esc(prop.recommendation)}</span>
-                            </div>
-                        </div>
-
-                        <div class="metrics-grid">
-                            <div class="metric-item"><span>Bed / Bath / Car</span><strong>${spec(prop.bedrooms, 'Bed')} | ${spec(prop.bathrooms, 'Bath')} | ${spec(prop.car_spaces, 'Car')}</strong></div>
-                            <div class="metric-item"><span>Land / House SQM</span><strong>${sqm(prop.land_size_sqm)} / ${sqm(prop.house_size_sqm)}</strong></div>
-                            <!-- ADVERTISED PRICE IS THE PRICE. A second figure beside it
-                                 ("Realistic Cost" — advertised plus our allowance for
-                                 unclear inclusions) was removed on request 9 Aug: two
-                                 prices on one card makes a consultant decide which to
-                                 quote, and the one the builder actually advertises is the
-                                 one a client will see. The allowance has not been hidden —
-                                 it is stated on the Turnkey Classification line directly
-                                 below, where it reads as what it is: an estimate we added,
-                                 not a price anyone is charging. -->
-                            <div class="metric-item"><span>Advertised Price</span><strong style="color:var(--accent-blue);">$${prop.advertised_package_price.toLocaleString()}</strong></div>
-                        </div>
-
-                        <div style="font-size:0.86rem; margin-bottom:1rem;">
-                            <!-- "(Allowance Added: +$15,000)" was here and was removed on
-                                 request 12 Aug. It is OUR estimate for inclusions the
-                                 stocklist does not mention, and beside the builder's own
-                                 advertised price it read as part of the quote — a second
-                                 number on a card that is now deliberately down to one.
-                                 Same reason "Realistic Cost" came off on 9 Aug.
-                                 The estimate itself still exists on the property and still
-                                 feeds the client report and the comparison; what is gone is
-                                 a figure a consultant could accidentally quote as a price.
-                                 "Full Turnkey Verified" stays — it states what IS confirmed
-                                 rather than adding a cost. -->
-                            <strong>Turnkey Classification:</strong> ${esc(prop.turnkey_status)}
-                            ${prop.missing_inclusions.length > 0 ? '' : '<span style="color:var(--emerald-green); font-weight:600;">(Full Turnkey Verified)</span>'}
-                        </div>
-
-                        <div style="font-size:0.86rem; margin-bottom:1rem;">
-                            <strong>${prop.benchmark && prop.benchmark.basis === 'internal'
-                                ? 'Price vs comparable stock' : 'Market Benchmark (SOP Step 7)'}:</strong>
-                            ${prop.benchmark && prop.benchmark.benchmarked
-                                ? `<span style="font-weight:600; color:${prop.benchmark.variance_pct <= 5 ? 'var(--emerald-green)' : 'var(--amber-yellow)'};">${esc(prop.benchmark.classification)}</span>
-                                   &mdash; ${prop.benchmark.basis === 'internal' ? 'median of comparable listings' : 'avg market'} $${Number(prop.benchmark.avg_market_price).toLocaleString()} (${prop.benchmark.variance_pct > 0 ? '+' : ''}${esc(prop.benchmark.variance_pct)}%)`
-                                : `<span style="color:var(--amber-yellow); font-weight:600;">${esc(prop.benchmark ? prop.benchmark.classification : 'Unbenchmarked')}</span>`}
-                            ${prop.benchmark && prop.benchmark.needs_manual_benchmark ? `<div style="color:${prop.benchmark.basis === 'internal' ? 'var(--text-muted, #64748b)' : 'var(--amber-yellow)'}; font-size:0.78rem; margin-top:0.2rem;">${esc(prop.benchmark.data_note || '')}</div>` : ''}
-                            ${prop.distance_km_from_target ? `<div style="font-size:0.8rem; margin-top:0.2rem;"><strong>Distance:</strong> ${esc(prop.distance_km_from_target)} km from target suburb</div>` : ''}
-                            ${competitiveRow(prop.competitive)}
-                            ${sourceLinkRow(prop.source_link)}
-                            ${capturedRow(prop.date_checked)}
-                        </div>
-
-                        <div class="score-section">
-                            <div style="font-size:0.75rem; font-weight:700; color:var(--text-heading); text-transform:uppercase; margin-bottom:0.5rem;">SOP Step 11 Scoring Matrix Breakdown</div>
-                            <div class="bar-item">
-                                <div class="bar-info"><span>Budget Fit (Max 20)</span><span>${prop.scoring_details.budget_fit} / 20</span></div>
-                                <div class="bar-bg"><div class="bar-fill" style="width:${(prop.scoring_details.budget_fit/20)*100}%"></div></div>
-                            </div>
-                            <div class="bar-item">
-                                <div class="bar-info"><span>Requirement Match (Max 20)</span><span>${prop.scoring_details.requirement_match} / 20</span></div>
-                                <div class="bar-bg"><div class="bar-fill" style="width:${(prop.scoring_details.requirement_match/20)*100}%"></div></div>
-                            </div>
-                            <div class="bar-item">
-                                <div class="bar-info"><span>Location & Amenities (Max 15)</span><span>${prop.scoring_details.location_amenity} / 15</span></div>
-                                <div class="bar-bg"><div class="bar-fill" style="width:${(prop.scoring_details.location_amenity/15)*100}%"></div></div>
-                            </div>
-                            <!-- The breakdown used to stop here, showing 55 of the 100
-                                 points next to a headline out of 100: three bars adding
-                                 to 51.3 beside a score of 87.8. The four missing
-                                 categories were being scored all along, just never
-                                 shown, so the matrix looked wrong to anyone who added
-                                 it up. -->
-                            <div class="bar-item">
-                                <div class="bar-info"><span>Value Competitiveness (Max 15)</span><span>${prop.scoring_details.value_competitiveness} / 15</span></div>
-                                <div class="bar-bg"><div class="bar-fill" style="width:${(prop.scoring_details.value_competitiveness/15)*100}%"></div></div>
-                            </div>
-                            <div class="bar-item">
-                                <div class="bar-info"><span>Builder Confidence (Max 10)</span><span>${prop.scoring_details.builder_confidence} / 10</span></div>
-                                <div class="bar-bg"><div class="bar-fill" style="width:${(prop.scoring_details.builder_confidence/10)*100}%"></div></div>
-                            </div>
-                            <div class="bar-item">
-                                <div class="bar-info"><span>Suitability (Max 10)</span><span>${prop.scoring_details.suitability_score} / 10</span></div>
-                                <div class="bar-bg"><div class="bar-fill" style="width:${(prop.scoring_details.suitability_score/10)*100}%"></div></div>
-                            </div>
-                            <div class="bar-item">
-                                <div class="bar-info"><span>Risk (Max 10)</span><span>${prop.scoring_details.risk_score} / 10</span></div>
-                                <div class="bar-bg"><div class="bar-fill" style="width:${(prop.scoring_details.risk_score/10)*100}%"></div></div>
-                            </div>
-                            <div class="bar-info" style="margin-top:0.4rem; font-weight:700; border-top:1px solid var(--border-strong); padding-top:0.4rem;">
-                                <span>Total</span><span>${prop.score} / 100</span>
-                            </div>
-                        </div>
-
-                        <div style="font-size:0.85rem; margin-top:1rem; color:var(--text-body);">
-                            <strong>Executive Reasoning:</strong> ${esc(prop.recommendation_reason)}
-                        </div>
-                        ${(prop.advisories || '').trim() ? `
-                        <div style="font-size:0.82rem; margin-top:0.5rem; color:var(--amber-yellow);">
-                            <strong>Confirm before presenting:</strong> ${esc(prop.advisories)}
-                        </div>` : ''}
-
-                        <!-- Colin, 9 Aug: a button under each researched property that asks
-                             whether realestate.com.au holds a better one for this client.
-                             Deliberately NOT run automatically with the search: it is a
-                             question the consultant asks about a specific lot, and firing it
-                             for every result would put a market claim on cards nobody looked
-                             at. -->
-                        <div style="margin-top:0.9rem; padding-top:0.75rem; border-top:1px solid var(--border-color,#e2e8f0);">
-                            <button type="button" class="bench-btn" data-idx="${idx}"
-                                style="padding:0.5rem 0.9rem; border:1px solid var(--accent-blue);
-                                       background:transparent; color:var(--accent-blue);
-                                       border-radius:6px; font-weight:600; cursor:pointer;
-                                       font-size:0.85rem;">
-                                Check the benchmark
-                            </button>
-                            <span style="margin-left:0.5rem; color:var(--text-muted); font-size:0.8rem;">
-                                is there a better one on realestate.com.au?
-                            </span>
-                            <div id="benchOut${idx}" style="margin-top:0.6rem; font-size:0.85rem;"></div>
-                        </div>
-                    `;
+                    // The markup is shortlistCardHtml's (Coleen, 28 Sep 2026: the Clare's Leads
+                    // tab draws the same card). No opts: this tab's own compare tick and
+                    // benchmark button, byte for byte as before.
+                    card.innerHTML = shortlistCardHtml(prop, idx);
 
                     cardsBox.appendChild(card);
                 };
@@ -6053,8 +7050,13 @@ ${SPB_BRAND()}
     /* Opens the window BEFORE the await, and this ordering is load-bearing: building the
      * share link is asynchronous (compression), and a window opened after an await is no
      * longer attributable to the click that started it, so browsers block it as a popup.
-     * Open first, show a holding line, then replace it. */
-    async function openGeneratedReport(kind, props, render) {
+     * Open first, show a holding line, then replace it.
+     *
+     * briefIn ({ client, pref, budget }), when given, says who the report is for instead of
+     * the Research tab's form (Coleen, 28 Sep 2026: the Clare's Leads tab builds the same
+     * report for a lead, and the form holds whoever was searched last -- another client, or
+     * the page-load search). Left out, the form is read exactly as before. */
+    async function openGeneratedReport(kind, props, render, briefIn) {
         const w = window.open('', '_blank');
         // A blocked popup returns null, and the old code went straight to w.document —
         // a TypeError swallowed by the event loop, so the button visibly did nothing.
@@ -6066,8 +7068,16 @@ ${SPB_BRAND()}
             + '<p style="font:14px -apple-system,sans-serif;padding:2rem;color:#334155">'
             + 'Preparing report…</p>');
         const _v = id => (document.getElementById(id) || {}).value || '';
-        const client = _v('clientName');
-        const brief = {
+        const given = (briefIn && typeof briefIn === 'object' && !Array.isArray(briefIn)) ? briefIn : null;
+        const givenBudget = given ? Number(given.budget) : 0;
+        const client = given ? String(given.client ?? '').trim() : _v('clientName');
+        const brief = given ? {
+            pref: String(given.pref ?? '').trim(),
+            // The lead's own figure or nothing: never the search's "no ceiling".
+            budget: (Number.isFinite(givenBudget) && givenBudget > 0
+                     && givenBudget < Number.MAX_SAFE_INTEGER) ? givenBudget : 0,
+            client,
+        } : {
             pref: [_v('suburbs'), _v('stateSelect')].map(x => String(x).trim())
                     .filter(Boolean).join(', '),
             budget: Number(String(_v('budgetMax')).replace(/[^0-9.]/g, '')) || 0,

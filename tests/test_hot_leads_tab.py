@@ -147,6 +147,256 @@ MUTANTS = {
         "const shortlist = (Array.isArray(d.shortlist) && d.shortlist.length) ? d.shortlist "
         ": (Array.isArray(d.needs_confirming) ? d.needs_confirming : []);",
         "needs_confirming only: none of its listings is shown"),
+
+    # --- Coleen, 28 Sep 2026 (3): contact details only for whoever holds the password ---
+    "the contact line is full whatever the view says": (
+        "const contact = full\n            ? (email", "const contact = true\n            ? (email",
+        "masked by default: no mailto and no tel link"),
+    "a card drawn with no view is unlocked": (
+        "contact: HL_ACCESS.contact === 'full' ? 'full' : 'masked',", "contact: 'full',",
+        "masked by default"),
+    "the loader trusts any contact value": (
+        "contact: data.contact === 'full' ? 'full' : 'masked',",
+        "contact: data.contact ? 'full' : 'masked',",
+        "a contact value other than exactly 'full' is masked"),
+    "one full read unlocks a half-masked list": (
+        "answers.every(a => a.contact === 'full')", "answers.some(a => a.contact === 'full')",
+        "half masked is masked"),
+    "the masked line shows more than 3 digits": (
+        "digits.length >= 6 ? digits.slice(-3) : ''", "digits.length >= 6 ? digits.slice(-6) : ''",
+        "shows only its last 3 digits"),
+    "phoneLast3 is printed as given": (
+        "/^\\d{3}$/.test(given) ? given", "given ? given",
+        "a phoneLast3 that is not 3 digits is not shown"),
+    "a masked card links the call recording": (
+        "full ? hlExtLink(L.recordingUrl, 'Call recording') : ''",
+        "hlExtLink(L.recordingUrl, 'Call recording')",
+        "masked: no recording link"),
+    "Email this client carries the record's text": (
+        'href="${esc(mail + HL_MAIL_QUERY)}"',
+        "href=\"${esc(mail + '?subject=' + encodeURIComponent(name))}\"",
+        "Email this client: subject and body are fixed words"),
+    "a wrong password is read as an expired sign-in": (
+        "if (res.status === 401) {\n            hlAccessSay(",
+        "if (res.status === 401 || res.status === 403) {\n            hlAccessSay(",
+        "403: the server's message is shown, and it is not an expired sign-in"),
+    "the password is left in the box": (
+        "if (box) box.value = '';\n        if (!password) {", "if (!password) {",
+        "the password box is emptied"),
+    "the unlock form is drawn with no password set": (
+        "} else if (HL_ACCESS.unlock === 'password') {", "} else if (true) {",
+        "no password set: a note, and no password box"),
+
+    # --- (1)/(2) the Research tab's selection and report, per lead ---
+    "a lead's tick writes the Research tab's selection": (
+        "if (rec) mine.set(h, slim(rec));",
+        "if (rec) { mine.set(h, slim(rec)); SELECTED.set(h, slim(rec)); }",
+        "a lead's picks never reach SELECTED"),
+    "a pick is stored whole": (
+        "if (rec) mine.set(h, slim(rec));", "if (rec) mine.set(h, rec);",
+        "a pick is slim()'d"),
+    "one lead's picks show on every lead": (
+        "const hlPicksFor = id => (id && hlPicksLoad().get(id)) || new Map();",
+        "const hlPicksFor = id => [...hlPicksLoad().values()][0] || new Map();",
+        "picks are per lead"),
+    "a tick for a building not on the card is kept": (
+        "else if (!mine.has(h)) return false;", "else mine.set(h, { content_hash: h });",
+        "a tick for a building not on the card is refused"),
+    "the tick listener reads the Research tab's boxes too": (
+        "!box.classList.contains('hl-cmp-box')) return;",
+        "!(box.classList.contains('hl-cmp-box') || box.classList.contains('cmp-box'))) return;",
+        "a Research tab .cmp-box is not this tab's to read"),
+    "the day-of-call picks carry no tick": (
+        "list.map(r => hlRecCard(r, lead === null ? undefined : { lead }))",
+        "list.map(r => hlRecCard(r))",
+        "each saved building carries its own lead's tick"),
+    "blocked storage loses a pick without a word": (
+        "if (!saved) {\n            hlSay(", "if (false) {\n            hlSay(",
+        "blocked storage"),
+    "the report is built from the Research tab's form": (
+        "comparisonDocument, hlReportBrief(lead));", "comparisonDocument);",
+        "the report is for the lead"),
+    "the report brief takes the no-ceiling budget": (
+        "&& bm > 0 && bm < Number.MAX_SAFE_INTEGER) ? bm : 0,", "&& bm > 0) ? bm : 0,",
+        "hlReportBrief: the no-ceiling budget is 0"),
+    "a spoken email reaches the report": (
+        "client: hlNoContact(hlText(c.name) || hlText(b.client_name), c),",
+        "client: hlText(c.name) || hlText(b.client_name),",
+        "a name that is an email or phone is taken out"),
+    "the live list is the top 3 again": (
+        "shortlist.slice(0, shown).map((p, k) => {", "shortlist.slice(0, 3).map((p, k) => {",
+        "the whole live shortlist"),
+    "the live list is not paged": (
+        "(Number.isInteger(o.shown) && o.shown > 0) ? o.shown : HL_LIVE_PAGE);", "shortlist.length);",
+        "a live shortlist is painted 25 at a time"),
+    "a live card is drawn for the Research tab": (
+        "shortlistCardHtml(p, k, { lead, picked: hlPicked(lead, hash) })", "shortlistCardHtml(p, k)",
+        "every live card carries this lead's tick"),
+
+    # --- (2)/(5) notes and links per lead ---
+    "a note's text is not escaped": (
+        '`<div class="hl-note-text">${esc(text)}</div>`', '`<div class="hl-note-text">${text}</div>`',
+        "hostile notes render as text"),
+    "who wrote a note is not escaped": (
+        "(meta ? `<span>${esc(meta)}</span>` : '')", "(meta ? `<span>${meta}</span>` : '')",
+        "hostile notes render as text"),
+    "a stored link is not checked": (
+        "(hlExtLink(url, label, url) || ", '(`<a href="${url}">${esc(label)}</a>` || ',
+        "a javascript: link stored in the notes is not a link"),
+    "a javascript: link is sent to be kept": (
+        "const safe = hlSafeUrl(u);\n        if (!safe) return '';\n        try {",
+        "const safe = String(u);\n        try {",
+        "a javascript: link is refused before sending"),
+    "a link carrying a password is sent to be kept": (
+        "if (p.username || p.password) return '';", "",
+        "a link carrying a user name or password is refused"),
+    "a 409 is read as saved": (
+        "if (res.status === 409) {",
+        "if (res.status === 409) { HL_NOTE_BUSY.delete(id); return true; }\n            if (false) {",
+        "409 keeps the note in the box"),
+    "an empty note is sent": (
+        "if (action === 'other' && !text) {", "if (false) {",
+        "an empty note is not sent"),
+    "a second save goes out while the first is out": (
+        "if (HL_NOTE_BUSY.has(id)) {", "if (false) {",
+        "a second save while the first is out sends nothing"),
+    "Remove takes the store's order, not what was drawn": (
+        "const x = pick(HL_NOTES.get(id))[k];", "const x = hlNotesOf(HL_NOTES.get(id)).entries[k];",
+        "Remove sends the id of the note drawn in that place"),
+    "Remove does not ask first": (
+        "if (typeof confirm === 'function' && !confirm(", "if (false && !confirm(",
+        "Remove asks first"),
+    "notes are drawn oldest first": (
+        ".sort((a, b) => (at(b.x) - at(a.x)) || (a.k - b.k))",
+        ".sort((a, b) => (at(a.x) - at(b.x)) || (a.k - b.k))",
+        "newest first"),
+    "a removed note is drawn": (
+        "&& !Array.isArray(x) && x.removed !== true);", "&& !Array.isArray(x));",
+        "a removed note is not drawn"),
+    "a save's answer is not drawn": (
+        "HL_NOTES.set(id, hlNotesOf(data.notes));", "",
+        "the list is redrawn from the answer"),
+    "the notes in /api/hot_leads are ignored": (
+        "if (!HL_NOTES.has(id)) HL_NOTES.set(id, hlNotesOf(raw));", "",
+        "notes from /api/hot_leads are drawn"),
+    "unreadable notes are not said": (
+        "(v.notesError ? ", "(false ? ",
+        "a lead whose notes could not be read says so"),
+    "typing is lost to a reload": (
+        "        hlCaptureDrafts();\n        el.innerHTML", "        el.innerHTML",
+        "a typed note survives a reload"),
+    "the consultant's name is not remembered": (
+        "try { if (by) localStorage.setItem(HL_BY_STORE, by); }", "try { }",
+        "the name is remembered"),
+
+    # --- the 28 Sep review of the above ---
+    # Three escapes that no check needed: removing any of them passed every check.
+    "the typed link draft is not escaped": (
+        'value="${esc(hlText(d.url))}"', 'value="${hlText(d.url)}"',
+        "a hostile draft link survives a reload, escaped"),
+    "a link with no URL prints its label unescaped": (
+        "(hlExtLink(url, label, url) || `<span class=\"hl-nolink\">${esc(label)} (link unavailable)</span>`)",
+        "(hlExtLink(url, label, url) || `<span class=\"hl-nolink\">${label} (link unavailable)</span>`)",
+        "a link with no URL: its label is text"),
+    "the remembered name is not escaped": (
+        'value="${esc(hlByStored())}"', 'value="${hlByStored()}"',
+        "a remembered name is escaped back into its box"),
+    # Two dashboard tabs: writing the page's whole map back dropped the other tab's picks.
+    "a pick save writes this page's whole map back": (
+        "const stored = hlPicksStored() || [];",
+        "const stored = [...hlPicksLoad()].map(([k, m]) => [k, [...m.values()]]);",
+        "two tabs: a pick ticked in one tab is not dropped"),
+    "a lead written again moves to the end of the store": (
+        "pairs.splice(at < 0 ? pairs.length : at, 0,", "pairs.splice(pairs.length, 0,",
+        "a lead written again keeps its place"),
+    # A save that may have been made was called "Not saved", and was saved twice.
+    "a save that may have been made is called not saved": (
+        "if (hlMaybeMade(res.status, why)) {", "if (false) {",
+        "may have saved, the hook's 502"),
+    "a 502 is read as refused": (
+        "(status >= 500 && status !== 503)", "(status === 500)",
+        "may have saved, a 502 with no message"),
+    "a message saying the note was saved is ignored": (
+        "if (/\\bwas saved, but\\b/i.test(m)) return true;", "",
+        "a message that says the note was saved"),
+    "a message saying nothing was changed is ignored": (
+        "if (/\\bnothing was changed\\b/i.test(m)) return false;", "",
+        "a 502 that says nothing was changed is 'Not saved'"),
+    "a dropped connection is said to have changed nothing": (
+        "hlNoteSay(hlIndexOf(id), unsure('the dashboard could not be reached'), true);",
+        "hlNoteSay(hlIndexOf(id), 'Could not reach the dashboard, so nothing was changed.' + kept, true);",
+        "unreachable: could not confirm"),
+    # (c) one requestId per press, the same one on the automatic retry.
+    "no requestId is sent": (
+        "body.requestId = hlRequestId();", "",
+        "carries a requestId"),
+    "every press sends the same requestId": (
+        "return Array.from(bytes, x => x.toString(16).padStart(2, '0')).join('');", "return 'r1';",
+        "a fresh requestId for every press of Save"),
+    "a dropped connection is not retried": (
+        "for (let tries = body.requestId ? 2 : 1;", "for (let tries = 1;",
+        "unreachable: sent once more, automatically"),
+    "the retry carries a new requestId": (
+        "body: sent\n", "body: JSON.stringify({ ...body, requestId: hlRequestId() })\n",
+        "with the same requestId"),
+    # notes[callId] === null (the hook's word for unreadable before 28 Sep) is not "no notes".
+    "a null notes value is drawn as no notes": (
+        "if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { HL_NOTES_ERR.add(id); return; }", "",
+        "a null notes value is said to be unreadable"),
+    "unreadable notes also say there are none": (
+        "const unread = !!v.notesError && !v.notes;", "const unread = false;",
+        "none says it has no notes"),
+    # The server's half of the same finding, had it been the page's: a masked answer with
+    # notesErrors taken as a failed answer loses every lead.
+    "a masked answer naming unreadable notes is treated as a failure": (
+        "if (!res.ok || !data || data.status !== 'success') {\n            return { kind: 'failed'",
+        "if (!res.ok || !data || data.status !== 'success' || (data.contact !== 'full'"
+        " && Array.isArray(data.notesErrors) && data.notesErrors.length)) {\n            return { kind: 'failed'",
+        "masked, with notes that could not be read: every lead is listed"),
+}
+
+
+# THE SAME, FOR WHAT THE TAB NOW SHARES WITH THE REST OF THE PAGE (Coleen, 28 Sep 2026): the
+# Research tab's card (shortlistCardHtml, in the SHORTLIST-CARD block) and openGeneratedReport
+# are outside the HOT-LEADS markers but are exercised by the same checks. Each anchor must be
+# in index.html exactly once, so a mutant cannot land somewhere the checks do not look.
+PAGE_MUTANTS = {
+    "a lead's card draws the Research tab's .cmp-box": (
+        "${leadMode ? leadPickBox(o.lead, prop.content_hash, o.picked === true) : `",
+        "${false ? '' : `",
+        "a live card's tick is the lead's own"),
+    "a lead's card keeps the benchmark button": (
+        "${leadMode ? '' : `<div style=\"margin-top:0.9rem;", "${false ? '' : `<div style=\"margin-top:0.9rem;",
+        "no benchmark button on a lead's card"),
+    "the card throws on a row with no scoring breakdown": (
+        "${sd ? `<div class=\"score-section\">", "${true ? `<div class=\"score-section\">",
+        "the card renders"),
+    "the card claims Full Turnkey Verified when it does not know": (
+        "${Array.isArray(prop.missing_inclusions) && prop.missing_inclusions.length === 0 ?",
+        "${!(prop.missing_inclusions || []).length ?",
+        "no claim of Full Turnkey Verified"),
+    "a missing price prints $undefined": (
+        "${price === null || price === undefined ? NOT_STATED : '$' + esc(price.toLocaleString())}",
+        "$${String(price)}",
+        "a missing advertised price says not stated"),
+    "a javascript: cheaper comparable becomes a link": (
+        "const cheapest = /^https?:\\/\\//i.test(String(c.cheapest_url || '').trim()) ? c.cheapest_url : '';",
+        "const cheapest = c.cheapest_url;",
+        "a javascript: cheaper comparable is not a link"),
+    "bed / bath / car are not escaped on the card": (
+        "${esc(spec(prop.bedrooms, 'Bed'))}", "${spec(prop.bedrooms, 'Bed')}",
+        "hostile live shortlist: markup"),
+    "the report ignores the lead's brief": (
+        "const given = (briefIn && typeof briefIn === 'object' && !Array.isArray(briefIn)) ? briefIn : null;",
+        "const given = null;",
+        "the report is for the lead"),
+    "openGeneratedReport prints the no-ceiling budget": (
+        "&& givenBudget < Number.MAX_SAFE_INTEGER) ? givenBudget : 0,", ") ? givenBudget : 0,",
+        "a no-ceiling budget handed to openGeneratedReport is never printed"),
+    "the Research tab's report stops reading its form": (
+        "const client = given ? String(given.client ?? '').trim() : _v('clientName');",
+        "const client = String((given || {}).client ?? '').trim();",
+        "the Research tab's call (no 4th argument) still reads its form"),
 }
 
 
@@ -167,3 +417,32 @@ def test_a_broken_page_fails_the_checks(tmp_path, name):
     assert any(expect in ln for ln in fails), (
         f"the run failed, but not on the check this mutant targets ({expect!r}). "
         f"FAIL lines: {fails[:6]} stderr: {r.stderr[-800:]}")
+
+
+@pytest.mark.parametrize("name", sorted(PAGE_MUTANTS))
+def test_a_broken_shared_part_fails_the_checks(tmp_path, name):
+    old, new, expect = PAGE_MUTANTS[name]
+    src = INDEX.read_text(encoding="utf-8")
+    begin, end = src.index(BEGIN), src.index(END)
+    assert src.count(old) == 1, (
+        f"mutation anchor {old!r} is not in index.html exactly once; the code changed, so "
+        f"update this mutant rather than deleting it")
+    assert not (begin <= src.index(old) < end), f"{old!r} is inside the hot-leads block: put it in MUTANTS"
+    broken = tmp_path / "index.html"
+    broken.write_text(src.replace(old, new), encoding="utf-8")
+    r = _run(broken)
+    assert r.returncode != 0, f"the checks PASSED against a page where {name}"
+    fails = [ln for ln in r.stdout.splitlines() if ln.strip().startswith("FAIL")]
+    assert any(expect in ln for ln in fails), (
+        f"the run failed, but not on the check this mutant targets ({expect!r}). "
+        f"FAIL lines: {fails[:6]} stderr: {r.stderr[-800:]}")
+
+
+def test_the_shared_parts_are_required(tmp_path):
+    """Without the card block the checks must refuse to run, not quietly check less."""
+    src = INDEX.read_text(encoding="utf-8")
+    broken = tmp_path / "index.html"
+    broken.write_text(src.replace("    // SHORTLIST-CARD-BEGIN", "    // renamed"), encoding="utf-8")
+    r = _run(broken)
+    assert r.returncode != 0
+    assert "the SHORTLIST-CARD block was not found" in r.stdout

@@ -570,6 +570,17 @@ MUTANTS = {
     "a count is read as short whatever the server says": (
         "return !!(nc && typeof nc === 'object' && nc.count_may_be_short === true);", "return true;",
         "an exact count stays exact"),
+    # --- Coleen, 28 Sep 2026: the card is shared with the Clare's Leads tab (shortlistCardHtml)
+    "the Research tab draws a lead's tick": (
+        "const leadMode = typeof o.lead === 'string';", "const leadMode = true;",
+        "the Research tab draws its own tick and benchmark button, never a lead's tick"),
+    "the card throws on a row with no verdict": (
+        "String(prop.recommendation ?? '').includes('Conditions')", "prop.recommendation.includes('Conditions')",
+        "a shortlist row missing its breakdown, inclusions and price still paints"),
+    "the card throws on a row with no inclusions list": (
+        "${Array.isArray(prop.missing_inclusions) && prop.missing_inclusions.length === 0 ?",
+        "${prop.missing_inclusions.length === 0 ?",
+        "a shortlist row missing its breakdown, inclusions and price still paints"),
 }
 
 
