@@ -95,6 +95,26 @@ def _error(message):
     return json.dumps({"status": "error", "message": text}).encode("utf-8")
 
 
+# Half a surrogate pair: JSON.stringify writes one as "\ud83d" when a .slice() cuts an emoji
+# in half, json.loads reads it back, and UTF-8 has no way to write it.
+_LONE_SURROGATE = re.compile("[" + chr(0xD800) + "-" + chr(0xDFFF) + "]")
+
+
+def _body(doc):
+    """`doc` as the UTF-8 JSON of a 200, in either view (this file's and api/lead_notes.py's).
+
+    28 Sep 2026 (second review): one lone surrogate anywhere in the hook's answer -- a
+    summary, a note, a callId -- failed the encode, and the whole answer was a 502 in both
+    views, with a message that blamed the contact details. It is sent as U+FFFD, which is
+    what a browser draws for it anyway (api/_contact.py plain() does the same in the masked
+    view's text)."""
+    text = json.dumps(doc, ensure_ascii=False)
+    try:
+        return text.encode("utf-8")
+    except UnicodeEncodeError:
+        return _LONE_SURROGATE.sub(chr(0xFFFD), text).encode("utf-8")
+
+
 def limit_from(path):
     """The ?limit= to forward, as a canonical integer string, or None."""
     query = urllib.parse.urlsplit(path or "").query
@@ -275,11 +295,13 @@ def view(raw, cookie_header):
     """(http_status, body_bytes): the hook's 200 answer in the view this request may see.
 
     FAILS CLOSED. An answer whose shape the masking does not know -- a body that is not an
-    object, no list of leads, a lead that is not an object -- is a 502 that says the leads
-    were not shown, never the raw body. ONE lead whose own number is still found after the
-    masking is cut down on its own (api/_contact.py hard_masked: grade, date and Kommo link,
+    object, no list of leads, a lead that is not an object, notes that are not an object --
+    is a 502 that says the leads were not shown, never the raw body. ONE lead whose own
+    number is still found after the masking, or that the masking fails on in any other way,
+    is cut down on its own (api/_contact.py hard_masked: grade, date and Kommo link,
     maskFailed) and its notes left out (notesHidden), so it cannot take the others with it
-    (28 Sep 2026, review). The full view needs only the cookie.
+    (28 Sep 2026, review; any exception since the second review). The full view needs only
+    the cookie.
     """
     try:
         doc = json.loads(raw.decode("utf-8"))
@@ -295,7 +317,7 @@ def view(raw, cookie_header):
             doc = _contact.mask_hot_leads(doc)
             doc["contact"] = "masked"
             doc["contactUnlock"] = "password" if _contact.configured() else "not-configured"
-        return 200, json.dumps(doc, ensure_ascii=False).encode("utf-8")
+        return 200, _body(doc)
     except Exception as e:                                             # noqa: BLE001
         return 502, _error("the leads were not shown: their contact details could not be "
                            f"hidden ({type(e).__name__})")

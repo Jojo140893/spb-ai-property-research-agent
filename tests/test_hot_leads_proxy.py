@@ -1269,6 +1269,8 @@ def test_a_request_id_is_kept_as_the_hook_stored_it(monkeypatch):
     "joseph test" + " " * 20000 + "x",                      # the said-aloud rule's "at"
     "joseph test at" + " " * 20000 + "x",
     "joseph test (" + " " * 20000 + "x",
+    "joseph test {" + " " * 20000 + "x",                    # the openers added 28 Sep (second
+    "joseph test -" + " " * 20000 + "x",                    # review) to the rule's "at"
     "a" * 20000,                                            # an address with no "@"
     "a." * 10000,
     "0400 " * 4000,
@@ -1383,6 +1385,307 @@ def test_every_spb_contact_cookie_is_looked_at_not_only_the_first(monkeypatch, s
     stale = ["spb_contact=1.stale-and-long-expired"] * stale_before
     cookie = "; ".join(stale + [_unlocked()])
     assert json.loads(_masked(monkeypatch, cookie=cookie)[2])["contact"] == "full"
+
+
+# ---- the second review, 28 Sep 2026. Each of these fails on the code before it (run
+# against a copy of api/_contact.py and api/hot_leads.py as they were at e24405d).
+
+# The address rule before the lookbehind that made it linear: what it hid is the standard.
+_UNANCHORED_EMAIL = re.compile(r"[\w.%+\-]+@[\w\-]+(?:\.[\w\-]+)+")
+
+
+@pytest.mark.parametrize("text,want", [
+    ("Emails: joe@gmail.com+mary@gmail.com", "Emails: [hidden][hidden]"),
+    ("a@b.com%c@d.com", "[hidden][hidden]"),
+    ("Contract to the solicitor sam@smithlaw.com.au%2Cmary.smith@gmail.com",
+     "Contract to the solicitor [hidden][hidden]"),           # a mailto list pasted in
+    ("cc joe@x.com..jane@y.com", "cc [hidden][hidden]"),
+    ("cc joe@x.com...jane@y.com", "cc [hidden][hidden]"),
+])
+def test_an_address_straight_after_another_is_hidden_too(monkeypatch, text, want):
+    """The first address stops at the "+", "%" or second "." -- address characters too, so
+    the lookbehind refused to start the second one there, and it was shown whole."""
+    assert H._contact.generic(text) == want
+    status, _, body = _masked(monkeypatch, _one(copy.deepcopy(CONTACT_LEAD), _note(text)))
+    assert status == 200 and _note_text(body) == want
+
+
+def test_the_linear_address_rule_hides_what_the_unanchored_one_did():
+    """A seeded differential over strings of address characters. And shown able to fail:
+    the lookbehind alone, without the retry where an address ends, differs on some of them."""
+    import random
+    rng = random.Random(20260928)
+    alphabet = "ab.@%+-_ x.com"
+    lookbehind_alone_differs = 0
+    for _ in range(4000):
+        text = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 40)))
+        want = _UNANCHORED_EMAIL.sub("[hidden]", text)
+        assert H._contact.generic(text) == want, text
+        lookbehind_alone_differs += H._contact._EMAIL_SHAPED.sub("[hidden]", text) != want
+    assert lookbehind_alone_differs > 0, "no input here tells the two apart: the test is blind"
+
+
+def _digits_from(text, zero):
+    """`text` with each ASCII digit written from the digit block that starts at `zero`."""
+    return "".join(chr(zero + int(c)) if c.isdigit() else c for c in text)
+
+
+def _superscript(text):
+    low = {"1": 0xB9, "2": 0xB2, "3": 0xB3}
+    return "".join(chr(low.get(c, 0x2070 + int(c))) if c.isdigit() else c for c in text)
+
+
+def _circled(text):
+    return "".join((chr(0x24EA) if c == "0" else chr(0x245F + int(c))) if c.isdigit() else c
+                   for c in text)
+
+
+FULLWIDTH, ARABIC_INDIC, DEVANAGARI = 0xFF10, 0x0660, 0x0966
+NBSP = chr(0xA0)
+
+
+@pytest.mark.parametrize("text", [
+    "joseph.test" + chr(0xFF20) + "example.com",             # a CJK input's full-width "@"
+    "joseph.test" + chr(0xFE6B) + "example.com",             # the small "@"
+    "joseph.test{at}example.com", "joseph.test<at>example.com", "joseph.test-at-example.com",
+    "joseph.test_at_example.com", "joseph test { at } example dot com",
+    # The lead's own number, in full-width digits and hyphens, and with the separators only
+    # its own rule knows ("/"), in each of the other forms of its digits.
+    _digits_from("0400", FULLWIDTH) + chr(0xFF0D) + _digits_from("111", FULLWIDTH)
+    + chr(0xFF0D) + _digits_from("678", FULLWIDTH),
+    _digits_from("0400/111/678", FULLWIDTH),
+    _superscript("0400 111 678"), _circled("0400 111 678"),
+    _digits_from("0400/111/678", ARABIC_INDIC), _digits_from("0400/111/678", DEVANAGARI),
+    # Someone else's, grouped with a space no rule listed.
+    "0498" + chr(0x2009) + "765" + chr(0x2009) + "432",      # thin space
+    "0498" + chr(0x202F) + "765" + chr(0x202F) + "432",      # narrow no-break space
+    "0498" + chr(0x3000) + "765" + chr(0x3000) + "432",      # ideographic space
+    "0498" + chr(0x2800) + "765" + chr(0x2800) + "432",      # the Braille blank
+])
+def test_a_number_or_address_in_another_form_of_its_characters_is_hidden(monkeypatch, text):
+    """plain() reads every string in its compatibility form (NFKC) with ASCII digits: the
+    full-width "@" is an "@", a superscript or circled digit a digit, a thin space a space."""
+    assert H._contact.Scrubber([(EMAIL, PHONE)]).free(text) == "[hidden]", ascii(text)
+    status, _, body = _masked(monkeypatch, _one(copy.deepcopy(CONTACT_LEAD),
+                                                _note("Sent " + text)))
+    assert status == 200, body[:300]
+    assert _note_text(body) == "Sent [hidden]" and "notesHidden" not in json.loads(body)
+
+
+def test_a_long_run_read_through_nfkc_is_masked_in_time_too():
+    """A parameter of the test above would be 120 KB of escapes in its name: here instead.
+    20,000 full-width letters, 16,000 Arabic-Indic digits and 8,000 joined emoji."""
+    import time as _t
+    scrub = H._contact.Scrubber([(EMAIL, PHONE)])
+    for text in (chr(0xFF41) * 20000, chr(0x0661) * 16000, (chr(0x1F600) + ZWJ) * 8000):
+        start = _t.perf_counter()
+        scrub.free(text)
+        scrub.leaked({"x": text})
+        assert _t.perf_counter() - start < 0.5, ascii(text[:4])
+
+
+def test_the_second_look_reads_the_other_forms_too(monkeypatch):
+    """With the masking switched off, the lead's number in Arabic-Indic digits and its
+    address with a full-width "@" are still found, and the notes fail closed."""
+    monkeypatch.setattr(H._contact.Scrubber, "own", lambda self, text: text)
+    monkeypatch.setattr(H._contact.Scrubber, "free", lambda self, text: text)
+    for text in (_digits_from("0400/111/678", ARABIC_INDIC),
+                 "joseph.test" + chr(0xFF20) + "example.com"):
+        lead = copy.deepcopy(LEADS["leads"][0])
+        lead.update(callId="call-678", customer={"name": "J", "email": EMAIL, "phone": PHONE})
+        status, _, body = _masked(monkeypatch, _one(lead, _note(text)))
+        assert status == 200 and json.loads(body)["notesHidden"] == ["call-678"], ascii(text)
+
+
+def test_a_stored_number_in_other_digits_is_still_the_leads_number(monkeypatch):
+    """customer.phone itself in full-width digits: its last 3 and its rules are the ASCII
+    number's."""
+    lead = copy.deepcopy(CONTACT_LEAD)
+    lead["customer"]["phone"] = _digits_from("0400 111 678", FULLWIDTH)
+    status, _, body = _masked(monkeypatch, _one(lead, _note("Texted 0400/111/678")))
+    assert status == 200 and _note_text(body) == "Texted [hidden]"
+    assert json.loads(body)["leads"][0]["customer"]["phoneLast3"] == "678"
+
+
+@pytest.mark.parametrize("text,want", [
+    ("Partner mob 0413" + NBSP + ZWJ + "222" + NBSP + ZWJ + "999", "Partner mob [hidden]"),
+    ("Partner mob 0413" + chr(0x2010) + VS16 + "222" + chr(0x2010) + VS16 + "999",
+     "Partner mob [hidden]"),
+    ("Call " + ZWJ.join(_digits_from(g, ARABIC_INDIC) for g in ("0400", "111", "678")),
+     "Call [hidden]"),                                         # the lead's own
+    ("Also sam@m" + chr(0xFC) + ZWJ + "ller.de", "Also [hidden]"),
+])
+def test_a_joiner_or_selector_off_an_emoji_does_not_split_a_number_or_address(monkeypatch,
+                                                                             text, want):
+    """U+200D and U+FE00-FE0F were kept wherever one neighbour was not ASCII: beside a
+    no-break space, a Unicode hyphen, a non-ASCII digit or an accented letter they split what
+    every rule reads, and drew nothing. Now they stay only on an emoji."""
+    assert H._contact.Scrubber([(EMAIL, PHONE)]).free(text) == want, ascii(text)
+    status, _, body = _masked(monkeypatch, _one(copy.deepcopy(CONTACT_LEAD), _note(text)))
+    assert status == 200 and _note_text(body) == want
+
+
+def test_a_joiner_inside_the_leads_own_idn_address_does_not_walk_it_past(monkeypatch):
+    idn = "jo@ex" + chr(0xE4) + "mple.com"
+    lead = copy.deepcopy(CONTACT_LEAD)
+    lead["customer"]["email"] = idn
+    status, _, body = _masked(monkeypatch, _one(lead, _note("Email jo@ex" + chr(0xE4) + ZWJ
+                                                            + "mple.com")))
+    assert status == 200 and _note_text(body) == "Email [hidden]"
+    assert idn not in body.decode()
+
+
+@pytest.mark.parametrize("emoji", [
+    chr(0x1F468) + ZWJ + chr(0x1F469) + ZWJ + chr(0x1F467),                  # a family
+    chr(0x1F44D) + chr(0x1F3FD),                                             # a skin tone
+    chr(0x1F9D1) + chr(0x1F3FD) + ZWJ + chr(0x1F4BB),                        # and a joiner
+    chr(0x1F926) + chr(0x1F3FD) + ZWJ + chr(0x2640) + VS16,
+    chr(0x1F3F3) + VS16 + ZWJ + chr(0x1F308),                                # rainbow flag
+    chr(0x2764) + VS16 + ZWJ + chr(0x1F525),
+    "#" + VS16 + chr(0x20E3),                                                # a keycap
+])
+def test_an_emoji_keeps_its_joiners_and_selectors(monkeypatch, emoji):
+    text = f"Keen {emoji} call after 5"
+    assert H._contact.plain(text) == text
+    assert H._contact.Scrubber([(EMAIL, PHONE)]).free(text) == text
+    status, _, body = _masked(monkeypatch, _one(copy.deepcopy(CONTACT_LEAD), _note(text)))
+    assert status == 200 and _note_text(body) == text
+
+
+@pytest.mark.parametrize("odd", [
+    {"customer": "0400 111 678", "grade": ["hot"], "channel": {"x": 1}},
+    {"summary": EVADED, "grade": {"g": "hot"}, "channel": ["vapi"]},
+])
+def test_a_cut_down_lead_with_a_grade_or_channel_of_another_type_is_still_alone(monkeypatch,
+                                                                                odd):
+    """hard_masked looked a list or an object up in a set (TypeError): a 502 for every lead
+    again, on the one path meant to stop that."""
+    lead = dict(copy.deepcopy(CONTACT_LEAD), **odd)
+    status, _, body = _masked(monkeypatch, {"status": "success", "count": 2,
+                                            "leads": [lead, WA_LEAD]})
+    assert status == 200 and _leaks(body) == [], body[:300]
+    got, wa = json.loads(body)["leads"]
+    assert got["maskFailed"] is True and got["grade"] == "" and "channel" not in got
+    assert "maskFailed" not in wa and wa["grade"] == "warm"
+
+
+def test_half_a_surrogate_pair_is_not_a_502_in_either_view(monkeypatch):
+    """JSON.stringify writes "\\ud83d" for an emoji a .slice() cut in half; json.loads reads it
+    back, and UTF-8 cannot write it. It is sent as U+FFFD: in the masked view's text (plain),
+    and anywhere else in either view -- a callId is passed on as the hook wrote it."""
+    monkeypatch.setenv("SPB_CONTACT_PASSWORD", CONTACT_PASSWORD)
+    lead = dict(copy.deepcopy(CONTACT_LEAD), summary="Loved it " + chr(0xD83D))
+    wa = dict(copy.deepcopy(WA_LEAD), callId="wa-1" + chr(0xDFFF))
+    upstream = {"status": "success", "count": 2, "leads": [lead, wa],
+                "notes": {"call-678": _note("Keen " + chr(0xD83D))}}
+    for cookie, view in ((None, "masked"), (_unlocked(), "full")):
+        status, _, body = _masked(monkeypatch, upstream, cookie=cookie)
+        assert status == 200, (view, body[:300])
+        doc = json.loads(body.decode("utf-8"))
+        assert doc["contact"] == view
+        assert doc["leads"][0]["summary"] == "Loved it " + chr(0xFFFD), view
+        assert doc["leads"][1]["callId"] == "wa-1" + chr(0xFFFD), view
+        assert _note_text(body) == "Keen " + chr(0xFFFD), view
+
+
+def _deep(value, depth=1200):
+    for _ in range(depth):
+        value = [value]
+    return value
+
+
+def _raw_masked(monkeypatch, upstream):
+    """_masked without its deepcopy, which cannot copy a value nested 1,200 deep."""
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    raw = json.dumps(upstream).encode()
+    _install(monkeypatch, lambda req: _Resp(raw))
+    return _call("GET")
+
+
+def test_a_lead_nested_too_deep_to_walk_is_cut_down_alone(monkeypatch):
+    """Nested past Python's recursion limit, the walk raises RecursionError, not MaskError:
+    that lead is cut down, and the others are shown."""
+    lead = dict(copy.deepcopy(CONTACT_LEAD), summary=_deep("ring 0400 111 678"))
+    status, _, body = _raw_masked(monkeypatch, {"status": "success", "count": 2,
+                                                "leads": [lead, copy.deepcopy(WA_LEAD)]})
+    assert status == 200 and _leaks(body) == [], body[:300]
+    got, wa = json.loads(body)["leads"]
+    assert got["maskFailed"] is True and got["callId"] == "call-678"
+    assert "maskFailed" not in wa and wa["customer"]["phoneLast3"] == "321"
+
+
+def test_notes_nested_too_deep_to_walk_are_left_out_alone(monkeypatch):
+    notes = {"entries": [{"id": "e1", "text": _deep("ring 0400 111 678")}], "links": [],
+             "rev": 1}
+    status, _, body = _raw_masked(monkeypatch, {"status": "success", "count": 1,
+                                                "leads": [copy.deepcopy(CONTACT_LEAD)],
+                                                "notes": {"call-678": notes}})
+    assert status == 200 and _leaks(body) == [], body[:300]
+    doc = json.loads(body)
+    assert doc["notes"] == {} and doc["notesHidden"] == ["call-678"]
+    assert "maskFailed" not in doc["leads"][0]
+
+
+def test_a_value_beside_the_leads_that_cannot_be_masked_is_left_out(monkeypatch):
+    """Only an answer that is not an object, has no list of leads, has a lead or notes that
+    are not objects is a 502. Anything else that cannot be masked is simply not sent."""
+    status, _, body = _raw_masked(monkeypatch, {"status": "success", "count": 1,
+                                                "leads": [copy.deepcopy(CONTACT_LEAD)],
+                                                "extra": _deep("0400 111 678")})
+    assert status == 200 and _leaks(body) == [], body[:300]
+    doc = json.loads(body)
+    assert "extra" not in doc and doc["leads"][0]["customer"]["phoneLast3"] == "678"
+
+
+def test_an_address_of_spoken_separator_words_is_masked_in_time():
+    """An address of 21 "at"s, looked for in 60 "at"s: every gap could read the next "at" as
+    the separator or as the word, and the time doubled with each (46 s through view()).
+    Such an address gets no said-aloud rule; as written, it is still hidden."""
+    import time as _t
+    email = ".".join(["at"] * 21) + "@example.com"
+    scrub = H._contact.Scrubber([(email, PHONE)])
+    text = " ".join(["at"] * 60)
+    start = _t.perf_counter()
+    scrub.free(text)
+    scrub.leaked({"x": text})
+    assert _t.perf_counter() - start < 0.5
+    assert scrub.free("Email " + email) == "Email [hidden]"
+
+
+def test_an_address_of_500_labels_is_not_a_502_for_the_other_leads(monkeypatch):
+    """One "(?:...)?" per label nested too deep for re to compile (RecursionError), outside
+    every try: a 502 for the whole tab."""
+    lead = copy.deepcopy(CONTACT_LEAD)
+    email = "joseph.test@" + ".".join(["a"] * 500)
+    lead["customer"]["email"] = email
+    lead["summary"] = "Email " + email
+    status, _, body = _masked(monkeypatch, {"status": "success", "count": 2,
+                                            "leads": [lead, WA_LEAD]})
+    assert status == 200, body[:300]
+    got, wa = json.loads(body)["leads"]
+    assert got["customer"]["email"] == "" and email not in body.decode()
+    assert "maskFailed" not in wa and wa["grade"] == "warm"
+
+
+def test_a_lead_whose_rules_cannot_be_built_is_only_its_call_id(monkeypatch):
+    """Whatever stops a lead's Scrubber being built, that lead alone is cut down -- and when
+    even hard_masked cannot build one, it is sent as its callId and nothing else. The
+    other leads' rules are built without it."""
+    real = H._contact._phone_pattern
+
+    def fails_for_one(phone):
+        if H._contact.digits(phone).endswith("111678"):
+            raise RecursionError("maximum recursion depth exceeded")
+        return real(phone)
+    monkeypatch.setattr(H._contact, "_phone_pattern", fails_for_one)
+    status, _, body = _masked(monkeypatch)
+    assert status == 200 and _leaks(body) == [], body[:300]
+    doc = json.loads(body)
+    assert doc["leads"][0] == {
+        "callId": "call-678", "maskFailed": True,
+        "customer": {"name": "[hidden]", "email": "", "phone": "", "phoneLast3": "",
+                     "hasEmail": False, "hasPhone": False}}
+    assert "maskFailed" not in doc["leads"][1] and doc["notesHidden"] == ["call-678"]
 
 
 # ------------------------------------------------------------------ methods and logs

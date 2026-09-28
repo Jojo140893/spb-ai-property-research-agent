@@ -29,8 +29,9 @@ THE UNLOCK COOKIE, spb_contact=<exp>.<b64url HMAC-SHA256(SPB_CONTACT_PASSWORD, "
 
 WHAT THE MASKED VIEW HIDES (mask_hot_leads, mask_notes_answer). Fail closed throughout: a shape
 this file does not recognise is an error the caller turns into a 502, never the raw body; ONE
-lead, or one lead's notes, that cannot be made safe is cut down or left out on its own
-(hard_masked, notesHidden), so it never takes the other leads with it.
+lead, or one lead's notes, that cannot be made safe -- for whatever reason, any exception --
+is cut down or left out on its own (hard_masked, notesHidden), so it never takes the other
+leads with it.
   * customer.email and customer.phone become "", with phoneLast3 (the last 3 digits, only when
     the number has at least 6) and hasEmail / hasPhone in their place.
   * recordingUrl becomes "": the recording is the caller saying their own number.
@@ -44,9 +45,10 @@ lead, or one lead's notes, that cannot be made safe is cut down or left out on i
     appointment) lose only the lead's own email and phone. The generic digit rule would break
     them: a Kommo lead id is 8 digits and an ISO timestamp is 8 digits with dashes.
   * A saved link is kept whole or hidden whole (see _scrub_url).
-  * Before any of it, every string loses the characters that draw nothing (see plain()), so a
-    zero-width space or a Hangul filler pasted into a number or an address cannot walk it past
-    the rules.
+  * Before any of it, every string loses the characters that draw nothing, and is read in its
+    compatibility form with ASCII digits (see plain()), so a zero-width space or a Hangul
+    filler pasted into a number or an address, a full-width "@" or Arabic-Indic digits cannot
+    walk it past the rules.
 """
 import base64
 import hashlib
@@ -148,9 +150,9 @@ def authorised(cookie_header, now=None):
 # masked the same way.
 _ZWJ = chr(0x200D)                    # kept ASCII: see _SEP_CHARS
 # The one format character kept: the zero-width joiner holds an emoji together (a family, a
-# flag) and a note may carry one. Between two ASCII characters it joins nothing any script
-# uses, so there it goes too: "joseph.test@exam", a U+200D, "ple.com" looks exactly like the
-# address and would match none of the rules (_ASCII_KEPT, below).
+# flag) and a note may carry one. Anywhere else it joins nothing a note needs, so there it
+# goes too: "joseph.test@exam", a U+200D, "ple.com" looks exactly like the address and would
+# match none of the rules (_on_an_emoji, below).
 # The other characters Unicode says draw nothing (Default_Ignorable_Code_Point) that are not
 # format characters, so the rule above let them through (28 Sep 2026, review): the combining
 # grapheme joiner, the Hangul fillers -- which are LETTERS, so "0400", U+3164, "111" was two
@@ -158,23 +160,80 @@ _ZWJ = chr(0x200D)                    # kept ASCII: see _SEP_CHARS
 # and the unassigned ranges kept for more of the same. Written as ranges, not a category:
 # Python's unicodedata has no Default_Ignorable property. The variation selectors U+FE00-FE0F
 # are kept, as the joiner is, because an emoji needs one ("red heart" is U+2764 U+FE0F); and,
-# as the joiner, not between two ASCII characters, where they select nothing.
+# as the joiner, only on an emoji.
 _IGNORABLE = frozenset(
     [0x034F, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x180B, 0x180C, 0x180D, 0x180F, 0x2065, 0x3164,
      0xFFA0] + list(range(0xFFF0, 0xFFF9)) + list(range(0xE0000, 0xE1000)))
 _VS = "".join(chr(c) for c in range(0xFE00, 0xFE10))
-_ASCII_KEPT = re.compile(r"(?<=[\x00-\x7f])[" + _ZWJ + _VS + r"]+(?=[\x00-\x7f])")
+# 28 Sep 2026 (second review): ONLY ON AN EMOJI. The joiner and the selectors were kept
+# wherever one neighbour was not ASCII, so one between a no-break space and a digit ("0413",
+# NBSP, U+200D, "222"), after an accented letter in an address ("jo@ex" + a-umlaut + U+200D
+# + "mple.com") or between two Arabic-Indic digits split the number or the address for every
+# rule here, and drew nothing. They are kept now only where an emoji needs them: after a
+# pictograph (a symbol, a skin tone, anything from U+1F000 up), before the keycap mark
+# (a selector: "3", U+FE0F, U+20E3), or before a pictograph (the joiner: the rainbow flag is
+# U+1F3F3 U+FE0F U+200D U+1F308, so its joiner follows a selector).
+_JOINERS = re.compile("[" + _ZWJ + _VS + "]")
+_KEYCAP = chr(0x20E3)
+# The Braille blank draws a space and is not one to any rule (a symbol, category So, which
+# the joiner rule above would also read as a pictograph): "0498", U+2800, "765" is a space.
+_BRAILLE_BLANK = chr(0x2800)
+_REPLACEMENT = chr(0xFFFD)
+_OTHER_DIGIT = re.compile(r"(?![0-9])\d")    # a decimal digit (category Nd) that is not ASCII
+
+
+def _drawn(ch):
+    """`ch`, or "" for a character that draws nothing, or U+FFFD for half a surrogate pair.
+
+    28 Sep 2026 (second review): a lone surrogate -- JSON.stringify writes one as "\\ud83d"
+    when a .slice() cuts an emoji in half -- parses, but cannot be written as UTF-8, and one in
+    a summary was a 502 for the whole tab. U+FFFD is what a browser draws for it anyway."""
+    cat = unicodedata.category(ch)
+    if cat == "Cs":
+        return _REPLACEMENT
+    if ch == _ZWJ or ch in _VS:
+        return ch                            # decided by its neighbours: see _on_an_emoji
+    return "" if cat == "Cf" or ord(ch) in _IGNORABLE else ch
+
+
+def _pictograph(ch):
+    return ch > "\x7f" and (ord(ch) >= 0x1F000 or unicodedata.category(ch) in ("So", "Sk"))
+
+
+def _on_an_emoji(m):
+    """A joiner or a selector, kept only where an emoji needs it (_JOINERS, above)."""
+    text, i, ch = m.string, m.start(), m.group()
+    after = text[i + 1:i + 2]
+    if _pictograph(text[i - 1:i]) or (after == _KEYCAP if ch in _VS else _pictograph(after)):
+        return ch
+    return ""
+
+
+def _ascii_digit(m):
+    return str(unicodedata.decimal(m.group()))
 
 
 def plain(text):
-    """`text` without the characters that draw nothing: Unicode format characters (category
-    Cf) and the rest of Default_Ignorable_Code_Point, except an emoji's joiner and variation
-    selectors -- and those too between two ASCII characters."""
+    """`text` as the rules below read it: without the characters that draw nothing (Unicode
+    format characters, category Cf, and the rest of Default_Ignorable_Code_Point, except an
+    emoji's joiner and variation selectors), in its compatibility form (NFKC), and with every
+    decimal digit written as an ASCII one.
+
+    28 Sep 2026 (second review): NFKC and the digits. Typed in a CJK input method's
+    full-width mode, or pasted from WeChat, the lead's own address is "liwei.buyer", U+FF20,
+    "gmail.com" and their number is written in full-width digits; a number can come in
+    superscript or circled digits, or grouped with a thin space (U+2009), a narrow no-break
+    space (U+202F) or an ideographic one (U+3000). Every rule here, and the second look
+    behind them, read those as something else, and showed them whole. NFKC writes each as the
+    character it stands for (an "@", a digit, a space). It leaves Arabic-Indic and the other
+    scripts' digits alone, so those are written as ASCII digits after it (unicodedata.decimal),
+    and the Braille blank, which NFKC keeps, becomes a space. A masked viewer is sent the
+    text in this form; the full view is the hook's text untouched."""
     if text.isascii():
-        return text                          # none of them is ASCII: the usual case
-    kept = "".join(ch for ch in text if ch == _ZWJ or ch in _VS
-                   or (unicodedata.category(ch) != "Cf" and ord(ch) not in _IGNORABLE))
-    return _ASCII_KEPT.sub("", kept) if (_ZWJ in kept or any(v in kept for v in _VS)) else kept
+        return text                          # none of it applies to ASCII: the usual case
+    text = unicodedata.normalize("NFKC", "".join(_drawn(ch) for ch in text))
+    text = _OTHER_DIGIT.sub(_ascii_digit, text).replace(_BRAILLE_BLANK, " ")
+    return _JOINERS.sub(_on_an_emoji, text) if _JOINERS.search(text) else text
 
 
 # Between two digits of a phone number: a space (a no-break one too), a dash (any of the
@@ -202,8 +261,14 @@ _PHONE_SHAPED = re.compile(
 # Tried only at the start of a run of address characters (28 Sep 2026, review): a match that
 # starts inside a run can always start at the run's first character instead, so this finds
 # the same addresses -- but without it, a 16 KB run with no "@" in it was tried from every
-# one of its characters, and the time grew with the square of its length.
-_EMAIL_SHAPED = re.compile(r"(?<![\w.%+\-])[\w.%+\-]+@[\w\-]+(?:\.[\w\-]+)+")
+# one of its characters, and the time grew with the square of its length. Except straight
+# after another address (28 Sep 2026, second review): "sam@law.com.au%2Cmary@gmail.com"
+# (a mailto list pasted in), "a@b.com+c@d.com" or "a@b.com..c@d.com" -- the first address
+# stops at the "%", "+" or second ".", which are address characters too, so the second
+# address was inside a run and never tried. _emails_hidden tries _EMAIL_ANYWHERE once,
+# exactly where each address ends, which is where the scan before the lookbehind went on.
+_EMAIL_ANYWHERE = re.compile(r"[\w.%+\-]+@[\w\-]+(?:\.[\w\-]+)+")
+_EMAIL_SHAPED = re.compile(r"(?<![\w.%+\-])" + _EMAIL_ANYWHERE.pattern)
 # In a URL, only a number in an Australian phone's own shape: national (0X XXXX XXXX),
 # international (61X XXXX XXXX) or anything after a "+". A listing's id -- 9 digits on
 # realestate.com.au, 10 starting 20 on domain.com.au -- and a Drive id's digits are not.
@@ -217,12 +282,18 @@ _SAID = (r"(?:\s*(?:[.@_+\-]|\bdot\b|\bat\b|\bunderscore\b|\bdash\b|\bhyphen\b|\
 # the address said aloud, and hid the name -- the one thing a masked viewer tells two callers
 # apart by. Never two "\s*" side by side with only an optional bracket between them (28 Sep
 # 2026, review): "joseph test" and 6,000 spaces took half a second, growing with the square
-# of the run, because the spaces could be split between the two in every way.
-_AT = r"\s*(?:[\[(]\s*)?(?:@|\bat\b)(?:\s*[\])])?\s*"
+# of the run, because the spaces could be split between the two in every way. Any bracket,
+# and a hyphen or an underscore, around the "at" (28 Sep 2026, second review): "{at}",
+# "<at>", "-at-" and "_at_" are the obfuscations people type, and each walked the lead's own
+# address past this rule and the second look. The "at" is a word of its own with "_" as a
+# boundary too, which "\b" does not treat as one.
+_AT = (r"\s*(?:[\[({<_\-]\s*)?(?:@|(?<![^\W_])at(?![^\W_]))(?:\s*[\])}>_\-])?\s*")
 
 
 def digits(value):
-    return re.sub(r"\D", "", "" if value is None else str(value))
+    """The digits of `value`, as ASCII (plain): a number stored in full-width or Arabic-Indic
+    digits is the same number to _phone_pattern, last3 and the second look."""
+    return re.sub(r"\D", "", plain("" if value is None else str(value)))
 
 
 def last3(phone):
@@ -254,6 +325,10 @@ def _is_address(email):
     return "@" in email and len(email) >= 3
 
 
+# The words _SAID reads as the punctuation between an address's parts.
+_SPOKEN = frozenset({"at", "dot", "underscore", "dash", "hyphen", "plus"})
+
+
 def _email_patterns(email):
     """(written, said): the address as written, and as said aloud or with its punctuation lost."""
     e = str(email or "").strip()
@@ -266,7 +341,15 @@ def _email_patterns(email):
     # Only for an address long enough that its spoken form cannot be an ordinary phrase:
     # with the separators optional, "a@b.co" would hide every "ab" in every summary. And only
     # with an explicit "at" and at least the domain's first label after it (_AT).
-    if words and labels and len("".join(words) + labels[0]) >= 8:
+    # And only for an address a person could say (28 Sep 2026, second review): at most 254
+    # characters (the most an address can have), 12 words before the "@" and 10 labels after
+    # it, and none of those words one of the words _SAID reads as punctuation. An address
+    # of 21 "at"s took 46 s to look for in a summary of 60 "at"s, every gap able to read the
+    # next "at" either way; one of 500 labels nested too deep for re to compile, a 502 for
+    # the whole tab. The address as written is still hidden, whatever it is.
+    if (len(e) <= 254 and len(words) <= 12 and len(labels) <= 10
+            and not any(w.lower() in _SPOKEN for w in words)
+            and words and labels and len("".join(words) + labels[0]) >= 8):
         tail = ""
         for label in reversed(labels[1:]):   # "... at gmail" hides as surely as "gmail.com"
             tail = "(?:" + _SAID + re.escape(label) + tail + ")?"
@@ -279,9 +362,25 @@ def _compiled(patterns):
     return re.compile("|".join(f"(?:{p})" for p in patterns), re.IGNORECASE) if patterns else None
 
 
+def _emails_hidden(text):
+    """Every email-shaped token in `text` as HIDDEN: the same tokens a plain
+    _EMAIL_ANYWHERE.sub finds, in time that grows with the text's length (_EMAIL_SHAPED).
+
+    Where one address ends, the next can start at once ("a@b.com+c@d.com"), which the
+    lookbehind refuses, so that one place is tried unanchored first. Anywhere else a match
+    the lookbehind refuses has an address character before it, and the match could start
+    one character earlier -- so the leftmost match past that place is one it allows."""
+    out, pos, m = [], 0, _EMAIL_SHAPED.search(text)
+    while m:
+        out += [text[pos:m.start()], HIDDEN]
+        pos = m.end()
+        m = _EMAIL_ANYWHERE.match(text, pos) or _EMAIL_SHAPED.search(text, pos)
+    return "".join(out) + text[pos:] if out else text
+
+
 def _anyones(text):
     """Any email-shaped token and any 8+ digit phone-shaped run, whoever's they are."""
-    return _PHONE_SHAPED.sub(HIDDEN, _EMAIL_SHAPED.sub(HIDDEN, text))
+    return _PHONE_SHAPED.sub(HIDDEN, _emails_hidden(text))
 
 
 def _strings(value):
@@ -535,10 +634,14 @@ def hard_masked(lead, contact):
     if isinstance(lead.get("callId"), str):
         out["callId"] = lead["callId"]
     kept = {}
-    if lead.get("channel") in _CHANNELS:
-        kept["channel"] = lead["channel"]
+    # A string before every "in" (28 Sep 2026, second review): a grade stored as a list or a
+    # channel as an object cannot be looked up in a set (TypeError), and the lead this is
+    # for was a 502 for the whole tab again.
+    channel, grade = lead.get("channel"), lead.get("grade")
+    if isinstance(channel, str) and channel in _CHANNELS:
+        kept["channel"] = channel
     if "grade" in lead:                       # an absent grade is an old hot call: stays absent
-        kept["grade"] = lead["grade"] if lead["grade"] in _GRADES else ""
+        kept["grade"] = grade if isinstance(grade, str) and grade in _GRADES else ""
     if lead.get("test") is True:
         kept["test"] = True
     created = lead.get("createdAt")
@@ -553,6 +656,15 @@ def hard_masked(lead, contact):
     out.update({k: v for k, v in kept.items() if not scrub.leaked(v)})
     out["customer"] = {"name": HIDDEN, "email": "", "phone": "", "phoneLast3": last3(phone),
                        "hasEmail": bool(email.strip()), "hasPhone": bool(digits(phone))}
+    out["maskFailed"] = True
+    return out
+
+
+def _nothing_but_its_id(lead):
+    """A lead even hard_masked could not cut down: its callId, and that it is hidden."""
+    out = {"callId": lead["callId"]} if isinstance(lead.get("callId"), str) else {}
+    out["customer"] = {"name": HIDDEN, "email": "", "phone": "", "phoneLast3": "",
+                       "hasEmail": False, "hasPhone": False}
     out["maskFailed"] = True
     return out
 
@@ -623,28 +735,44 @@ def mask_hot_leads(doc):
     leads = doc.get("leads")
     if not isinstance(leads, list):
         raise MaskError("the answer has no list of leads")
-    contacts = []
+    # 28 Sep 2026 (second review): ANY EXCEPTION, not only MaskError. One lead that raised
+    # something else -- a grade stored as a list (TypeError), a summary nested 1,200 deep
+    # (RecursionError), an address of 500 labels that re cannot compile -- was still a 502
+    # for every lead. Each lead's Scrubber is built, and the lead masked, on its own: what
+    # fails is cut down (hard_masked), and if even that fails, the lead is only its callId
+    # (_nothing_but_its_id). "anyone" is built from the contacts whose own Scrubber built:
+    # the same patterns again, joined by "|", which nests no deeper than the deepest of them.
+    contacts, scrubs = [], []
     for lead in leads:
         if not isinstance(lead, dict):
             raise MaskError("a lead is not an object")
         try:
-            contacts.append(_lead_contact(lead))
-        except MaskError:
-            contacts.append(None)             # a customer that is not an object: hard_masked
-    anyone = Scrubber([c for c in contacts if c is not None])
+            contact = _lead_contact(lead)
+        except Exception:                                              # noqa: BLE001
+            contact = None                    # a customer that is not an object: hard_masked
+        try:
+            scrub = Scrubber([contact]) if contact is not None else None
+        except Exception:                                              # noqa: BLE001
+            scrub = None
+        contacts.append(contact)
+        scrubs.append(scrub)
+    anyone = Scrubber([c for c, s in zip(contacts, scrubs) if s is not None])
     # Each lead on its own (hard_masked). A callId any of whose leads was cut down is
     # "untrusted": its notes are not sent.
     masked, per_lead, untrusted = [], {}, set()
-    for lead, contact in zip(leads, contacts):
+    for lead, contact, scrub in zip(leads, contacts, scrubs):
         cid = lead.get("callId") if isinstance(lead.get("callId"), str) else None
         one = None
-        if contact is not None:
+        if scrub is not None:
             try:
-                one = mask_lead(lead, Scrubber([contact]))
-            except MaskError:
+                one = mask_lead(lead, scrub)
+            except Exception:                                          # noqa: BLE001
                 one = None
         if one is None:
-            one = hard_masked(lead, contact)
+            try:
+                one = hard_masked(lead, contact)
+            except Exception:                                          # noqa: BLE001
+                one = _nothing_but_its_id(lead)
             if cid is not None:
                 untrusted.add(cid)
         elif cid is not None:
@@ -667,7 +795,11 @@ def mask_hot_leads(doc):
             # a lead is cut down alone: never a 502 for everyone.
             out[k] = {}
             for cid, n in v.items():
-                if anyone.leaked(cid):
+                try:
+                    named = anyone.leaked(cid)
+                except Exception:                                      # noqa: BLE001
+                    named = True
+                if named:
                     continue                  # a key that is a contact detail is no callId
                 if cid in untrusted:
                     hidden.append(cid)
@@ -675,17 +807,27 @@ def mask_hot_leads(doc):
                 try:
                     out[k][cid] = mask_notes(n, Scrubber(per_lead[cid]) if cid in per_lead
                                              else anyone)
-                except MaskError:
+                except Exception:                                      # noqa: BLE001
                     hidden.append(cid)
-        elif k in ("status", "count", "notesErrors"):
-            out[k] = anyone.tree(v, anyone.own)
         elif k == "notesHidden":
             continue                          # this file's to say, never the hook's
         else:
-            out[anyone.free(k)] = anyone.tree(v, anyone.free)
+            # Beside the leads and the notes (status, count, notesErrors, anything added
+            # later): a value that cannot be masked is left out, never sent as it came, and
+            # is no reason to take the leads away from everyone.
+            try:
+                if k in ("status", "count", "notesErrors"):
+                    out[k] = anyone.tree(v, anyone.own)
+                else:
+                    out[anyone.free(k)] = anyone.tree(v, anyone.free)
+            except Exception:                                          # noqa: BLE001
+                continue
     if hidden:
         out["notesHidden"] = hidden
     return out
+
+
+DUPLICATE_FLAGS = ("duplicate", "duplicateRemoved")
 
 
 def mask_notes_answer(doc):
@@ -702,7 +844,12 @@ def mask_notes_answer(doc):
     A hook deployed before that sends no "contact". Then only the generic rules apply -- any
     email address, any 8+ digit phone-shaped run -- and the lead's own other spellings are
     hidden when GET /api/hot_leads next returns these notes beside the lead. A "contact" that
-    is there but not an object is a shape this file does not know: a 502.
+    is there but not an object is a shape this file does not know: MaskError, which
+    api/lead_notes.py answers with the notes hidden (notes_hidden_answer).
+
+    "duplicate" and "duplicateRemoved" (28 Sep 2026): the hook's word that the Save was a
+    retried click it had already stored -- and whether what it stored has since been removed
+    -- so the tab does not draw it twice. Passed on as they are when they are true or false.
     """
     if not isinstance(doc, dict):
         raise MaskError("the answer is not an object")
@@ -719,12 +866,28 @@ def mask_notes_answer(doc):
             continue                          # the lead's own details: never to the browser
         if k == "notes":
             out[k] = mask_notes(v, scrub) if v is not None else None
-        elif k in ("status", "callId"):
+        elif k in ("status", "callId") or (k in DUPLICATE_FLAGS and isinstance(v, bool)):
             out[k] = v
         else:
             out[scrub.free(k)] = scrub.tree(v, scrub.free)
     if scrub.leaked({k: v for k, v in out.items() if k != "callId"}):
         raise MaskError("the lead's own contact details survived the notes masking")
+    return out
+
+
+def notes_hidden_answer(doc):
+    """The POST /api/lead-notes answer when mask_notes_answer could not make it safe.
+
+    28 Sep 2026 (second review): that was a 502, "the note was saved, but ...", an error for
+    a save that had gone through. Now the answer says it went through: the callId, the
+    hook's duplicate flags, and notesHidden in place of the notes. Nothing else of the hook's
+    answer is sent; the notes come back with the lead on the next GET /api/hot_leads, masked
+    or left out there by the same rules."""
+    out = {"status": "success"}
+    if isinstance(doc.get("callId"), str):
+        out["callId"] = doc["callId"]
+    out["notesHidden"] = True
+    out.update({k: doc[k] for k in DUPLICATE_FLAGS if isinstance(doc.get(k), bool)})
     return out
 
 
