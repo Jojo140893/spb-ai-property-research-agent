@@ -126,7 +126,7 @@ MUTANTS = {
     # An unreadable free-text suburb still returns stock, for the whole state. The card has
     # to say the search ran on those words, or the buildings read as an answer to the place.
     "the suburb is not said to have been searched as written": (
-        "${hlUnresolvedNote(L.research)}", "",
+        "+ hlUnresolvedNote(L.research)}", "}",
         "searched as written"),
     # Since 15 Sep warm and nurture callers share the hook's answer with hot ones, so a cut-off
     # answer can leave an older hot caller out; the tab then asks for hot callers on their own.
@@ -280,7 +280,7 @@ MUTANTS = {
         "if (!HL_NOTES.has(id)) HL_NOTES.set(id, hlNotesOf(raw));", "",
         "notes from /api/hot_leads are drawn"),
     "unreadable notes are not said": (
-        "(v.notesError ? ", "(false ? ",
+        "err: v.notesError ? ", "err: false ? ",
         "a lead whose notes could not be read says so"),
     "typing is lost to a reload": (
         "        hlCaptureDrafts();\n        el.innerHTML", "        el.innerHTML",
@@ -316,9 +316,11 @@ MUTANTS = {
     "a 502 is read as refused": (
         "(status >= 500 && status !== 503)", "(status === 500)",
         "may have saved, a 502 with no message"),
+    # 28 Sep second review: the dashboard's "was saved, but" is a save, not "could not confirm".
     "a message saying the note was saved is ignored": (
-        "if (/\\bwas saved, but\\b/i.test(m)) return true;", "",
-        "a message that says the note was saved"),
+        "const hlSavedAnyway = message => /\\bwas saved, but\\b/i.test(String(message ?? ''));",
+        "const hlSavedAnyway = message => false;",
+        "a message that says the note was saved: saved for the draft"),
     "a message saying nothing was changed is ignored": (
         "if (/\\bnothing was changed\\b/i.test(m)) return false;", "",
         "a 502 that says nothing was changed is 'Not saved'"),
@@ -328,25 +330,25 @@ MUTANTS = {
         "unreachable: could not confirm"),
     # (c) one requestId per press, the same one on the automatic retry.
     "no requestId is sent": (
-        "body.requestId = hlDraftRequestId(d, 'noteReq', [action, text]);", "",
+        "body.requestId = hlDraftRequestId(d, 'noteReqs', same);", "",
         "carries a requestId"),
     # 28 Sep review: "press Save again" after "could not confirm" must be the same request.
     "Save again after an unconfirmed save is a new request": (
-        "if (!d[key] || d[key].sig !== sig) d[key] =", "d[key] =",
+        "if (!kept.has(sig)) {", "if (true) {",
         "Save again after 'could not confirm': the same requestId"),
     "an edited note keeps the unconfirmed press's requestId": (
-        "if (!d[key] || d[key].sig !== sig) d[key] =", "if (!d[key]) d[key] =",
+        "const sig = JSON.stringify(same);", "const sig = '';",
         "an edited note after 'could not confirm' is a new request"),
     "a confirmed note's requestId is kept for the next one": (
-        "        d.noteReq = null;\n", "",
+        "        if (outcome) hlDraftForget(d, 'noteReqs', same);\n", "",
         "the same quick action saved twice is two requests"),
     # One lead the server could not mask is cut down alone (maskFailed, notesHidden).
     "a cut-down lead does not say why": (
-        "${!full && L.maskFailed === true ?", "${false ?",
+        "${cut ? '<div class=\"hl-notice hl-mask-failed\">", "${false ? '<div class=\"hl-notice hl-mask-failed\">",
         "the cut-down one says why most of it is missing"),
     "notes left out are drawn as no notes": (
-        "const unread = (!!v.notesError || !!v.notesHidden) && !v.notes;",
-        "const unread = !!v.notesError && !v.notes;",
+        "const hlNotesUnread = v => (!!v.notesError || !!v.notesHidden) && !v.notes;",
+        "const hlNotesUnread = v => !!v.notesError && !v.notes;",
         "its notes are said to need the password"),
     "notesHidden is not read from the answer": (
         "a.notesHidden.forEach(id => HL_NOTES_HIDDEN.add(id));", "",
@@ -368,7 +370,8 @@ MUTANTS = {
         "if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { HL_NOTES_ERR.add(id); return; }", "",
         "a null notes value is said to be unreadable"),
     "unreadable notes also say there are none": (
-        "const unread = (!!v.notesError || !!v.notesHidden) && !v.notes;", "const unread = false;",
+        "const hlNotesUnread = v => (!!v.notesError || !!v.notesHidden) && !v.notes;",
+        "const hlNotesUnread = v => false;",
         "none says it has no notes"),
     # The server's half of the same finding, had it been the page's: a masked answer with
     # notesErrors taken as a failed answer loses every lead.
@@ -377,6 +380,79 @@ MUTANTS = {
         "if (!res.ok || !data || data.status !== 'success' || (data.contact !== 'full'"
         " && Array.isArray(data.notesErrors) && data.notesErrors.length)) {\n            return { kind: 'failed'",
         "masked, with notes that could not be read: every lead is listed"),
+
+    # --- the second 28 Sep review: settling a press, and the masked view's edges ---------
+    # A kept requestId was dropped only by a confirmed save, so a Refresh that showed the note
+    # changed nothing, and the next identical note was a "duplicate" the hook skipped.
+    "a press the list shows arrived is kept for later": (
+        "const arrived = hlSettleDrafts();", "const arrived = new Map();",
+        "a Refresh that shows the unconfirmed press arrived"),
+    "a press the hook already had is called Saved.": (
+        "(data.duplicate === true ? 'Already saved.' : 'Saved.')", "'Saved.'",
+        "a press the hook already had: 'Already saved.'"),
+    "a press matched to a removed note is called saved": (
+        "if (kind !== 'remove' && data.duplicateRemoved === true) {", "if (false) {",
+        "a press matched to a note since removed"),
+    "a press matched to a removed note sends the same requestId again": (
+        "if (outcome) hlDraftForget(d, 'noteReqs', same);",
+        "if (outcome === 'made') hlDraftForget(d, 'noteReqs', same);",
+        "the next press adds it anew"),
+    # One slot per draft: X, then Y, then X again stored X twice.
+    "one unconfirmed press is kept per draft": (
+        "const HL_REQ_KEEP = 10;", "const HL_REQ_KEEP = 1;",
+        "X, then Y, then X again"),
+    # C3: a masked answer whose notes cannot be masked is a save, with the notes left hidden.
+    "a notesHidden answer is read as could not confirm": (
+        "&& (hidden || (data.notes && typeof data.notes === 'object'))) {",
+        "&& (data.notes && typeof data.notes === 'object')) {",
+        "a masked save whose notes cannot be shown (notesHidden)"),
+    "a notesHidden answer leaves the lead's notes showing": (
+        "                        HL_NOTES.delete(id);\n                        HL_NOTES_HIDDEN.add(id);\n", "",
+        "a save that hides a lead's notes"),
+    # A cut-down (maskFailed) lead drew "No discovery call booked -- follow up" over a booked call.
+    "a cut-down card draws what it does not have": (
+        "const cut = !full && L.maskFailed === true;", "const cut = false;",
+        "a cut-down card draws no booking line"),
+    "a cut-down card still draws its buildings, Re-run and report bar": (
+        "${cut ? '' : `<div class=\"hl-recs-head\">", "${false ? '' : `<div class=\"hl-recs-head\">",
+        "a cut-down card draws no booking line"),
+    # The notices had no id, so a save that changed what was known left them standing.
+    "a save leaves the notices over a lead's notes as they were": (
+        "[['hlNotesErr-', notice.err], ['hlNotesHidden-', notice.hidden]].forEach(", "[].forEach(",
+        "the notice saying they are hidden is gone"),
+    "the notices name a password when none is set": (
+        "const hlCanUnlock = () => HL_ACCESS.unlock === 'password';", "const hlCanUnlock = () => true;",
+        "no password set: no notice sends anyone for a password"),
+    # Words typed while a save was out were wiped by its success.
+    "a save empties the box whatever was typed since": (
+        "if (String(typed ?? '').trim() === text) {", "if (true) {",
+        "words typed while a save is out stay in the box"),
+    "a save lets go of a chip pressed since": (
+        "if ((HL_NOTE_ACTIONS.includes(d.action) ? d.action : 'other') === action) {", "if (true) {",
+        "a chip pressed while it saved stays pressed"),
+    "an Add link empties both boxes whatever was typed since": (
+        "if (read((b && typeof b.value === 'string') ? b.value : d[field]) !== sentAs) return;", "",
+        "a link box changed while the link saved keeps the new link"),
+    # The tab sent URL.href, so the hook's own link rules never ran on a link from it.
+    "invisible characters are sent in a link": (
+        ".replace(HL_LINK_INVISIBLE, '')", "",
+        "a trailing zero-width space"),
+    "two links pasted together are sent as one": (
+        "if (/[\\s\\u0000-\\u001F\\u007F]/.test(raw)) {", "if (false) {",
+        "two links pasted together are refused before sending"),
+    "the parsed href is sent, not the link as pasted": (
+        "const body = { callId: id, op: 'add_link', url: raw };", "const body = { callId: id, op: 'add_link', url };",
+        "a link is sent as pasted"),
+    # Save, then Lock before the answer: the full notes were drawn onto the locked tab.
+    "a late answer is drawn onto a list drawn after it was sent": (
+        "const stale = HL_DRAWN !== drawnAt ||", "const stale = false ||",
+        "from a dashboard that does not say which view"),
+    "the list's redraws are not counted": (
+        "            HL_DRAWN++;\n", "",
+        "from a dashboard that does not say which view"),
+    "a full answer is drawn onto a masked list": (
+        " || (data.contact === 'full' && HL_ACCESS.contact !== 'full');", ";",
+        "a full answer to a masked list, with no redraw between: not drawn"),
 }
 
 
