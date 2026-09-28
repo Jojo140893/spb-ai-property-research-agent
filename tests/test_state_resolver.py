@@ -11,9 +11,9 @@ other on the live data showed each one can be wrong alone.
 """
 
 from geo import SuburbGeoIndex
-from state_resolver import (file_is_national, locality_in_listing, normalise_state,
-                            own_state, resolve_state, state_from_postcode,
-                            state_named_in_listing)
+from state_resolver import (disagreement, file_is_national, locality_in_listing,
+                            normalise_state, own_state, postcode_is_lot_number,
+                            resolve_state, state_from_postcode, state_named_in_listing)
 
 _GEO = SuburbGeoIndex()
 
@@ -358,6 +358,70 @@ def test_a_street_name_does_not_become_the_suburb():
         "2259 CENTRAL COAST COUNCIL NSW November 2026", "NSW") == "Wadalba"
 
 
+# Coleen, 28 Sep 2026: "I searched for QLD properties, however, the app is reporting on VIC
+# properties." Verv Projects id 19094 off E-Agent's VICTORIA page, lot 4327, and the row
+# text parser stored 4327 as its postcode too -- a Queensland one.
+_JUBILEE_19094 = ("2-Part Detached SS West 4327 Jubilee Wyndhamvale 263 $338,000 Enzo 10.5 "
+                  "3 / 2 / 2 $347,050 $685,050 Brochure M")
+
+
+def test_a_postcode_that_is_the_lot_number_is_recognised():
+    """Same digits, whatever surrounds them; nothing to compare means no match."""
+    assert postcode_is_lot_number("4327", "4327")
+    assert postcode_is_lot_number(" 4327 ", "Lot 4327")
+    assert postcode_is_lot_number("4327", "4327A")
+    for pc, lot in (("4327", "4328"), ("3024", "4327"), ("4327", None), (None, "4327"),
+                    ("", ""), (None, None), ("4327", "")):
+        assert not postcode_is_lot_number(pc, lot), (pc, lot)
+
+
+def test_own_state_does_not_prove_a_state_from_the_rows_own_lot_number():
+    """19094: 'Jubilee' is a Queensland locality and nowhere else, 4327 a Queensland
+    postcode, so own_state proved QLD by 'suburb + postcode' -- the standard of proof that
+    overrules a whole file's page hint -- for a lot in Wyndham Vale, Victoria."""
+    # PREMISE: without the lot number this is exactly the proof that filed it QLD.
+    assert own_state(postcode="4327", suburb="Jubilee", address=_JUBILEE_19094,
+                     geo=_GEO) == ("QLD", "suburb + postcode")
+    assert own_state(postcode="4327", suburb="Jubilee", address=_JUBILEE_19094,
+                     geo=_GEO, lot_number="4327") == ("", "")
+    # Only the row's OWN lot number is ignored: a real postcode on another lot still counts.
+    assert own_state(postcode="4327", suburb="Jubilee", address=_JUBILEE_19094,
+                     geo=_GEO, lot_number="4328") == ("QLD", "suburb + postcode")
+    # Tomorrow Homes id 11671, "2704 Talladega Rd, Clyde": Clyde is in NSW and VIC, and the
+    # lot number picked NSW. Five such lots made the whole VIC sheet "national".
+    assert own_state(postcode="2704", suburb="Clyde", estate="SOUTH EAST",
+                     address="2704 Talladega Rd, Clyde", geo=_GEO) == ("NSW", "suburb + postcode")
+    assert own_state(postcode="2704", suburb="Clyde", estate="SOUTH EAST",
+                     address="2704 Talladega Rd, Clyde", geo=_GEO,
+                     lot_number="2704") == ("", "")
+
+
+def test_resolve_state_gives_a_lot_number_no_vote():
+    """With the number ignored, 19094 is decided the way the Jubilee test above decides a
+    bare 'Jubilee' on the VIC page: the page, labelled as contested."""
+    assert resolve_state(postcode="4327", suburb="Jubilee", page_state="VIC",
+                         geo=_GEO) == ("QLD", "postcode + suburb")          # PREMISE
+    assert resolve_state(postcode="4327", suburb="Jubilee", page_state="VIC", geo=_GEO,
+                         lot_number="4327") == ("VIC", "e-agent page (conflicting signals)")
+    # A lone lot number is no postcode, so it cannot carry a row with nothing else.
+    assert resolve_state(postcode="2704", suburb="Clyde", geo=_GEO) == ("NSW", "postcode")
+    assert resolve_state(postcode="2704", suburb="Clyde", geo=_GEO,
+                         lot_number="2704") == ("", "")
+    # ...nor put an "(over NSW)" on a row that names its own state (Goldstate lot 2324).
+    assert resolve_state(postcode="2324", suburb="Clyde North", listing_state="VIC",
+                         geo=_GEO) == ("VIC", "listing text (over NSW)")
+    assert resolve_state(postcode="2324", suburb="Clyde North", listing_state="VIC",
+                         geo=_GEO, lot_number="2324") == ("VIC", "listing text")
+
+
+def test_a_lot_number_is_no_disagreement_with_the_page():
+    """Silkwood id 9255, 'PR8851 6053 Yarrabilba ...' off the QLD page: 6053 is the lot, a
+    WA number. It is not the row contradicting its page."""
+    assert disagreement("6053", "", "QLD", _GEO)["postcode_state"] == "WA"   # PREMISE
+    assert disagreement("6053", "", "QLD", _GEO, lot_number="6053") is None
+    assert disagreement("6053", "", "QLD", _GEO, lot_number="6072")["postcode_state"] == "WA"
+
+
 def run_all():
     tests = [
         ("own-state locality beats text position",
@@ -386,6 +450,10 @@ def run_all():
         ("own_state refuses a bare postcode or suburb word", test_own_state_refuses_a_bare_postcode_and_a_bare_suburb_word),
         ("named state outranks the page", test_a_named_state_outranks_the_page_it_came_from),
         ("a national file is recognised", test_a_national_file_is_recognised_from_its_own_rows),
+        ("a lot number postcode is recognised", test_a_postcode_that_is_the_lot_number_is_recognised),
+        ("own_state ignores the lot number", test_own_state_does_not_prove_a_state_from_the_rows_own_lot_number),
+        ("resolve_state ignores the lot number", test_resolve_state_gives_a_lot_number_no_vote),
+        ("a lot number is no disagreement", test_a_lot_number_is_no_disagreement_with_the_page),
     ]
     failed = 0
     for name, fn in tests:

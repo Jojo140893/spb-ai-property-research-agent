@@ -563,6 +563,46 @@ def test_every_card_must_match_the_catalogue_and_the_brief():
     assert report.failures == 6, out
 
 
+def test_a_card_filed_by_its_own_lot_number_read_as_a_postcode_warns():
+    """Coleen, 28 Sep 2026: "Jubilee, QLD" lots 4316/4317 offered to a QLD lead are in
+    Wyndham Vale, VIC -- state_source 'suburb + postcode', and the postcode is the lot.
+    A WARN on a shortlisted or needs-confirming card, read from its DATABASE row, never a
+    FAIL; not for a state that did not use the postcode, nor for a real postcode."""
+    jubilee = _row("v2:jubilee0", lot_number="4316", lot_address="Jubilee Wyndhamvale 336")
+    confirm = _row("v2:jubilee1", lot_number="4317", lot_address="Jubilee Wyndhamvale 337")
+    stated = _row("v2:stated00", lot_number="2324", lot_address="2324 Carrera Cres, South")
+    real = _row("v2:realpc00", lot_number="12", lot_address="Lot 12 Example Street 4207")
+    rows = [jubilee, confirm, stated, real]
+    db = [{"id": 20541, "content_hash": "v2:jubilee0", "date_checked": "15/09/2026",
+           "state": "QLD", "state_source": "suburb + postcode", "postcode": "4316",
+           "lot_number": "4316"},
+          {"id": 20542, "content_hash": "v2:jubilee1", "date_checked": "15/09/2026",
+           "state": "QLD", "state_source": "suburb + postcode", "postcode": "4317",
+           "lot_number": "4317"},
+          # the lot is the postcode, but the state came from the row's own words
+          {"id": 15151, "content_hash": "v2:stated00", "date_checked": "15/09/2026",
+           "state": "QLD", "state_source": "listing text (over NSW)", "postcode": "2324",
+           "lot_number": "2324"},
+          # the state came from a postcode, and it is a real one
+          {"id": 7, "content_hash": "v2:realpc00", "date_checked": "15/09/2026",
+           "state": "QLD", "state_source": "postcode", "postcode": "4207",
+           "lot_number": "12"}]
+
+    def answers(body):
+        return _response([_card(jubilee), _card(stated), _card(real)],
+                         confirming=[_card(confirm), _card(jubilee)])
+
+    report, out, _posted = _run([{"id": "b", "client_brief": {}},
+                                 {"id": "c", "client_brief": {}}], answers, rows, db=db)
+    assert report.failures == 0, out
+    assert ("lot number as postcode: shortlisted v2:jubilee0 (id 20541) is filed QLD by "
+            "'suburb + postcode', but its postcode 4316 is its own lot number") in out
+    assert "lot number as postcode: needs confirming v2:jubilee1 (id 20542)" in out
+    # once per row a run, though the row is on two briefs and in both lists of one
+    assert report.warnings == 2, out
+    assert "v2:stated00" not in out and "v2:realpc00" not in out
+
+
 def test_a_fresher_capture_of_the_same_line_that_says_gone_fails_the_older_one():
     """The sibling invariant, both ways round, and not for two lines of ONE read."""
     older = _row("v2:older000", lot_address="Howard Available 21 Howard Crossing Kinchant "

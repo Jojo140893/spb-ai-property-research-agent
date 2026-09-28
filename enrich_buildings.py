@@ -56,6 +56,14 @@ back blank rather than with the state the suburb match once gave it.
 The nightly's database lives in the Supabase bucket, so either rollback is run on the file
 `python state_sync.py pull` fetches (the pull takes the harvest lock, so it cannot race a
 nightly) and published with `python state_sync.py push`.
+
+A STATE READ OFF THE ROW'S OWN LOT NUMBER IS RE-RESOLVED (Coleen, 28 Sep 2026). A stored
+state whose state_source cites a postcode, on a row whose postcode is its own lot number
+("...SS West 4327 Jubilee Wyndhamvale...": lot 4327, "postcode" 4327, QLD), is treated as
+not settled: the postcode is cleared and the state resolved again with it ignored. See
+rests_on_its_lot_number. Every such row is printed with its old and new state and the
+number, which is the whole record needed to undo it by hand -- the postcode column is
+cleared, so no SQL can find these rows afterwards.
 """
 
 import argparse
@@ -71,7 +79,7 @@ import config
 from database import ResearchDatabase
 from geo import SuburbGeoIndex
 from state_resolver import (TEXT_LOCALITY_SOURCE, disagreement, file_is_national, own_state,
-                            resolve_state, text_locality_elsewhere)
+                            postcode_is_lot_number, resolve_state, text_locality_elsewhere)
 
 STATE_RE = re.compile(r"\b(VIC|NSW|QLD|SA|WA|NT|ACT|TAS)\b", re.I)
 
@@ -93,6 +101,32 @@ STATE_WORDS = {
     "south australia": "SA", "western australia": "WA", "tasmania": "TAS",
     "northern territory": "NT", "australian capital territory": "ACT",
 }
+
+
+def cites_a_postcode(signal) -> bool:
+    """True when a stored state_source names the postcode as one of its signals.
+
+    The signals are joined with " + " ("suburb + postcode", "postcode + e-agent page",
+    "listing locality + postcode"), so the test is on the parts, not a substring: the
+    repair note "withdrawn: postcode was the lot number" is not a signal, and a state
+    that says "listing text (over NSW)" was decided by the row's own words.
+    """
+    return "postcode" in [p.strip() for p in str(signal or "").split("+")]
+
+
+def rests_on_its_lot_number(r) -> bool:
+    """A stored state decided by a postcode that is the row's own lot number.
+
+    Coleen, 28 Sep 2026: a QLD search offered two "Jubilee, QLD" lots that are the Jubilee
+    estate in Wyndham Vale, VIC. Their line reads "...SS West 4327 Jubilee Wyndhamvale...",
+    4327 is the lot, and it was stored as the postcode too; own_state then proved QLD by
+    "suburb + postcode" over the VIC page. Such a state is SETTLED by the rule below, so
+    fixing state_resolver alone would never reach the rows already written -- the same
+    trap as the Hudson rows the hint-only rule exists for. On the 28 Sep nightly 18 live
+    rows are in this position and 12 are in the wrong state.
+    """
+    return (cites_a_postcode(r["state_source"])
+            and postcode_is_lot_number(r["postcode"], r["lot_number"]))
 
 
 def state_from_filename(url: str) -> str:
@@ -262,6 +296,9 @@ def main(argv=None):
     # run degraded and CI goes red AFTER publishing.
     degraded: List[str] = []
     overruled: List[tuple] = []
+    # Settled states that rested on the row's own lot number read as a postcode, each
+    # re-resolved with its postcode cleared (rests_on_its_lot_number).
+    lot_postcodes: List[tuple] = []
 
     # Constructing the database applies the column migration, so a newly declared field
     # (state_source) exists before the raw sqlite3 connection below tries to write it.
@@ -349,7 +386,8 @@ def main(argv=None):
             if found:
                 suburb = found
         state, why = own_state(postcode=r["postcode"], suburb=suburb,
-                               estate=r["estate_name"], address=r["lot_address"], geo=geo)
+                               estate=r["estate_name"], address=r["lot_address"], geo=geo,
+                               lot_number=r["lot_number"])
         proven[rid] = (suburb, state, why)
         per_file.setdefault(file_of(r), set()).add(state)
 
@@ -395,6 +433,17 @@ def main(argv=None):
         # already written, so a fill-the-blanks pass would skip all 149 of them.
         settled = bool(state) and bool(STATE_RE.fullmatch(state or "")) \
             and (r["state_source"] or "") not in HINT_ONLY_SIGNALS
+        # A STATE READ OFF THE ROW'S OWN LOT NUMBER is not settled either (Coleen, 28 Sep
+        # 2026 -- see rests_on_its_lot_number). It is re-resolved below with that number
+        # ignored, and the number comes out of the postcode column: it was never the
+        # postcode, and left there it is what the next reader of the column trusts.
+        # postcode is not a content_hash field (database._HASH_FIELDS), so clearing it
+        # does not re-identify the row; _write refuses a column that is.
+        reopened = settled and rests_on_its_lot_number(r)
+        if reopened:
+            settled = False
+            _write(conn, rid, postcode=None)
+            was = (state, r["state_source"])
         # A SETTLED STATE THAT RESTS ON A SUBURB MATCH is still checked against the row's
         # own text. Settled rows are never re-resolved, which is right for most of them --
         # re-resolving every 'suburb' state blanked 64 correct ones, because their files
@@ -419,7 +468,8 @@ def main(argv=None):
             else:
                 new_state, signal = resolve_state(postcode=r["postcode"], suburb=suburb,
                                                   page_state=page, geo=geo,
-                                                  listing_state=mine)
+                                                  listing_state=mine,
+                                                  lot_number=r["lot_number"])
                 # The same check as for a settled row, so the answer does not depend on
                 # whether the state was already written when the check first ran.
                 hit = text_overrules(r, suburb, new_state, signal)
@@ -452,7 +502,8 @@ def main(argv=None):
                 state = new_state
             if new_state:
                 by_signal[signal] = by_signal.get(signal, 0) + 1
-            clash = disagreement(r["postcode"], suburb, page, geo)
+            clash = disagreement(r["postcode"], suburb, page, geo,
+                                 lot_number=r["lot_number"])
             if clash:
                 clashes.append(clash)
                 # The state was decided by other signals, so a postcode pointing somewhere
@@ -462,6 +513,9 @@ def main(argv=None):
                 if state and clash["postcode_state"] != state:
                     _write(conn, rid, postcode=None)
                     cleared_postcodes += 1
+            if reopened:
+                lot_postcodes.append((rid, r["postcode"], was[0], was[1], state,
+                                      signal if state else ""))
 
         if not state:
             still_no_state += 1
@@ -492,6 +546,15 @@ def main(argv=None):
     for rid, was, now, sub, col, why in overruled:
         print(f"            id {rid:<7} {was:<3} -> {now:<3}  suburb {sub!r} "
               f"({'column' if col else 'guessed'})  {why}")
+    # Zero on a healthy night: the first run clears every such postcode, and the write-time
+    # guard in database.record_building stops a harvest storing another. A number here
+    # after the first night means a path round that guard. Every row is printed, because
+    # each one changes which state's searches the lot appears in.
+    print(f"  state   re-resolved, its postcode was its own lot number (postcode cleared): "
+          f"{len(lot_postcodes)}")
+    for rid, pc, was, was_src, now, now_src in lot_postcodes:
+        print(f"            id {rid:<7} {was or '-':<3} -> {now or '-':<3}  lot/postcode {pc}  "
+              f"was {was_src!r}, now {now_src or 'blank'!r}")
     if national:
         # The file, not the row, is what was wrong. Printed in full because each one is a
         # decision to stop trusting a whole file, and a human should be able to check it.

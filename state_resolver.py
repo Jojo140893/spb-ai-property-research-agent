@@ -100,6 +100,44 @@ def state_from_postcode(postcode: Any) -> str:
     return ""
 
 
+# --- a lot number is not a postcode ------------------------------------------------------
+#
+# Coleen, 28 Sep 2026: "I searched for QLD properties, however, the app is reporting on VIC
+# properties." Her comparison report for a QLD lead under $800k offered two "Jubilee, QLD"
+# lots. Both are Verv Projects lots in the Jubilee estate at Wyndham Vale, Victoria, off
+# E-Agent's VICTORIA page. Their line reads
+#
+#     "2-Part Detached SS West 4327 Jubilee Wyndhamvale 263 $338,000 Enzo 10.5 ..."
+#
+# and 4327 is the LOT. The extractor also stored it as the postcode (the compass-word guard
+# in sources/feature_extract.parse_postcode only fires when "West" opens the row, and here
+# "2-Part Detached SS" comes first). 4327 is a Queensland postcode, Jubilee is a
+# Queensland locality in the gazetteer, so own_state proved QLD by "suburb + postcode", the
+# E-Agent VIC page was overruled, and enrich has treated the row as settled ever since.
+#
+# Measured on the 28 Sep nightly: 18 live rows rest on a postcode equal to their own lot
+# number and 12 of them are in the wrong state -- 6 Jubilee VIC lots filed QLD, 5 Tomorrow
+# Homes Clyde VIC lots filed NSW, a Yarrabilba QLD lot filed WA -- and the Clyde five made
+# Tomorrow Homes' whole sheet "national", leaving 128 of its rows with no state at all. A
+# number the row already uses as its lot cannot also be its postcode, so it is ignored
+# before any state is read from it. Stated once here and taken by all three functions
+# below, so no caller can pass the lot number to one and forget the others.
+def postcode_is_lot_number(postcode: Any, lot_number: Any) -> bool:
+    """True when the stored postcode is the row's own lot number: the same digits.
+
+    Digits only, so "Lot 4327" / "4327A" / " 4327 " all match a stored 4327. A row with no
+    lot number (or no postcode) never matches -- there is nothing to compare.
+    """
+    pc = re.sub(r"\D", "", str(postcode or ""))
+    lot = re.sub(r"\D", "", str(lot_number or ""))
+    return bool(pc) and pc == lot
+
+
+def _unless_lot_number(postcode: Any, lot_number: Any) -> Any:
+    """The postcode, or None when it is the lot number (see postcode_is_lot_number)."""
+    return None if postcode_is_lot_number(postcode, lot_number) else postcode
+
+
 def _components(cell: Any) -> List[str]:
     """A stocklist cell split on the separators the files themselves use.
 
@@ -214,8 +252,11 @@ def locality_tail_in_cell(cell: Any, geo: Any) -> str:
 
 
 def own_state(postcode: Any = None, suburb: Any = "", estate: Any = "",
-              address: Any = "", geo: Any = None) -> Tuple[str, str]:
+              address: Any = "", geo: Any = None, lot_number: Any = None) -> Tuple[str, str]:
     """What the ROW proves on its own, ignoring every page and file. ('', '') if nothing.
+
+    `lot_number`: a postcode equal to it is no postcode at all (postcode_is_lot_number) --
+    the Jubilee lots proved QLD here on "suburb + postcode" from their lot number, 4327.
 
     Deliberately stricter than `resolve_state`, and in two ways, because this is both the
     standard of proof for overruling a hint that covers a whole file AND the only signal
@@ -229,6 +270,7 @@ def own_state(postcode: Any = None, suburb: Any = "", estate: Any = "",
         "54 Greenway Street" reduced to Hobart and Greenway in the suburb column, and the
         gazetteer answers TAS and ACT for a Central Coast NSW builder.
     """
+    postcode = _unless_lot_number(postcode, lot_number)
     named, _ = state_named_in_listing(suburb, estate, address)
     if named:
         return named, "listing text"
@@ -281,7 +323,8 @@ def file_is_national(proven_states: Any) -> bool:
 
 
 def resolve_state(postcode: Any = None, suburb: str = "", page_state: Any = "",
-                  geo: Any = None, listing_state: Any = "") -> Tuple[str, str]:
+                  geo: Any = None, listing_state: Any = "",
+                  lot_number: Any = None) -> Tuple[str, str]:
     """Return (state, signal). Both empty when nothing reliable is available.
 
     Decided by AGREEMENT, not by a fixed ranking, because cross-checking the signals
@@ -303,7 +346,12 @@ def resolve_state(postcode: Any = None, suburb: str = "", page_state: Any = "",
     NAMES its state has already answered the question, and no amount of agreement between
     weaker signals can outvote it. It is the signal that was missing when 12 Toowoomba lots
     were exported as New South Wales off a file whose own cells read "KEARNEYS SPRING / QLD".
+
+    `lot_number`: a postcode equal to it casts no vote (postcode_is_lot_number). "2704
+    Talladega Rd, Clyde" stored 2704 as its postcode -- NSW -- and Clyde, a locality in NSW
+    and VIC, agreed with it, so five Tomorrow Homes lots off the VIC page went to NSW.
     """
+    postcode = _unless_lot_number(postcode, lot_number)
     votes: Dict[str, List[str]] = {}
 
     stated = normalise_state(listing_state)
@@ -446,13 +494,18 @@ def text_locality_elsewhere(row_text: Any, state: Any, geo: Any,
     return None
 
 
-def disagreement(postcode: Any, suburb: str, page_state: Any, geo: Any) -> Optional[Dict[str, Any]]:
+def disagreement(postcode: Any, suburb: str, page_state: Any, geo: Any,
+                 lot_number: Any = None) -> Optional[Dict[str, Any]]:
     """Report when the row's own postcode contradicts the page it came from.
 
     Worth surfacing rather than silently preferring one: it means either a builder has
     listed interstate stock on a state page, or a postcode was misparsed. Both are things
     a human should see, and both would otherwise be invisible.
+
+    `lot_number`: a postcode equal to it is not the row's postcode, so it contradicts
+    nothing (postcode_is_lot_number). enrich clears that postcode itself.
     """
+    postcode = _unless_lot_number(postcode, lot_number)
     pc_state = state_from_postcode(postcode)
     hint = normalise_state(page_state)
     if pc_state and hint and pc_state != hint:
