@@ -1,0 +1,442 @@
+"""Who may see a Clare caller's full contact details, and what everyone else is shown.
+
+Coleen, 28 Sep 2026: "Please only display the last 3 digits of the customer's mobile number
+for identification purposes. Not everyone on the team should have access to the customer's
+full email address or phone number." The owner chose the rule: AUTHORISED is whoever knows a
+second password, SPB_CONTACT_PASSWORD, set on the dashboard's Vercel project. The site login
+lets the whole team into the dashboard; this password lets one person see who to ring.
+
+Used by three functions, and bundled beside each of them (build_web.py includeFiles):
+    api/contact_unlock.py  checks the password and sets or clears the unlock cookie
+    api/hot_leads.py       masks the leads unless the request carries a valid cookie
+    api/lead_notes.py      masks the notes it hands back, on the same rule
+
+WHY ON THE SERVER AND NOT IN THE PAGE. A number the page hides with CSS or script has still
+been sent to the browser: the Network tab, View Source or a saved copy of the JSON reads it in
+full. So the masking happens here, before the bytes leave Vercel, and a masked viewer's
+browser never receives the number at all.
+
+THE UNLOCK COOKIE, spb_contact=<exp>.<b64url HMAC-SHA256(SPB_CONTACT_PASSWORD, "contact|"+exp)>
+  * SIGNED WITH THE PASSWORD ITSELF, as middleware.js signs the site session with
+    SITE_PASSWORD: one setting to configure, and changing it ends every unlock at once.
+  * "contact|" is a different message from the site session's "<user>|<exp>", so neither
+    cookie can ever be replayed as the other, even if the two passwords were the same.
+  * Path=/api: only the functions read it; the page, stock.json and the PDFs never carry it.
+  * HttpOnly (script cannot read it), Secure, SameSite=Strict, and 4 hours: a shared laptop
+    should ask again the same working day.
+  * AN EMPTY OR UNSET PASSWORD NEVER VALIDATES. Anyone can compute an HMAC under an empty key,
+    so with no password there is nothing to unlock with and everyone gets the masked view.
+
+WHAT THE MASKED VIEW HIDES (mask_hot_leads, mask_notes_answer). Fail closed throughout: a shape
+this file does not recognise is an error the caller turns into a 502, never the raw body.
+  * customer.email and customer.phone become "", with phoneLast3 (the last 3 digits, only when
+    the number has at least 6) and hasEmail / hasPhone in their place.
+  * recordingUrl becomes "": the recording is the caller saying their own number.
+  * Every free-text string -- summary, gradeReason, brief.*, research.message, the research
+    location readings, customer.name, the notes' text, label and by, and any key this file
+    does not know -- loses the lead's own email and phone in every spelling (see Scrubber),
+    any email-shaped token, and any run of 8 or more digits shaped like a phone number.
+  * Machine-written fields (ids, timestamps, the Kommo link, the shortlist's listings, the
+    appointment) lose only the lead's own email and phone. The generic digit rule would break
+    them: a Kommo lead id is 8 digits and an ISO timestamp is 8 digits with dashes.
+  * A saved link is kept whole or hidden whole (see _scrub_url).
+"""
+import base64
+import hashlib
+import hmac
+import json
+import os
+import re
+import time
+import urllib.parse
+
+COOKIE = "spb_contact"
+MAX_AGE = 4 * 60 * 60                       # 14400 s
+# A correctly signed cookie that claims to last longer than MAX_AGE was never minted here.
+# The slack allows for the clocks of two function instances disagreeing by a few minutes.
+_FUTURE_SLACK = 300
+HIDDEN = "[hidden]"
+_EXP = re.compile(r"[0-9]{1,12}")           # ASCII digits only, like hot_leads' ?limit=
+
+
+class MaskError(Exception):
+    """The answer is not a shape this file can mask. The caller answers 502, never the raw body."""
+
+
+def secret():
+    return (os.environ.get("SPB_CONTACT_PASSWORD") or "").strip()
+
+
+def configured():
+    return bool(secret())
+
+
+# ------------------------------------------------------------------ the unlock cookie
+
+def _b64url(raw):
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def sign(key, exp):
+    """The cookie's signature, byte-compatible with middleware.js's sign()."""
+    mac = hmac.new(key.encode("utf-8"), ("contact|" + exp).encode("utf-8"), hashlib.sha256)
+    return _b64url(mac.digest())
+
+
+def unlock_cookie(now=None):
+    """The Set-Cookie value for a correct password. Only ever called with one configured."""
+    key = secret()
+    if not key:
+        raise RuntimeError("SPB_CONTACT_PASSWORD is not set")
+    exp = str(int(time.time() if now is None else now) + MAX_AGE)
+    return (f"{COOKIE}={exp}.{sign(key, exp)}; Path=/api; HttpOnly; Secure; SameSite=Strict; "
+            f"Max-Age={MAX_AGE}")
+
+
+def lock_cookie():
+    """The Set-Cookie value that clears the unlock. Same Path, or the browser keeps the old one."""
+    return f"{COOKIE}=; Path=/api; HttpOnly; Secure; SameSite=Strict; Max-Age=0"
+
+
+def cookie_values(header, name=COOKIE):
+    """Every value the Cookie header carries under `name`, in order (the way readCookie reads)."""
+    out = []
+    for part in str(header or "").split(";"):
+        k, eq, v = part.partition("=")
+        if eq and k.strip() == name:
+            out.append(v.strip())
+    return out
+
+
+def authorised(cookie_header, now=None):
+    """True only for an unexpired spb_contact cookie signed with the configured password."""
+    key = secret()
+    if not key:
+        return False                          # an empty key is a key anyone holds
+    now = time.time() if now is None else now
+    for raw in cookie_values(cookie_header)[:4]:
+        exp, dot, sig = raw.rpartition(".")
+        if not dot or not _EXP.fullmatch(exp):
+            continue
+        seconds = int(exp)
+        if seconds <= now or seconds > now + MAX_AGE + _FUTURE_SLACK:
+            continue
+        # Bytes, not str: compare_digest raises on a str that is not pure ASCII, and a
+        # cookie is whatever the browser, or someone forging one, chose to send.
+        if hmac.compare_digest(sig.encode("utf-8", "replace"), sign(key, exp).encode("ascii")):
+            return True
+    return False
+
+
+# ------------------------------------------------------------------ scrubbing
+
+# Between two digits of a phone number: a space (a no-break one too), a dash (any of the
+# Unicode hyphens and dashes a phone's autocorrect produces), a dot or a bracket, up to three
+# of them ("(03) 9123 4567", "0400-111-678", "+61 (0)400 111 678"). Not "/" or ",": a
+# date written 14/09/2026 and a price written 750,000 are not phone numbers. Built with chr()
+# so the source stays ASCII: an invisible no-break space in a regex is a trap for the next edit.
+_SEP_CHARS = r" \t" + chr(0xA0) + r"\-.()" + "".join(chr(c) for c in range(0x2010, 0x2016))
+_SEP = "[" + _SEP_CHARS + "]{0,3}"
+# 8 or more digits in a phone's shape. Not starting straight after a "$" or another digit, or
+# one separator after one, so a budget ("$750 000 - 800 000") is never read as a number to
+# hide, and not an ISO date ("2026-10-02"), which a note saying when a call is booked will
+# often carry.
+_PHONE_SHAPED = re.compile(
+    r"(?<![\d$])(?<![\d$][" + _SEP_CHARS + r"])(?!\d{4}-[01]\d-[0-3]\d(?!\d))\+?\d(?:"
+    + _SEP + r"\d){7,}")
+_EMAIL_SHAPED = re.compile(r"[\w.%+\-]+@[\w\-]+(?:\.[\w\-]+)+")
+# In a URL, only a number in an Australian phone's own shape: national (0X XXXX XXXX),
+# international (61X XXXX XXXX) or anything after a "+". A listing's id -- 9 digits on
+# realestate.com.au, 10 starting 20 on domain.com.au -- and a Drive id's digits are not.
+_URL_PHONE = re.compile(r"(?<!\d)(?:\+\d{8,15}|0[2-9]\d{8}|61[2-9]\d{8})(?!\d)")
+# Between the parts of an email said aloud: "joseph dot test at example dot com".
+_SAID = (r"(?:\s*(?:[.@_+\-]|\bdot\b|\bat\b|\bunderscore\b|\bdash\b|\bhyphen\b|\bplus\b)\s*"
+         r"|\s+)?")
+
+
+def digits(value):
+    return re.sub(r"\D", "", "" if value is None else str(value))
+
+
+def last3(phone):
+    """The last 3 digits, for telling two callers apart -- only for a number of 6 digits or more."""
+    d = digits(phone)
+    return d[-3:] if len(d) >= 6 else ""
+
+
+def _phone_pattern(phone):
+    """Every written form of this number: +61 400 111 678, 0400111678, 400-111-678, ...
+
+    The CORE is the last 9 digits (an Australian number without its 0 or 61), matched with
+    any separators between them; the optional prefix swallows the "+61 ", "0061", "(0)" or
+    "0" in front, so what is left in the text is "[hidden]" rather than "+61 [hidden]".
+    """
+    d = digits(phone)
+    if len(d) < 6:
+        return None, ""                      # too short to be a number, and to hide safely
+    core = d[-9:]
+    pre = d[:-9].lstrip("0")
+    prefix = r"(?:(?:\+|00)[ ]?\d{1,3}" + _SEP
+    if pre:
+        prefix += "|" + _SEP.join(re.escape(c) for c in pre) + _SEP
+    prefix += r")?(?:\(?0\)?" + _SEP + ")?"
+    return prefix + _SEP.join(re.escape(c) for c in core), core
+
+
+def _email_patterns(email):
+    """The address as written, and as said aloud or with its punctuation lost."""
+    e = str(email or "").strip()
+    if "@" not in e or len(e) < 3:
+        return []
+    out = [re.escape(e)]
+    local, _, domain = e.rpartition("@")
+    words = [t for t in re.split(r"[\W_]+", local) if t]
+    labels = [t for t in re.split(r"[\W_]+", domain) if t]
+    # Only for an address long enough that its spoken form cannot be an ordinary phrase:
+    # with the separators optional, "a@b.co" would hide every "ab" in every summary.
+    if words and labels and len("".join(words) + labels[0]) >= 8:
+        tail = ""
+        for label in reversed(labels[1:]):   # "... at gmail" hides as surely as "gmail.com"
+            tail = "(?:" + _SAID + re.escape(label) + tail + ")?"
+        out.append(r"(?<!\w)" + _SAID.join(re.escape(w) for w in words) + _SAID
+                   + re.escape(labels[0]) + tail + r"(?!\w)")
+    return out
+
+
+class Scrubber:
+    """Hides one or more leads' own email and phone, and (in free text) anyone's."""
+
+    def __init__(self, contacts=()):
+        patterns, self.cores, self.emails = [], [], []
+        for email, phone in contacts:
+            for p in _email_patterns(email):
+                patterns.append(p)
+            if isinstance(email, str) and email.strip():
+                self.emails.append(email.strip().lower())
+            pattern, core = _phone_pattern(phone)
+            if pattern:
+                patterns.append(pattern)
+                self.cores.append(core)
+        self._own = re.compile("|".join(f"(?:{p})" for p in patterns),
+                               re.IGNORECASE) if patterns else None
+
+    def own(self, text):
+        """The lead's own email and phone, in every spelling. For machine-written fields."""
+        return self._own.sub(HIDDEN, text) if self._own else text
+
+    def free(self, text):
+        """own(), then any email-shaped token and any 8+ digit phone-shaped run."""
+        text = self.own(text)
+        text = _EMAIL_SHAPED.sub(HIDDEN, text)
+        return _PHONE_SHAPED.sub(HIDDEN, text)
+
+    def number(self, n):
+        """A number that spells the lead's phone (a record that stored it as an int)."""
+        s = digits(n)
+        return HIDDEN if any(core in s for core in self.cores) else n
+
+    def tree(self, value, text):
+        """Apply `text` (own or free) to every string, key included, under `value`."""
+        if isinstance(value, str):
+            return text(value)
+        if isinstance(value, bool) or value is None:
+            return value
+        if isinstance(value, (int, float)):
+            return self.number(value)
+        if isinstance(value, list):
+            return [self.tree(v, text) for v in value]
+        if isinstance(value, dict):
+            return {(text(k) if isinstance(k, str) else k): self.tree(v, text)
+                    for k, v in value.items()}
+        raise MaskError(f"cannot mask a {type(value).__name__}")
+
+    def leaked(self, value):
+        """True when the lead's own email or phone is still anywhere in `value`, serialised.
+
+        The walk above is the masking; this is a second, independent look at the result, so a
+        field the walk ever misses is a 502 rather than a published number.
+        """
+        blob = json.dumps(value, ensure_ascii=False)
+        low = blob.lower()
+        if self._own and self._own.search(blob):
+            return True
+        if any(e in low for e in self.emails):
+            return True
+        return any(core in digits_run for core in self.cores
+                   for digits_run in re.findall(r"\d+", blob))
+
+
+def _scrub_url(url, scrub):
+    """A saved link, kept whole or hidden whole.
+
+    A link with "[hidden]" spliced into it is a broken link that still looks like one, so the
+    whole URL is replaced. Checked percent-decoded too ("%40" is an "@"). The generic
+    8-digit rule is NOT applied to a URL: Coleen's saved property links carry listing ids of
+    9 and 10 digits (realestate.com.au, domain.com.au), and hiding those would break every
+    link the team saves for anyone without the contact-details password. A URL is hidden when
+    it carries the lead's own email or phone, any email address, or a number in an Australian
+    phone's shape (_URL_PHONE).
+    """
+    if not isinstance(url, str):
+        return ""
+    both = url + " " + urllib.parse.unquote(url)
+    if (scrub.own(both) != both or _EMAIL_SHAPED.search(both) or _URL_PHONE.search(both)):
+        return HIDDEN
+    return url
+
+
+# The lead record's machine-written keys (vapi-kommo-hook lib/record.js). They lose only the
+# lead's own email and phone; everything else, and any key added later, is free text.
+_MACHINE = frozenset({"version", "channel", "fieldsFingerprint", "test", "createdAt",
+                      "endedReason", "durationSeconds", "grade", "gradeSource", "appointment",
+                      "kommo", "recommendations"})
+_MACHINE_RESEARCH = frozenset({"status", "record_id", "shortlist_count"})
+_MACHINE_NOTE = frozenset({"id", "at", "action", "removed"})
+
+
+def _text(value):
+    return "" if value is None else (value if isinstance(value, str) else str(value))
+
+
+def _lead_contact(lead):
+    c = lead.get("customer")
+    if c is None:
+        return "", ""
+    if not isinstance(c, dict):
+        raise MaskError("a lead's customer is not an object")
+    return _text(c.get("email")), _text(c.get("phone"))
+
+
+def _mask_customer(customer, scrub):
+    if customer is None:
+        customer = {}
+    if not isinstance(customer, dict):
+        raise MaskError("a lead's customer is not an object")
+    email, phone = _text(customer.get("email")), _text(customer.get("phone"))
+    out = {scrub.free(k): scrub.tree(v, scrub.free)
+           for k, v in customer.items() if k not in ("email", "phone")}
+    out.update(email="", phone="", phoneLast3=last3(phone),
+               hasEmail=bool(email.strip()), hasPhone=bool(digits(phone)))
+    return out
+
+
+def mask_lead(lead, scrub):
+    if not isinstance(lead, dict):
+        raise MaskError("a lead is not an object")
+    out = {}
+    for k, v in lead.items():
+        if k == "callId":
+            out[k] = v                        # the key the notes and the page hang on
+        elif k == "customer":
+            out[k] = _mask_customer(v, scrub)
+        elif k == "recordingUrl":
+            out[k] = ""
+        elif k in _MACHINE:
+            out[k] = scrub.tree(v, scrub.own)
+        elif k == "research" and isinstance(v, dict):
+            out[k] = {scrub.free(rk): scrub.tree(rv, scrub.own if rk in _MACHINE_RESEARCH
+                                                 else scrub.free)
+                      for rk, rv in v.items()}
+        else:
+            out[scrub.free(k)] = scrub.tree(v, scrub.free)
+    body = {k: v for k, v in out.items() if k != "callId"}
+    if scrub.leaked(body):
+        raise MaskError("a lead's own contact details survived the masking")
+    return out
+
+
+def _mask_note_item(item, scrub):
+    if not isinstance(item, dict):
+        raise MaskError("a note entry or link is not an object")
+    out = {}
+    for k, v in item.items():
+        if k == "url":
+            out[k] = _scrub_url(v, scrub)
+        elif k in _MACHINE_NOTE:
+            out[k] = scrub.tree(v, scrub.own)
+        else:                                 # text, label, by, and anything added later
+            out[scrub.free(k)] = scrub.tree(v, scrub.free)
+    return out
+
+
+def mask_notes(notes, scrub):
+    """One lead's {entries, links, rev}, masked."""
+    if not isinstance(notes, dict):
+        raise MaskError("a lead's notes are not an object")
+    out = {}
+    for k, v in notes.items():
+        if k in ("entries", "links"):
+            if not isinstance(v, list):
+                raise MaskError(f"notes.{k} is not a list")
+            out[k] = [_mask_note_item(item, scrub) for item in v]
+        elif k == "rev":
+            out[k] = scrub.tree(v, scrub.own)
+        else:
+            out[scrub.free(k)] = scrub.tree(v, scrub.free)
+    if scrub.leaked(out):
+        raise MaskError("a lead's own contact details survived the notes masking")
+    return out
+
+
+def mask_hot_leads(doc):
+    """The hook's GET /api/hot-leads answer as a person without the password may see it."""
+    if not isinstance(doc, dict):
+        raise MaskError("the answer is not an object")
+    leads = doc.get("leads")
+    if not isinstance(leads, list):
+        raise MaskError("the answer has no list of leads")
+    per_lead, everyone = {}, []
+    for lead in leads:
+        if not isinstance(lead, dict):
+            raise MaskError("a lead is not an object")
+        contact = _lead_contact(lead)
+        everyone.append(contact)
+        cid = lead.get("callId")
+        if isinstance(cid, str):
+            per_lead.setdefault(cid, []).append(contact)
+    anyone = Scrubber(everyone)
+    out = {}
+    for k, v in doc.items():
+        if k == "leads":
+            out[k] = [mask_lead(lead, Scrubber([_lead_contact(lead)])) for lead in v]
+        elif k == "notes":
+            if v is None:
+                out[k] = None
+                continue
+            if not isinstance(v, dict):
+                raise MaskError("notes is not an object")
+            # A note is masked with ITS lead's details; notes for a lead not on this page
+            # (the hook should never send one) with every returned lead's.
+            out[k] = {cid: mask_notes(n, Scrubber(per_lead[cid]) if cid in per_lead else anyone)
+                      for cid, n in v.items()}
+        elif k in ("status", "count", "notesErrors"):
+            out[k] = anyone.tree(v, anyone.own)
+        else:
+            out[anyone.free(k)] = anyone.tree(v, anyone.free)
+    return out
+
+
+def mask_notes_answer(doc):
+    """The hook's POST /api/lead-notes answer, masked.
+
+    There is no lead record to hand on this path, so only the generic rules apply: any email
+    address and any 8+ digit phone-shaped run. The lead's own shorter spellings are hidden
+    when GET /api/hot_leads next returns these notes beside the lead.
+    """
+    if not isinstance(doc, dict):
+        raise MaskError("the answer is not an object")
+    generic = Scrubber()
+    out = {}
+    for k, v in doc.items():
+        if k == "notes":
+            out[k] = mask_notes(v, generic) if v is not None else None
+        elif k in ("status", "callId"):
+            out[k] = v
+        else:
+            out[generic.free(k)] = generic.tree(v, generic.free)
+    return out
+
+
+def generic(text):
+    """Free-text scrubbing with no lead in hand: any email address, any phone-shaped run."""
+    return Scrubber().free(_text(text))

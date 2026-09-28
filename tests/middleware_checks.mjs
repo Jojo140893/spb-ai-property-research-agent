@@ -210,6 +210,7 @@ console.log("\n--- Agent 1's service key: POST /api/research, and nothing else -
   for (const p of ["/api/research/extra", "/api/researchX", "/api/research/",
                    "/api/research.py", "/API/research", "/api/Research", "/api//research",
                    "/stock.json", "/", "/api/hot_leads", "/api/refresh", "/api/narrative",
+                   "/api/contact_unlock", "/api/lead_notes",
                    "/reports/client-report.pdf"]) {
     const res = await quiet(keyed(p, "POST", KEY));
     check(`correct key + POST ${p} -> not bypassed`, refused(res),
@@ -345,6 +346,40 @@ console.log("\n--- signing out ---");
   check("/logout redirects to login", res.status === 303);
   const sc = res.headers.get("set-cookie") || "";
   check("  ...clears the cookie", sc.includes("Max-Age=0"));
+  // Coleen, 28 Sep 2026: the contact-details unlock (spb_contact, api/_contact.py) lives at
+  // Path=/api, and a browser clears a cookie only at the Path it was set with. One header
+  // clearing both, or one at Path=/ only, leaves full phone numbers showing for whoever signs
+  // in next on the same laptop. getSetCookie() keeps the two headers apart; get() joins them.
+  const all = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
+  check("  ...as two separate Set-Cookie headers", all.length === 2, JSON.stringify(all));
+  const session = all.find((c) => c.startsWith("spb_session=")) || "";
+  const contact = all.find((c) => c.startsWith("spb_contact=")) || "";
+  check("  ...the session cookie expires at Path=/",
+        session.startsWith("spb_session=;") && session.includes("Max-Age=0") &&
+        /;\s*Path=\/(;|$)/.test(session), session);
+  check("  ...the contact-details cookie expires at Path=/api",
+        contact.startsWith("spb_contact=;") && contact.includes("Max-Age=0") &&
+        /;\s*Path=\/api(;|$)/.test(contact), contact || "NOT CLEARED: FULL NUMBERS SURVIVE SIGN-OUT");
+  check("  ...both HttpOnly and Secure",
+        [session, contact].every((c) => c.includes("HttpOnly") && c.includes("Secure")));
+}
+
+console.log("\n--- the contact-details routes are behind the login ---");
+{
+  // api/contact_unlock.py sets spb_contact on a correct password, and api/lead_notes.py writes
+  // to the hook. Neither may ever be reachable without a site session: the contact password
+  // is a second lock on the team's dashboard, not a way in.
+  for (const [p, m] of [["/api/contact_unlock", "POST"], ["/api/lead_notes", "POST"],
+                        ["/api/hot_leads", "GET"]]) {
+    const res = await call(req(p, { method: m }));
+    check(`${m} ${p} without a session -> 401`, res && res.status === 401,
+          res ? "status " + res.status : "SERVED WITHOUT A LOGIN");
+  }
+  // The contact cookie is not a session. Holding only it (a copy lifted off another
+  // machine, or one left behind by an old sign-out) must not open the dashboard.
+  const res = await call(req("/api/hot_leads", { cookie: "spb_contact=9999999999.forged" }));
+  check("a contact cookie alone is not a session", res && res.status === 401,
+        res ? "status " + res.status : "SERVED ON THE CONTACT COOKIE");
 }
 
 console.log("\n" + (fail === 0 ? "ALL " + pass + " CHECKS PASSED"
