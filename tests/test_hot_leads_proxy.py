@@ -913,6 +913,274 @@ def test_a_cookie_minted_four_hours_ago_has_run_out(monkeypatch):
     assert json.loads(_masked(monkeypatch, cookie=fresh)[2])["contact"] == "full"
 
 
+# ------------------------------------------------------------------ review fixes, 28 Sep 2026
+# Each test below fails with the fix it names taken out (checked by breaking each one on
+# purpose, one at a time).
+
+def _one(lead, notes=None):
+    """The hook's answer for one lead, with `notes` as that lead's notes when given."""
+    doc = {"status": "success", "count": 1, "leads": [lead]}
+    if notes is not None:
+        doc.update(notes={lead["callId"]: notes}, notesErrors=[])
+    return doc
+
+
+def _note(text, **extra):
+    return {"entries": [{"id": "e1", "at": "2026-09-28T02:00:00.000Z", "by": "Coleen",
+                         "action": "other", "text": text, **extra}], "links": [], "rev": 1}
+
+
+def _note_text(body, cid="call-678"):
+    return json.loads(body)["notes"][cid]["entries"][0]["text"]
+
+
+def test_one_unreadable_notes_object_is_absent_not_a_502_for_the_whole_tab(monkeypatch):
+    """The hook's own shape for a notes file it could not read (lib/hot-leads.js before the
+    fix on its side): null beside notesErrors. Masking the null raised, and ONE broken note
+    blanked every lead for everyone without the password."""
+    lead = dict(copy.deepcopy(CONTACT_LEAD), callId="c1")
+    status, _, body = _masked(monkeypatch, {"status": "success", "count": 1, "leads": [lead],
+                                            "notes": {"c1": None}, "notesErrors": ["c1"]})
+    assert status == 200, body[:300]
+    assert _leaks(body) == []
+    doc = json.loads(body)
+    got = doc["leads"][0]
+    assert doc["contact"] == "masked" and got["callId"] == "c1"
+    assert (got["customer"]["phone"], got["customer"]["email"]) == ("", "")
+    assert got["customer"]["phoneLast3"] == "678" and got["recordingUrl"] == ""
+    assert doc["notes"] == {} and doc["notesErrors"] == ["c1"], "absent, and named"
+
+
+def test_mask_hot_leads_itself_reads_a_null_as_absent():
+    """Not only through view(): the rule belongs to mask_hot_leads, whoever calls it."""
+    lead = dict(copy.deepcopy(CONTACT_LEAD), callId="c1")
+    out = H._contact.mask_hot_leads({"status": "success", "count": 1, "leads": [lead],
+                                     "notes": {"c1": None}, "notesErrors": ["c1"]})
+    assert out["notes"] == {} and out["notesErrors"] == ["c1"]
+    assert out["leads"][0]["customer"]["phone"] == ""
+
+
+def test_a_null_the_hook_did_not_name_is_named_and_the_full_view_drops_it_too(monkeypatch):
+    """Treated as absent in both views, so the tab gets one shape; and named in notesErrors,
+    because "could not read" and "no notes yet" must not look the same."""
+    monkeypatch.setenv("SPB_CONTACT_PASSWORD", CONTACT_PASSWORD)
+    upstream = {"status": "success", "count": 2, "leads": [CONTACT_LEAD, WA_LEAD],
+                "notes": {"call-678": NOTES, "wa-54494433": None}}
+    for cookie, view in ((None, "masked"), (_unlocked(), "full")):
+        status, _, body = _masked(monkeypatch, upstream, cookie=cookie)
+        doc = json.loads(body)
+        assert status == 200 and doc["contact"] == view
+        assert list(doc["notes"]) == ["call-678"], view
+        assert doc["notesErrors"] == ["wa-54494433"], view
+
+
+@pytest.mark.parametrize("text", [
+    "0400/111/678", "0400,111,678", "0400\n111\n678", "0400\r\n111\r\n678", "0400\t111\t678",
+    "0400    111    678", "0400 / 111 / 678", "+61/400/111/678", "0400_111_678",
+    "0400,\n111,\n678",
+])
+def test_the_leads_own_number_is_hidden_whatever_punctuation_is_between_its_digits(
+        monkeypatch, text):
+    """Slashes, commas, line breaks (the hook keeps a note's), tabs and runs of spaces: the
+    generic rule leaves those out for dates and prices, but these are the lead's own 9 digits
+    in order, which are the number whatever sits between them."""
+    assert H._contact.Scrubber([(EMAIL, PHONE)]).free(text) == "[hidden]"
+    status, _, body = _masked(monkeypatch, _one(copy.deepcopy(CONTACT_LEAD),
+                                                _note("Texted " + text + " at 5")))
+    assert status == 200, body[:300]
+    assert _note_text(body) == "Texted [hidden] at 5"
+
+
+def test_the_same_punctuation_leaves_other_numbers_alone():
+    scrub = H._contact.Scrubber([(EMAIL, PHONE)])
+    for text in ("from 14/09/2026, 10:30", "prices 400,000 to 450,000", "Lot 400, 111 Smith St",
+                 "0400/111/679"):
+        assert scrub.free(text) == text, text
+
+
+# The lead's digits in order, with words between them that no pattern can list. The masking
+# cannot hide this; the second look must see it and fail closed.
+EVADED = "ring 0400 or 111 then 678"
+
+
+def test_the_number_written_past_every_pattern_in_a_note_is_a_502(monkeypatch):
+    """The NOTES-level second look (mask_notes), by its digit half: every non-digit removed,
+    "0400 or 111 then 678" is 0400111678."""
+    status, _, body = _masked(monkeypatch, _one(copy.deepcopy(CONTACT_LEAD), _note(EVADED)))
+    assert status == 502 and "could not be hidden" in _message(body)
+    assert "then 678" not in body.decode()
+
+
+def test_the_number_written_past_every_pattern_in_a_lead_is_a_502(monkeypatch):
+    """The LEAD-level second look (mask_lead), by the same digit half."""
+    lead = copy.deepcopy(CONTACT_LEAD)
+    lead["summary"] = "Joseph said to " + EVADED
+    status, _, body = _masked(monkeypatch, _one(lead))
+    assert status == 502 and "could not be hidden" in _message(body)
+    assert "then 678" not in body.decode()
+
+
+def test_a_short_stored_number_is_not_found_in_a_note_of_dates_and_prices(monkeypatch):
+    """A number stored cut short (7 digits) is looked for only as an unbroken run: its digits
+    in order across words turn up by chance, and a false match is a 502 for the whole tab."""
+    lead = copy.deepcopy(CONTACT_LEAD)
+    lead["customer"]["phone"] = "4567890"
+    status, _, body = _masked(monkeypatch, _one(lead, _note("Lot 456 on 78-90 Smith St")))
+    assert status == 200 and _note_text(body) == "Lot 456 on 78-90 Smith St"
+
+
+def test_notes_are_masked_with_their_own_leads_spellings(monkeypatch):
+    """The lead-specific rules reach the notes, not only the generic ones: the address said
+    aloud and the number written with slashes are nobody else's pattern."""
+    notes = _note("Emailed joseph dot test at example dot com")
+    notes["entries"].append(dict(notes["entries"][0], id="e2", text="Texted 0400/111/678"))
+    status, _, body = _masked(monkeypatch, _one(copy.deepcopy(CONTACT_LEAD), notes))
+    assert status == 200, body[:300]
+    texts = [e["text"] for e in json.loads(body)["notes"]["call-678"]["entries"]]
+    assert texts == ["Emailed [hidden]", "Texted [hidden]"]
+
+
+@pytest.mark.parametrize("email,said", [
+    ("joseph@shahid.com.au", "joseph at shahid dot com dot au"),
+    ("joseph.shahid@gmail.com", "joseph dot shahid at gmail dot com"),
+])
+def test_a_callers_name_is_not_read_as_their_address_said_aloud(monkeypatch, email, said):
+    """joseph@shahid.com.au with the "at" optional read "Joseph Shahid" -- the name -- as the
+    address, and hid it from the one identifier a masked viewer has. Said aloud WITH its "at"
+    and domain, the address still goes."""
+    lead = copy.deepcopy(CONTACT_LEAD)
+    lead["customer"].update(name="Joseph Shahid", email=email)
+    lead["brief"]["client_name"] = "Joseph Shahid"
+    lead["summary"] = f"Joseph Shahid wants a QLD house. Email {said}."
+    status, _, body = _masked(monkeypatch, _one(lead))
+    assert status == 200, body[:300]
+    got = json.loads(body)["leads"][0]
+    assert got["customer"]["name"] == "Joseph Shahid"
+    assert got["brief"]["client_name"] == "Joseph Shahid"
+    assert got["summary"] == "Joseph Shahid wants a QLD house. Email [hidden]."
+
+
+def test_the_name_fields_skip_only_the_address_said_aloud(monkeypatch):
+    """A name kept on purpose: "Joseph at Shahid Realty" is the address said aloud to the
+    summary's rule and the caller's name to the two name fields -- which still lose the
+    address as written and the lead's number."""
+    lead = copy.deepcopy(CONTACT_LEAD)
+    lead["customer"].update(name="Joseph at Shahid Realty", email="joseph@shahid.com.au")
+    lead["brief"]["client_name"] = "Joseph at Shahid Realty"
+    lead["summary"] = "Joseph at Shahid Realty rang."
+    status, _, body = _masked(monkeypatch, _one(lead))
+    assert status == 200, body[:300]
+    got = json.loads(body)["leads"][0]
+    assert got["customer"]["name"] == got["brief"]["client_name"] == "Joseph at Shahid Realty"
+    assert got["summary"] == "[hidden] Realty rang."
+
+    lead["customer"]["name"] = "joseph@shahid.com.au"
+    lead["brief"]["client_name"] = "Joseph 0400/111/678"
+    status, _, body = _masked(monkeypatch, _one(lead))
+    got = json.loads(body)["leads"][0]
+    assert status == 200 and got["customer"]["name"] == "[hidden]"
+    assert got["brief"]["client_name"] == "Joseph [hidden]"
+
+
+ZWSP, WJ, LRM, ZWJ = chr(0x200B), chr(0x2060), chr(0x200E), chr(0x200D)
+
+
+@pytest.mark.parametrize("text", [
+    "0400" + ZWSP + "111" + ZWSP + "678",
+    "04" + WJ + "00 111 6" + WJ + "78",
+    LRM + "+61 400 111 678" + LRM,
+    "0400" + chr(0xAD) + "111" + chr(0x202E) + "678",       # a soft hyphen, a bidi override
+    "0411" + ZWSP + "222" + WJ + "333",                      # someone else's: the generic rule
+    "03" + LRM + " 9123 " + chr(0xFEFF) + "4567",           # a byte-order mark too
+    "joseph" + ZWSP + ".test@example.com",
+    "joseph.test@exa" + WJ + "mple.com",
+    "joseph.test" + LRM + "@example.com",
+    "joseph.test@exam" + ZWJ + "ple.com",                    # a joiner between two letters
+    "joseph dot te" + ZWSP + "st at example dot com",
+    "sam@spb" + ZWSP + ".example",                           # someone else's address
+])
+def test_an_invisible_character_does_not_walk_a_number_or_address_past_the_masking(
+        monkeypatch, text):
+    """Pasted out of WhatsApp or Word, a number or an address can carry characters that do
+    not show. They go before any pattern runs (the rule the hook applies to what it stores)."""
+    assert H._contact.Scrubber([(EMAIL, PHONE)]).free(text) == "[hidden]", repr(text)
+    status, _, body = _masked(monkeypatch, _one(copy.deepcopy(CONTACT_LEAD),
+                                                _note("Sent " + text)))
+    assert status == 200, body[:300]
+    assert _note_text(body) == "Sent [hidden]"
+
+
+def test_the_second_look_sees_through_an_invisible_character_too(monkeypatch):
+    """If the walk ever stopped stripping them, the check behind it still would: an address
+    with a zero-width space in it is found, and the answer fails closed."""
+    monkeypatch.setattr(H._contact.Scrubber, "own", lambda self, text: text)
+    monkeypatch.setattr(H._contact.Scrubber, "free", lambda self, text: text)
+    lead = copy.deepcopy(LEADS["leads"][0])
+    lead.update(callId="call-678", customer={"name": "J", "email": EMAIL, "phone": ""})
+    status, _, body = _masked(monkeypatch, _one(lead, _note("joseph.test@exa" + ZWSP
+                                                            + "mple.com")))
+    assert status == 502 and "exa" + ZWSP not in body.decode()
+
+
+def test_a_stored_address_with_an_invisible_character_is_still_the_leads_address(monkeypatch):
+    """The lead record itself can carry one (an address pasted into Kommo). It is the address
+    without it that a machine-written field would show, and that must go."""
+    lead = copy.deepcopy(CONTACT_LEAD)
+    lead["customer"]["email"] = "jo" + ZWSP + "@ab.co"       # too short for a said-aloud rule
+    lead["appointment"]["meetingUrl"] = "https://meet.example/join?e=jo@ab.co"
+    status, _, body = _masked(monkeypatch, _one(lead))
+    assert status == 200, body[:300]
+    got = json.loads(body)["leads"][0]
+    assert got["appointment"]["meetingUrl"] == "https://meet.example/join?e=[hidden]"
+
+
+def test_a_saved_link_with_an_invisible_character_is_kept_as_the_plain_link():
+    """A zero-width space pasted into a listing link is not a reason to hide the link."""
+    scrub = H._contact.Scrubber([(EMAIL, PHONE)])
+    assert H._contact._scrub_url(REA[:30] + ZWSP + REA[30:], scrub) == REA
+    assert H._contact._scrub_url("https://wa.me/614001" + ZWSP + "11678", scrub) == "[hidden]"
+
+
+def test_an_email_stored_as_a_word_is_not_looked_for_as_one(monkeypatch):
+    """A lead whose email was stored as "none" must not make every "none" in the answer look
+    like a leak: only an address is looked for as one."""
+    lead = copy.deepcopy(CONTACT_LEAD)
+    lead["customer"]["email"] = "none"
+    lead["summary"] = "Has none of the paperwork yet."
+    status, _, body = _masked(monkeypatch, _one(lead))
+    assert status == 200 and json.loads(body)["leads"][0]["summary"] == lead["summary"]
+
+
+def test_an_emojis_joiner_is_kept(monkeypatch):
+    """The one format character kept: U+200D holds an emoji sequence together."""
+    family = chr(0x1F468) + ZWJ + chr(0x1F469) + ZWJ + chr(0x1F467)
+    text = f"Whole family {family} keen, call after 5"
+    assert H._contact.Scrubber([(EMAIL, PHONE)]).free(text) == text
+    status, _, body = _masked(monkeypatch, _one(copy.deepcopy(CONTACT_LEAD), _note(text)))
+    assert status == 200 and _note_text(body) == text
+
+
+def test_a_request_id_is_kept_as_the_hook_stored_it(monkeypatch):
+    """The tab's random id per Save click, stored on the item: machine-written, so the
+    generic 8-digit rule does not turn it into [hidden]."""
+    rid = "r-20260928-12345678-ab"
+    status, _, body = _masked(monkeypatch, _one(copy.deepcopy(CONTACT_LEAD),
+                                                _note("Package sent", requestId=rid)))
+    assert status == 200
+    assert json.loads(body)["notes"]["call-678"]["entries"][0]["requestId"] == rid
+
+
+@pytest.mark.parametrize("stale_before", [1, 3])
+def test_every_spb_contact_cookie_is_looked_at_not_only_the_first(monkeypatch, stale_before):
+    """A browser can hold two cookies of one name -- a stale one from another path, or one an
+    older version of the site set -- and sends them all. The valid one unlocks wherever it
+    comes in the header."""
+    monkeypatch.setenv("SPB_CONTACT_PASSWORD", CONTACT_PASSWORD)
+    stale = ["spb_contact=1.stale-and-long-expired"] * stale_before
+    cookie = "; ".join(stale + [_unlocked()])
+    assert json.loads(_masked(monkeypatch, cookie=cookie)[2])["contact"] == "full"
+
+
 # ------------------------------------------------------------------ methods and logs
 
 @pytest.mark.parametrize("method", ["POST", "PUT", "DELETE", "PATCH"])

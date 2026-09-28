@@ -19,9 +19,16 @@ cookie's format and the masking rules are in api/_contact.py.
 THE ANSWERS, and why none of them is a 401:
   200  unlocked (or locked).
   403  "That contact-details password is not right." after a fixed 0.7 s delay: the same
-       brake middleware.js puts on a wrong site password. The function is stateless across
-       instances, so there is nowhere to count attempts; the delay caps one guesser at about
-       a guess a second. It is not a substitute for a strong password.
+       brake middleware.js puts on a wrong site password. The delay is PER REQUEST and slows
+       only a guesser who waits for each answer before sending the next. The function is
+       stateless across instances, so there is nowhere to count attempts, and nothing stops a
+       signed-in person sending many guesses side by side: Vercel runs them in parallel, each
+       with its own 0.7 s, so the rate is limited only by how many requests they send at
+       once. What keeps the numbers safe is the password itself: SPB_CONTACT_PASSWORD must be
+       long and random (a generated passphrase or 20+ random characters, never a word or a
+       date), so no number of guesses a second finds it. (Corrected 28 Sep 2026, review: this
+       said the delay capped a guesser at about a guess a second, which is true only of one
+       guess at a time.)
   503  SPB_CONTACT_PASSWORD is not set here: there is nothing to unlock with, and an empty
        password must never unlock anything (anyone can sign with an empty key).
   400 / 405 / 413  a request this endpoint does not take.

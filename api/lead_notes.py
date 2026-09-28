@@ -9,11 +9,13 @@ reference."
     browser -> POST /api/lead_notes {callId, op, ...}      (this file, behind the login)
             -> POST vapi-kommo-hook/api/lead-notes         (x-spb-service-key: SPB_SERVICE_KEY)
 
-The body is the hook's, unchanged in meaning: op "add_entry" {action, text, by?}, op
-"add_link" {url, label?, by?}, op "remove" {id}. The hook validates it, stores it beside the
-lead (lead-notes/<callId>.json in its private Blob store) and answers with the lead's notes
-as they now stand. GET /api/hot_leads returns the same notes with every lead, so the tab
-shows them without a second request.
+The body is the hook's, unchanged in meaning: op "add_entry" {action, text, by?, requestId?},
+op "add_link" {url, label?, by?, requestId?}, op "remove" {id}. The hook validates it, stores
+it beside the lead (lead-notes/<callId>.json in its private Blob store) and answers with the
+lead's notes as they now stand; a requestId it has already stored for that lead is a retried
+click, answered with the notes and nothing written. GET /api/hot_leads returns the same notes
+with every lead, so the tab shows them without a second request.
+The upstream is SPB_LEAD_NOTES_URL, else the host of SPB_HOT_LEADS_URL, else production.
 
 WHY THE HOOK STORES THEM. This dashboard is a static site whose functions have a read-only
 disk and no store of their own; the hook already keeps each lead in a private Blob store and
@@ -25,10 +27,13 @@ https:// upstream, and is never returned or logged. The request body is checked 
 anything is sent: JSON (Content-Type application/json, which a cross-site form cannot send),
 an object, at most 16 KB -- the hook's own cap.
 
-WHAT COMES BACK. The hook's JSON, with contact: "full" | "masked" added. Masked -- no valid
-spb_contact cookie, see api/_contact.py -- means every note's text, label and by, and every
-saved link, are scrubbed of email addresses and phone numbers exactly as GET /api/hot_leads
-scrubs them, so saving a note never shows a masked viewer more than reading one does. Errors:
+WHAT COMES BACK. The hook's JSON without its "contact" block -- the lead's own email and phone,
+which the hook adds for the masking below and which the browser never gets from here, in
+either view. Masked -- no valid spb_contact cookie, see api/_contact.py -- means every note's
+text, label and by, and every saved link, are scrubbed with that lead's own rules and the
+generic ones, exactly as GET /api/hot_leads scrubs them, so saving a note never shows a
+masked viewer more than reading one does. (A hook deployed before it sent "contact" gets the
+generic rules only: api/_contact.py mask_notes_answer.) Errors:
   400 404 409 413 415  the hook's own answer and message, passed on: a bad request, no such
                        lead, a conflict it could not retry past, over a cap, not JSON.
   503  a setting is missing (either project's SPB_SERVICE_KEY, the hook's
@@ -59,7 +64,24 @@ PASSED_ON = (400, 404, 409, 413, 415)
 
 
 def _upstream():
-    return (os.environ.get("SPB_LEAD_NOTES_URL") or "").strip() or DEFAULT_URL
+    """(url, the setting it came from).
+
+    28 Sep 2026 (review): the notes follow the leads. With SPB_HOT_LEADS_URL pointed at a
+    staging hook and SPB_LEAD_NOTES_URL left unset, the leads were read from staging and their
+    notes written to production, which answered "no such lead". So an unset
+    SPB_LEAD_NOTES_URL means the same host as SPB_HOT_LEADS_URL, at /api/lead-notes (its query
+    and fragment are the leads' business, not the notes'), and only with neither set is it
+    the production hook.
+    """
+    own = (os.environ.get("SPB_LEAD_NOTES_URL") or "").strip()
+    if own:
+        return own, "SPB_LEAD_NOTES_URL"
+    leads = (os.environ.get("SPB_HOT_LEADS_URL") or "").strip()
+    if leads:
+        parts = urllib.parse.urlsplit(leads)
+        return (urllib.parse.urlunsplit((parts.scheme, parts.netloc, "/api/lead-notes", "", "")),
+                "SPB_HOT_LEADS_URL (which SPB_LEAD_NOTES_URL follows when it is unset)")
+    return DEFAULT_URL, "SPB_LEAD_NOTES_URL"
 
 
 def _failure(code, detail):
@@ -98,10 +120,11 @@ def send(body):
     key = _hl._key()
     if not key:
         return 503, _hl._error("SPB_SERVICE_KEY is not set on the dashboard project")
-    parts = urllib.parse.urlsplit(_upstream())
+    upstream, setting = _upstream()
+    parts = urllib.parse.urlsplit(upstream)
     if parts.scheme != "https" or not parts.hostname:
         # Refused BEFORE the key is attached, as in api/hot_leads.py.
-        return 503, _hl._error("SPB_LEAD_NOTES_URL must be an https:// URL")
+        return 503, _hl._error(f"{setting} must be an https:// URL")
     url = urllib.parse.urlunsplit(parts._replace(fragment=""))
     host = parts.hostname                    # never netloc, which could carry user:password@
     req = urllib.request.Request(url, data=body, method="POST", headers={
@@ -144,10 +167,12 @@ def view(raw, cookie_header):
         if not isinstance(doc, dict):
             raise _contact.MaskError("the answer is not an object")
         if _contact.authorised(cookie_header):
-            doc["contact"] = "full"
+            # The hook's "contact" block is the lead's own email and phone, there for the
+            # masking below. The page never needs it from this endpoint (it has the lead from
+            # GET /api/hot_leads), so it is dropped in the full view too.
+            doc.pop("contact", None)
         else:
-            doc = _contact.mask_notes_answer(doc)
-            doc["contact"] = "masked"
+            doc = _contact.mask_notes_answer(doc)       # uses "contact", and drops it
         return 200, json.dumps(doc, ensure_ascii=False).encode("utf-8")
     except Exception as e:                                             # noqa: BLE001
         return 502, _hl._error("the note was saved, but the notes could not be shown with "
@@ -175,7 +200,10 @@ def _request_body(headers, rfile):
     if not isinstance(payload, dict):
         return 400, _hl._error('Send a JSON object: {"callId": ..., "op": ...}.')
     # Re-serialised, so what reaches the hook is JSON this function parsed, never the bytes
-    # as they arrived.
+    # as they arrived. Every field goes on, requestId included (28 Sep 2026: the tab's random
+    # id per Save or Add click, so the hook can tell a retried click from a second note): the
+    # hook is what checks each field, and a list kept here too would be a second thing to
+    # keep in step.
     return None, json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
 

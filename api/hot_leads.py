@@ -24,7 +24,9 @@ WHAT COMES BACK. On success, the hook's JSON -- the tab and the hook share one r
 and a second copy of that shape here would be a second thing to keep in step -- in one of two
 views, and the top level says which:
   contact: "full"    the request carries a valid spb_contact cookie (api/contact_unlock.py):
-                     the hook's JSON untouched, with contact and contactUnlock added.
+                     the hook's JSON untouched, with contact and contactUnlock added (and a
+                     lead's notes the hook sent as null -- could not be read -- left out and
+                     named in notesErrors, as in the masked view).
   contact: "masked"  everyone else. Coleen, 28 Sep 2026: "Please only display the last 3
                      digits of the customer's mobile number ... Not everyone on the team
                      should have access to the customer's full email address or phone
@@ -282,6 +284,9 @@ def view(raw, cookie_header):
         doc = json.loads(raw.decode("utf-8"))
         if not isinstance(doc, dict):
             raise _contact.MaskError("the answer is not an object")
+        # 28 Sep 2026: an older hook marks a lead's unreadable notes with notes[callId] = null.
+        # Read as absent (and named in notesErrors) in both views, so the tab gets one shape.
+        doc = _contact.unreadable_notes_absent(doc)
         if _contact.authorised(cookie_header):
             doc["contact"] = "full"
             doc["contactUnlock"] = "password"

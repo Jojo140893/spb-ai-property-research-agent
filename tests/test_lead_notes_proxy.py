@@ -226,7 +226,7 @@ def test_the_masked_answer_hides_numbers_and_emails_but_keeps_the_links(monkeypa
     for leak in ("0400 111 678", "61400111678", "joseph.test@example.com"):
         assert leak not in text, leak
     doc = json.loads(body)
-    assert doc["contact"] == "masked" and doc["callId"] == "call-678"
+    assert "contact" not in doc and doc["callId"] == "call-678"
     entry, = doc["notes"]["entries"]
     assert entry["text"] == "Follow up 2026-10-02 on [hidden] or [hidden]"
     assert entry["at"] == "2026-09-28T02:00:00.000Z"
@@ -248,7 +248,149 @@ def test_the_password_holder_gets_the_notes_as_written(monkeypatch):
     _ok(monkeypatch)
     status, _, body = _call(cookie=_unlocked())
     assert status == 200
-    assert json.loads(body) == {**ANSWER, "contact": "full"}
+    assert json.loads(body) == ANSWER
+
+
+# ------------------------------------------------------------------ review fixes, 28 Sep 2026
+# The hook's answer now carries the lead's own details, "contact": {"email", "phone"}, read
+# from the lead record it checks anyway, so a save is masked with the lead's rules exactly as
+# GET /api/hot_leads masks the same notes -- and the block itself never reaches the browser.
+
+LEAD_CONTACT = {"email": "joseph.shahid@example.com", "phone": "+61 400 111 678"}
+RID = "r-20260928-12345678-ab"
+OWN_NOTES = {
+    "entries": [
+        {"id": "e1", "at": "2026-09-28T02:00:00.000Z", "by": "Coleen", "action": "other",
+         "text": "Emailed joseph dot shahid at example dot com", "requestId": RID},
+        {"id": "e2", "at": "2026-09-28T02:01:00.000Z", "by": "Coleen", "action": "other",
+         "text": "Texted 0400/111/678, then rang 0400 111 678"}],
+    "links": [{"id": "l1", "at": "2026-09-28T02:02:00.000Z", "by": "Coleen", "url": REA,
+               "label": "Lot 12 for joseph_shahid at example"}],
+    "rev": 3}
+WITH_CONTACT = {"status": "success", "callId": "call-678", "notes": OWN_NOTES,
+                "contact": LEAD_CONTACT}
+
+
+def _get_view(notes):
+    """The same notes as GET /api/hot_leads shows them to a masked viewer, beside the lead."""
+    lead = {"callId": "call-678", "customer": {"name": "Joseph Shahid", **LEAD_CONTACT}}
+    code, body = N._hl.view(json.dumps({"status": "success", "count": 1, "leads": [lead],
+                                        "notes": {"call-678": notes},
+                                        "notesErrors": []}).encode(), "")
+    assert code == 200, body
+    return json.loads(body)["notes"]["call-678"]
+
+
+def test_a_masked_save_hides_the_leads_own_spellings_exactly_as_reading_does(monkeypatch):
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    _ok(monkeypatch, WITH_CONTACT)
+    status, _, body = _call()
+    assert status == 200, body
+    doc = json.loads(body)
+    assert "contact" not in doc, "the lead's own details are the hook's, for the masking"
+    assert [e["text"] for e in doc["notes"]["entries"]] == [
+        "Emailed [hidden]", "Texted [hidden], then rang [hidden]"]
+    assert doc["notes"]["links"][0]["label"] == "Lot 12 for [hidden]"
+    assert doc["notes"]["links"][0]["url"] == REA
+    assert doc["notes"]["entries"][0]["requestId"] == RID
+    assert doc["notes"] == _get_view(OWN_NOTES), "saving shows no more than reading"
+    text = body.decode()
+    for leak in ("joseph dot shahid", "joseph_shahid", "joseph.shahid@example.com",
+                 "0400/111/678", "0400 111 678", "+61 400 111 678"):
+        assert leak not in text, leak
+
+
+def test_the_password_holder_never_gets_the_contact_block_either(monkeypatch):
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    monkeypatch.setenv("SPB_CONTACT_PASSWORD", PASSWORD)
+    _ok(monkeypatch, WITH_CONTACT)
+    status, _, body = _call(cookie=_unlocked())
+    assert status == 200
+    assert json.loads(body) == {k: v for k, v in WITH_CONTACT.items() if k != "contact"}
+    assert "joseph.shahid@example.com" not in body.decode()
+
+
+def test_an_older_hook_with_no_contact_block_gets_the_generic_rules(monkeypatch):
+    """Before the hook sent "contact": any address and any 8+ digit phone-shaped run go, and
+    the lead's other spellings wait for GET, which has the lead in hand. Not a 502: the note
+    was saved and its answer is safe on the generic rules."""
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    _ok(monkeypatch, {k: v for k, v in WITH_CONTACT.items() if k != "contact"})
+    status, _, body = _call()
+    assert status == 200, body
+    doc = json.loads(body)
+    assert "contact" not in doc
+    assert doc["notes"]["entries"][1]["text"].endswith("then rang [hidden]")
+    assert "0400 111 678" not in body.decode()
+
+
+@pytest.mark.parametrize("contact", ["joseph.shahid@example.com", ["x"], 5, False])
+def test_a_contact_block_that_is_not_an_object_is_a_502(monkeypatch, contact):
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    _ok(monkeypatch, dict(WITH_CONTACT, contact=contact))
+    status, _, body = _call()
+    assert status == 502 and "Refresh" in _message(body)
+    assert "0400 111 678" not in body.decode()
+
+
+def test_a_saved_number_written_past_every_pattern_is_a_502_not_shown(monkeypatch):
+    """The second look, on this path too: the digits with every non-digit removed."""
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    notes = dict(OWN_NOTES, entries=[dict(OWN_NOTES["entries"][0],
+                                          text="ring 0400 or 111 then 678")])
+    _ok(monkeypatch, dict(WITH_CONTACT, notes=notes))
+    status, _, body = _call()
+    assert status == 502 and "then 678" not in body.decode()
+
+
+def test_the_second_look_covers_the_whole_answer_not_only_the_notes(monkeypatch):
+    """A field the hook may add later, beside the notes, is looked at too."""
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    _ok(monkeypatch, dict(WITH_CONTACT, note="ring 0400 or 111 then 678"))
+    status, _, body = _call()
+    assert status == 502 and "then 678" not in body.decode()
+
+
+def test_a_request_id_goes_to_the_hook_as_the_tab_sent_it(monkeypatch):
+    """The tab's random id per Save or Add click, reused on a retry of the same click: the
+    hook needs it to tell a retry from a second note, so the body check passes it on."""
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    up = _ok(monkeypatch)
+    for body in ({**ADD, "requestId": "k3J-9_x2"},
+                 {"callId": "call-678", "op": "add_link", "url": REA, "requestId": RID}):
+        assert _call(body=body)[0] == 200
+        assert json.loads(up.calls[-1][0].data) == body
+
+
+def test_the_notes_follow_an_overridden_leads_address(monkeypatch):
+    """Leads read from a staging hook had their notes written to production, which answered
+    "no such lead"."""
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    monkeypatch.setenv("SPB_HOT_LEADS_URL",
+                       "https://staging-hook.example/api/hot-leads?region=vic#top")
+    up = _ok(monkeypatch)
+    assert _call()[0] == 200
+    assert up.calls[0][0].full_url == "https://staging-hook.example/api/lead-notes"
+
+
+def test_SPB_LEAD_NOTES_URL_still_wins_over_the_leads_address(monkeypatch):
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    monkeypatch.setenv("SPB_HOT_LEADS_URL", "https://staging-hook.example/api/hot-leads")
+    monkeypatch.setenv("SPB_LEAD_NOTES_URL", "https://notes.example/api/lead-notes")
+    up = _ok(monkeypatch)
+    assert _call()[0] == 200
+    assert up.calls[0][0].full_url == "https://notes.example/api/lead-notes"
+
+
+@pytest.mark.parametrize("url", ["http://staging-hook.example/api/hot-leads", "hot-leads"])
+def test_a_non_https_leads_address_is_refused_for_the_notes_too(monkeypatch, url):
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    monkeypatch.setenv("SPB_HOT_LEADS_URL", url)
+    up = _ok(monkeypatch)
+    status, _, body = _call()
+    assert status == 503 and up.calls == [], "the key must not be sent in the clear"
+    msg = _message(body)
+    assert "SPB_HOT_LEADS_URL" in msg and "https" in msg
 
 
 @pytest.mark.parametrize("upstream", [[1], {"status": "success", "notes": "x"},
