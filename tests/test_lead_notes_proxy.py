@@ -226,7 +226,7 @@ def test_the_masked_answer_hides_numbers_and_emails_but_keeps_the_links(monkeypa
     for leak in ("0400 111 678", "61400111678", "joseph.test@example.com"):
         assert leak not in text, leak
     doc = json.loads(body)
-    assert "contact" not in doc and doc["callId"] == "call-678"
+    assert doc["contact"] == "masked" and doc["callId"] == "call-678"
     entry, = doc["notes"]["entries"]
     assert entry["text"] == "Follow up 2026-10-02 on [hidden] or [hidden]"
     assert entry["at"] == "2026-09-28T02:00:00.000Z"
@@ -248,7 +248,7 @@ def test_the_password_holder_gets_the_notes_as_written(monkeypatch):
     _ok(monkeypatch)
     status, _, body = _call(cookie=_unlocked())
     assert status == 200
-    assert json.loads(body) == ANSWER
+    assert json.loads(body) == {**ANSWER, "contact": "full"}
 
 
 # ------------------------------------------------------------------ review fixes, 28 Sep 2026
@@ -287,7 +287,7 @@ def test_a_masked_save_hides_the_leads_own_spellings_exactly_as_reading_does(mon
     status, _, body = _call()
     assert status == 200, body
     doc = json.loads(body)
-    assert "contact" not in doc, "the lead's own details are the hook's, for the masking"
+    assert doc["contact"] == "masked", "the view, never the hook's block of the lead's details"
     assert [e["text"] for e in doc["notes"]["entries"]] == [
         "Emailed [hidden]", "Texted [hidden], then rang [hidden]"]
     assert doc["notes"]["links"][0]["label"] == "Lot 12 for [hidden]"
@@ -306,7 +306,8 @@ def test_the_password_holder_never_gets_the_contact_block_either(monkeypatch):
     _ok(monkeypatch, WITH_CONTACT)
     status, _, body = _call(cookie=_unlocked())
     assert status == 200
-    assert json.loads(body) == {k: v for k, v in WITH_CONTACT.items() if k != "contact"}
+    assert json.loads(body) == {**{k: v for k, v in WITH_CONTACT.items() if k != "contact"},
+                                "contact": "full"}
     assert "joseph.shahid@example.com" not in body.decode()
 
 
@@ -319,36 +320,227 @@ def test_an_older_hook_with_no_contact_block_gets_the_generic_rules(monkeypatch)
     status, _, body = _call()
     assert status == 200, body
     doc = json.loads(body)
-    assert "contact" not in doc
+    assert doc["contact"] == "masked"
     assert doc["notes"]["entries"][1]["text"].endswith("then rang [hidden]")
     assert "0400 111 678" not in body.decode()
 
 
+# Since the second review (28 Sep 2026) an answer the masking cannot make safe is no longer a
+# 502 for a note the hook had saved: a 200 that says the save went through, with the notes
+# left out (notesHidden) and nothing else of the hook's answer.
+HIDDEN_ANSWER = {"status": "success", "callId": "call-678", "notesHidden": True,
+                 "contact": "masked"}
+# Every spelling of the lead's details the answers below carry, looked for in the raw bytes.
+LEAD_SPELLINGS = ("0400 111 678", "0400/111/678", "then 678", "joseph.shahid@example.com",
+                  "joseph dot shahid", "joseph_shahid", "+61 400 111 678")
+
+
+def _hides_the_notes(body):
+    assert json.loads(body) == HIDDEN_ANSWER
+    text = body.decode()
+    assert [s for s in LEAD_SPELLINGS if s in text] == []
+
+
 @pytest.mark.parametrize("contact", ["joseph.shahid@example.com", ["x"], 5, False])
-def test_a_contact_block_that_is_not_an_object_is_a_502(monkeypatch, contact):
+def test_a_contact_block_that_is_not_an_object_hides_the_notes(monkeypatch, contact):
+    """A contact block this file does not know cannot give the lead's rules, so the notes
+    are not sent -- and the block itself, whatever it holds, is not sent either."""
     monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
     _ok(monkeypatch, dict(WITH_CONTACT, contact=contact))
     status, _, body = _call()
-    assert status == 502 and "Refresh" in _message(body)
-    assert "0400 111 678" not in body.decode()
+    assert status == 200, body
+    _hides_the_notes(body)
 
 
-def test_a_saved_number_written_past_every_pattern_is_a_502_not_shown(monkeypatch):
+def test_a_saved_number_written_past_every_pattern_hides_the_notes(monkeypatch):
     """The second look, on this path too: the digits with every non-digit removed."""
     monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
     notes = dict(OWN_NOTES, entries=[dict(OWN_NOTES["entries"][0],
                                           text="ring 0400 or 111 then 678")])
     _ok(monkeypatch, dict(WITH_CONTACT, notes=notes))
     status, _, body = _call()
-    assert status == 502 and "then 678" not in body.decode()
+    assert status == 200, body
+    _hides_the_notes(body)
 
 
 def test_the_second_look_covers_the_whole_answer_not_only_the_notes(monkeypatch):
-    """A field the hook may add later, beside the notes, is looked at too."""
+    """A field the hook may add later, beside the notes, is looked at too -- and is not
+    sent once the answer is found unsafe."""
     monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
     _ok(monkeypatch, dict(WITH_CONTACT, note="ring 0400 or 111 then 678"))
     status, _, body = _call()
-    assert status == 502 and "then 678" not in body.decode()
+    assert status == 200, body
+    _hides_the_notes(body)
+
+
+def _deep(value, depth=1200):
+    for _ in range(depth):
+        value = [value]
+    return value
+
+
+@pytest.mark.parametrize("notes", [
+    "x", {"entries": [1]}, {"entries": "x"},
+    # Not only MaskError: nested past Python's recursion limit, the walk raises
+    # RecursionError, and that too hides the notes rather than failing the answer.
+    {"entries": [{"id": "e1", "text": _deep("0400 111 678")}], "links": [], "rev": 1},
+])
+def test_notes_the_masking_does_not_know_the_shape_of_are_hidden_in_a_200(monkeypatch, notes):
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    _ok(monkeypatch, dict(WITH_CONTACT, notes=notes))
+    status, _, body = _call()
+    assert status == 200, body
+    _hides_the_notes(body)
+
+
+def test_the_hidden_answer_is_shown_able_to_fail(monkeypatch):
+    """A silent check reads as a pass: with the notes-hidden answer replaced by the hook's
+    own, the same search over the same bytes finds the number."""
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    monkeypatch.setattr(N._contact, "notes_hidden_answer", lambda doc: dict(doc))
+    notes = dict(OWN_NOTES, entries=[dict(OWN_NOTES["entries"][0],
+                                          text="ring 0400 or 111 then 678")])
+    _ok(monkeypatch, dict(WITH_CONTACT, notes=notes))
+    status, _, body = _call()
+    assert status == 200 and "then 678" in body.decode()
+
+
+@pytest.mark.parametrize("flags", [{"duplicate": True},
+                                   {"duplicate": True, "duplicateRemoved": True}])
+def test_the_hooks_duplicate_flags_are_passed_on_in_every_answer(monkeypatch, flags):
+    """The hook's word that the Save was a click it had already stored (and whether that
+    note has since been removed), so the tab does not draw it twice: unchanged in both
+    views, and in the answer that hides the notes."""
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    monkeypatch.setenv("SPB_CONTACT_PASSWORD", PASSWORD)
+    _ok(monkeypatch, dict(WITH_CONTACT, **flags))
+    for cookie, view in ((None, "masked"), (_unlocked(), "full")):
+        status, _, body = _call(cookie=cookie)
+        doc = json.loads(body)
+        assert status == 200 and doc["contact"] == view, view
+        assert {k: doc.get(k) for k in ("duplicate", "duplicateRemoved")} == {
+            "duplicate": True, "duplicateRemoved": flags.get("duplicateRemoved")}, view
+        assert "notes" in doc and "notesHidden" not in doc, view
+    _ok(monkeypatch, dict(WITH_CONTACT, contact=5, **flags))
+    status, _, body = _call()
+    assert status == 200 and json.loads(body) == {**HIDDEN_ANSWER, **flags}
+
+
+@pytest.mark.parametrize("upstream", [ANSWER, WITH_CONTACT,
+                                      {k: v for k, v in WITH_CONTACT.items() if k != "contact"},
+                                      dict(WITH_CONTACT, contact=5)])
+def test_every_answer_says_which_view_it_was_built_in(monkeypatch, upstream):
+    """"contact" at the top is "masked" or "full", as GET /api/hot_leads says it -- never the
+    hook's block of the lead's own details."""
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    monkeypatch.setenv("SPB_CONTACT_PASSWORD", PASSWORD)
+    _ok(monkeypatch, upstream)
+    for cookie, view in ((None, "masked"), (_unlocked(), "full")):
+        status, _, body = _call(cookie=cookie)
+        assert status == 200, (view, body)
+        assert json.loads(body)["contact"] == view
+        assert "joseph.shahid@example.com" not in body.decode(), view
+
+
+def test_half_a_surrogate_pair_in_a_note_is_not_a_502_in_either_view(monkeypatch):
+    """JSON.stringify writes "\\ud83d" for an emoji a .slice() cut in half; json.loads reads it
+    back, and UTF-8 cannot write it. It is sent as U+FFFD, in both views."""
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    monkeypatch.setenv("SPB_CONTACT_PASSWORD", PASSWORD)
+    entry = dict(ANSWER["notes"]["entries"][0], text="Keen " + chr(0xD83D))
+    _ok(monkeypatch, dict(ANSWER, notes=dict(ANSWER["notes"], entries=[entry])))
+    for cookie, view in ((None, "masked"), (_unlocked(), "full")):
+        status, _, body = _call(cookie=cookie)
+        assert status == 200, (view, body)
+        doc = json.loads(body.decode("utf-8"))
+        assert doc["notes"]["entries"][0]["text"] == "Keen " + chr(0xFFFD), view
+
+
+# ---- the third review, 28 Sep 2026. Each of these fails on the code before it (run against
+# a copy of api/ as it was at 6a1581d).
+
+def _dingbat(text):
+    """`text` in the negative circled digits (U+2776 on; 0 is U+24FF)."""
+    return "".join((chr(0x24FF) if c == "0" else chr(0x2775 + int(c))) if c.isdigit() else c
+                   for c in text)
+
+
+def test_a_masked_save_hides_the_newer_spellings_of_the_leads_own_details(monkeypatch):
+    """The same rules as GET on this path too: the address with "(a)" or "[a]" for its "@"
+    or a mark under each letter, and the number in dingbat digits."""
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    texts = ["Sent to joseph.shahid(a)example.com", "Sent to joseph.shahid[a]example.com",
+             "Sent to " + "".join(ch + chr(0x0332) for ch in LEAD_CONTACT["email"]),
+             "Call " + _dingbat("0400 111 678")]
+    notes = dict(OWN_NOTES, entries=[dict(OWN_NOTES["entries"][0], id=f"e{i}", text=text)
+                                     for i, text in enumerate(texts)])
+    _ok(monkeypatch, dict(WITH_CONTACT, notes=notes))
+    status, _, body = _call()
+    assert status == 200, body
+    doc = json.loads(body)
+    assert "notesHidden" not in doc, "hidden by the masking, not by the second look"
+    assert [e["text"] for e in doc["notes"]["entries"]] == [
+        "Sent to [hidden]", "Sent to [hidden]", "Sent to [hidden]", "Call [hidden]"]
+    assert doc["notes"] == _get_view(notes), "saving shows no more than reading"
+
+
+def test_a_masked_save_hides_an_address_whose_word_is_a_spoken_separator(monkeypatch):
+    """dot.henderson@gmail.com got no said-aloud rule in the second review: said aloud, it
+    was shown whole in the answer to a save."""
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    notes = dict(OWN_NOTES, entries=[dict(OWN_NOTES["entries"][0],
+                                          text="Emailed dot henderson at gmail dot com")])
+    _ok(monkeypatch, dict(WITH_CONTACT, notes=notes,
+                          contact={"email": "dot.henderson@gmail.com", "phone": ""}))
+    status, _, body = _call()
+    assert status == 200, body
+    assert json.loads(body)["notes"]["entries"][0]["text"] == "Emailed [hidden]"
+
+
+def test_a_masked_save_sends_what_the_rules_left_as_it_was_written(monkeypatch):
+    """The answer to a save was in the form the rules read: "3" and one half as "31", U+2044,
+    "2", and a saved link with a full-width letter in it as a different link."""
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    half = chr(0xBD)
+    url = "https://example.com/" + chr(0xFF46) + "ull/" + chr(0x2460)
+    notes = dict(OWN_NOTES, entries=[dict(OWN_NOTES["entries"][0],
+                                          text="Wants 3" + half + " beds, call 0400 111 678")],
+                 links=[dict(OWN_NOTES["links"][0], url=url, label="Plan " + half)])
+    _ok(monkeypatch, dict(WITH_CONTACT, notes=notes))
+    status, _, body = _call()
+    assert status == 200, body
+    doc = json.loads(body)
+    assert doc["notes"]["entries"][0]["text"] == "Wants 3" + half + " beds, call [hidden]"
+    assert doc["notes"]["links"][0] == dict(OWN_NOTES["links"][0], url=url, label="Plan " + half)
+
+
+def test_a_note_holding_half_a_surrogate_pair_reaches_the_hook(monkeypatch):
+    """The body was re-encoded with a plain .encode("utf-8"): a note whose text held "\\ud83d"
+    (a browser's JSON.stringify writes one for an emoji a .slice() cut in half) was a 500,
+    and the note unsaved. It goes to the hook with U+FFFD in its place."""
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    up = _ok(monkeypatch)
+    status, _, body = _call(raw=json.dumps(dict(ADD, text="Keen " + chr(0xD83D))).encode())
+    assert status == 200, body
+    assert json.loads(up.calls[-1][0].data)["text"] == "Keen " + chr(0xFFFD)
+
+
+def test_a_request_nested_past_what_json_can_read_is_a_400(monkeypatch):
+    """16 KB of "[" is some 16,000 deep: json.loads raised RecursionError, which only
+    ValueError was caught for -- a 500."""
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    up = _ok(monkeypatch)
+    status, _, body = _call(raw=b"[" * 16000)
+    assert status == 400 and up.calls == [], body
+
+
+def test_an_answer_nested_past_what_json_can_read_is_a_502(monkeypatch):
+    monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    deep = b"[" * 100000 + b"]" * 100000
+    raw = b'{"status": "success", "callId": "call-678", "notes": ' + deep + b"}"
+    _install(monkeypatch, lambda req: _Resp(raw))
+    status, _, body = _call()
+    assert status == 502 and "nested too deep" in _message(body)
 
 
 def test_a_request_id_goes_to_the_hook_as_the_tab_sent_it(monkeypatch):
@@ -393,13 +585,21 @@ def test_a_non_https_leads_address_is_refused_for_the_notes_too(monkeypatch, url
     assert "SPB_HOT_LEADS_URL" in msg and "https" in msg
 
 
-@pytest.mark.parametrize("upstream", [[1], {"status": "success", "notes": "x"},
-                                      {"status": "success", "notes": {"entries": [1]}}])
-def test_an_answer_that_cannot_be_masked_is_a_502(monkeypatch, upstream):
+@pytest.mark.parametrize("upstream", [
+    [1], "saved", 5, None,
+    {"callId": "call-678", "notes": ANSWER["notes"]},               # no status
+])
+def test_an_answer_of_a_shape_the_hook_does_not_send_is_still_a_502(monkeypatch, upstream):
+    """Not an object, or no status: not a lead-notes answer at all. A 502 in both views,
+    never the body."""
     monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
-    _ok(monkeypatch, upstream)
-    status, _, body = _call()
-    assert status == 502 and "Refresh" in _message(body)
+    monkeypatch.setenv("SPB_CONTACT_PASSWORD", PASSWORD)
+    raw = json.dumps(upstream).encode()                  # _ok would read None as ANSWER
+    _install(monkeypatch, lambda req: _Resp(raw))
+    for cookie in (None, _unlocked()):
+        status, _, body = _call(cookie=cookie)
+        assert status == 502 and "Refresh" in _message(body)
+        assert "0400 111 678" not in body.decode()
 
 
 # ------------------------------------------------------------------ hook failures

@@ -95,6 +95,27 @@ def _error(message):
     return json.dumps({"status": "error", "message": text}).encode("utf-8")
 
 
+# Half a surrogate pair: JSON.stringify writes one as "\ud83d" when a .slice() cuts an emoji
+# in half, json.loads reads it back, and UTF-8 has no way to write it.
+_LONE_SURROGATE = re.compile("[" + chr(0xD800) + "-" + chr(0xDFFF) + "]")
+
+
+def _body(doc):
+    """`doc` as the UTF-8 JSON of a 200, in either view (this file's and api/lead_notes.py's),
+    and of the note api/lead_notes.py forwards to the hook.
+
+    28 Sep 2026 (second review): one lone surrogate anywhere in the hook's answer -- a
+    summary, a note, a callId -- failed the encode, and the whole answer was a 502 in both
+    views, with a message that blamed the contact details. It is sent as U+FFFD, which is
+    what a browser draws for it anyway (api/_contact.py plain() does the same in the masked
+    view's text)."""
+    text = json.dumps(doc, ensure_ascii=False)
+    try:
+        return text.encode("utf-8")
+    except UnicodeEncodeError:
+        return _LONE_SURROGATE.sub(chr(0xFFFD), text).encode("utf-8")
+
+
 def limit_from(path):
     """The ?limit= to forward, as a canonical integer string, or None."""
     query = urllib.parse.urlsplit(path or "").query
@@ -268,6 +289,13 @@ def fetch(limit=None, include_test=False, grade=None):
         # A 200 that is not JSON is a login or error page served in the hook's place, and
         # passing it on would hand the tab HTML where it expected leads.
         return 502, _error(f"hot-lead store answered HTTP {status} with a body that is not JSON")
+    except RecursionError:
+        # 28 Sep 2026 (third review): a value nested some 3,000 deep (a hand-edited record) is
+        # more than json.loads can read, and this raised past every except here: a 500 for
+        # everyone, in both views. Nothing of such an answer can be shown, so it is a 502 like
+        # any other answer that cannot be read.
+        return 502, _error(f"hot-lead store answered HTTP {status} with JSON nested too deep "
+                           "to read")
     return 200, raw
 
 
@@ -275,11 +303,13 @@ def view(raw, cookie_header):
     """(http_status, body_bytes): the hook's 200 answer in the view this request may see.
 
     FAILS CLOSED. An answer whose shape the masking does not know -- a body that is not an
-    object, no list of leads, a lead that is not an object -- is a 502 that says the leads
-    were not shown, never the raw body. ONE lead whose own number is still found after the
-    masking is cut down on its own (api/_contact.py hard_masked: grade, date and Kommo link,
+    object, no list of leads, a lead that is not an object, notes that are not an object --
+    is a 502 that says the leads were not shown, never the raw body. ONE lead whose own
+    number is still found after the masking, or that the masking fails on in any other way,
+    is cut down on its own (api/_contact.py hard_masked: grade, date and Kommo link,
     maskFailed) and its notes left out (notesHidden), so it cannot take the others with it
-    (28 Sep 2026, review). The full view needs only the cookie.
+    (28 Sep 2026, review; any exception since the second review). The full view needs only
+    the cookie.
     """
     try:
         doc = json.loads(raw.decode("utf-8"))
@@ -295,7 +325,7 @@ def view(raw, cookie_header):
             doc = _contact.mask_hot_leads(doc)
             doc["contact"] = "masked"
             doc["contactUnlock"] = "password" if _contact.configured() else "not-configured"
-        return 200, json.dumps(doc, ensure_ascii=False).encode("utf-8")
+        return 200, _body(doc)
     except Exception as e:                                             # noqa: BLE001
         return 502, _error("the leads were not shown: their contact details could not be "
                            f"hidden ({type(e).__name__})")

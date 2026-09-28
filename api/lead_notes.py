@@ -33,7 +33,11 @@ either view. Masked -- no valid spb_contact cookie, see api/_contact.py -- means
 text, label and by, and every saved link, are scrubbed with that lead's own rules and the
 generic ones, exactly as GET /api/hot_leads scrubs them, so saving a note never shows a
 masked viewer more than reading one does. (A hook deployed before it sent "contact" gets the
-generic rules only: api/_contact.py mask_notes_answer.) Errors:
+generic rules only: api/_contact.py mask_notes_answer.) Since 28 Sep 2026 the top-level
+"contact" is instead the view it was built in, "full" or "masked", as GET /api/hot_leads says
+it; notes a masked view cannot make safe come back as notesHidden: true with no notes; and the
+hook's "duplicate" / "duplicateRemoved" (a retried click it had already stored) are passed
+on in both views. Errors:
   400 404 409 413 415  the hook's own answer and message, passed on: a bad request, no such
                        lead, a conflict it could not retry past, over a cap, not JSON.
   503  a setting is missing (either project's SPB_SERVICE_KEY, the hook's
@@ -157,23 +161,40 @@ def send(body):
     except ValueError:
         return 502, _hl._error(f"lead-notes store answered HTTP {status} with a body that is "
                                "not JSON")
+    except RecursionError:                   # nested past json.loads: see api/hot_leads.py
+        return 502, _hl._error(f"lead-notes store answered HTTP {status} with JSON nested too "
+                               "deep to read")
     return 200, raw
 
 
 def view(raw, cookie_header):
-    """The hook's 200 answer in the view this request may see. Fails closed, as hot_leads.view."""
+    """The hook's 200 answer in the view this request may see. Fails closed, as hot_leads.view.
+
+    28 Sep 2026 (second review):
+      * "contact" at the top is the VIEW, "full" or "masked", as GET /api/hot_leads says it,
+        so the tab knows which notes it was handed. The hook's "contact" block -- the lead's
+        own email and phone, there for the masking -- is never passed on, in either view:
+        the page has the lead from GET /api/hot_leads.
+      * Notes the masking cannot make safe, for any reason, are no longer a 502 for a note
+        the hook had saved: the answer is a 200 that says so, notesHidden: true and no notes
+        (api/_contact.py notes_hidden_answer).
+      * An answer that is not an object, or has no status, is not a shape the hook sends:
+        still a 502, never the body.
+    """
     try:
         doc = json.loads(raw.decode("utf-8"))
-        if not isinstance(doc, dict):
-            raise _contact.MaskError("the answer is not an object")
+        if not isinstance(doc, dict) or "status" not in doc:
+            raise _contact.MaskError("the answer is not a lead-notes answer")
         if _contact.authorised(cookie_header):
-            # The hook's "contact" block is the lead's own email and phone, there for the
-            # masking below. The page never needs it from this endpoint (it has the lead from
-            # GET /api/hot_leads), so it is dropped in the full view too.
             doc.pop("contact", None)
+            doc["contact"] = "full"
         else:
-            doc = _contact.mask_notes_answer(doc)       # uses "contact", and drops it
-        return 200, json.dumps(doc, ensure_ascii=False).encode("utf-8")
+            try:
+                doc = _contact.mask_notes_answer(doc)   # uses "contact", and drops it
+            except Exception:                                          # noqa: BLE001
+                doc = _contact.notes_hidden_answer(doc)
+            doc["contact"] = "masked"
+        return 200, _hl._body(doc)
     except Exception as e:                                             # noqa: BLE001
         return 502, _hl._error("the note was saved, but the notes could not be shown with "
                                f"their contact details hidden ({type(e).__name__}); press "
@@ -197,14 +218,24 @@ def _request_body(headers, rfile):
         payload = json.loads(rfile.read(length).decode("utf-8"))
     except ValueError:
         return 400, _hl._error("That request is not JSON.")
+    except RecursionError:
+        # 16 KB of "[" is nested some 16,000 deep, past what json.loads can read: a 500 before
+        # the third review (28 Sep 2026). It is not a note, whatever else it is.
+        return 400, _hl._error('Send a JSON object: {"callId": ..., "op": ...}.')
     if not isinstance(payload, dict):
         return 400, _hl._error('Send a JSON object: {"callId": ..., "op": ...}.')
     # Re-serialised, so what reaches the hook is JSON this function parsed, never the bytes
     # as they arrived. Every field goes on, requestId included (28 Sep 2026: the tab's random
     # id per Save or Add click, so the hook can tell a retried click from a second note): the
     # hook is what checks each field, and a list kept here too would be a second thing to
-    # keep in step.
-    return None, json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    # keep in step. Written by _hl._body (28 Sep 2026, third review): a note whose text holds
+    # half a surrogate pair -- a browser's JSON.stringify writes one as "\\ud83d" when a
+    # .slice() cuts an emoji in half -- failed the UTF-8 encode here, a 500 with the note
+    # unsaved; it goes to the hook as U+FFFD, what the tab draws for it anyway.
+    try:
+        return None, _hl._body(payload)
+    except RecursionError:
+        return 400, _hl._error('Send a JSON object: {"callId": ..., "op": ...}.')
 
 
 class handler(BaseHTTPRequestHandler):
