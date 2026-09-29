@@ -224,7 +224,7 @@ def postcode_stated(postcode: Any, row_text: Any, geo: Any = None) -> str:
     """
     pc = re.sub(r"\D", "", str(postcode or ""))
     state = state_from_postcode(pc)
-    if len(pc) != 4 or not state:
+    if len(pc) != 4 or not state or _large_volume_receiver(pc):
         return ""
     texts = row_text if isinstance(row_text, (list, tuple)) else [row_text]
     for text in texts:
@@ -238,6 +238,16 @@ def postcode_stated(postcode: Any, row_text: Any, geo: Any = None) -> str:
                     or _locality_of_state_ends(head, state, geo)):
                 return state
     return ""
+
+
+def _large_volume_receiver(pc: str) -> bool:
+    """True for a large-volume receiver's or PO box number (0200-0299, 0900-0999, 1000-1999,
+    8000-9999): no house-and-land lot is addressed to one. 29 Sep 2026, round 3's review: a
+    generated "Blaxland 1639 Lancelin Titled 249" -- lot 1639 after its design -- was read
+    as a NSW postcode written after a NSW place. None of the 29 Sep copy's 6,089 postcodes
+    written as one is in these ranges."""
+    n = int(pc)
+    return 200 <= n <= 299 or 900 <= n <= 1999 or 8000 <= n <= 9999
 
 
 def _locality_of_state_ends(before: str, state: str, geo: Any) -> bool:
@@ -1125,17 +1135,40 @@ def label_tail_is_the_pair(label: Any, one: Any, other: Any) -> bool:
     29 Sep 2026, round 3 (enrich_buildings.page_and_guess_hold): such a part is an estate
     and a locality, and nothing in it says which is which, so a page that picked one of
     them is not backed by the label against the other."""
+    low = [t.lower() for t in _label_tail_tokens(label)]
+    a = [w.lower() for w in _TEXT_TOKEN.findall(str(one or ""))]
+    b = [w.lower() for w in _TEXT_TOKEN.findall(str(other or ""))]
+    return bool(a and b) and low in (a + b, b + a)
+
+
+def _label_tail_tokens(label: Any) -> List[str]:
+    """The words of the last part of an "X, Locality" label, split and trimmed as
+    suburb_in_row_text's step 1 reads it; [] when the label has no such part."""
     parts = [p.strip() for p in re.split(r",(?!\d)", str(label or ""))]
     parts = [p for p in parts if p and not re.fullmatch(
         r"[\s\d]*|" + _STATE_CODE + r"(?:\s+\d{4})?", p)]
     if len(parts) < 2:
-        return False
+        return []
     last = re.sub(r"\s*\([^)]*\)", " ", parts[-1])
     last = re.sub(r"(?:\s+" + _STATE_CODE + r")?(?:\s+\d{4})?\s*$", "", last).strip()
-    low = [t.lower() for t in _tokens(last)[0]]
+    return _tokens(last)[0]
+
+
+def label_tail_partner(label: Any, one: Any) -> str:
+    """The other words of the label's last part when that part opens or ends with `one`
+    ("Lot 27102, Windermere Mambourin" and Windermere -> 'Mambourin'); '' otherwise: the
+    name label_tail_is_the_pair could pair `one` with (29 Sep 2026, round 3's review --
+    enrich_buildings.names_the_page_cannot_tell)."""
+    toks = _label_tail_tokens(label)
     a = [w.lower() for w in _TEXT_TOKEN.findall(str(one or ""))]
-    b = [w.lower() for w in _TEXT_TOKEN.findall(str(other or ""))]
-    return bool(a and b) and low in (a + b, b + a)
+    low = [t.lower() for t in toks]
+    if not a or len(low) <= len(a):
+        return ""
+    if low[:len(a)] == a:
+        return " ".join(toks[len(a):])
+    if low[-len(a):] == a:
+        return " ".join(toks[:-len(a)])
+    return ""
 
 
 def _label_tail_verdicts(raw: str, geo: Any, estate: Any = "", prefer: Any = "",
