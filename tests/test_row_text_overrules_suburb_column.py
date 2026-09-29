@@ -422,13 +422,14 @@ def test_the_rollback_command_re_resolves_every_moved_row(tmp_path, monkeypatch)
     assert not any(src == TEXT_LOCALITY_SOURCE for _s, src in after.values())
     # Re-resolved by today's rules with the check off: back to the suburb match...
     assert after[14905] == ("QLD", "suburb")
-    # ...which for the two rows with no suburb column is tonight's GUESS, and since 29 Sep
-    # 2026 that reads the locality, not the word before it (state_resolver.
-    # suburb_in_row_text): "Murray Bridge, South" is Murray Bridge, SA -- once 'Murray', a
-    # QLD place, and with no page the longer name the row writes is read (enrich_buildings.
-    # guess_suburb). "Windermere Mambourin" off the QLD page is read as origin/main read it
-    # (round 2): Windermere, which the page picks, and with the check off that stands.
-    assert after[18659] == ("SA", "suburb")
+    # ...which for the two rows with no suburb column is tonight's GUESS. "Murray Bridge,
+    # South" was 'Murray', a QLD place, to origin/main; since 29 Sep 2026 that guess is
+    # refused -- it lies inside the longer name the row writes (state_resolver.
+    # reading_refuses) -- and the longer name, Murray Bridge, SA, is not taken over a state
+    # origin/main gives (round 3, enrich_buildings.longer_name_stands). So blank, not QLD.
+    # "Windermere Mambourin" off the QLD page is read as origin/main read it (round 2):
+    # Windermere, which the page picks, and with the check off that stands.
+    assert after[18659] == (None, None)
     assert after[9700] == ("QLD", "suburb + e-agent page")
     # ...except in a file whose own rows prove two states, which comes back blank.
     assert after[9568] == (None, None)

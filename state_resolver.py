@@ -1257,6 +1257,93 @@ def extends_the_guess(reading: Any, origin: Any, text: Any) -> bool:
     return False
 
 
+def longer_name_of_the_line(reading: Any, origin: Any, line: Any, geo: Any,
+                            estate: Any = "") -> str:
+    """The one state of `reading` when it is round 1's longer name as the row's own LINE
+    writes it (enrich_buildings.longer_name_stands); '' otherwise.
+
+    Round 3, 29 Sep 2026. Round 2 took the longer name around origin/main's guess wherever
+    the LABEL wrote it, and both reviews found that a road to any state at all: a label is
+    as often "Lot <n>, <estate>", and estates are named after places anywhere -- "Lot 3772,
+    Redwood Park" on a Clyde North lot went to SA, "Lot 340, Boat Harbour Beach" on a
+    Caringbah NSW 2229 lot to TAS, "LOT 58 MONTANA CRES, DIGGERS REST 3427, Verona Sands"
+    to TAS. The 23 rows it was for (Hattan's email lists) write the name in the line, and
+    first: "Available Wyndham Vale Q3 2026 Townhouse ...". So all of these must hold:
+      * it extends the guess and the line writes it with no street, estate or region word
+        after it (extends_the_guess, on the line, not the label);
+      * the line opens with it, after nothing but its availability (opens_with);
+      * it is a place of exactly one state;
+      * it is not the row's estate, a part of it, or around it ("Lot 44, Brooklyn Park",
+        estate Brooklyn Park; "Lot 1768, Emu Downs").
+    """
+    if geo is None or not str(line or "").strip():
+        return ""
+    if not (extends_the_guess(reading, origin, line) and opens_with(line, reading, geo)):
+        return ""
+    states = _places(str(reading), geo)
+    if len(states) != 1:
+        return ""
+    long_ = [w.lower() for w in _TEXT_TOKEN.findall(str(reading))]
+    own = _estate_key(estate).split()
+
+    def _within(a, b):
+        return bool(a) and any(b[k:k + len(a)] == a for k in range(len(b) - len(a) + 1))
+
+    if own and (_within(own, long_) or _within(long_, own)):
+        return ""
+    return states[0]
+
+
+# The words a stocklist line may open with before its locality: its availability.
+_OPENING_STATUS = re.compile(r"^(?:available|register|now|sold|on|hold|under|offer|"
+                             r"reserved|release)$", re.IGNORECASE)
+
+
+def opens_with(text: Any, name: Any, geo: Any) -> bool:
+    """True when `text` opens with the place name `name`, after nothing but its availability
+    ("Available Clyde North ...", "REGISTER NOW New Beith ...") -- and so no other place
+    name comes before it. Round 3, 29 Sep 2026 -- enrich_buildings.longer_name_stands: the
+    line of every row round 1's longer name put right opens with its locality ("Available
+    Wyndham Vale Q3 2026 ...", "Available Springvale South Titled ..."), while a place
+    further in is an estate, a design or a region as often: "2-Part Detached SS North 762
+    Moore Park Beach MunnoParaDowns" (a review's generated Verv row) is the estate Moore
+    Park Beach before an SA suburb written as one word, as "4327 Jubilee Wyndhamvale" is."""
+    want = [w.lower() for w in _TEXT_TOKEN.findall(str(name or ""))]
+    if geo is None or not want:
+        return False
+    toks, breaks = _tokens(text)
+    spans = _place_spans(toks, breaks, geo)
+    starts = [i for (i, size) in spans
+              if size == len(want) and [t.lower() for t in toks[i:i + size]] == want]
+    if not starts:
+        return False
+    at = min(starts)
+    return (all(_OPENING_STATUS.match(t) for t in toks[:at])
+            and not any(i < at for (i, _size) in spans))
+
+
+def states_written_in(row_text: Any, geo: Any = None) -> set:
+    """Every state the row's own text states outright: a state's code as a capitalised word
+    or its name spelled out ("CARINGBAH, NSW, 2229", "Dual Key QLD"), and any four-digit
+    number written where a postcode is written (postcode_stated: "DIGGERS REST 3427") --
+    whether or not the postcode column holds it. Round 3, 29 Sep 2026: a longer name that
+    names another state than one of these is not taken (enrich_buildings.
+    longer_name_stands)."""
+    texts = row_text if isinstance(row_text, (list, tuple)) else [row_text]
+    out = set()
+    for text in texts:
+        text = str(text or "")
+        out.update(m.group(1) for m in _STATE_TOKEN.finditer(text))
+        low = text.lower()
+        out.update(st for word, st in _STATE_WORDS.items()
+                   if re.search(r"\b" + word + r"\b", low))
+        for m in re.finditer(r"(?<![\d.])\d{4}(?!\d)", text):
+            st = postcode_stated(m.group(0), texts, geo)
+            if st:
+                out.add(st)
+    return out
+
+
 # The words of _NOT_A_LOCALITY_AFTER that make a name part of a street's or an estate's --
 # not its numbers, storey counts or "House", which follow a suburb in round 1's own rows
 # ("Available Clyde North House 263", "Available Clyde North Double Storey", "Available
@@ -1368,9 +1455,13 @@ def text_locality_elsewhere(row_text: Any, state: Any, geo: Any, stocked: Any,
     Paddington 180m2" filed QLD on the column Paddington, stocked QLD by AVIA's facade rows;
     7889 "66 Taylors Ridge Walloon Banksia 183" filed NSW on Banksia).
 
-    It keeps quiet about that answer in ONE case: the nightly replay's false alarm on AVIA
-    7810 ("... Rhodes Paddington 180m2 ...") and 12359 ("... Rhodes Fortitude 180m2 ..."),
-    a design and its facade read as Rhodes, NSW. All of these must hold:
+    Given `suburb` and `page` (enrich's overrule passes them), it keeps quiet about that
+    answer in ONE case: AVIA 7810 ("... Rhodes Paddington 180m2 ...") and 12359 ("... Rhodes
+    Fortitude 180m2 ..."), a design and its facade read as Rhodes, NSW -- the row stays on
+    its page's state, which is never a state origin/main would not give. The nightly
+    replay asks without them and warns wherever origin/main warns; where this silence
+    would apply it words the WARN as a facade (search_regressions.locality_check, round
+    3). All of these must hold:
       * the row's own `page` state is the state it is filed in, so two claims that do not
         come from the line -- the E-Agent page and the suburb column -- agree (7810: QLD
         page, GLENVALE, 'suburb + e-agent page');
@@ -1379,21 +1470,32 @@ def text_locality_elsewhere(row_text: Any, state: Any, geo: Any, stocked: Any,
         word of the row put in the column (Banksia in "Walloon Banksia", The Grove in
         "Tarneit The Grove") -- or a column the page does not back: Colin's 14905 was filed
         QLD on 'Riverhills', a word its line never writes, with no page state at all;
-      * the row shows the name to be a design wherever it writes it: not_the_locality_here's
-        'design' (a garage or facade word after it) or 'followed' (a place of the filed
-        state straight after it, as Paddington is QLD's) -- a single plain mention and the
-        answer stands.
-    Measured on the 29 Sep copy: of the replay's warnings this silences 7810's, and 12359's
-    once AVIA's sheet is filed QLD, and no other; asked of every row with its own page and
-    column in every state, it keeps quiet on 13 rows, each a design with its facade or
-    style and size after it (AVIA's "Rhodes Paddington/Fortitude", Creation Homes' NSW
-    "Chelsea Traditional 12.5", "Kuraby Traditional 10", "Magnolia Traditional 10"). And
-    over 2.1 million asks -- those rows and 5,000 generated ones, filed in every state, on
-    their column, a blank one or any place-word of their line, with their page, the filed
-    state's or none -- it never names a place origin/main does not, and keeps quiet where
-    origin/main answers only in this case. Enrich hardly meets it: its row-text check looks
-    at a state resting on the column alone ('suburb', no page behind it) or on a guess,
-    which is always one of the line's own words.
+      * every time the row writes the name, a facade CODE follows it -- a garage code or a
+        facade that is no place ("SG", "Fortitude"), or one of AVIA's facades that are
+        places with the design's size after it ("Paddington 180m2") -- see
+        _only_ever_a_facaded_design;
+      * and the line names no other place outside the state the row is filed in, nor
+        states another state's code or postcode (states_written_in: "... Soutbank, VIC,
+        3006 Illawarra SG" filed QLD is a VIC lot): the design is then the only
+        other-state name the row writes, so its page is the only claim to its locality
+        there is, and it backs the filed state.
+    Round 3, 29 Sep 2026: the round-2 silence also let a name go when a place of the filed
+    state came straight after it ('followed') or a facade style did ("Chelsea Traditional
+    12.5"). Both reviews found that blind to genuine misfiles origin/main catches, whenever
+    the page backed the wrong state and the column was a heading: Creation Homes' real
+    layout is "<suburb> <design> <size>" (7889 "66 Taylors Ridge Walloon Banksia 183"
+    filed NSW on Cameron Park; "534 Bellevue Ripley Coolamon 213"), and Silkwood's
+    "REGISTER NOW Parkinson Paradise", G Developments' "Oran Park Clontarf". The words
+    cannot tell that layout from a design and its facade; only a facade code and the
+    design's house area can, so only that is let go -- and even that, the words cannot
+    prove against a page that is wrong, so the replay no longer keeps quiet at all.
+    Measured: over 2.8 million asks (verify-0's fn_tle: every row of the 29 Sep copy and
+    6,000 mutated ones, filed in four states, on four columns, three pages, three stocked
+    sets) it never names a place origin/main does not, and keeps quiet where origin/main
+    answers on 337 asks (2,730 in round 2), each a name with a garage code or AVIA facade
+    after it. Enrich hardly meets it: its row-text check looks at a state resting on the
+    column alone ('suburb', no page behind it) or on a guess, which is always one of the
+    line's own words.
 
     None when nothing qualifies. Pure: reads no database and writes nothing, so enrich
     decides what to do with the answer.
@@ -1430,30 +1532,71 @@ def text_locality_elsewhere(row_text: Any, state: Any, geo: Any, stocked: Any,
             # origin/main answers here.
             if (stored and normalise_state(page) == stored and str(suburb or "").strip()
                     and not _written_in(toks, breaks, suburb)
-                    and _only_ever_a_design(toks, breaks, span, geo, estate, stored,
-                                            stocked)):
+                    and _only_ever_a_facaded_design(toks, breaks, span, geo, stored)
+                    and not states_written_in(row_text, geo) - {stored}):
                 return None
             return cand, states[0]
     return None
 
 
-def _only_ever_a_design(toks: List[str], breaks: Any, span: List[str], geo: Any,
-                        estate: Any, state: str, stocked: Any) -> bool:
-    """True when every time the row writes `span` it is a design's (not_the_locality_here's
-    'design', or 'followed' by a place of `state`) -- one plain mention ("... Display home:
-    Rhodes") and the row names the place after all."""
+# AVIA's facades that are also place names (tests/fixtures/state_corpus_vocab.json holds the
+# night's facades): straight after a design, with the design's size after them, they are
+# the facade -- "Rhodes Paddington 180m2" (7810), and so Yamba and Newstead. The rest of
+# its facades are no place and are in _DESIGN_VARIANT_AFTER.
+_FACADE_PLACE = re.compile(r"^(?:paddington|yamba|newstead)$", re.IGNORECASE)
+
+
+def _house_area_at(toks: List[str], breaks: Any, k: int) -> bool:
+    """True when toks[k:] is a house area in square metres, written as one word: "180m2"
+    (AVIA's "Rhodes Paddington 180m2"). Not a bare number: Creation Homes' designs are
+    sized bare -- "Munno Para West Yamba 28 - Newstead" is a Munno Para West lot, design
+    Yamba (the review's generated row, round 3)."""
+    return (k + 2 < len(toks) and toks[k][:1].isdigit() and toks[k + 1].lower() == "m"
+            and toks[k + 2] == "2" and not {k, k + 1, k + 2} & set(breaks))
+
+
+def _only_ever_a_facaded_design(toks: List[str], breaks: Any, span: List[str], geo: Any,
+                                state: str) -> bool:
+    """True when every time the row writes `span` a facade code follows it, and the row
+    names no other place outside `state` (text_locality_elsewhere's one silence).
+
+    A facade code is a garage code or a facade that is no place (_DESIGN_VARIANT_AFTER:
+    "Verona SG", "Rhodes Fortitude" -- not the first word of a place, "Lennox Head"), or a
+    facade that is a place (_FACADE_PLACE) with the design's house area after it
+    ("Rhodes Paddington 180m2", _house_area_at). Not a place of `state` after it, nor a
+    facade style, nor a bare size: a
+    suburb is followed by those as often as a design is (round 3, 29 Sep 2026 -- see
+    text_locality_elsewhere). One plain mention ("... Display home: Rhodes") and the row
+    names the place after all; one other place of another state anywhere in the line
+    ("Lot 5 Rhodes SG Tarneit" filed QLD) and the answer stands too, because the row is
+    then not on its page's word alone."""
     want = [t.lower() for t in span]
     seen = False
+    covered = set()
     for i in range(len(toks) - len(want) + 1):
         if [t.lower() for t in toks[i:i + len(want)]] != want:
             continue
         if any(k in breaks for k in range(i + 1, i + len(want))):
             continue
         seen = True
-        if not_the_locality_here(toks, i, len(want), geo, estate, breaks, state,
-                                 stocked=stocked) not in ("design", "followed"):
+        j = i + len(want)
+        if j >= len(toks) or j in breaks:
             return False
-    return seen
+        after = toks[j + 1] if j + 1 < len(toks) and j + 1 not in breaks else ""
+        if _DESIGN_VARIANT_AFTER.match(toks[j]):
+            if after and _places(toks[j] + " " + after, geo):
+                return False
+        elif not (_FACADE_PLACE.match(toks[j]) and _house_area_at(toks, breaks, j + 1)):
+            return False
+        covered.update(range(i, j + 1))
+    if not seen:
+        return False
+    for (i, size), states in _place_spans(toks, breaks, geo).items():
+        if covered & set(range(i, i + size)):
+            continue
+        if state not in states:
+            return False
+    return True
 
 
 def disagreement(postcode: Any, suburb: str, page_state: Any, geo: Any,

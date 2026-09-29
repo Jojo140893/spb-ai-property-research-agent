@@ -104,6 +104,20 @@ class Gen:
             if st in STATES and 5 <= len(name) < 18 and rng.random() < 0.01:
                 other_places.append(geo._canonical.get(name, name.title()))
         self.other_places = other_places
+        # Round 3 (29 Sep 2026): multi-word places with a shorter place inside them
+        # ("Redwood Park", "Boat Harbour Beach", "Murray Bridge"), as a label's estate or an
+        # appended tail -- the reviews' road to a state origin/main never gives through the
+        # longer-name rule. PO-box names ("Adelaide BC") left out.
+        nested = []
+        for (name, st) in list(geo._index.keys()):
+            words = name.split()
+            if (st not in STATES or len(words) < 2 or len(name) >= 24
+                    or words[-1] in ("bc", "dc", "po", "mc", "msc")):
+                continue
+            subs = [" ".join(words[:k]) for k in range(1, len(words))]
+            if any(_places(geo, x) for x in subs) and rng.random() < 0.3:
+                nested.append(geo._canonical.get(name, name.title()))
+        self.nested = nested
 
     def pick(self, seq):
         return self.rng.choice(seq)
@@ -141,7 +155,9 @@ class Gen:
         style = self.pick(STYLES)
         garage = self.pick(GARAGE)
         prod = self.pick(PRODUCT)
-        tid = rng.randint(1, 34)
+        tid = rng.randint(1, 42)
+        P = self.pick(self.nested)
+        pcode = _pc(rng, st)
         est_name = None
         named = True                   # the line names the true suburb
         if tid == 1:
@@ -219,9 +235,37 @@ class Gen:
             label = f"{n} {S}, {T} {st}"; line = label
         elif tid == 33:
             label = f"Lot {n}, {E} {T} {D}"; line = label
+        # Round 3 (29 Sep 2026): the reviews' shapes around the longer-name rule -- a
+        # multi-word place P in the label only, over a line naming the real locality.
+        elif tid == 35:            # Hattan email row, the label holding its estate
+            est_name = P if rng.random() < 0.5 else None
+            label = f"Lot {n}, {P}"
+            line = f"Available {T} Q3 2026 Townhouse Lot {n} 168 6 {D} D | {D2} 9.66 Single Storey 3 1 1 {_money(rng)}"
+        elif tid == 36:            # Proxima: the address with its state and postcode
+            label = f"Lot {n}, {P}"
+            line = f"Lot {n} Unit B{k}11, 10-14 {S}, {T.upper()}, {st}, {pcode}"
+        elif tid == 37:            # Hermitage: the address, then an estate-like tail
+            label = f"LOT {n} {S.upper()}, {T.upper()} {pcode}, {P}"
+            line = f"LOT {n} {S.upper()}, {T.upper()} {pcode}"
+        elif tid == 38:            # Hattan line == label, a place appended
+            label = f"Available {T} Titled House Lot {n} 350 12.5 {D} 20 Single Storey 4 2 2 {_money(rng)} | {P}"
+            line = label
+        elif tid == 39:            # Verv: the estate, then the suburb written as one word
+            label = f"2-Part Detached SS North {n} {P} {T.replace(' ', '')} 283 {_money(rng)} {D} 190m2 3 / 2 / 2"
+            line = label
+        elif tid == 40:            # Hattan: the line opens with the locality (round 1's rows)
+            label = f"Available {T} Q3 2026 Townhouse {n} 168 6 {D} E | {E} 16.65 Double Storey 4 2 2 {_money(rng)}"
+            line = label
+        elif tid == 41:            # an estate label over a Creation Homes line
+            est_name = P if rng.random() < 0.5 else None
+            label = f"Lot {n}, {P}"
+            line = f"{n} {S} {T} {D} {size} - {F} Available 4 2 2 {area} {_money(rng)}"
+        elif tid == 42:            # a place appended to the label only
+            label = f"Lot {n}, {E} | {P}"
+            line = f"Available {T} Titled House Lot {n} 350 12.5 {D} 20 Single Storey 4 2 2 {_money(rng)}"
         else:
             label = f"Lot {n} {mon} {yr} {T} {D} {size}"; line = label
-        words = {"T": T, "E": E, "D": D, "D2": D2, "F": F, "S": S}
+        words = {"T": T, "E": E, "D": D, "D2": D2, "F": F, "S": S, "P": P, "PC": pcode}
         return label, line, est_name, n, st, named, words, tid
 
     def record(self):
@@ -230,6 +274,9 @@ class Gen:
         truth = st
         # page hint: the lot's state, another state, or none
         r = rng.random()
+        if tid >= 35:
+            # the longer-name rule reads only rows with no page state
+            r = 0.75 + r / 2.8 if r < 0.7 else (r - 0.7) * 2.5
         if r < 0.5:
             page = st
         elif r < 0.75:
@@ -243,7 +290,9 @@ class Gen:
         pc, lot = None, None
         r = rng.random()
         pc_real = False
-        if r < 0.12 and st != "ACT" and named:
+        if tid in (36, 37):
+            pc_real, pc = True, words["PC"]
+        elif r < 0.12 and st != "ACT" and named:
             pc_real = True
             pc = _pc(rng, st)
             label = label + f" {pc}" if pc not in label else label
@@ -289,7 +338,7 @@ class Gen:
         """A state an earlier night could have written: the truth, or a state some place-like
         word of the line names."""
         cands = [st]
-        for k in ("E", "D", "F", "D2"):
+        for k in ("E", "D", "F", "D2", "P"):
             cands += _places(self.geo, words[k])
         return self.pick(cands)
 

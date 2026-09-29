@@ -114,13 +114,22 @@ found 1,192 more. So a row's answer is held to origin/main 31d13ef's: its guess
 (geo.find_suburb_in_text with the stored state), its own_state and resolve_state, its
 national files and its row-text check, run on the same stored columns (origin_main_state).
 Tonight's answer is kept when it is origin/main's, none, the row's page or file-name state,
-its stated postcode's (state_resolver.postcode_stated), or -- with no page -- the longer
-name the row writes around origin/main's guess ("Clyde North" for Clyde: round 1's Hattan
-rows); anything else gets origin/main's answer, and the row is printed. The blank-suburb
-reading is weighed the same way before it votes (guess_suburb). Over the 29 Sep copy no row
-is held -- the reading and the bound between them change 2 rows from round 1's result, both
-superseded -- and over the generated rows, with the catalogue as it is or stocking every
-place, no row lands in a state origin/main would not give (tests/test_state_invariant.py).
+its stated postcode's (state_resolver.postcode_stated), or -- with no page, and only where
+origin/main's answer is blank -- the longer name the row's own line opens with around
+origin/main's guess ("Available Clyde North ..." for Clyde: round 1's Hattan rows, see
+longer_name_stands); anything else gets origin/main's answer, and the row is printed
+(bound). The blank-suburb reading is weighed the same way before it votes (guess_suburb).
+Over the 29 Sep copy no row is held -- the reading and the bound between them change 2 rows
+from round 1's result, both superseded -- and over the generated rows, with the catalogue
+as it is or stocking every place, no row lands in a state origin/main would not give
+(tests/test_state_invariant.py).
+
+ROUND 3 (29 Sep 2026). Both reviews of round 2 found the longer-name exception a road to
+any state: a label is as often "Lot <n>, <estate>", and estates are named after places
+anywhere ("Lot 3772, Redwood Park" on a Clyde North lot went to SA; "Lot 340, Boat
+Harbour Beach" on a "CARINGBAH, NSW, 2229" lot to TAS). It now needs the row's own line
+to open with the name and nothing else in the row to name another state, and it never
+overrules a state origin/main gives (longer_name_stands, bound).
 
 KNOWN EDGE, left as it is: Hattan 5375-5377 and 8359 ("Available Clyde North Q3 2026
 Townhouse 3673 ... | Ceduna") carry the house design "Ceduna" -- a South Australian
@@ -144,11 +153,11 @@ from urllib.parse import unquote
 import config
 from database import ResearchDatabase
 from geo import SuburbGeoIndex
-from state_resolver import (TEXT_LOCALITY_SOURCE, disagreement, extends_the_guess,
-                            file_is_national, normalise_state, own_state,
+from state_resolver import (TEXT_LOCALITY_SOURCE, disagreement, file_is_national,
+                            longer_name_of_the_line, normalise_state, own_state,
                             postcode_is_lot_number, postcode_stated, reading_refuses,
-                            resolve_state, state_from_postcode, suburb_in_row_text,
-                            text_locality_elsewhere)
+                            resolve_state, state_from_postcode, states_written_in,
+                            suburb_in_row_text, text_locality_elsewhere)
 
 STATE_RE = re.compile(r"\b(VIC|NSW|QLD|SA|WA|NT|ACT|TAS)\b", re.I)
 
@@ -443,6 +452,67 @@ def _real_postcode_state(r, geo) -> str:
     return postcode_stated(pc, row_text(r), geo)
 
 
+def longer_name_stands(r, reading, origin, geo, stocked) -> str:
+    """The state round 1's one correction that is neither a page nor a postcode may give a
+    row -- the longer place name around origin/main's guess ("Wyndham Vale" for Wyndham,
+    "Clyde North" for Clyde, "Springvale South" for Springvale: 23 Hattan email rows) --
+    or '' wherever the row cannot tell, and origin/main's answer stands.
+
+    Round 3, 29 Sep 2026. Round 2 let any longer name the LABEL wrote through its bound on
+    a row with no page, whatever its state, and both reviews found it a road to states
+    origin/main never gives, over the row's own words: "Lot 3772, Redwood Park" (the
+    label's estate) sent a Clyde North lot to SA over origin/main's right VIC; "Lot 340,
+    Boat Harbour Beach" a "CARINGBAH, NSW, 2229" lot to TAS; "..., DIGGERS REST 3427,
+    Verona Sands" a Diggers Rest lot to TAS; "Lot 5, Capri DG Corner Murray Bridge" a
+    "Dual Key QLD ... 4244" lot to SA -- 13 and 23 wrong moves in the reviews' corpora,
+    and 542 of 695 when the label's estate was a random place. What the 23 rows have, and
+    those do not, is now required of every one:
+      * no page state (as before);
+      * the row's own line opens with the name, after nothing but its availability
+        ("Available ..."), with no street or estate word after it, and it is not the
+        row's estate (state_resolver.longer_name_of_the_line);
+      * nothing else the row says names another state: no state code or name, no
+        postcode written as one (states_written_in, _real_postcode_state), no state in
+        its file's name;
+      * and the row-text check, asked as origin/main asks it, finds no stocked place of
+        another state in the line ("Available Truganina ..." under the label "Lot 1364,
+        Murray Bridge").
+    The caller also takes it only where origin/main's answer is blank, as on all 23: a
+    state origin/main gives is never overruled by it.
+    """
+    keys = r.keys()
+    if normalise_state(r["source_state_hint"] if "source_state_hint" in keys else ""):
+        return ""
+    line = r["source_text"] if "source_text" in keys else ""
+    state = longer_name_of_the_line(reading, origin, line, geo, r["estate_name"])
+    if not state:
+        return ""
+    stated = states_written_in(row_text(r), geo) | {
+        _real_postcode_state(r, geo), state_from_filename(r["source_url"] or "")}
+    if stated - {"", state}:
+        return ""
+    text = " ".join(row_text(r))
+    if text_locality_elsewhere(text, state, geo, stocked, estate=r["estate_name"]):
+        return ""
+    return state
+
+
+def bound(r, origin_state, longer, geo) -> set:
+    """The states pass 2 may leave in a row (round 2, 29 Sep 2026 -- the acceptance bar, see
+    tests/test_state_invariant.py): origin/main's own answer `origin_state`, none, the
+    row's page or file-name state, its stated postcode's -- and `longer`, the state of
+    round 1's longer name (longer_name_stands), only where origin/main's answer is blank.
+    Round 3: never over a state origin/main gives ("Lot 3772, Redwood Park" on a Clyde
+    North lot that origin/main's row-text check files VIC went to SA)."""
+    keys = r.keys()
+    page = r["source_state_hint"] if "source_state_hint" in keys else ""
+    allowed = {origin_state or "", "", normalise_state(page),
+               state_from_filename(r["source_url"] or ""), _real_postcode_state(r, geo)}
+    if longer and not origin_state:
+        allowed.add(longer)
+    return allowed
+
+
 def guess_suburb(r, geo, stocked, decide, origin=None):
     """The suburb a row with a blank suburb column is read as: state_resolver.
     suburb_in_row_text's reading, or origin/main's guess (geo.find_suburb_in_text with the
@@ -467,9 +537,11 @@ def guess_suburb(r, geo, stocked, decide, origin=None):
         is no place here (state_resolver.reading_refuses: "Verona SG", a month, a street
         word -- but not "Grange West 56 Werribee", where the reading took Grange and
         origin/main Werribee);
-      * or, with no page state, it is the longer name the row writes around origin/main's
-        guess (state_resolver.extends_the_guess): "Clyde North" for Clyde, "Wyndham Vale"
-        for Wyndham -- round 1's 24 Hattan email rows, the one correction that is neither.
+      * or origin/main's guess gives the row no state, and the reading is the longer name
+        the row's own line opens with around that guess, and nothing else in the row names
+        another state (longer_name_stands -- round 3): "Clyde North" for Clyde, "Wyndham
+        Vale" for Wyndham -- round 1's 23 Hattan email rows, the one correction that is
+        neither.
     Otherwise origin/main's guess is used, and the row lands where origin/main put it.
     """
     text = r["lot_address"] or ""
@@ -499,8 +571,8 @@ def guess_suburb(r, geo, stocked, decide, origin=None):
         if new_state or withdrawn:
             return reading
         return origin
-    if (reading and not page and extends_the_guess(reading, origin, text)
-            and {new_state, new_proof} <= allowed | set(geo.states_for_suburb(reading))):
+    longer = longer_name_stands(r, reading, origin, geo, stocked) if not old_state else ""
+    if longer and {new_state, new_proof} <= allowed | {longer}:
         return reading
     # The reading goes where origin/main's would not, or finds nothing. origin/main's guess
     # then -- unless the row is sure that guess is no place here and origin/main's state is
@@ -510,6 +582,14 @@ def guess_suburb(r, geo, stocked, decide, origin=None):
 
 
 def main(argv=None):
+    # 29 Sep 2026 (round 3): the report quotes rows' own words, and a row holding a
+    # character the console's code page lacks (U+FF0C, a full-width comma) crashed a
+    # by-hand run AFTER the commit, exit 1. run_daily launches this with -X utf8, so the
+    # nightly never met it; a report line is not worth a failed step either way.
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except (AttributeError, ValueError):
+        pass
     ap = argparse.ArgumentParser(description="Backfill state on harvested stock.")
     ap.add_argument("--rollback-text-locality", action="store_true",
                     help=f"re-resolve every row whose state_source is "
@@ -582,9 +662,10 @@ def main(argv=None):
     # origin/main's reading of each row (origin_main_state): its suburb, proof and votes.
     origin: Dict[int, tuple] = {}
     per_file_o: Dict[str, set] = {}
-    # The states of a longer name the row writes around origin/main's guess, on a row with
-    # no page state (guess_suburb, round 1's correction C) -- otherwise empty.
-    longer: Dict[int, set] = {}
+    # The state of the longer name the row's line opens with around origin/main's guess, on
+    # a row with no page state and nothing else naming a state (longer_name_stands, round
+    # 1's correction C) -- otherwise empty.
+    longer: Dict[int, str] = {}
     # Whether the suburb pass 2 votes with came out of the column or was guessed from the
     # address below -- a guessed "Windermere" is weaker than a stated one.
     from_column: Dict[int, bool] = {}
@@ -661,7 +742,7 @@ def main(argv=None):
         suburb = (r["suburb"] or "").strip()
         from_column[rid] = bool(suburb)
         origin_suburb = suburb
-        longer[rid] = set()
+        longer[rid] = ""
         if not suburb:
             # IN MEMORY ONLY. This used to also
             #
@@ -702,9 +783,9 @@ def main(argv=None):
             found = guess_suburb(r, geo, evidence[0], decide, origin_suburb)
             if found:
                 suburb = found
-                if (not normalise_state(r["source_state_hint"])
-                        and extends_the_guess(found, origin_suburb, r["lot_address"])):
-                    longer[rid] = set(geo.states_for_suburb(found))
+                if found.lower() != origin_suburb.lower():
+                    longer[rid] = longer_name_stands(r, found, origin_suburb, geo,
+                                                     evidence[0])
         state, why = own_state(postcode=r["postcode"], suburb=suburb,
                                estate=r["estate_name"], address=r["lot_address"], geo=geo,
                                lot_number=r["lot_number"], row_text=row_text(r),
@@ -869,14 +950,12 @@ def main(argv=None):
         # NEVER A STATE ORIGIN/MAIN WOULD NOT GIVE (round 2, 29 Sep 2026 -- the acceptance
         # bar, see origin_main_state and tests/test_state_invariant.py). The answer above is
         # kept when it is origin/main's own, none, the row's page or file-name state, its
-        # stated postcode's, or the longer name round 1 reads for origin/main's guess;
-        # anything else is origin/main's answer instead. Printed, row by row.
+        # stated postcode's, or -- where origin/main's answer is blank -- the longer name
+        # round 1 reads for origin/main's guess (longer_name_stands); anything else is
+        # origin/main's answer instead. Printed, row by row.
         new_state = new_state or ""
         origin_answer = origin_main_state(r)
-        allowed = {origin_answer[0] or "", "", normalise_state(page),
-                   state_from_filename(url), _real_postcode_state(r, geo)}
-        allowed |= longer[rid]
-        if new_state not in allowed:
+        if new_state not in bound(r, origin_answer[0] or "", longer[rid], geo):
             held.append((rid, new_state, signal, origin_answer[0] or "", origin_answer[1]))
             new_state, signal = origin_answer[0] or "", origin_answer[1]
             hit = None

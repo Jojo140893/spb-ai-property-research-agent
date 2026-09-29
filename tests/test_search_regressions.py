@@ -633,24 +633,60 @@ _LINE_14913 = ("Available Titled Townhouse 44 215 10.86 Verona SG Corner | Rosel
                "3 2 1 $954,950")
 
 
-def test_a_design_and_its_facade_are_not_read_as_another_states_place():
+def test_a_design_and_its_facade_warn_as_what_they_are():
     """29 Sep 2026: every night the replay warned that AVIA 7810 ("... Rhodes Paddington
     180m2 ...", design Rhodes, facade Paddington) is filed QLD but names Rhodes, NSW.
-    locality_check now applies enrich's rule (state_resolver.not_the_locality_here), and
-    it still warns when the same word is written as a place in the same row."""
+    Rounds 1 and 2 silenced it; round 3 warns wherever origin/main warns (the same words are
+    a genuine misfile's in other rows -- see the next test), and says what the row shows:
+    a design with its facade code on a row its page backs ('facade:'), not a misfile claim.
+    A plain mention of the same word is the ordinary 'text:' WARN."""
     avia = _row("v2:avia7810", state="QLD", state_source="suburb + e-agent page",
                 suburb="Glenvale", lot_address="Lot 60, THE HILLS COLLECTION",
                 estate_name="THE HILLS COLLECTION", price=892900.0)
     meriton = _row("v2:rhodes00", state="NSW", state_source="listing text", suburb="Rhodes",
                    lot_address="Unit 1203, 1 Walker Street, Rhodes", price=900000.0)
-    for text, warned in ((_LINE_7810, False),
-                         (_LINE_7810 + " Display home: Rhodes", True)):
+    for text, kind in ((_LINE_7810, "facade"),
+                       (_LINE_7810.replace("180m2", "180m2 Rhodes Fortitude"), "facade"),
+                       (_LINE_7810 + " Display home: Rhodes", "text")):
         db = [{"id": 7810, "content_hash": "v2:avia7810", "date_checked": "15/09/2026",
                "state": "QLD", "state_source": "suburb + e-agent page", "suburb": "GLENVALE",
-               "source_text": text}]
+               "source_state_hint": "QLD", "source_text": text}]
         report, out = _run_with_locality([avia, meriton], db, [_card(avia)], "QLD")
         assert report.failures == 0, out
-        assert ("its own text names Rhodes (NSW)" in out) is warned, out
+        assert report.warnings == 1, out
+        assert ("%s: shortlisted v2:avia7810 (id 7810) is filed QLD" % kind) in out, out
+        assert "names Rhodes (NSW)" in out, out
+
+
+@pytest.mark.parametrize("line, filed, heading, named", [
+    # the reviews' recall losses, round 2 (verify-0 and verify-1): each a real row's line,
+    # re-filed in another state on its page's word, with a heading in its suburb column
+    ("66 Taylors Ridge Walloon Banksia 183 - Urban Available 4 2 2 315 $ 451,900", "NSW",
+     "Cameron Park", ("Walloon", "QLD")),
+    ("534 Bellevue Ripley Coolamon 213 - Classic Available 4 2 2 400 $ 520,900", "NSW",
+     "Rosebery", ("Ripley", "QLD")),
+    ("155 Wattle Green Burpengary Banksia 183 - Urban Available 4 2 2", "NSW", "Glenvale",
+     ("Burpengary", "QLD")),
+    ("91 Oran Park Clontarf Traditional 4 2 2 $ 820,000", "QLD", "Ripley",
+     ("Oran Park", "NSW")),
+])
+def test_a_misfile_its_page_backs_is_still_warned_about(line, filed, heading, named):
+    """Review, 29 Sep 2026 (round 2): the design silence also hid genuine misfiles origin/main
+    catches -- a row filed in its page's (wrong) state on a heading column, whose line is
+    Creation Homes' "<suburb> <design> <size>": the suburb is 'followed' by a place of the
+    filed state, just as a design is by its facade. Warned about again, as origin/main
+    warns."""
+    lot = _row("v2:misfile0", state=filed, state_source="suburb + e-agent page",
+               suburb=heading, lot_address=line[:40], estate_name=None, price=700000.0)
+    stock = _row("v2:stock000", state=named[1], state_source="listing text",
+                 suburb=named[0], lot_address="Lot 1, " + named[0], price=600000.0)
+    db = [{"id": 7889, "content_hash": "v2:misfile0", "date_checked": "15/09/2026",
+           "state": filed, "state_source": "suburb + e-agent page", "suburb": heading,
+           "source_state_hint": filed, "source_text": line}]
+    report, out = _run_with_locality([lot, stock], db, [_card(lot)], filed)
+    assert report.failures == 0, out
+    assert ("text: shortlisted v2:misfile0 (id 7889) is filed %s" % filed) in out, out
+    assert "its own text names %s (%s)" % named in out, out
 
 
 def test_a_suburb_before_the_word_its_misfile_rests_on_still_warns():
