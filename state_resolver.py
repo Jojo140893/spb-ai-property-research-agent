@@ -1116,6 +1116,28 @@ def _verdict(toks: List[str], breaks: Any, i: int, size: int, geo: Any, estate: 
     return "take"
 
 
+def label_tail_is_the_pair(label: Any, one: Any, other: Any) -> bool:
+    """True when the last part of an "X, <A> <B>" label is nothing but the two place names
+    `one` and `other`, in either order ("Lot 27102, Windermere Mambourin"; "Lot 11950,
+    Warralily Armstrong Creek") -- the part suburb_in_row_text's step 1 reads, split and
+    trimmed the same way.
+
+    29 Sep 2026, round 3 (enrich_buildings.page_and_guess_hold): such a part is an estate
+    and a locality, and nothing in it says which is which, so a page that picked one of
+    them is not backed by the label against the other."""
+    parts = [p.strip() for p in re.split(r",(?!\d)", str(label or ""))]
+    parts = [p for p in parts if p and not re.fullmatch(
+        r"[\s\d]*|" + _STATE_CODE + r"(?:\s+\d{4})?", p)]
+    if len(parts) < 2:
+        return False
+    last = re.sub(r"\s*\([^)]*\)", " ", parts[-1])
+    last = re.sub(r"(?:\s+" + _STATE_CODE + r")?(?:\s+\d{4})?\s*$", "", last).strip()
+    low = [t.lower() for t in _tokens(last)[0]]
+    a = [w.lower() for w in _TEXT_TOKEN.findall(str(one or ""))]
+    b = [w.lower() for w in _TEXT_TOKEN.findall(str(other or ""))]
+    return bool(a and b) and low in (a + b, b + a)
+
+
 def _label_tail_verdicts(raw: str, geo: Any, estate: Any = "", prefer: Any = "",
                          stocked: Any = None) -> List[Tuple[str, str]]:
     """[(name, verdict)] for the place names the last part of an "X, Locality" label
@@ -1341,6 +1363,43 @@ def states_written_in(row_text: Any, geo: Any = None) -> set:
             st = postcode_stated(m.group(0), texts, geo)
             if st:
                 out.add(st)
+    return out
+
+
+def places_after_a_street(row_text: Any, geo: Any = None) -> set:
+    """The states of every place of ONE state the row writes straight after a street --
+    the locality of its address ("Lot 7, Redhead Street, Jetsonville" -> TAS), with a comma
+    or nothing between (29 Sep 2026, round 3). Only a name standing on its own: not one a
+    longer place name the row writes holds, nor one with a street type of its own after it
+    (a second street), nor a month.
+
+    A review of round 2 found round 1's longer-name correction winning over that address:
+    "Available Regents Park Dc Lot 7, Redhead Street, Jetsonville Acacia - Haven ..." went
+    to NSW on "Regents Park Dc" around origin/main's guess Regents Park, though the row
+    writes a one-state TAS place after its street. enrich_buildings.longer_name_stands
+    counts these as states the row names."""
+    from geo import _STREET_TYPE
+    if geo is None:
+        return set()
+    texts = row_text if isinstance(row_text, (list, tuple)) else [row_text]
+    out = set()
+    for text in texts:
+        toks, breaks = _tokens(text)
+        spans = _place_spans(toks, breaks, geo)
+        for j, tok in enumerate(toks):
+            if j == 0 or not _STREET_TYPE.fullmatch(tok) or toks[j - 1][:1].isdigit():
+                continue
+            for size in (3, 2, 1):
+                states = spans.get((j + 1, size))
+                if not states or len(states) != 1 or _MONTH_WORD.match(toks[j + 1]):
+                    continue
+                if _inside_a_longer_place(spans, j + 1, size):
+                    continue
+                k = j + 1 + size
+                if k < len(toks) and _STREET_TYPE.fullmatch(toks[k]):
+                    continue
+                out.add(states[0])
+                break
     return out
 
 

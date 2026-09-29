@@ -14,14 +14,23 @@ So the bar is stated against origin/main 31d13ef itself, frozen in tests/_origin
 the new code may leave a row blank, and may correct round 1's misreadings, but must never
 put a row in a state origin/main would not, unless it is
 
-  (i)   the row's own page state (source_state_hint), or its file name's;
+  (i)   the row's own page state (source_state_hint -- or, with none tonight, the state its
+        stored signal records the page and another signal agreeing on: _page), or its
+        file name's;
   (ii)  proven by the row's own postcode, written where a postcode is written (after a
-        place of its state, or its state's code) and not its lot or another number; or
+        place of its state, or its state's code) and not its lot or another number;
   (iii) round 1's one documented correction that is neither: with no page state, where
         origin/main's answer is blank, the longer place name the row's own LINE opens
         with around origin/main's guess ("Available Wyndham Vale ..." for Wyndham,
         "Available Clyde North ..." for Clyde -- 23 Hattan email rows), when nothing else
-        in the row names another state -- and on a generated row, only its true state;
+        in the row names another state -- and on a generated row, only its true state; or
+  (iv)  origin/main's answer on the postcode column as the run leaves it (round 3): a lot
+        number enrich takes out of the column is out of it for origin/main the next night;
+
+(i)'s missing hint and (iv) are round 3's (29 Sep 2026), for the harness over many nights
+(tests/test_state_multinight.py): without them the bound walked with this step's own writes
+-- a page-backed row's hint dropped for a night, or its lot number cleared from the postcode
+column, moved it once to origin/main's answer and once more the next night;
 
 and the misfile check (state_resolver.text_locality_elsewhere, which enrich's row-text
 overrule calls) may keep quiet where origin/main spoke only on a design and its facade code
@@ -170,12 +179,31 @@ def _stated_postcode(r, geo):
     return ""
 
 
-def _allowed(r, old_state, geo, truth=None):
-    """The states a row may be given that origin/main does not give it: (i) its page's or
-    its file name's, (ii) its stated postcode's, (iii) round 1's longer name -- only where
-    origin/main's answer is blank, and, on a generated row whose true state is known, only
-    that one."""
+def _page(r):
+    """(i)'s page: the row's hint -- or, when tonight's row carries none, the state its
+    stored signal records the page and another signal agreeing on ('suburb + e-agent page',
+    'postcode + e-agent page'; not the page alone). Round 3, 29 Sep
+    2026: a hint missing for a night is not a page that disagrees; read as none, the
+    multi-night harness's night with a sheet's hints dropped moved 494 page-backed rows
+    by origin/main's row-text check, for good, where origin/main's own lineage kept them
+    blank. (The harvest writes the hint on INSERT only, so a stored row never loses it in
+    production; the harness takes it away to see what the code does if it ever does.)"""
     page = sr.normalise_state(r["source_state_hint"])
+    if page:
+        return page
+    st = sr.normalise_state(r["state"])
+    parts = [p.strip() for p in str(r["state_source"] or "").split("+")]
+    if st and "e-agent page" in parts and len(parts) > 1:
+        return st
+    return ""
+
+
+def _allowed(r, old_state, geo, truth=None):
+    """The states a row may be given that origin/main does not give it: (i) its page's
+    (_page) or its file name's, (ii) its stated postcode's, (iii) round 1's longer name --
+    only where origin/main's answer is blank, and, on a generated row whose true state is
+    known, only that one."""
+    page = _page(r)
     file_state = origin.state_from_filename(r["source_url"] or "")
     ok = {old_state or "", "", page, file_state, _stated_postcode(r, geo)}
     if not (r["suburb"] or "").strip() and not page and not old_state and not file_state:
@@ -229,18 +257,30 @@ def _enrich(tmp_path, monkeypatch, rows):
     assert enrich_buildings.main([]) == 0
     conn = sqlite3.connect(str(db))
     try:
-        return {i: (s, src) for i, s, src in
-                conn.execute("SELECT id, state, state_source FROM buildings")}
+        return {i: (s, src, pc) for i, s, src, pc in
+                conn.execute("SELECT id, state, state_source, postcode FROM buildings")}
     finally:
         conn.close()
 
 
 def _violations(rows, got, geo):
+    """Rows given a state outside (i)-(iii) of origin/main's answer on the same columns --
+    or (iv, round 3, 29 Sep 2026) of origin/main's answer on the postcode column as
+    tonight's run leaves it: a lot number enrich takes out of the column is out of it for
+    origin/main the next night, so its answer then is one the night's own write reaches
+    (a row whose line opens with its lot, "9671 Second Avenue Baldivis ...", postcode 9671)."""
     before = origin.old_enrich(rows, geo)
+    written = {r["id"]: got[r["id"]][2] for r in rows if len(got[r["id"]]) > 2}
+    moved_pc = {i for i, pc in written.items()
+                if (pc or None) != (next(r for r in rows if r["id"] == i)["postcode"] or None)}
+    after_pc = (origin.old_enrich([dict(r, postcode=written[r["id"]]) if r["id"] in moved_pc
+                                   else r for r in rows], geo) if moved_pc else before)
     out, changed = [], 0
     for r in rows:
         new, old = got[r["id"]][0] or "", before[r["id"]][0] or ""
         changed += new != old
+        if new != old and new == (after_pc[r["id"]][0] or "") and r["id"] in moved_pc:
+            continue
         if new != old and new not in _allowed(r, old, geo, r.get("_truth")):
             out.append((r["id"], old, new, got[r["id"]][1], r["lot_address"],
                         r["source_state_hint"], r["suburb"], r["state"], r["state_source"]))
@@ -263,7 +303,9 @@ def test_the_harness_can_fail(tmp_path, monkeypatch, geo):
     """A silent check reads as a pass: let the reading through unbounded -- round 1's code
     path, a reading taken wherever no page contradicts it -- and the harness must see it."""
     monkeypatch.setattr(enrich_buildings, "guess_suburb",
-                        lambda r, geo_, stocked, decide, origin_=None: sr.suburb_in_row_text(
+                        lambda r, geo_, stocked, decide, origin_=None, reading_=None,
+                        actual_=None:
+                        sr.suburb_in_row_text(
                             r["lot_address"] or "", geo_, prefer=r["source_state_hint"] or "",
                             estate=r["estate_name"], stocked=stocked))
     monkeypatch.setattr(enrich_buildings, "bound", lambda *a: set(STATES) | {""})
