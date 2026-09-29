@@ -148,20 +148,39 @@ def test_the_row_text_check_still_sees_a_suburb_before_the_misleading_word(geo, 
     assert sr.text_locality_elsewhere(text, state, geo, stocked, suburb=suburb) == want
 
 
-@pytest.mark.parametrize("text, state, suburb", [
-    # a design and its facade, filed in the facade's state (AVIA 7810): no alarm
-    ("60 Stage 4 429m2 $390,000 August 2026 Rhodes Paddington 180m2 4 2 2 0", "QLD",
-     "GLENVALE"),
-    # an estate and its suburb, filed in the suburb's state (Verv 1825), no suburb column
-    ("2-Part Detached SS West 123 Oaklands Bonnie Brook 392 $430,000", "VIC", ""),
-    # ... and with its suburb column, which the catalogue stocks there: the column is not
-    # the word under suspicion, so this is not the "Tarneit The Grove" misfile
-    ("2-Part Detached SS West 123 Oaklands Bonnie Brook 392 $430,000", "VIC", "Bonnie Brook"),
+@pytest.mark.parametrize("text, suburb", [
+    # a design and its facade (AVIA 7810), filed QLD on the sheet heading's GLENVALE
+    ("60 Stage 4 429m2 $390,000 August 2026 Rhodes Paddington 180m2 4 2 2 0", "GLENVALE"),
+    ("91 Stage 2 354m2 $545,000 February 2027 Rhodes Fortitude 180m2 4 2 2 1", "Ripley"),
 ])
-def test_a_design_or_estate_beside_a_place_of_the_rows_state_is_still_let_go(geo, text,
-                                                                           state, suburb):
-    stocked = {("rhodes", "NSW"), ("oaklands", "NSW"), ("bonnie brook", "VIC")}
-    assert sr.text_locality_elsewhere(text, state, geo, stocked, suburb=suburb) is None
+def test_a_design_on_a_row_its_page_backs_is_let_go(geo, text, suburb):
+    """Round 2, 29 Sep 2026: the one answer of origin/main's the check keeps quiet about.
+    The page backs the state the row is filed in, the suburb column is none of the line's
+    words, and the line writes the name only as a design."""
+    stocked = {("rhodes", "NSW")}
+    assert sr.text_locality_elsewhere(text, "QLD", geo, stocked, suburb=suburb,
+                                      page="QLD") is None
+    # without the page behind it, or with the column one of the line's own words, the row
+    # is asked as origin/main asks it
+    assert sr.text_locality_elsewhere(text, "QLD", geo, stocked,
+                                      suburb=suburb) == ("Rhodes", "NSW")
+    assert sr.text_locality_elsewhere(text, "QLD", geo, stocked, suburb="Rhodes",
+                                      page="QLD") == ("Rhodes", "NSW")
+
+
+def test_an_estate_beside_its_suburb_is_answered_as_origin_main_answers_it(geo):
+    """Verv 1825, "... 123 Oaklands Bonnie Brook ...", filed VIC. The first cut let
+    Oaklands (NSW) go as 'followed' by Bonnie Brook, VIC -- and the same rule let go the
+    real suburb before the word a misfile rests on (review round 1: "Available Tarneit
+    Paddington 180m2" filed QLD on the column Paddington). The two read alike, so the row
+    is answered as origin/main answers it: quiet while Oaklands, NSW, holds no stock (as
+    tonight), an alarm once it does."""
+    line = "2-Part Detached SS West 123 Oaklands Bonnie Brook 392 $430,000"
+    for column in ("", "Bonnie Brook"):
+        assert sr.text_locality_elsewhere(line, "VIC", geo, {("bonnie brook", "VIC")},
+                                          suburb=column, page="VIC") is None
+        assert sr.text_locality_elsewhere(line, "VIC", geo, {("oaklands", "NSW")},
+                                          suburb=column, page="VIC") == ("Oaklands", "NSW")
 
 
 def test_the_overrule_corrects_the_misfile_a_suburb_column_makes(tmp_path, monkeypatch):
@@ -190,12 +209,28 @@ def test_the_overrule_corrects_the_misfile_a_suburb_column_makes(tmp_path, monke
 @pytest.mark.parametrize("text, prefer, want", [
     ("Available Lot 12 Fraser Rise Double Storey 4 2 2", "", "Fraser Rise"),
     ("Available Lot 12 Marsden Park Single Storey 4 2 2", "", "Marsden Park"),
-    ("Available Lot 12 Marsden Park Single Storey 4 2 2", "QLD", "Marsden Park"),
-    ("Available Clyde North Double Storey", "NSW", "Clyde North"),
-    ("Lot 5 Clyde North", "NSW", "Clyde North"),
+    ("Available Lot 12 Marsden Park Single Storey 4 2 2", "NSW", "Marsden Park"),
+    ("Available Clyde North Double Storey", "VIC", "Clyde North"),
+    ("Lot 5 Clyde North", "", "Clyde North"),
     ("Lot 5 Marsden Park Modern", "NSW", None),       # a design's facade, and nothing inside it
 ])
 def test_a_name_inside_a_longer_place_name_is_not_a_second_place(geo, text, prefer, want):
+    assert sr.suburb_in_row_text(text, geo, prefer) == want
+
+
+@pytest.mark.parametrize("text, prefer, want", [
+    ("Available Lot 12 Marsden Park Single Storey 4 2 2", "QLD", "Marsden"),
+    ("Available Clyde North Double Storey", "NSW", "Clyde"),
+    ("Lot 5 Clyde North", "NSW", "Clyde"),
+    ("77 Brooklyn Park Rise, Park Rise . 28 items", "NSW", "Brooklyn"),   # Eternal 23331
+])
+def test_a_longer_name_in_another_state_does_not_beat_a_place_of_the_page(geo, text, prefer,
+                                                                          want):
+    """Round 2, 29 Sep 2026. Round 1 read the longer name whatever the page said, and
+    review round 1 found the Eternal Homes NSW lot at Dora Creek, "Lot 77 Brooklyn Park
+    Rise", read as Brooklyn Park -- SA, and a proof over its NSW page. Which of the two a
+    row means its words do not say, so the page's state is taken, as origin/main took it;
+    the longer name wins only where no page says otherwise (above)."""
     assert sr.suburb_in_row_text(text, geo, prefer) == want
 
 
@@ -258,13 +293,17 @@ def test_a_page_state_that_beat_a_bare_word_is_not_overruled(tmp_path, monkeypat
     assert _rows(db)[19094][:2] == ("VIC", "e-agent page (conflicting signals)")
 
 
-def test_only_a_label_that_states_its_locality_opens_that_state_again(geo):
-    assert sr.label_locality("Lot 27102, Windermere Mambourin", geo) == "Mambourin"
-    assert sr.label_locality("5629 The Grove, Tarneit", geo) == "Tarneit"
-    assert sr.label_locality(_LINE_19094[:110], geo) is None
-    assert sr.label_locality("803 Cameron Grove, SOUTHERN HIGHLANDS", geo) is None
+def test_a_state_the_page_won_is_never_looked_at_again(geo):
+    """Round 2, 29 Sep 2026: round 1 looked again at 'e-agent page (conflicting signals)'
+    when the guess was the label's "X, Locality" word, and review moved a Diggers Rest VIC
+    lot to NSW through it ("Lot 518, Davis Vineyard", Vineyard its estate's word) and a
+    Wyndham Vale lot to QLD ("Lot 5, Wyndham Vale Jubilee"). Back to origin/main's two
+    signals; 9700 reaches VIC as origin/main took it (the rollback test in
+    test_row_text_overrules_suburb_column.py)."""
+    assert not hasattr(enrich_buildings, "page_overrode_the_label")
     assert not enrich_buildings.rests_on_a_suburb_match(
         "e-agent page (conflicting signals)", suburb_from_column=False)
+    assert sr.suburb_in_row_text("Lot 5, Wyndham Vale Jubilee", geo, "VIC") == "Wyndham Vale"
 
 
 # ------------------------------------------------------------- a postcode written first

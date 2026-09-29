@@ -1159,15 +1159,16 @@ def locality_check(catalogue, report):
     """14905's shape, as a WARN: filed in a state by its suburb column alone, with its own
     text naming a locality of one other state the catalogue stocks (state_resolver's rule).
 
-    Same rule as enrich's, word for word (29 Sep 2026): text_locality_elsewhere now refuses
-    a name the row shows to be a design or an estate (state_resolver.not_the_locality_here),
-    which is what silences the nightly false alarm on AVIA 7810, "... Rhodes Paddington
-    180m2 ..." (design Rhodes, facade Paddington: not Rhodes NSW). It is read with the
-    row's suburb column, as enrich reads it, so "Tarneit The Grove" filed NSW on 'The
-    Grove' is still caught. Measured on the 29 Sep copy: 0 warnings over every live row;
-    the 30 rows enrich has moved by this rule, filed back in a wrong state, are still
-    caught 24 times of 30, as before; and of every row whose suburb column is a one-state
-    locality its text names, re-filed in another state, as many are caught as before.
+    Same rule as enrich's, word for word (29 Sep 2026): origin/main's, which is what
+    text_locality_elsewhere scans with, answering only where origin/main's answers. It
+    keeps quiet about one answer: a design the row writes ("... Rhodes Paddington 180m2
+    ...", AVIA 7810: design Rhodes, facade Paddington, not Rhodes NSW) on a row whose page
+    backs the state it is filed in and whose suburb column is not one of its own words
+    (GLENVALE, from the sheet's heading). Round 2: the first cut let a design go whatever
+    the column, and was blind to "Tarneit The Grove" filed NSW on 'The Grove' only while
+    the catalogue did not stock The Grove, NSW -- it does tonight -- and to 7889 "Walloon
+    Banksia" filed NSW on Banksia. A misfile has the column from the row's own words, or no
+    page behind it, and is caught exactly as origin/main catches it.
 
     And a second WARN for the misfile that rule cannot see (state_resolver.
     design_the_state_rests_on): the only place a suburb-match state can rest on is written
@@ -1200,9 +1201,16 @@ def locality_check(catalogue, report):
             # -- so a name beside that very word is not let go as 'followed'.
             rec = catalogue.db_row(h) or {}
             column = str(rec.get("suburb") or row.get("suburb") or "").strip()
+            # The page's state, as far as this row shows it: the database's hint, or the
+            # state itself when its signal says the page voted for it (a snapshot without
+            # the database carries no hint). Round 2, 29 Sep 2026: text_locality_elsewhere
+            # keeps quiet about a design only where the page backs the filed state.
+            signals = [p.strip() for p in str(row.get("state_source") or "").split("+")]
+            page = rec.get("source_state_hint") or (row.get("state")
+                                                    if "e-agent page" in signals else "")
             hit = state_resolver.text_locality_elsewhere(
                 catalogue.text(h), row.get("state"), geo, stocked,
-                estate=row.get("estate_name") or "", suburb=column)
+                estate=row.get("estate_name") or "", suburb=column, page=page or "")
             if hit:
                 return hit
             suburb = str(row.get("suburb") or rec.get("suburb") or "").strip()

@@ -298,7 +298,7 @@ def test_the_guess_does_not_take_a_house_design(geo):
     ("114 Neale Rd, Parkside", "VIC", "Parkside", "Parkside"),
     ("Jensen Rise Estate - Wadalba 49 Road #5 Wadalba 2259 CENTRAL COAST COUNCIL", "NSW", "",
      "Wadalba"),
-    ("Lot 27102, Windermere Mambourin", "QLD", "Windermere Mambourin", "Mambourin"),
+    ("Lot 27102, Windermere Mambourin", "VIC", "Windermere Mambourin", "Mambourin"),
     ("2-Part Detached SS West 123 Oaklands Bonnie Brook 392 $430,000 Cura 20B", "VIC", "",
      "Bonnie Brook"),
     ("276 Glenvale Alford Grove", "QLD", "", "Glenvale"),        # the name after is a street's
@@ -308,6 +308,20 @@ def test_the_guess_does_not_take_a_house_design(geo):
 ])
 def test_nearby_names_the_guess_still_reads(geo, text, prefer, estate, want):
     assert sr.suburb_in_row_text(text, geo, prefer, estate) == want
+
+
+def test_an_estate_and_its_suburb_off_another_states_page_read_as_origin_main_read_them(geo):
+    """Round 2, 29 Sep 2026. 9568/9700, "Lot 27102, Windermere Mambourin" off the QLD page:
+    round 1 read Mambourin, VIC -- but "Wyndham Vale Jubilee" and "Joyner Banksia" are the
+    same two words side by side the other way round (suburb, then its estate or design),
+    and reading the second there took Wyndham Vale lots to QLD and Joyner lots to NSW. On
+    a page that names one of the two, the page's is read, as origin/main read it; the lot
+    still reaches VIC, by the row-text check reading Mambourin in its line
+    (test_row_text_overrules_suburb_column.py)."""
+    text = "Lot 27102, Windermere Mambourin"
+    assert sr.suburb_in_row_text(text, geo, "QLD", "Windermere Mambourin") == "Windermere"
+    # and with no page to pick between them, the two readings name different states
+    assert sr.suburb_in_row_text(text, geo, "", "") is None
 
 
 def test_the_verv_sheet_is_victorian_once_the_grove_is_read_as_the_estate(tmp_path,
@@ -417,11 +431,15 @@ def test_a_design_and_its_facade_do_not_name_a_place_in_another_state(geo):
     """The nightly replay's warning on 7810 every night, and 12359 once the AVIA sheet was
     filed QLD. Rhodes NSW is stocked (Meriton's Rhodes apartments)."""
     stocked = {("rhodes", "NSW")}
-    assert sr.text_locality_elsewhere(_LINE_7810, "QLD", geo, stocked) is None
-    assert sr.text_locality_elsewhere(_LINE_12359, "QLD", geo, stocked) is None
+    # Asked as the replay asks it: with the row's suburb column and its page (round 2).
+    assert sr.text_locality_elsewhere(_LINE_7810, "QLD", geo, stocked, suburb="GLENVALE",
+                                      page="QLD") is None
+    assert sr.text_locality_elsewhere(_LINE_12359, "QLD", geo, stocked, suburb="Ripley",
+                                      page="QLD") is None
     # the check can still fail: the same word written as a place in the same row
     placed = _LINE_7810 + " Display home: Rhodes"
-    assert sr.text_locality_elsewhere(placed, "QLD", geo, stocked) == ("Rhodes", "NSW")
+    assert sr.text_locality_elsewhere(placed, "QLD", geo, stocked, suburb="GLENVALE",
+                                      page="QLD") == ("Rhodes", "NSW")
 
 
 def test_a_design_name_is_what_a_suburb_state_can_be_seen_to_rest_on(geo):
