@@ -348,9 +348,9 @@ def test_a_state_that_rested_on_a_design_is_re_resolved(tmp_path, monkeypatch, c
     assert after[12348][:2] == ("VIC", "listing text")
     out = capsys.readouterr().out
     line = next(ln for ln in out.splitlines() if "id 14913" in ln)
-    assert "NSW -> -" in line and "guess now 'none'" in line and "Verona SG" in line
+    assert "NSW -> -" in line and "suburb now 'none'" in line and "Verona SG" in line
     assert _enrich(monkeypatch, db) == 0
-    assert "no longer makes: 0" in capsys.readouterr().out
+    assert "the row no longer gives: 0" in capsys.readouterr().out
 
 
 def test_a_guess_that_still_names_a_place_in_the_state_is_left_alone(tmp_path, monkeypatch):

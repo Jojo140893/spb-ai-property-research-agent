@@ -147,14 +147,81 @@ def postcode_is_lot_number(postcode: Any, lot_number: Any, row_text: Any = None,
     matches on that count -- there is nothing to compare.
 
     `row_text`: the row's own line(s). A postcode that is the number OPENING one of them is
-    the lot as well, with or without a lot number to compare (postcode_opens_the_row).
+    the lot as well, with or without a lot number to compare (postcode_opens_the_row). So is
+    one they write only as part of another number or as a land area
+    (postcode_written_as_another_number): no postcode at all, whatever the name says.
     """
     pc = re.sub(r"\D", "", str(postcode or ""))
     if not pc:
         return False
     if _number(pc) in {_number(n) for n in re.findall(r"\d+", str(lot_number or ""))}:
         return True
-    return postcode_opens_the_row(pc, row_text, geo)
+    return (postcode_opens_the_row(pc, row_text, geo)
+            or postcode_written_as_another_number(pc, row_text, geo))
+
+
+# --- a postcode the row writes only as some other number ------------------------------
+#
+# Review, 29 Sep 2026. With the lot numbers out of the way, two stocklists were still
+# national on one vote each, and both votes were a four-digit number read as a postcode:
+#   * APLACE 12153, "Yarrawonga 2077 Buloke Circuit Glanmire Park Titled 2064 39 x 54
+#     $390,000" -- 2064 is the land area, before the lot's 39 x 54 m. Yarrawonga is in NSW
+#     and VIC, 2064 is a NSW code, so own_state proved NSW "suburb + postcode", and the VIC
+#     sheet's page state was void for its 56 other unsettled rows;
+#   * six Mornington storage units, "... Cold Shell 03-7076 71,550.00 ..." -- TAS 7076,
+#     Mornington being in TAS and VIC.
+# Measured on the 29 Sep copy: 21 stored postcodes appear in their row's text only inside
+# a longer number or as an area -- "2730.00", "2066.91m2", "$2576.1 per year", "3815.58",
+# the "3653" of an Adobe link's "30d49294- 3653-47da-...", "03-7076", "2064 39 x 54" --
+# and not one is a postcode; the other 6,774 are written plainly at least once. A stored
+# postcode the text does not contain at all is kept: nothing says it is anything else.
+_JOINED_BEFORE = re.compile(r"\d[-.]\s?$")
+_JOINED_AFTER = re.compile(r"[-.]\d")
+_AREA_AFTER = re.compile(r"\s*(?:m2|m\u00b2|sqm|sq\b)|\s+\d+(?:\.\d+)?\s*[xX]\s*\d",
+                         re.IGNORECASE)
+
+
+def postcode_written_as_another_number(postcode: Any, row_text: Any, geo: Any = None) -> bool:
+    """True when the row's own text writes the postcode's number, and every time only as
+    part of a longer number ("2730.00", "03-7076", "3653-47da") or as a land area ("2064
+    39 x 54", "2066.91m2").
+
+    Before a frontage and depth the number is a postcode after all when a locality of its
+    own state is written just before it: "Tarneit 3029 12.5 x 28".
+    """
+    pc = re.sub(r"\D", "", str(postcode or ""))
+    if len(pc) != 4:
+        return False
+    texts = row_text if isinstance(row_text, (list, tuple)) else [row_text]
+    seen = False
+    for text in texts:
+        text = str(text or "")
+        for m in re.finditer(r"(?<![\d.])" + pc + r"(?!\d)", text):
+            seen = True
+            before, after = text[:m.start()], text[m.end():]
+            if _JOINED_BEFORE.search(before) or _JOINED_AFTER.match(after):
+                continue
+            area = _AREA_AFTER.match(after)
+            if area and ("x" in area.group(0).lower()
+                         and _locality_of_state_ends(before, state_from_postcode(pc), geo)):
+                return False
+            if not area:
+                return False
+    return seen
+
+
+def _locality_of_state_ends(before: str, state: str, geo: Any) -> bool:
+    """True when `before` ends with a locality of `state` ("Lot 5 Tarneit")."""
+    geo = _gazetteer(geo)
+    words = re.findall(r"[A-Za-z][A-Za-z'\-]*", before[-60:])
+    if not state or geo is None or not words or not re.search(r"[A-Za-z]\W*$", before):
+        return False
+    if words[-1].upper() in VALID_STATES:                   # "Tarneit VIC 3029"
+        words = words[:-1]
+    for size in (3, 2, 1):
+        if len(words) >= size and state in _places(" ".join(words[-size:]), geo):
+            return True
+    return False
 
 
 # --- the number that opens the row is its lot, lot number or not ---------------------
@@ -181,7 +248,10 @@ def postcode_is_lot_number(postcode: Any, lot_number: Any, row_text: Any = None,
 # name of a street ("3064 Donnybrook Road" is a house on Donnybrook Road).
 _OPENING_NUMBER = re.compile(r"^[^\w$]*(\d+)(?![\d.,/])")
 # The run of words straight after that number, up to a digit, a comma or other punctuation.
-_WORDS_AFTER = re.compile(r"\s+([A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){0,3})")
+# A dash, colon or bar may stand between the two (review, 29 Sep 2026: "3978 - Clyde
+# North" is Clyde North's postcode written first, and needing a bare space dropped it).
+_WORDS_AFTER = re.compile(r"(?:\s*[-:|\u2013\u2014]\s*|\s+)"
+                          r"([A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){0,3})")
 
 
 def postcode_opens_the_row(postcode: Any, row_text: Any, geo: Any = None) -> bool:
@@ -222,7 +292,12 @@ def _gazetteer(geo: Any) -> Any:
 
 
 def _locality_of_state_follows(rest: str, state: str, geo: Any) -> bool:
-    """True when `rest` opens with a locality of `state` that is not a street's name."""
+    """True when `rest` opens with a locality of `state` that is not a street's name.
+
+    The LONGEST place name there decides, whatever its state (review, 29 Sep 2026): "2765
+    Clyde North" opens with Clyde North, VIC only, so 2765 -- a NSW code -- is the lot,
+    although Clyde alone is a NSW place too; the same for "2560 Springfield Lakes" (QLD).
+    """
     geo = _gazetteer(geo)
     if not state or geo is None:
         return False
@@ -235,10 +310,11 @@ def _locality_of_state_follows(rest: str, state: str, geo: Any) -> bool:
         name = " ".join(words[:size])
         nxt = words[size] if len(words) > size else ""
         try:
-            if geo.locate(name, state) and not (nxt and _STREET_TYPE.fullmatch(nxt)):
-                return True
+            states = geo.states_for_suburb(name)
         except Exception:                                             # noqa: BLE001
             return False
+        if states:
+            return state in states and not (nxt and _STREET_TYPE.fullmatch(nxt))
     return False
 
 
@@ -361,6 +437,20 @@ def locality_tail_in_cell(cell: Any, geo: Any) -> str:
     return ""
 
 
+def suburb_cell_is_the_street(suburb: Any, texts: Any) -> bool:
+    """True when the suburb cell ends in a street type and the row's own label or line
+    writes it straight after a house number: "21 The Grove" is a street, whatever The
+    Grove is in the gazetteer. Measured on the 29 Sep copy: 6 rows prove a state from such
+    a cell, all six Boondall (QLD) lots proved NSW by 'The Grove'; the 124 other cells that
+    end in a street type are never written after a number, and are left alone."""
+    from geo import _STREET_TYPE
+    words = str(suburb or "").split()
+    if not words or not _STREET_TYPE.fullmatch(words[-1]):
+        return False
+    pattern = r"\b\d+[A-Za-z]?\s+" + r"\s+".join(map(re.escape, words)) + r"\b"
+    return any(re.search(pattern, str(t or ""), re.IGNORECASE) for t in texts)
+
+
 def own_state(postcode: Any = None, suburb: Any = "", estate: Any = "",
               address: Any = "", geo: Any = None, lot_number: Any = None,
               row_text: Any = None) -> Tuple[str, str]:
@@ -399,7 +489,14 @@ def own_state(postcode: Any = None, suburb: Any = "", estate: Any = "",
         # and 'The Grove' answers Grove TAS. Measured over the live table, allowing the
         # estate cell here manufactured 31 false proofs — and a false proof is worse than
         # no proof, because this is the standard used to overrule a whole file's hint.
-        loc = locality_tail_in_cell(suburb, geo)
+        #
+        # Nor a cell that is the row's own STREET (review, 29 Sep 2026): Creation Homes'
+        # QLD sheet has "21 The Grove Boondall Rosewood 215 ..." with 'The Grove' in the
+        # suburb column, and The Grove is a NSW locality -- the one NSW vote that kept that
+        # Queensland sheet national, its page state void for 61 rows.
+        if not suburb_cell_is_the_street(suburb, (address,) + tuple(
+                row_text if isinstance(row_text, (list, tuple)) else (row_text,))):
+            loc = locality_tail_in_cell(suburb, geo)
     if loc and geo is not None:
         try:
             cand = [c for c in geo.states_for_suburb(loc) if c in VALID_STATES]
@@ -543,28 +640,41 @@ _NOT_A_LOCALITY_AFTER = re.compile(
     r"^(?:point|park|springs|estate|heights|homes|group|house|range|river|lakes?|green|"
     r"rise|views?|hills?|waters|shores|quarter|collection|coast|single|double|storey|"
     r"custom|facade|sg|dg|\d+(?:\.\d+)?)$", re.IGNORECASE)
-# The design half of that list, plus the facade styles: a word that, straight after a name,
-# is the design's own garage, storey or facade variant -- "Verona SG Corner", "Vesper DG",
-# "HARWOOD SINGLE", "Magnolia Traditional", "Somerset Coastal". Added 29 Sep 2026: in the
-# 29 Sep copy every place name followed by one of these words is a house design (Vesper
-# 54, Verona 43, Harwood 23, Magnolia 26, Chelsea 24, Eden 19, Somerset 19, Concord 15 ...,
-# Kuraby 5 -- a Brisbane suburb on a NSW list). "Dual" is NOT one of them: "Weston
-# Available 14 Weston Dual Living ..." is G Developments' estate named after its suburb.
-# Also AVIA's facades that are no place's name, typos included (its others -- Paddington,
-# Yamba, Newstead -- are places, and 'followed' reads them): once AVIA's sheet stopped
-# being national, "91 Stage 2 354m2 ... Rhodes Fortitude 180m2" (12359) was filed QLD and
-# the replay read Rhodes, NSW, in it. Rhodes Fortitude 5, Sorrento Carolina 4, Sorrento
-# Fortitude 2 in the 29 Sep copy, every one a design.
+# A word that, straight after a name, is a house design's own garage or facade variant --
+# "Verona SG Corner", "Vesper DG", "Magnolia Traditional", "Somerset Coastal", "Balwyn
+# Trad" -- so the name is the design's. Added 29 Sep 2026, and measured over every row of
+# the 29 Sep copy: every place name followed by one of these words is a design (Vesper 82,
+# Verona 83, Magnolia 45, Chelsea 30, Somerset 29, Roseberry 19, Moogerah 12, Kuraby 10 --
+# a Brisbane suburb on a NSW list -- Rhodes 10 ...), and none is the row's suburb column.
+# The typos are the data's own: "Magnolia Tradtional" (12736, a sibling of the Magnolia
+# rows this refuses) and "Verona SGCormer" (17430). Also AVIA's facades that are no
+# place's name: once AVIA's sheet stopped being national, "91 Stage 2 354m2 ... Rhodes
+# Fortitude 180m2" (12359) was filed QLD and the replay read Rhodes, NSW, in it. (Its
+# other facades -- Paddington, Yamba, Newstead -- are places, and 'followed' reads them.)
+# "Dual" is NOT one of these: "Weston Available 14 Weston Dual Living ..." is G
+# Developments' estate named after its suburb.
 _DESIGN_VARIANT_AFTER = re.compile(
-    r"^(?:single|double|storey|custom|facade|sg|dg|traditional|modern|coastal|"
-    r"contemporary|hamptons|classic|fortitude|fortitdue|carolina|caolina|lennox|"
+    r"^(?:facade|sg|dg|sgcorner|sgcormer|dgcorner|traditional|tradtional|trad|modern|"
+    r"coastal|contemporary|hamptons|classic|fortitude|fortitdue|carolina|caolina|lennox|"
     r"padington)$", re.IGNORECASE)
+# A word that, straight after a name, is the PRODUCT -- storey count or a custom design --
+# which follows a design and a suburb alike: "HARWOOD SINGLE", "CONCORD SINGLE" (designs),
+# but "Lot 50, Springvale Double" (11 Hattan rows), "Crangan Bay ... 701 Crangan Bay Custom
+# Dual Occ" and "Available Clyde North Double Storey" (suburbs). Review, 29 Sep 2026: the
+# first cut refused these as designs, which dropped Springvale off 11 rows and, worse, let
+# a shorter name inside the refused one through ("Fraser Rise Double Storey" -> Fraser,
+# ACT). So they DEMOTE the name in the blank-suburb guess instead of refusing it, and
+# design_the_state_rests_on does not count them.
+_PRODUCT_AFTER = re.compile(r"^(?:single|double|storey|custom)$", re.IGNORECASE)
 _ESTATE_WORD = re.compile(r"^estates?$", re.IGNORECASE)
 # The first word of a region or a longer name, whose last word alone is some other place:
 # "SOUTHERN HIGHLANDS" is not Highlands VIC, "LAKE MACQUARIE" is not Macquarie TAS.
 _NAME_HEAD = re.compile(r"^(?:north|south|east|west|northern|southern|eastern|western|"
                         r"central|upper|lower|greater|inner|outer|lake|mount|mt|port|"
                         r"cape)$", re.IGNORECASE)
+# The heads of those that only ever begin a region: "SOUTHERN HIGHLANDS", "LAKE MACQUARIE".
+_REGION_HEAD = re.compile(r"^(?:northern|southern|eastern|western|central|upper|lower|"
+                          r"greater|inner|outer|lake)$", re.IGNORECASE)
 _STATE_CODE = r"(?:VIC|NSW|QLD|SA|WA|NT|ACT|TAS)"
 
 
@@ -613,11 +723,14 @@ def _tokens(text: Any) -> Tuple[List[str], set]:
 # which enrich's overrule and search_regressions.locality_check both call -- so the three
 # can never disagree about what a word in a row is.
 def not_the_locality_here(toks: List[str], i: int, size: int, geo: Any, estate: Any = "",
-                          breaks: Any = (), state: Any = "") -> str:
+                          breaks: Any = (), state: Any = "", suburb: Any = "") -> str:
     """Why the place name toks[i:i+size] is not the lot's locality in this row, or ''.
 
-    'design'   the next word is a design's garage, storey or facade variant ("Verona SG",
+    'design'   the next word is a design's garage or facade variant ("Verona SG",
                "Magnolia Traditional");
+    'product'  the next word is a storey count or "Custom" ("HARWOOD SINGLE", but also
+               "Lot 50, Springvale Double"), which follows a design and a suburb alike --
+               a doubt, not a refusal (see _PRODUCT_AFTER);
     'followed' straight after it, with nothing but a space between, comes another place
                name that does not extend it: a house design and its facade ("Rhodes
                Paddington"), an estate and its suburb ("Windermere Mambourin", "The Grove
@@ -632,6 +745,21 @@ def not_the_locality_here(toks: List[str], i: int, size: int, geo: Any, estate: 
                IS the row's estate name. An estate is often named after its own suburb
                ("Wadalba Estate" in Wadalba), so the guess DEMOTES this rather than refuse it.
 
+    'followed' reads two names side by side, and the same layout is just as often a SUBURB
+    and then the word that caused a misfile -- its estate, design or street (review, 29 Sep
+    2026: the first cut blinded the row-text check to exactly that). So a name is never
+    'followed' when:
+      * the name after it repeats it: "Mambourin Mambourin Green", "Fraser Rise Fraser Rise"
+        -- a suburb and the estate named after it, or a doubled cell. A design and its
+        facade are never one word twice;
+      * it is written straight after a street type: "63 Oxford Street Joyner Banksia 183",
+        "Trawler Walk Tarneit The Grove", "19 The Grove Boondall Rosewood 215". A name
+        after the street is the address's locality, the fact geo.find_suburb_in_text
+        leans on the other way round;
+      * `suburb` -- the row's suburb column, the word its state rests on -- is this name or
+        the name after it: "Tarneit The Grove" filed NSW on a suburb column 'The Grove' is
+        the misfile itself, not a design and its facade.
+
     `toks`/`breaks` are _tokens' split of the row, numbers included, so a number between
     two names ("Tarneit 300 ... Enzo") keeps them apart, and so does punctuation.
     """
@@ -640,7 +768,11 @@ def not_the_locality_here(toks: List[str], i: int, size: int, geo: Any, estate: 
     nxt = toks[j] if j < len(toks) and j not in breaks else ""
     if nxt and _DESIGN_VARIANT_AFTER.match(nxt):
         return "design"
-    if nxt and _place_follows(toks, j, name, geo, breaks, state):
+    if nxt and _PRODUCT_AFTER.match(nxt):
+        return "product"
+    column = " ".join(str(suburb or "").lower().split())
+    if (nxt and name.lower() != column and not _after_a_street(toks, i)
+            and _place_follows(toks, j, name, geo, breaks, state, column)):
         return "followed"
     if nxt and _ESTATE_WORD.match(nxt):
         return "estate"
@@ -650,18 +782,30 @@ def not_the_locality_here(toks: List[str], i: int, size: int, geo: Any, estate: 
     return ""
 
 
+def _after_a_street(toks: List[str], i: int) -> bool:
+    """True when toks[i] comes straight after a street type ("Oxford Street Joyner")."""
+    from geo import _STREET_TYPE
+    return i > 0 and bool(_STREET_TYPE.fullmatch(toks[i - 1]))
+
+
 def _place_follows(toks: List[str], j: int, name: str, geo: Any, breaks: Any = (),
-                   state: Any = "") -> bool:
+                   state: Any = "", column: str = "") -> bool:
     """True when toks[j:] opens with a place name, standing on its own, that does not
-    extend `name` (see not_the_locality_here, 'followed')."""
+    extend `name`, repeat it or be the row's suburb `column` (not_the_locality_here,
+    'followed')."""
     from geo import _STREET_TYPE
     st = normalise_state(state)
+    own = [t.lower() for t in name.split()]
+    if [t.lower() for t in toks[j:j + len(own)]] == own:
+        return False
     for size in (3, 2, 1):
         span = toks[j:j + size]
         if (len(span) < size or any(t[0].isdigit() or len(t) < 2 for t in span)
                 or any(k in breaks for k in range(j + 1, j + size))):
             continue
         after = " ".join(span)
+        if column and after.lower() == column:
+            return False
         states = _places(after, geo)
         if not states or (st and st not in states) or _places(name + " " + after, geo):
             continue
@@ -671,6 +815,38 @@ def _place_follows(toks: List[str], j: int, name: str, geo: Any, breaks: Any = (
             continue
         return True
     return False
+
+
+def _place_spans(toks: List[str], breaks: Any, geo: Any) -> Dict[Tuple[int, int], List[str]]:
+    """{(i, size): states} for every 1-3 word span of the row that is a place name: no
+    number or one-letter word in it and no punctuation inside it."""
+    spans: Dict[Tuple[int, int], List[str]] = {}
+    for size in (3, 2, 1):
+        for i in range(len(toks) - size + 1):
+            span = toks[i:i + size]
+            if (any(t[0].isdigit() or len(t) < 2 for t in span)
+                    or any(k in breaks for k in range(i + 1, i + size))):
+                continue
+            states = _places(" ".join(span), geo)
+            if states:
+                spans[(i, size)] = states
+    return spans
+
+
+def _inside_a_longer_place(spans: Any, i: int, size: int, state: Any = "") -> bool:
+    """True when toks[i:i+size] lies inside a longer place name the row writes -- one that
+    is not a place of `state`, when that is given.
+
+    Review, 29 Sep 2026: "Fraser Rise Double Storey" with Fraser Rise doubted gave Fraser,
+    ACT, and "Marsden Park Single Storey" Marsden, QLD -- and "Clyde North" off a NSW page
+    gave Clyde, NSW, the state preferred before the longer name was ever looked at (as
+    geo.find_suburb_in_text always did). The row wrote the longer name; a name inside it
+    is not a second place, whatever is decided about the longer one. `state` is for a
+    caller that asks only which STATE the text names (text_locality_elsewhere): Cranbourne
+    inside "Cranbourne East" names Victoria as surely as the whole name does.
+    """
+    return any(s > size and i2 <= i and i + size <= i2 + s
+               and not (state and state in spans[(i2, s)]) for (i2, s) in spans)
 
 
 def _places(name: str, geo: Any) -> List[str]:
@@ -701,86 +877,127 @@ def suburb_in_row_text(text: Any, geo: Any, prefer: Any = "",
       2. Otherwise every 1-3 word span that is a locality: those of `prefer` first (the
          page's state -- never one enrich wrote), then every state, longest span first and
          then left to right.
-    Refused: 'design' and 'followed' (not_the_locality_here), a month ("March 2027") and a
-    bare street word ("Grove"). Demoted to a last resort, as find_suburb_in_text demotes a
-    street's name: 'estate' -- with every shorter name inside it, so "Innes Park Estate"
-    cannot hand the lot to Innes -- and, after it, a name followed by a street type: an
-    estate is often named after its suburb, a name before "Rd" is a street's ("114 Neale
-    Rd, Parkside", estate Parkside, is in Parkside). None when nothing qualifies.
+    Refused: 'design' and 'followed' (not_the_locality_here), a month ("March 2027"), a
+    bare street word ("Grove") and a name inside a longer place name the row writes
+    (_inside_a_longer_place: not Fraser out of "Fraser Rise", not Clyde out of "Clyde
+    North"). Demoted to a last resort, as find_suburb_in_text demotes a street's name, best
+    first: 'product' ("Lot 50, Springvale Double" -- when nothing else in the row is a
+    place, the name before the storey count is the lot's suburb); 'estate' -- with every
+    shorter name inside it, so "Innes Park Estate" cannot hand the lot to Innes; and a name
+    followed by a street type: an estate is often named after its suburb, a name before
+    "Rd" is a street's ("114 Neale Rd, Parkside", estate Parkside, is in Parkside). None
+    when nothing qualifies.
     """
     if geo is None or not text:
         return None
-    from geo import _STREET_TYPE
 
     raw = str(text)
-    # last resorts, best first: a name the row's estate shares, then a street's name
-    fallback: Dict[str, List[str]] = {"estate": [], "street": []}
+    # last resorts, best first
+    fallback: Dict[str, List[str]] = {"product": [], "estate": [], "street": []}
 
-    def verdict(toks, breaks, i, size, state="", estate_words=None):
-        """'take', 'refuse', or the demotion 'estate' / 'street', for toks[i:i+size]."""
-        span = toks[i:i + size]
-        if _MONTH_WORD.match(span[0]) or (size == 1 and _STREET_TYPE.fullmatch(span[0])):
-            return "refuse"
-        why = not_the_locality_here(toks, i, size, geo, estate, breaks, state)
-        if why in ("design", "followed"):
-            return "refuse"
-        j = i + size
-        if why == "estate" or (estate_words and estate_words & set(range(i, j))):
-            if estate_words is not None:
-                estate_words.update(range(i, j))
-            return "estate"
-        nxt = toks[j] if j < len(toks) and j not in breaks else ""
-        if nxt and _STREET_TYPE.fullmatch(nxt):
-            return "street"
-        return "take"
-
-    # 1. the last part of an "X, Locality" label. A comma straight before a digit is a
-    # thousands separator ("$1,084,400"), not an address comma.
-    parts = [p.strip() for p in re.split(r",(?!\d)", raw)]
-    parts = [p for p in parts if p and not re.fullmatch(
-        r"[\s\d]*|" + _STATE_CODE + r"(?:\s+\d{4})?", p)]
-    if len(parts) > 1 and not _ADMIN_AREA.search(parts[-1]):
-        # "Marsden Park (Lot 1) (Block B)", "COLAC 3250", "Tarneit VIC 3029" -> the name
-        last = re.sub(r"\s*\([^)]*\)", " ", parts[-1])
-        last = re.sub(r"(?:\s+" + _STATE_CODE + r")?(?:\s+\d{4})?\s*$", "", last).strip()
-        toks, breaks = _tokens(last)
-        for start in range(len(toks)):
-            span = toks[start:]
-            if (len(span) > 3 or any(t[0].isdigit() or len(t) < 2 for t in span)
-                    or (start and _NAME_HEAD.match(toks[start - 1]))):
-                continue
-            name = " ".join(span)
-            if not _places(name, geo):
-                continue
-            how = verdict(toks, breaks, start, len(span))
-            if how == "take":
-                return name.title()
-            if how in fallback:
-                fallback[how].append(name.title())
+    # 1. the last part of an "X, Locality" label
+    for name, how in _label_tail_verdicts(raw, geo, estate):
+        if how == "take":
+            return name.title()
+        if how in fallback:
+            fallback[how].append(name.title())
 
     # 2. every span of the whole text
     toks, breaks = _tokens(raw)
+    spans = _place_spans(toks, breaks, geo)
     first = normalise_state(prefer)
     for only in ([first] if first else []) + [""]:
         estate_words: set = set()
         for size in (3, 2, 1):
             for i in range(len(toks) - size + 1):
-                span = toks[i:i + size]
-                if (any(t[0].isdigit() or len(t) < 2 for t in span)
-                        or any(k in breaks for k in range(i + 1, i + size))):
-                    continue
-                name = " ".join(span)
-                states = _places(name, geo)
+                states = spans.get((i, size))
                 if not states or (only and only not in states):
                     continue
-                how = verdict(toks, breaks, i, size, only, estate_words)
+                if _inside_a_longer_place(spans, i, size):
+                    continue
+                # The tail of a region's name, as step 1 refuses it: "129 Millfield Rise,
+                # SOUTHERN HIGHLANDS" is not Highlands, VIC, "3 Watson Road, LAKE
+                # MACQUARIE" not Macquarie (9612-9616, 29 Sep 2026). Not after North, South
+                # and the like, which also start a development's name: "stage 2 North
+                # Flemington Racecourse" is a Flemington lot (10243, live).
+                if i and i not in breaks and _REGION_HEAD.match(toks[i - 1]):
+                    continue
+                name = " ".join(toks[i:i + size])
+                how = _verdict(toks, breaks, i, size, geo, estate, only, estate_words)
                 if how == "take":
                     return name.title()
                 if how in fallback:
                     fallback[how].append(name.title())
-    for kind in ("estate", "street"):
+    for kind in ("product", "estate", "street"):
         if fallback[kind]:
             return fallback[kind][0]
+    return None
+
+
+def _verdict(toks: List[str], breaks: Any, i: int, size: int, geo: Any, estate: Any = "",
+             state: Any = "", estate_words: Any = None) -> str:
+    """suburb_in_row_text's reading of the place name toks[i:i+size]: 'take', 'refuse', or
+    the demotion 'product' / 'estate' / 'street'."""
+    from geo import _STREET_TYPE
+    span = toks[i:i + size]
+    if _MONTH_WORD.match(span[0]) or (size == 1 and _STREET_TYPE.fullmatch(span[0])):
+        return "refuse"
+    why = not_the_locality_here(toks, i, size, geo, estate, breaks, state)
+    if why in ("design", "followed"):
+        return "refuse"
+    if why == "product":
+        return "product"
+    j = i + size
+    nxt = toks[j] if j < len(toks) and j not in breaks else ""
+    if why == "estate" or (estate_words and estate_words & set(range(i, j))):
+        if estate_words is not None:
+            estate_words.update(range(i, j))
+        return "estate"
+    if nxt and _STREET_TYPE.fullmatch(nxt):
+        return "street"
+    return "take"
+
+
+def _label_tail_verdicts(raw: str, geo: Any, estate: Any = "") -> List[Tuple[str, str]]:
+    """[(name, verdict)] for the place names that END the last part of an "X, Locality"
+    label, longest first -- step 1 of suburb_in_row_text. Empty when the text has no such
+    part: one part only, or a last part that is a council or region."""
+    # A comma straight before a digit is a thousands separator ("$1,084,400"), not an
+    # address comma.
+    parts = [p.strip() for p in re.split(r",(?!\d)", raw)]
+    parts = [p for p in parts if p and not re.fullmatch(
+        r"[\s\d]*|" + _STATE_CODE + r"(?:\s+\d{4})?", p)]
+    if len(parts) < 2 or _ADMIN_AREA.search(parts[-1]):
+        return []
+    # "Marsden Park (Lot 1) (Block B)", "COLAC 3250", "Tarneit VIC 3029" -> the name
+    last = re.sub(r"\s*\([^)]*\)", " ", parts[-1])
+    last = re.sub(r"(?:\s+" + _STATE_CODE + r")?(?:\s+\d{4})?\s*$", "", last).strip()
+    toks, breaks = _tokens(last)
+    out: List[Tuple[str, str]] = []
+    for start in range(len(toks)):
+        span = toks[start:]
+        if (len(span) > 3 or any(t[0].isdigit() or len(t) < 2 for t in span)
+                or (start and _NAME_HEAD.match(toks[start - 1]))):
+            continue
+        name = " ".join(span)
+        if _places(name, geo):
+            out.append((name, _verdict(toks, breaks, start, len(span), geo, estate)))
+    return out
+
+
+def label_locality(text: Any, geo: Any, estate: Any = "") -> Optional[str]:
+    """The locality a label states in its "X, Locality" position ("Lot 27102, Windermere
+    Mambourin" -> Mambourin), or None -- the name step 1 of suburb_in_row_text takes.
+
+    Review, 29 Sep 2026: this is what lets enrich's row-text check look again at a state
+    the page won against the row's own label (enrich_buildings.page_overrode_the_label)
+    without also looking again at every row whose guess is a bare word from its line.
+    """
+    if geo is None or not text:
+        return None
+    for name, how in _label_tail_verdicts(str(text), geo, estate):
+        if how == "take":
+            return name.title()
     return None
 
 
@@ -798,8 +1015,9 @@ def design_the_state_rests_on(row_text: Any, suburb: Any, state: Any,
       * no suburb: every name in the text that is a place of `state` -- the ones a guess
         could have used;
     and a name is reported when it appears, and every appearance is followed by a design's
-    garage, storey or facade word (not_the_locality_here's 'design'). A name also written
-    any other way in the row is its locality as far as the row can say. NOT 'followed':
+    garage or facade word (not_the_locality_here's 'design'). A name also written any other
+    way in the row is its locality as far as the row can say. Not a storey count
+    ('product'): "Available Tarneit Double" is a Tarneit lot. NOT 'followed':
     two place names side by side are a design and its facade ("Rhodes Paddington") but
     also a suburb and its design -- Creation Homes' QLD list reads "4 Pilny Street Camira
     Banksia 183 - Classic" -- and counting them put 40 correct rows on this WARN in the
@@ -814,16 +1032,12 @@ def design_the_state_rests_on(row_text: Any, suburb: Any, state: Any,
     if str(suburb or "").strip():
         names = [str(suburb).strip()]
     elif stored:
-        for size in (3, 2, 1):
-            for i in range(len(toks) - size + 1):
-                span = toks[i:i + size]
-                if (any(t[0].isdigit() or len(t) < 2 for t in span)
-                        or any(k in breaks for k in range(i + 1, i + size))):
-                    continue
-                name = " ".join(span)
-                if stored in _places(name, geo) and name.lower() not in \
-                        [n.lower() for n in names]:
-                    names.append(name)
+        spans = _place_spans(toks, breaks, geo)
+        for (i, size), states in spans.items():
+            name = " ".join(toks[i:i + size])
+            if (stored in states and not _inside_a_longer_place(spans, i, size)
+                    and name.lower() not in [n.lower() for n in names]):
+                names.append(name)
     for name in names:
         want = [w.lower() for w in _TEXT_TOKEN.findall(name)]
         if not want:
@@ -842,8 +1056,8 @@ def design_the_state_rests_on(row_text: Any, suburb: Any, state: Any,
     return None
 
 
-def text_locality_elsewhere(row_text: Any, state: Any, geo: Any,
-                            stocked: Any, estate: Any = "") -> Optional[Tuple[str, str]]:
+def text_locality_elsewhere(row_text: Any, state: Any, geo: Any, stocked: Any,
+                            estate: Any = "", suburb: Any = "") -> Optional[Tuple[str, str]]:
     """(locality, other_state) when the row's own text names a place in ANOTHER state.
 
     Only a claim strong enough to overrule a state that rests on a suburb match alone. A
@@ -861,7 +1075,15 @@ def text_locality_elsewhere(row_text: Any, state: Any, geo: Any,
         estate word;
       * the row does not show it to be a design or an estate (not_the_locality_here):
         "Verona SG", "Rhodes Paddington" (design, facade), "Windermere Mambourin" (estate,
-        suburb) -- the rule enrich's blank-suburb guess uses too (29 Sep 2026);
+        suburb) -- the rule enrich's blank-suburb guess uses too (29 Sep 2026). Read with
+        the row's own `state` and `suburb` column, so a name followed by another place is
+        let go only when that place could be the lot's locality in the state it is filed
+        in, and is not the very suburb the state rests on -- unless `stocked` has that
+        suburb in that state: "Rhodes Paddington" filed QLD is a design and its facade,
+        "Tarneit The Grove" filed NSW on the suburb 'The Grove' is the misfile, "Oaklands
+        Bonnie Brook" filed VIC on a stocked 'Bonnie Brook' is an estate and its suburb;
+      * it does not lie inside a longer place name of another state that the row writes
+        (_inside_a_longer_place): not Fraser, ACT, out of "Fraser Rise";
       * `stocked` holds (locality lower-case, that state): the catalogue has live rows
         filed under that locality in that state, so the place is where this kind of stock
         actually is rather than a gazetteer coincidence.
@@ -876,6 +1098,14 @@ def text_locality_elsewhere(row_text: Any, state: Any, geo: Any,
     own_estate = _estate_key(estate)
     stored = normalise_state(state)
     toks, breaks = _tokens(row_text)
+    spans = _place_spans(toks, breaks, geo)
+    # The suburb column is the word under suspicion only while the catalogue does not stock
+    # it in the row's own state: "123 Oaklands Bonnie Brook" filed VIC on 'Bonnie Brook'
+    # reads, word for word, like "Tarneit The Grove" filed NSW on 'The Grove' -- but Bonnie
+    # Brook VIC is where Verv's stock is, so the name before it is its estate.
+    column = " ".join(str(suburb or "").split())
+    if column and (column.lower(), stored) in stocked:
+        column = ""
     for size in (3, 2, 1):
         for i in range(len(toks) - size + 1):
             span = toks[i:i + size]
@@ -898,7 +1128,9 @@ def text_locality_elsewhere(row_text: Any, state: Any, geo: Any,
                 continue
             if (cand.lower(), states[0]) not in stocked:
                 continue
-            if not_the_locality_here(toks, i, size, geo, estate, breaks):
+            if _inside_a_longer_place(spans, i, size, states[0]):
+                continue
+            if not_the_locality_here(toks, i, size, geo, estate, breaks, stored, column):
                 continue
             return cand, states[0]
     return None

@@ -1162,9 +1162,12 @@ def locality_check(catalogue, report):
     Same rule as enrich's, word for word (29 Sep 2026): text_locality_elsewhere now refuses
     a name the row shows to be a design or an estate (state_resolver.not_the_locality_here),
     which is what silences the nightly false alarm on AVIA 7810, "... Rhodes Paddington
-    180m2 ..." (design Rhodes, facade Paddington: not Rhodes NSW). Measured on the 29 Sep
-    copy: 0 warnings over every live row, and the 30 rows enrich has moved by this rule,
-    filed back in a wrong state, are still caught 24 times of 30 -- as many as before.
+    180m2 ..." (design Rhodes, facade Paddington: not Rhodes NSW). It is read with the
+    row's suburb column, as enrich reads it, so "Tarneit The Grove" filed NSW on 'The
+    Grove' is still caught. Measured on the 29 Sep copy: 0 warnings over every live row;
+    the 30 rows enrich has moved by this rule, filed back in a wrong state, are still
+    caught 24 times of 30, as before; and of every row whose suburb column is a one-state
+    locality its text names, re-filed in another state, as many are caught as before.
 
     And a second WARN for the misfile that rule cannot see (state_resolver.
     design_the_state_rests_on): the only place a suburb-match state can rest on is written
@@ -1193,12 +1196,15 @@ def locality_check(catalogue, report):
         if not str(row.get("state_source") or "").strip().lower().startswith("suburb"):
             return None
         try:
+            # The suburb the state rests on -- the database's column, as enrich reads it
+            # -- so a name beside that very word is not let go as 'followed'.
+            rec = catalogue.db_row(h) or {}
+            column = str(rec.get("suburb") or row.get("suburb") or "").strip()
             hit = state_resolver.text_locality_elsewhere(
                 catalogue.text(h), row.get("state"), geo, stocked,
-                estate=row.get("estate_name") or "")
+                estate=row.get("estate_name") or "", suburb=column)
             if hit:
                 return hit
-            rec = catalogue.db_row(h) or {}
             suburb = str(row.get("suburb") or rec.get("suburb") or "").strip()
             design = state_resolver.design_the_state_rests_on(
                 catalogue.text(h), suburb, row.get("state"), geo)

@@ -653,6 +653,27 @@ def test_a_design_and_its_facade_are_not_read_as_another_states_place():
         assert ("its own text names Rhodes (NSW)" in out) is warned, out
 
 
+def test_a_suburb_before_the_word_its_misfile_rests_on_still_warns():
+    """Review, 29 Sep 2026: the design-and-facade rule above first blinded this WARN to the
+    commonest misfile -- the real suburb, then the word the suburb column took ("Lot 5733
+    Trawler Walk Tarneit The Grove ...", filed NSW on 'The Grove'). locality_check reads
+    the row with its suburb column, as enrich does, and warns again; the same line filed
+    VIC on 'Tarneit' is quiet."""
+    line = ("Lot 5733 Trawler Walk Tarneit The Grove Q3 2027 162sqm $187,600 Split 3 2 2 "
+            "173.34sqm $437,400 $625,000")
+    tarneit = _row("v2:tarneit0", state="VIC", state_source="listing text", suburb="Tarneit",
+                   lot_address="Lot 12 Smith Street, Tarneit", price=600000.0)
+    for state, column, warned in (("NSW", "The Grove", True), ("VIC", "Tarneit", False)):
+        grove = _row("v2:grove000", state=state, state_source="suburb", suburb=column,
+                     lot_address="5733 Trawler Walk", lot_number="5733", price=625000.0)
+        db = [{"id": 22859, "content_hash": "v2:grove000", "date_checked": "15/09/2026",
+               "state": state, "state_source": "suburb", "suburb": column,
+               "source_text": line}]
+        report, out = _run_with_locality([grove, tarneit], db, [_card(grove)], state)
+        assert report.failures == 0, out
+        assert ("its own text names Tarneit (VIC)" in out) is warned, out
+
+
 def test_a_state_that_rests_on_a_design_name_warns():
     """Hattan 14913, filed NSW by 'suburb' on "Verona SG Corner" -- Verona the design, SG
     its single garage. No other state's place is in the line, so the text-locality WARN
