@@ -790,7 +790,13 @@ class Run:
                         and h not in self.warned_locality):
                     self.warned_locality.add(h)
                     hit = self.locality(h)
-                    if hit:
+                    if hit and len(hit) > 2 and hit[2] == "design":
+                        self.report.warn(where, "design: shortlisted %s is filed %s by %r, "
+                                                "and the only place it can rest on, %r, is "
+                                                "written in its own text as a house design"
+                                         % (name, row.get("state"), row.get("state_source"),
+                                            hit[0]))
+                    elif hit:
                         self.report.warn(where, "text: shortlisted %s is filed %s from its "
                                                 "suburb column (%s), but its own text names "
                                                 "%s (%s)" % (name, row.get("state"),
@@ -815,6 +821,11 @@ class Run:
         The postcode is compared with each NUMBER in the lot, not with all its digits run
         together (review, 28 Sep 2026): Geocon's lot "GRD-T2-601" is 2 and 601, and 2601
         is its real Canberra postcode, not its lot number.
+
+        And with the number that OPENS the row's own line or label (29 Sep 2026), lot
+        number stored or not: AVIA 2234, "2120 Stage 21 ...", lot_number empty, postcode
+        2120 -- a NSW state from a QLD lot's number. Stated here without the resolver's
+        exception for a line written postcode-first, which no stored row has.
         """
         if row is None or h in self.warned_lot_postcode:
             return
@@ -822,6 +833,10 @@ class Run:
         signals = [p.strip() for p in str(rec.get("state_source") or "").split("+")]
         postcode = re.sub(r"\D", "", str(rec.get("postcode") or "")).lstrip("0")
         lot = {n.lstrip("0") for n in re.findall(r"\d+", str(rec.get("lot_number") or ""))}
+        for line in (rec.get("source_text"), rec.get("lot_address")):
+            opening = re.match(r"^[^\w$]*(\d+)(?![\d.,/])", str(line or ""))
+            if opening:
+                lot.add(opening.group(1).lstrip("0"))
         if "postcode" not in signals or not postcode or postcode not in lot:
             return
         self.warned_lot_postcode.add(h)
@@ -1144,6 +1159,19 @@ def locality_check(catalogue, report):
     """14905's shape, as a WARN: filed in a state by its suburb column alone, with its own
     text naming a locality of one other state the catalogue stocks (state_resolver's rule).
 
+    Same rule as enrich's, word for word (29 Sep 2026): text_locality_elsewhere now refuses
+    a name the row shows to be a design or an estate (state_resolver.not_the_locality_here),
+    which is what silences the nightly false alarm on AVIA 7810, "... Rhodes Paddington
+    180m2 ..." (design Rhodes, facade Paddington: not Rhodes NSW). Measured on the 29 Sep
+    copy: 0 warnings over every live row, and the 30 rows enrich has moved by this rule,
+    filed back in a wrong state, are still caught 24 times of 30 -- as many as before.
+
+    And a second WARN for the misfile that rule cannot see (state_resolver.
+    design_the_state_rests_on): the only place a suburb-match state can rest on is written
+    in the row's own text as a house design -- Hattan 14913/14914, filed NSW on "Verona SG
+    Corner", where no other state's place is named at all. check() returns (name, None,
+    "design") for it.
+
     geo imports config, whose module-level mkdir the read-only bundle refuses: the caller
     imports config through _bootstrap first, as the endpoint does."""
     try:
@@ -1165,9 +1193,16 @@ def locality_check(catalogue, report):
         if not str(row.get("state_source") or "").strip().lower().startswith("suburb"):
             return None
         try:
-            return state_resolver.text_locality_elsewhere(
+            hit = state_resolver.text_locality_elsewhere(
                 catalogue.text(h), row.get("state"), geo, stocked,
                 estate=row.get("estate_name") or "")
+            if hit:
+                return hit
+            rec = catalogue.db_row(h) or {}
+            suburb = str(row.get("suburb") or rec.get("suburb") or "").strip()
+            design = state_resolver.design_the_state_rests_on(
+                catalogue.text(h), suburb, row.get("state"), geo)
+            return (design, None, "design") if design else None
         except Exception:                                             # noqa: BLE001
             return None
     return check

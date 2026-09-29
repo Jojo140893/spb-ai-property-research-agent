@@ -73,6 +73,26 @@ there -- 39 of them a number from another state's range, like 11847 "7608 Sugar 
 Cct, Aintree", VIC, postcode 7608 (a TAS number).
 Printed with a count line, id by id, for the same reason as above.
 
+THE NUMBER OPENING THE ROW IS ITS LOT TOO (29 Sep 2026), lot_number or not: AVIA 2234,
+"2120 Stage 21 ...", kept the postcode 2120 an older parser stored, proved NSW with it,
+and made AVIA's QLD sheet national. Both rules above take it (state_resolver.
+postcode_opens_the_row), and it is cleared off every live row the same way.
+
+A STATE THAT RESTED ON A GUESS THE GUESS NO LONGER MAKES IS RE-RESOLVED (29 Sep 2026).
+The suburb guessed for a row with a blank suburb column is state_resolver.
+suburb_in_row_text, which does not take the row's estate ("Round Mountain Estate"), the
+estate before the comma ("5629 The Grove, Tarneit") or a house design ("Verona SG"). A
+settled state whose signal names the suburb, on such a row, is re-resolved when tonight's
+guess is not a place in that state and the row does not prove it (rests_on_a_withdrawn_
+guess). Every such row is printed with its old and new state and signal and the words the
+guess reads now -- the record needed to undo one by hand.
+
+Measured over a copy of the 29 Sep nightly against origin/main's enrich: 828 rows change
+(194 live tonight, 169 of those in state), every one attributed; AVIA's, Silkwood's and
+Verv's sheets are no longer national (their 74 + 42 + 51 stateless live rows take the
+sheet's state), 27 settled states are re-resolved, 31 lot numbers leave the postcode
+column, and a second run writes nothing.
+
 KNOWN EDGE, left as it is: Hattan 5375-5377 and 8359 ("Available Clyde North Q3 2026
 Townhouse 3673 ... | Ceduna") carry the house design "Ceduna" -- a South Australian
 place -- in their suburb column. Their lot numbers 3673-3677 happen to be VIC postcodes,
@@ -97,7 +117,7 @@ from database import ResearchDatabase
 from geo import SuburbGeoIndex
 from state_resolver import (TEXT_LOCALITY_SOURCE, disagreement, file_is_national, own_state,
                             postcode_is_lot_number, resolve_state, state_from_postcode,
-                            text_locality_elsewhere)
+                            suburb_in_row_text, text_locality_elsewhere)
 
 STATE_RE = re.compile(r"\b(VIC|NSW|QLD|SA|WA|NT|ACT|TAS)\b", re.I)
 
@@ -132,7 +152,13 @@ def cites_a_postcode(signal) -> bool:
     return "postcode" in [p.strip() for p in str(signal or "").split("+")]
 
 
-def rests_on_its_lot_number(r) -> bool:
+def row_text(r) -> tuple:
+    """The row's own line and label, as state_resolver's `row_text` takes them."""
+    keys = r.keys()
+    return tuple(str(r[k] or "") for k in ("source_text", "lot_address") if k in keys)
+
+
+def rests_on_its_lot_number(r, geo=None) -> bool:
     """A stored state decided by a postcode that is the row's own lot number.
 
     Coleen, 28 Sep 2026: a QLD search offered two "Jubilee, QLD" lots that are the Jubilee
@@ -142,9 +168,55 @@ def rests_on_its_lot_number(r) -> bool:
     fixing state_resolver alone would never reach the rows already written -- the same
     trap as the Hudson rows the hint-only rule exists for. On the 28 Sep nightly 18 live
     rows are in this position and 12 are in the wrong state.
+
+    The lot counts whether or not the lot_number column holds it (29 Sep 2026): the number
+    opening the row's own line is its lot too ("2120 Stage 21 ..." -- AVIA 2234, whose
+    lot_number is empty). See state_resolver.postcode_opens_the_row.
     """
     return (cites_a_postcode(r["state_source"])
-            and postcode_is_lot_number(r["postcode"], r["lot_number"]))
+            and postcode_is_lot_number(r["postcode"], r["lot_number"], row_text(r), geo))
+
+
+# Signals whose state was decided with the row's SUBURB -- the column, or on a row with a
+# blank column the guess enrich makes from its label (suburb_in_row_text).
+_SUBURB_SIGNALS = ("suburb", "listing locality")
+
+
+def rests_on_a_withdrawn_guess(r, suburb, mine, from_column, geo) -> bool:
+    """A settled state that rested on a suburb GUESSED from the row's label, which the
+    guess made tonight no longer supports.
+
+    29 Sep 2026. Verv 11494 ("5629 The Grove, Tarneit", NSW by 'listing locality') and
+    Silkwood 11510 ("... New Beith Round Mountain Estate ...", NSW the same way) were
+    settled on a guess -- "The Grove", "Round Mountain" -- that the guess no longer makes
+    (it now reads Tarneit and New Beith, see state_resolver.suburb_in_row_text), and
+    Hattan 14913/14914 on "Verona", which it now refuses as a design. A settled state is
+    never looked at again, so fixing the guess alone would never have reached them: stale,
+    not wrong when written, and the refresh path is what has to change. So a state is
+    re-resolved when all of these hold:
+      * the suburb column is blank, so the only suburb the state can have used is a guess;
+      * its signal names the suburb ('suburb ...', 'listing locality ...');
+      * tonight's guess is not a locality of that state, and what the row proves tonight
+        (own_state) is not that state either.
+    A guess that still names a place in the stored state leaves it alone, which is what
+    keeps this from re-resolving every 'suburb' state -- the change that blanked 64 correct
+    ones (see the settled-state check in main()).
+    """
+    if from_column:
+        return False
+    parts = [p.strip() for p in str(r["state_source"] or "").split("+")]
+    if not any(p.startswith(_SUBURB_SIGNALS) for p in parts):
+        return False
+    stored = (r["state"] or "").strip().upper()
+    if mine == stored:
+        return False
+    if suburb:
+        try:
+            if stored in geo.states_for_suburb(suburb):
+                return False
+        except Exception:                                             # noqa: BLE001
+            return False
+    return True
 
 
 def state_from_filename(url: str) -> str:
@@ -216,9 +288,20 @@ def rests_on_a_suburb_match(signal, suburb_from_column: bool) -> bool:
     The same test is applied to a state being resolved now and to one already written, so
     a row lands on the same answer whichever way it reaches the check, and a second run
     has nothing left to change.
+
+    'e-agent page (conflicting signals)' counts too when the suburb was GUESSED (29 Sep
+    2026): then the page won only because the row's own label disagreed with it, and the
+    row's text is the very thing to check. The better guess is what made this necessary:
+    9700, "Lot 27102, Windermere Mambourin" off the QLD page, used to guess the estate
+    word Windermere, resolve 'suburb + e-agent page' QLD and be moved to VIC by the check;
+    it now guesses Mambourin, which disagrees with the page, and without this line would
+    stay QLD on the page. Measured on the 29 Sep copy: 58 rows not superseded hold such a
+    state, and the check moves none of them.
     """
     signal = (signal or "").strip()
-    return signal == "suburb" or (signal == "suburb + e-agent page" and not suburb_from_column)
+    return (signal == "suburb"
+            or (signal in ("suburb + e-agent page", "e-agent page (conflicting signals)")
+                and not suburb_from_column))
 
 
 def overrule_evidence(rows, geo):
@@ -320,6 +403,9 @@ def main(argv=None):
     # Every other live row whose postcode is its own lot number: postcode cleared, state
     # not touched (the resolver already ignores that number).
     lot_numbers_cleared: List[tuple] = []
+    # Settled states that rested on a guessed suburb tonight's guess no longer supports,
+    # each re-resolved (rests_on_a_withdrawn_guess).
+    withdrawn_guesses: List[tuple] = []
 
     # Constructing the database applies the column migration, so a newly declared field
     # (state_source) exists before the raw sqlite3 connection below tries to write it.
@@ -402,14 +488,37 @@ def main(argv=None):
             # hash field, which is why writing it is safe and writing this is not. What a
             # row's suburb should DISPLAY as is decided on the way out, by
             # suburb_quality.resolve.
-            found = geo.find_suburb_in_text(r["lot_address"] or "",
-                                            (r["state"] or "").strip().upper())
+            #
+            # THE GUESS ITSELF (29 Sep 2026) is state_resolver.suburb_in_row_text, not
+            # geo.find_suburb_in_text: that took the estate ("Round Mountain Estate"), the
+            # estate before the comma ("5629 The Grove, Tarneit") and the design ("Verona
+            # SG"), and it preferred the row's STORED state -- which a wrong guess had
+            # written on an earlier night, so the wrong guess preferred itself for good.
+            # The page's state is preferred instead; enrich never writes that.
+            found = suburb_in_row_text(r["lot_address"] or "", geo,
+                                       prefer=(r["source_state_hint"] or ""),
+                                       estate=r["estate_name"])
             if found:
                 suburb = found
         state, why = own_state(postcode=r["postcode"], suburb=suburb,
                                estate=r["estate_name"], address=r["lot_address"], geo=geo,
-                               lot_number=r["lot_number"])
+                               lot_number=r["lot_number"], row_text=row_text(r))
         proven[rid] = (suburb, state, why)
+        # EVERY row votes, superseded and stale ones included -- decided by measurement,
+        # 29 Sep 2026. Three sheets were national on one wrong vote each from an old row
+        # (AVIA 2234 last seen 28/09, Silkwood 11510 22/08, Verv 11494 03/09), so counting
+        # only live rows looked like the fix. It is not: an E-Agent PDF is a snapshot, and
+        # when a newer file lists the same lots its rows are superseded. Tallied over
+        # non-superseded rows only, 4 truly national PDFs stop being national -- Hudson's
+        # (NSW 67 / QLD 11 over all its rows) among them, which would stamp its Queensland
+        # page on its NSW lots again; over each file's latest read 6, over tonight's rows
+        # 10. Over every row, with the votes computed by tonight's rules, exactly the three
+        # wrong sheets drop out. So the wrong vote is fixed where it is MADE -- own_state
+        # ignores the lot number opening the row, the guess no longer takes an estate or a
+        # design -- and since every vote is recomputed each night from the stored columns,
+        # a rule fixed in code reaches every old row the same night. Nothing here reads a
+        # column this step writes except the postcode it clears, which own_state already
+        # ignores, so a second run tallies exactly as the first.
         per_file.setdefault(file_of(r), set()).add(state)
 
     national = {f for f, states in per_file.items() if file_is_national(states)}
@@ -460,7 +569,7 @@ def main(argv=None):
         # postcode, and left there it is what the next reader of the column trusts.
         # postcode is not a content_hash field (database._HASH_FIELDS), so clearing it
         # does not re-identify the row; _write refuses a column that is.
-        reopened = settled and rests_on_its_lot_number(r)
+        reopened = settled and rests_on_its_lot_number(r, geo)
         if reopened:
             settled = False
             _write(conn, rid, postcode=None)
@@ -471,6 +580,7 @@ def main(argv=None):
         # prove more than one state -- but it also meant a state resting on an estate name
         # in the suburb column was never looked at again. Checked, not re-resolved: the
         # state changes only when the text names another state's locality.
+        hit = None
         if settled:
             hit = text_overrules(r, suburb, state, r["state_source"])
             if hit:
@@ -478,6 +588,17 @@ def main(argv=None):
                 overruled.append((rid, state, hit[0], suburb, from_column[rid], hit[1]))
                 corrected_states += 1
                 state = hit[0]
+        # A SETTLED STATE THAT RESTED ON A GUESS THE GUESS NO LONGER MAKES is not settled
+        # either (29 Sep 2026 -- see rests_on_a_withdrawn_guess): "The Grove", "Round
+        # Mountain", "Verona". Re-resolved below with tonight's guess -- AFTER the check
+        # above, so a row it moves is moved exactly as before: 9568, "Lot 27102, Windermere
+        # Mambourin" filed QLD on the old guess 'Windermere', goes to VIC on its text even
+        # in a file whose rows prove two states, where re-resolving would leave it blank.
+        reguessed = (settled and not reopened and not hit
+                     and rests_on_a_withdrawn_guess(r, suburb, mine, from_column[rid], geo))
+        if reguessed:
+            settled = False
+            was = (state, r["state_source"])
         if not settled:
             page = r["source_state_hint"] if "source_state_hint" in r.keys() else ""
             if file_of(r) in national:
@@ -490,7 +611,8 @@ def main(argv=None):
                 new_state, signal = resolve_state(postcode=r["postcode"], suburb=suburb,
                                                   page_state=page, geo=geo,
                                                   listing_state=mine,
-                                                  lot_number=r["lot_number"])
+                                                  lot_number=r["lot_number"],
+                                                  row_text=row_text(r))
                 # The same check as for a settled row, so the answer does not depend on
                 # whether the state was already written when the check first ran.
                 hit = text_overrules(r, suburb, new_state, signal)
@@ -524,7 +646,7 @@ def main(argv=None):
             if new_state:
                 by_signal[signal] = by_signal.get(signal, 0) + 1
             clash = disagreement(r["postcode"], suburb, page, geo,
-                                 lot_number=r["lot_number"])
+                                 lot_number=r["lot_number"], row_text=row_text(r))
             if clash:
                 clashes.append(clash)
                 # The state was decided by other signals, so a postcode pointing somewhere
@@ -537,6 +659,9 @@ def main(argv=None):
             if reopened:
                 lot_postcodes.append((rid, r["postcode"], was[0], was[1], state,
                                       signal if state else ""))
+            if reguessed:
+                withdrawn_guesses.append((rid, was[0], was[1], state, signal if state else "",
+                                          suburb, _excerpt(r["lot_address"], suburb or "")))
 
         # A LOT NUMBER LEFT IN THE POSTCODE COLUMN of a live row comes out too, whatever the
         # row's state rests on (review, 28 Sep 2026). The re-open above only reached rows
@@ -546,8 +671,11 @@ def main(argv=None):
         # resolve_state and disagreement all ignore this number already, so the next run
         # resolves the row exactly as this one did. Live rows only; the re-open above has
         # already cleared its own rows, superseded or not.
+        # The number opening the row's own line counts as its lot here too (29 Sep 2026):
+        # AVIA 2234's "2120 Stage 21 ...", stored as postcode 2120 by an older parser and
+        # never refreshed, because postcode is fill-if-empty.
         if not reopened and not r["superseded_by"] \
-                and postcode_is_lot_number(r["postcode"], r["lot_number"]):
+                and postcode_is_lot_number(r["postcode"], r["lot_number"], row_text(r), geo):
             _write(conn, rid, postcode=None)
             lot_numbers_cleared.append((rid, r["postcode"], state))
 
@@ -597,6 +725,13 @@ def main(argv=None):
     for rid, pc, st in lot_numbers_cleared:
         print(f"            id {rid:<7} {st or '-':<3}  lot/postcode {pc} "
               f"({state_from_postcode(pc) or 'no'} range)")
+    # Zero once the first run has re-resolved them: a guess only changes when the code does.
+    # Every row is printed with the words it now reads, for the same reason as above.
+    print(f"  state   re-resolved, it rested on a guessed suburb tonight's guess no longer "
+          f"makes: {len(withdrawn_guesses)}")
+    for rid, was, was_src, now, now_src, sub, words in withdrawn_guesses:
+        print(f"            id {rid:<7} {was or '-':<3} -> {now or '-':<3}  was {was_src!r}, "
+              f"now {now_src or 'blank'!r}, guess now {sub or 'none'!r}: {words!r}")
     if national:
         # The file, not the row, is what was wrong. Printed in full because each one is a
         # decision to stop trusting a whole file, and a human should be able to check it.
@@ -609,13 +744,15 @@ def main(argv=None):
             for r in its:
                 sub, st, why = proven[r["id"]]
                 if st:
-                    says.setdefault(st, (why, sub))
+                    says.setdefault(st, (why, sub, r["id"]))
             hints = sorted({(r["source_state_hint"] or "-") for r in its})
             blank = sum(1 for r in its if not proven[r["id"]][1])
             print(f"        {len(its):>4} row(s), hint said {'/'.join(hints)}, the rows say "
                   f"{'/'.join(sorted(says))}   {f[-58:]}")
-            for st, (why, sub) in sorted(says.items()):
-                print(f"               {st:<4} {why} — {sub!r}")
+            # The id is the one to look at when a file should not be national (29 Sep 2026:
+            # the three wrongly national sheets were each one row, found by hand).
+            for st, (why, sub, rid) in sorted(says.items()):
+                print(f"               {st:<4} {why} — {sub!r} (e.g. id {rid})")
             print(f"               {blank} row(s) prove nothing themselves and stay blank")
 
     # What is still taken on trust, and how much of it could be checked at all. A hint in a

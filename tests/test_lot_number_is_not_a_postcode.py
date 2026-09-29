@@ -214,9 +214,10 @@ def test_the_jubilee_lot_goes_back_to_the_page_it_came_from(tmp_path, monkeypatc
     ignored, this cut of its sheet proves only VIC, so the E-Agent VIC page decides --
     labelled as contested, because 'Jubilee' in its line is still a Queensland place name.
 
-    CUT SHEET: on the whole Verv sheet 19094 comes out BLANK, not VIC, because another row
-    (11494, "5629 The Grove, Tarneit", read as NSW) still makes that sheet national. Blank
-    is what takes it out of a QLD search; VIC here shows the rule, not the live answer."""
+    CUT SHEET, and since 29 Sep 2026 the live answer too: 19094 came out BLANK on the whole
+    Verv sheet while 11494 ("5629 The Grove, Tarneit") read as NSW and made the sheet
+    national. It now reads Tarneit, the sheet is VIC, and enrich over the 29 Sep copy
+    files 19094 -- and 19092, 19093, 19095, 20541, 20542 -- exactly as here."""
     db = _make_db(tmp_path, [_jubilee_19094(), _verv_clyde_north_6948()])
     assert _enrich(monkeypatch, db) == 0
     assert _rows(db)[19094] == ("VIC", "e-agent page (conflicting signals)", None)
@@ -302,21 +303,21 @@ def test_clearing_the_lot_number_moves_no_state(tmp_path, monkeypatch):
             == {rid: v[:2] for rid, v in _rows(blank).items()})
 
 
-def test_a_lot_number_state_on_a_sheet_that_is_still_national_goes_blank(tmp_path,
-                                                                       monkeypatch):
-    """Silkwood 9255, 'PR8851 6053 Yarrabilba ...' filed WA. Its sheet also proves NSW and
-    QLD from other rows, so it stays national: with its lot number gone the row proves
-    nothing, and blank beats a state from a lot number. 9240 proves QLD by Bahrs Scrub;
-    11510 proves NSW by the Round Mountain in its estate "New Beith Round Mountain"."""
-    sheet = "https://docs.example.test/spreadsheets/d/silkwood"
+_SILKWOOD_SHEET = "https://docs.example.test/spreadsheets/d/silkwood"
+
+
+def _silkwood_cut_sheet(beith_estate="New Beith Round Mountain"):
+    """Silkwood 9255 ('PR8851 6053 Yarrabilba ...', filed WA off lot 6053), 9240 (Bahrs
+    Scrub, QLD) and 11510 ('REGISTER NOW New Beith Round Mountain Estate ...')."""
+    sheet = _SILKWOOD_SHEET
     line = ("PR8851 6053 Yarrabilba Yarrabilba Estate March-May 2027 362 $520,900 $426,979 "
             "$947,879 $770 4.22% Mornington 188 4/2/2/2 Uncon Only")
     bahrs = ("PR8745 1797 Bahrs Scrub Brookhaven Estate Registered 541 $680,000 $402,185 "
              "$1,082,185 $710 3.42% Eliza 184 4/2/2/2 Finance Considered")
     beith = ("REGISTER NOW New Beith Round Mountain Estate July 2027 $542,000 $440,000 "
              "$982,000 Doncaster 191 4/2/1/2")
-    rows = [_row(9255, builder_name="Silkwood Homes", lot_address=line[:110], source_text=line,
-                 estate_name="Yarrabilba Yarrabilba", state="WA",
+    return [_row(9255, builder_name="Silkwood Homes", lot_address=line[:110],
+                 source_text=line, estate_name="Yarrabilba Yarrabilba", state="WA",
                  state_source="suburb + postcode", postcode="6053", lot_number="6053",
                  source_state_hint="QLD", source_url=sheet, stocklist_file=sheet,
                  price=947879.0),
@@ -326,12 +327,44 @@ def test_a_lot_number_state_on_a_sheet_that_is_still_national_goes_blank(tmp_pat
                  source_state_hint="QLD", source_url=sheet, stocklist_file=sheet,
                  price=1082185.0),
             _row(11510, builder_name="Silkwood Homes", lot_address=beith, source_text=beith,
-                 estate_name="New Beith Round Mountain", state="NSW",
+                 estate_name=beith_estate, state="NSW",
                  state_source="listing locality", source_state_hint="QLD",
                  source_url=sheet, stocklist_file=sheet, price=982000.0)]
-    db = _make_db(tmp_path, rows)
+
+
+def test_a_lot_number_state_on_a_sheet_that_is_still_national_goes_blank(tmp_path,
+                                                                       monkeypatch):
+    """Silkwood 9255 filed WA off lot 6053, on a sheet whose rows prove two states: with
+    its lot number gone the row proves nothing, and blank beats a state from a lot number.
+
+    PREMISE, one stored value changed (29 Sep 2026): the real sheet is not national any
+    more. Its second state was 11510's NSW, read off "Round Mountain", its ESTATE, and
+    that is no longer read as a place (next test). So 11510's estate is given as "Round
+    Mountain, NSW" here -- a cell that names NSW outright -- to keep a sheet that really
+    does prove two states."""
+    db = _make_db(tmp_path, _silkwood_cut_sheet(beith_estate="Round Mountain, NSW"))
     assert _enrich(monkeypatch, db) == 0
+    assert _rows(db)[11510][0] == "NSW", "PREMISE: the sheet still proves NSW"
     assert _rows(db)[9255] == (None, None, None)
+
+
+def test_the_silkwood_sheet_is_queensland_once_its_estate_is_not_read_as_a_place(
+        tmp_path, monkeypatch):
+    """29 Sep 2026: the same rows as stored. 11510 was settled NSW by 'listing locality'
+    on "Round Mountain" -- the estate in "New Beith Round Mountain Estate", guessed as its
+    suburb -- and that one vote made Silkwood's QLD sheet national: 42 live rows on it had
+    no state. The guess now reads New Beith (state_resolver.suburb_in_row_text), 11510 is
+    re-resolved because the guess no longer supports NSW, the sheet proves QLD alone, and
+    9255, re-opened off its lot number, is QLD by its Yarrabilba and the page together."""
+    db = _make_db(tmp_path, _silkwood_cut_sheet())
+    assert _enrich(monkeypatch, db) == 0
+    after = _rows(db)
+    assert after[11510][:2] == ("QLD", "listing text")
+    assert after[9255] == ("QLD", "suburb + e-agent page", None)
+    assert after[9240][:2] == ("QLD", "listing locality"), "a row that proves QLD is left"
+    before = _table(db)
+    assert _second_run_writes(monkeypatch, db) == [], "the second run wrote again"
+    assert _table(db) == before
 
 
 def test_every_re_resolved_row_is_logged_with_its_number(tmp_path, monkeypatch, capsys):

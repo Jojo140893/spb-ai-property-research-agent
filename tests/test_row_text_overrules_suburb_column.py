@@ -422,8 +422,13 @@ def test_the_rollback_command_re_resolves_every_moved_row(tmp_path, monkeypatch)
     assert not any(src == TEXT_LOCALITY_SOURCE for _s, src in after.values())
     # Re-resolved by today's rules with the check off: back to the suburb match...
     assert after[14905] == ("QLD", "suburb")
-    assert after[18659] == ("QLD", "suburb")
-    assert after[9700] == ("QLD", "suburb + e-agent page")
+    # ...which for the two rows with no suburb column is tonight's GUESS, and since 29 Sep
+    # 2026 that reads the locality, not the word before it (state_resolver.
+    # suburb_in_row_text): "Murray Bridge, South" is Murray Bridge, SA -- once 'Murray', a
+    # QLD place -- and "Windermere Mambourin" is Mambourin, VIC, which disagrees with the
+    # QLD page, so with the check off the page decides, labelled contested.
+    assert after[18659] == ("SA", "suburb")
+    assert after[9700] == ("QLD", "e-agent page (conflicting signals)")
     # ...except in a file whose own rows prove two states, which comes back blank.
     assert after[9568] == (None, None)
 
