@@ -1399,6 +1399,69 @@ def states_written_in(row_text: Any, geo: Any = None) -> set:
     return out
 
 
+# The street types geo._STREET_TYPE leaves out on purpose -- a suburb or an estate ends in
+# them as often as a street does ("Mambourin Green", "Wollert Rise") -- counted here only
+# as a house number's street: "7 Park Rise, Sommariva", "47 Mambourin Green, Gungahlin",
+# "12 Banksia Retreat, ...". Integration, 30 Sep 2026: round 3's review found the longer
+# name winning over those addresses' localities because "Rise" was not a street type, and
+# 78 real labels carry one. Used only where it can make round 1's longer-name rule YIELD
+# (places_after_a_street feeds longer_name_stands' refusals), so a word taken for a
+# street here can only return a row to origin/main's answer, never give it a new state.
+_HOUSE_STREET_TYPE = re.compile(
+    r"^(?:rise|green|retreat|chase|glade|parkway|promenade|outlook|brace|bend|crest|"
+    r"row|trail|track|pass|rest|circle|square|quay|wynd|grange|approach|ramble)$",
+    re.IGNORECASE)
+
+
+def _house_street_type(toks, j) -> bool:
+    """True when toks[j] is one of _HOUSE_STREET_TYPE and a house number stands one to three
+    words before it ("7 Park Rise", "29 Madora Park Rise")."""
+    if not _HOUSE_STREET_TYPE.fullmatch(toks[j]):
+        return False
+    return any(re.fullmatch(r"\d{1,5}[A-Za-z]?", toks[k]) for k in range(max(0, j - 4), j - 1))
+
+
+def places_after_a_lot_number(row_text: Any, geo: Any = None) -> set:
+    """The states of every place of ONE state a row writes straight after the number that
+    follows the name its line opens with -- the "<estate> <lot> <locality> Titled" layout
+    ("Grange West 56 Werribee Titled 400", "Lake Argyle 1624 Mirranatwa Titled 344").
+
+    Integration, 30 Sep 2026: round 3's review found round 1's longer-name rule giving the
+    line-opening name's state in that layout where origin/main gives nothing and the row
+    writes another state's one-state place in its locality position (10 of 26 and 11 of 18
+    generated rows). Like places_after_a_street, it only feeds longer_name_stands'
+    refusals: it can return a row to origin/main's answer, never give it a new state."""
+    if geo is None:
+        return set()
+    texts = row_text if isinstance(row_text, (list, tuple)) else [row_text]
+    out = set()
+    for text in texts:
+        toks, breaks = _tokens(text)
+        spans = _place_spans(toks, breaks, geo)
+        for j, tok in enumerate(toks[1:6], start=1):
+            if not re.fullmatch(r"\d{1,5}[A-Za-z]?", tok) or not toks[j - 1][:1].isalpha():
+                continue
+            from geo import _STREET_TYPE
+            for size in (3, 2, 1):
+                states = spans.get((j + 1, size))
+                if not states or len(states) != 1 or _MONTH_WORD.match(toks[j + 1]) \
+                        or _inside_a_longer_place(spans, j + 1, size):
+                    continue
+                k = j + 1 + size             # "Lot 7, Redhead Rise": a street, not a place
+                if k < len(toks) and (_STREET_TYPE.fullmatch(toks[k])
+                                      or _house_street_type(toks, k)):
+                    break
+                # "Glen Waverley Lot 7035 Hume Coastal": a design and its facade style in the
+                # locality position -- the committed multi-night test's named row, VIC.
+                if not_the_locality_here(toks, j + 1, size, geo, breaks=breaks) in (
+                        "design", "product"):
+                    break
+                out.add(states[0])
+                break
+            break
+    return out
+
+
 def places_after_a_street(row_text: Any, geo: Any = None) -> set:
     """The states of every place of ONE state the row writes straight after a street --
     the locality of its address ("Lot 7, Redhead Street, Jetsonville" -> TAS), with a comma
@@ -1420,7 +1483,9 @@ def places_after_a_street(row_text: Any, geo: Any = None) -> set:
         toks, breaks = _tokens(text)
         spans = _place_spans(toks, breaks, geo)
         for j, tok in enumerate(toks):
-            if j == 0 or not _STREET_TYPE.fullmatch(tok) or toks[j - 1][:1].isdigit():
+            if j == 0 or toks[j - 1][:1].isdigit():
+                continue
+            if not (_STREET_TYPE.fullmatch(tok) or _house_street_type(toks, j)):
                 continue
             for size in (3, 2, 1):
                 states = spans.get((j + 1, size))

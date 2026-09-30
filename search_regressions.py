@@ -796,6 +796,12 @@ class Run:
                                                 "written in its own text as a house design"
                                          % (name, row.get("state"), row.get("state_source"),
                                             hit[0]))
+                    elif hit and len(hit) > 2 and hit[2] == "page-held":
+                        self.report.warn(where, "page-held: shortlisted %s is held %s on its "
+                                                "page (%r), and its label also names %s (%s)"
+                                                " -- a misfile if the page is wrong"
+                                         % (name, row.get("state"), row.get("state_source"),
+                                            hit[0], hit[1]))
                     elif hit and len(hit) > 2 and hit[2] == "facade":
                         self.report.warn(where, "facade: shortlisted %s is filed %s by %r, "
                                                 "its page's state, and its own text names "
@@ -1230,6 +1236,18 @@ def locality_check(catalogue, report):
                     text, row.get("state"), geo, stocked, estate=estate, suburb=column,
                     page=page or "") is None
                 return (hit[0], hit[1], "facade") if quiet else hit
+            # A row enrich HELD on its page (state_source 'suburb (page-held) + e-agent
+            # page') while its label also names a place of another state (integration, 30
+            # Sep 2026): round 3's review found neither enrich nor this check sees such a row
+            # again -- the check reads its line before its label -- so a genuine misfile of
+            # that shape on a wrong page ("Lot 27102, Windermere Mambourin" filed QLD) went
+            # unreported. The label is asked on its own, and a hit is a WARN, never a move.
+            if "page-held" in str(row.get("state_source") or ""):
+                label = str(row.get("lot_address") or rec.get("lot_address") or "")
+                held = state_resolver.text_locality_elsewhere(label, row.get("state"), geo,
+                                                              stocked, estate=estate)
+                if held:
+                    return (held[0], held[1], "page-held")
             suburb = str(row.get("suburb") or rec.get("suburb") or "").strip()
             design = state_resolver.design_the_state_rests_on(
                 catalogue.text(h), suburb, row.get("state"), geo)

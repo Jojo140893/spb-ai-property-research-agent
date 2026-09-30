@@ -220,7 +220,8 @@ from geo import SuburbGeoIndex
 from state_resolver import (TEXT_LOCALITY_SOURCE, _estate_key, disagreement,
                             file_is_national, label_tail_is_the_pair, label_tail_partner,
                             longer_name_of_the_line, normalise_state, own_state,
-                            places_after_a_street, postcode_is_lot_number, postcode_stated,
+                            places_after_a_lot_number, places_after_a_street,
+                            postcode_is_lot_number, postcode_stated,
                             reading_refuses, resolve_state, state_from_postcode,
                             states_written_in, suburb_in_row_text, text_locality_elsewhere)
 
@@ -770,6 +771,7 @@ def longer_name_stands(r, reading, origin, geo, stocked) -> str:
     if not state:
         return ""
     stated = (states_written_in(row_text(r), geo) | places_after_a_street(row_text(r), geo)
+              | places_after_a_lot_number(row_text(r), geo)
               | {_real_postcode_state(r, geo), state_from_filename(r["source_url"] or "")})
     if stated - {"", state}:
         return ""
@@ -1866,6 +1868,29 @@ def main(argv=None, _gone=frozenset(), _geo=None, _depth=0):
     for rid, now, now_src, kept, kept_src in held:
         print(f"            id {rid:<7} {now or '-':<3} ({now_src or 'blank'}) -> "
               f"{kept or '-':<3} ({kept_src or 'blank'})")
+    # THE TRADE, SHOWN EVERY NIGHT (integration, 30 Sep 2026). A row held on its page
+    # (PAGE_HELD_SIGNAL) is no longer moved by a place name in its text: that is what keeps
+    # Verv 18833 ("... Balmain Donnybrook ...") in VIC however many Balmain listings arrive.
+    # The price is a genuine misfile of the same shape on a WRONG page ("Lot 27102,
+    # Windermere Mambourin" on a QLD page), which origin/main moved and now nothing moves --
+    # and round 3's review found the replay does not warn on it either, because it reads the
+    # row's line before its label. So every live held row is listed, with the other state
+    # its label names, for a human to check against the page.
+    try:
+        held_rows = [dict(x) for x in conn.execute(
+            "SELECT id, state, lot_address, suburb FROM buildings "
+            "WHERE state_source = ? AND superseded_by IS NULL ORDER BY id",
+            (PAGE_HELD_SIGNAL,)).fetchall()]
+    except Exception:                                                 # noqa: BLE001
+        held_rows = []
+    print(f"  state   held on its page although its label also names a place of another "
+          f"state: {len(held_rows)}")
+    for x in held_rows[:25]:
+        print(f"            id {x['id']:<7} {x['state'] or '-':<3} "
+              f"{str(x['lot_address'] or '')[:70]}")
+    if len(held_rows) > 25:
+        print(f"            ... and {len(held_rows) - 25} more (state_source "
+              f"'{PAGE_HELD_SIGNAL}')")
     if national:
         # The file, not the row, is what was wrong. Printed in full because each one is a
         # decision to stop trusting a whole file, and a human should be able to check it.
