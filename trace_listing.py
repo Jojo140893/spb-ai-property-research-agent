@@ -978,8 +978,13 @@ class Tracer:
                                          str(r.get("state")).strip().upper())}
             text = " ".join(str(v or "") for v in (_db(row).get("source_text"),
                                                    row.get("lot_address")))
+            column = _db(row).get("suburb") or row.get("suburb") or ""
+            signals = [p.strip() for p in str(row.get("state_source") or "").split("+")]
+            page = _db(row).get("source_state_hint") or (
+                row.get("state") if "e-agent page" in signals else "")
             return text_locality_elsewhere(text, row.get("state"), self._geo,
-                                           self._stocked, estate=row.get("estate_name"))
+                                           self._stocked, estate=row.get("estate_name"),
+                                           suburb=column, page=page or "")
         except Exception:                                             # noqa: BLE001
             return None
 

@@ -611,6 +611,162 @@ def test_a_card_filed_by_its_own_lot_number_read_as_a_postcode_warns():
     assert "v2:geocon00" not in out
 
 
+def _run_with_locality(rows, db, cards, state):
+    """One brief searching `state`, shortlisting `cards`, with the text-locality check on
+    (search_regressions.locality_check over the same catalogue, as --snapshot runs it)."""
+    spec = dict(SPEC, briefs=[{"id": "b", "client_brief": {}}])
+    report = SR.Report(io.StringIO())
+    catalogue = SR.Catalogue(rows, db)
+
+    def post(body):
+        answer = _response(cards, brief_used={"state": state, "budget_min": 0,
+                                              "budget_max": 2000000, "primary_suburbs": []})
+        return 200, json.loads(json.dumps(answer)), 0.01
+    SR.Run(spec, post, catalogue, date(2026, 9, 16), report,
+           locality=SR.locality_check(catalogue, report)).execute()
+    return report, report.out.getvalue()
+
+
+_LINE_7810 = ("60 Stage 4 429m2 $390,000 August 2026 Rhodes Paddington 180m2 4 2 2 0 "
+              "$502,900 $892,900 Volos Available Owner OCC & Investor 18.09.2026")
+_LINE_14913 = ("Available Titled Townhouse 44 215 10.86 Verona SG Corner | Roselle 15.72 "
+               "3 2 1 $954,950")
+
+
+def test_a_design_and_its_facade_warn_as_what_they_are():
+    """29 Sep 2026: every night the replay warned that AVIA 7810 ("... Rhodes Paddington
+    180m2 ...", design Rhodes, facade Paddington) is filed QLD but names Rhodes, NSW.
+    Rounds 1 and 2 silenced it; round 3 warns wherever origin/main warns (the same words are
+    a genuine misfile's in other rows -- see the next test), and says what the row shows:
+    a design with its facade code on a row its page backs ('facade:'), not a misfile claim.
+    A plain mention of the same word is the ordinary 'text:' WARN."""
+    avia = _row("v2:avia7810", state="QLD", state_source="suburb + e-agent page",
+                suburb="Glenvale", lot_address="Lot 60, THE HILLS COLLECTION",
+                estate_name="THE HILLS COLLECTION", price=892900.0)
+    meriton = _row("v2:rhodes00", state="NSW", state_source="listing text", suburb="Rhodes",
+                   lot_address="Unit 1203, 1 Walker Street, Rhodes", price=900000.0)
+    for text, kind in ((_LINE_7810, "facade"),
+                       (_LINE_7810.replace("180m2", "180m2 Rhodes Fortitude"), "facade"),
+                       (_LINE_7810 + " Display home: Rhodes", "text")):
+        db = [{"id": 7810, "content_hash": "v2:avia7810", "date_checked": "15/09/2026",
+               "state": "QLD", "state_source": "suburb + e-agent page", "suburb": "GLENVALE",
+               "source_state_hint": "QLD", "source_text": text}]
+        report, out = _run_with_locality([avia, meriton], db, [_card(avia)], "QLD")
+        assert report.failures == 0, out
+        assert report.warnings == 1, out
+        assert ("%s: shortlisted v2:avia7810 (id 7810) is filed QLD" % kind) in out, out
+        assert "names Rhodes (NSW)" in out, out
+
+
+@pytest.mark.parametrize("line, filed, heading, named", [
+    # the reviews' recall losses, round 2 (verify-0 and verify-1): each a real row's line,
+    # re-filed in another state on its page's word, with a heading in its suburb column
+    ("66 Taylors Ridge Walloon Banksia 183 - Urban Available 4 2 2 315 $ 451,900", "NSW",
+     "Cameron Park", ("Walloon", "QLD")),
+    ("534 Bellevue Ripley Coolamon 213 - Classic Available 4 2 2 400 $ 520,900", "NSW",
+     "Rosebery", ("Ripley", "QLD")),
+    ("155 Wattle Green Burpengary Banksia 183 - Urban Available 4 2 2", "NSW", "Glenvale",
+     ("Burpengary", "QLD")),
+    ("91 Oran Park Clontarf Traditional 4 2 2 $ 820,000", "QLD", "Ripley",
+     ("Oran Park", "NSW")),
+])
+def test_a_misfile_its_page_backs_is_still_warned_about(line, filed, heading, named):
+    """Review, 29 Sep 2026 (round 2): the design silence also hid genuine misfiles origin/main
+    catches -- a row filed in its page's (wrong) state on a heading column, whose line is
+    Creation Homes' "<suburb> <design> <size>": the suburb is 'followed' by a place of the
+    filed state, just as a design is by its facade. Warned about again, as origin/main
+    warns."""
+    lot = _row("v2:misfile0", state=filed, state_source="suburb + e-agent page",
+               suburb=heading, lot_address=line[:40], estate_name=None, price=700000.0)
+    stock = _row("v2:stock000", state=named[1], state_source="listing text",
+                 suburb=named[0], lot_address="Lot 1, " + named[0], price=600000.0)
+    db = [{"id": 7889, "content_hash": "v2:misfile0", "date_checked": "15/09/2026",
+           "state": filed, "state_source": "suburb + e-agent page", "suburb": heading,
+           "source_state_hint": filed, "source_text": line}]
+    report, out = _run_with_locality([lot, stock], db, [_card(lot)], filed)
+    assert report.failures == 0, out
+    assert ("text: shortlisted v2:misfile0 (id 7889) is filed %s" % filed) in out, out
+    assert "its own text names %s (%s)" % named in out, out
+
+
+def test_a_suburb_before_the_word_its_misfile_rests_on_still_warns():
+    """Review, 29 Sep 2026: the design-and-facade rule above first blinded this WARN to the
+    commonest misfile -- the real suburb, then the word the suburb column took ("Lot 5733
+    Trawler Walk Tarneit The Grove ...", filed NSW on 'The Grove'). locality_check reads
+    the row with its suburb column, as enrich does, and warns again; the same line filed
+    VIC on 'Tarneit' is quiet."""
+    line = ("Lot 5733 Trawler Walk Tarneit The Grove Q3 2027 162sqm $187,600 Split 3 2 2 "
+            "173.34sqm $437,400 $625,000")
+    tarneit = _row("v2:tarneit0", state="VIC", state_source="listing text", suburb="Tarneit",
+                   lot_address="Lot 12 Smith Street, Tarneit", price=600000.0)
+    for state, column, warned in (("NSW", "The Grove", True), ("VIC", "Tarneit", False)):
+        grove = _row("v2:grove000", state=state, state_source="suburb", suburb=column,
+                     lot_address="5733 Trawler Walk", lot_number="5733", price=625000.0)
+        db = [{"id": 22859, "content_hash": "v2:grove000", "date_checked": "15/09/2026",
+               "state": state, "state_source": "suburb", "suburb": column,
+               "source_text": line}]
+        report, out = _run_with_locality([grove, tarneit], db, [_card(grove)], state)
+        assert report.failures == 0, out
+        assert ("its own text names Tarneit (VIC)" in out) is warned, out
+
+
+def test_a_state_that_rests_on_a_design_name_warns():
+    """Hattan 14913, filed NSW by 'suburb' on "Verona SG Corner" -- Verona the design, SG
+    its single garage. No other state's place is in the line, so the text-locality WARN
+    cannot see it; this one can. Not for a suburb followed by its design (Creation Homes
+    7864, "Camira Banksia 183 - Classic"), and not for a state the row named itself."""
+    verona = _row("v2:verona00", state="NSW", state_source="suburb", suburb="",
+                  lot_address="Lot 44, Springvale Double", estate_name="Springvale Double",
+                  lot_number="44", price=954950.0)
+    camira = _row("v2:camira00", state="NSW", state_source="suburb + e-agent page",
+                  suburb="Camira", lot_address="4 Pilny Street", lot_number="4",
+                  estate_name=None, price=1115900.0)
+    db = [{"id": 14913, "content_hash": "v2:verona00", "date_checked": "15/09/2026",
+           "state": "NSW", "state_source": "suburb", "suburb": None,
+           "source_text": _LINE_14913},
+          {"id": 7864, "content_hash": "v2:camira00", "date_checked": "15/09/2026",
+           "state": "NSW", "state_source": "suburb + e-agent page", "suburb": "Camira",
+           "source_text": "4B 4 Pilny Street Camira Banksia 183 - Classic Available 4 2 2 "
+                          "501 $ 420,900 $ 695,000 $ 1,115,900 Split Aug-26"}]
+    report, out = _run_with_locality([verona, camira], db,
+                                     [_card(verona), _card(camira)], "NSW")
+    assert report.failures == 0, out
+    assert ("design: shortlisted v2:verona00 (id 14913) is filed NSW by 'suburb', and the "
+            "only place it can rest on, 'Verona', is written in its own text as a house "
+            "design") in out
+    assert "v2:camira00" not in out
+    assert report.warnings == 1, out
+
+
+def test_a_card_filed_by_the_number_opening_its_own_line_warns():
+    """29 Sep 2026: AVIA 2234, "2120 Stage 21 ...", has no lot_number, and its postcode
+    2120 -- a NSW one, on a QLD lot -- is the number that opens its line. Not for a real
+    postcode written after the suburb."""
+    line = ("2120 Stage 21 400 $627,000 July 2026 Madrid 190 Paddington 190m2 4 2 2 1 "
+            "$457,400 $1,084,400 Volos Available")
+    avia = _row("v2:avia2234", lot_number=None, lot_address=line[:110])
+    real = _row("v2:realpc01", lot_number=None, lot_address="Lot 12 Smith Street, Ormeau 4208")
+    db = [{"id": 2234, "content_hash": "v2:avia2234", "date_checked": "15/09/2026",
+           "state": "QLD", "state_source": "listing locality + postcode", "postcode": "2120",
+           "lot_number": None, "source_text": line, "lot_address": line[:110]},
+          {"id": 8, "content_hash": "v2:realpc01", "date_checked": "15/09/2026",
+           "state": "QLD", "state_source": "suburb + postcode", "postcode": "4208",
+           "lot_number": None, "source_text": "Lot 12 Smith Street, Ormeau 4208",
+           "lot_address": "Lot 12 Smith Street, Ormeau 4208"}]
+
+    def answers(body):
+        return _response([_card(avia), _card(real)])
+
+    report, out, _posted = _run([{"id": "b", "client_brief": {}}], answers, [avia, real],
+                                db=db)
+    assert report.failures == 0, out
+    assert ("lot number as postcode: shortlisted v2:avia2234 (id 2234) is filed QLD by "
+            "'listing locality + postcode', but its postcode 2120 is its own lot "
+            "number") in out
+    assert "v2:realpc01" not in out
+    assert report.warnings == 1, out
+
+
 def test_a_fresher_capture_of_the_same_line_that_says_gone_fails_the_older_one():
     """The sibling invariant, both ways round, and not for two lines of ONE read."""
     older = _row("v2:older000", lot_address="Howard Available 21 Howard Crossing Kinchant "

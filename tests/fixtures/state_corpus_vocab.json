@@ -1,0 +1,2407 @@
+{
+ "_about": "Vocabularies for tests/test_state_invariant.py's generated corpus, taken from the 29 Sep 2026 nightly: suburbs the catalogue files stock under (with the state), estate names, house designs and facades, and streets, as the rows write them. Places only by name -- no row, price or person.",
+ "catalogue_suburbs": [
+  [
+   "Wollongong",
+   "NSW"
+  ],
+  [
+   "Macquarie Park",
+   "NSW"
+  ],
+  [
+   "Caringbah",
+   "NSW"
+  ],
+  [
+   "Blacktown",
+   "NSW"
+  ],
+  [
+   "Clyde North",
+   "VIC"
+  ],
+  [
+   "Canberra",
+   "ACT"
+  ],
+  [
+   "Lindfield",
+   "NSW"
+  ],
+  [
+   "Mount Druitt",
+   "NSW"
+  ],
+  [
+   "Homebush",
+   "NSW"
+  ],
+  [
+   "Carlingford",
+   "NSW"
+  ],
+  [
+   "Merrylands",
+   "NSW"
+  ],
+  [
+   "Tarneit",
+   "VIC"
+  ],
+  [
+   "Austral",
+   "NSW"
+  ],
+  [
+   "Lancelin",
+   "WA"
+  ],
+  [
+   "Armstrong Creek",
+   "VIC"
+  ],
+  [
+   "Donnybrook",
+   "VIC"
+  ],
+  [
+   "Deanside",
+   "VIC"
+  ],
+  [
+   "Zetland",
+   "NSW"
+  ],
+  [
+   "Braddon",
+   "ACT"
+  ],
+  [
+   "Harris Park",
+   "NSW"
+  ],
+  [
+   "Eastgardens",
+   "NSW"
+  ],
+  [
+   "Beveridge",
+   "VIC"
+  ],
+  [
+   "Dora Creek",
+   "NSW"
+  ],
+  [
+   "Officer",
+   "VIC"
+  ],
+  [
+   "Epping",
+   "NSW"
+  ],
+  [
+   "Greenbank",
+   "QLD"
+  ],
+  [
+   "Melrose Park",
+   "NSW"
+  ],
+  [
+   "Ashbury",
+   "NSW"
+  ],
+  [
+   "Rhodes",
+   "NSW"
+  ],
+  [
+   "Wadalba",
+   "NSW"
+  ],
+  [
+   "Rouse Hill",
+   "NSW"
+  ],
+  [
+   "Truganina",
+   "VIC"
+  ],
+  [
+   "Wyndham Vale",
+   "VIC"
+  ],
+  [
+   "Box Hill",
+   "NSW"
+  ],
+  [
+   "Dee Why",
+   "NSW"
+  ],
+  [
+   "Adelaide",
+   "SA"
+  ],
+  [
+   "Diggers Rest",
+   "VIC"
+  ],
+  [
+   "Joyner",
+   "QLD"
+  ],
+  [
+   "Fraser Rise",
+   "VIC"
+  ],
+  [
+   "Rosewood",
+   "QLD"
+  ],
+  [
+   "Hunterview",
+   "NSW"
+  ],
+  [
+   "Weir Views",
+   "VIC"
+  ],
+  [
+   "Castle Hill",
+   "NSW"
+  ],
+  [
+   "Colac",
+   "VIC"
+  ],
+  [
+   "Mambourin",
+   "VIC"
+  ],
+  [
+   "Clyde",
+   "VIC"
+  ],
+  [
+   "Walloon",
+   "QLD"
+  ],
+  [
+   "Mascot",
+   "NSW"
+  ],
+  [
+   "Thornhill Park",
+   "VIC"
+  ],
+  [
+   "Sunbury",
+   "VIC"
+  ],
+  [
+   "Bellbird",
+   "NSW"
+  ],
+  [
+   "Burwood",
+   "NSW"
+  ],
+  [
+   "Wollert",
+   "VIC"
+  ],
+  [
+   "Millfield",
+   "NSW"
+  ],
+  [
+   "Warnervale",
+   "NSW"
+  ],
+  [
+   "Jordan Springs",
+   "NSW"
+  ],
+  [
+   "Werribee",
+   "VIC"
+  ],
+  [
+   "Rockbank",
+   "VIC"
+  ],
+  [
+   "Long Jetty",
+   "NSW"
+  ],
+  [
+   "Cobblebank",
+   "VIC"
+  ],
+  [
+   "Schofields",
+   "NSW"
+  ],
+  [
+   "Werrington",
+   "NSW"
+  ],
+  [
+   "Melton South",
+   "VIC"
+  ],
+  [
+   "Oakville",
+   "NSW"
+  ],
+  [
+   "Winter Valley",
+   "VIC"
+  ],
+  [
+   "Leppington",
+   "NSW"
+  ],
+  [
+   "Manor Lakes",
+   "VIC"
+  ],
+  [
+   "Wyee",
+   "NSW"
+  ],
+  [
+   "Morayfield",
+   "QLD"
+  ],
+  [
+   "Wallan",
+   "VIC"
+  ],
+  [
+   "Echuca",
+   "VIC"
+  ],
+  [
+   "Logan Reserve",
+   "QLD"
+  ],
+  [
+   "Shepparton",
+   "VIC"
+  ],
+  [
+   "Glenvale",
+   "QLD"
+  ],
+  [
+   "Lara",
+   "VIC"
+  ],
+  [
+   "Strathtulloh",
+   "VIC"
+  ],
+  [
+   "Mango Hill",
+   "QLD"
+  ],
+  [
+   "Hurstville",
+   "NSW"
+  ],
+  [
+   "Charlemont",
+   "VIC"
+  ],
+  [
+   "Ripley",
+   "QLD"
+  ],
+  [
+   "Vineyard",
+   "NSW"
+  ],
+  [
+   "Park Ridge",
+   "QLD"
+  ],
+  [
+   "Ceduna",
+   "SA"
+  ],
+  [
+   "Hornsby",
+   "NSW"
+  ],
+  [
+   "Cessnock",
+   "NSW"
+  ],
+  [
+   "White Rock",
+   "QLD"
+  ],
+  [
+   "Warragul",
+   "VIC"
+  ],
+  [
+   "Bonnie Brook",
+   "VIC"
+  ],
+  [
+   "Rushcutters Bay",
+   "NSW"
+  ],
+  [
+   "Huntingdale",
+   "VIC"
+  ],
+  [
+   "Caboolture",
+   "QLD"
+  ],
+  [
+   "Mickleham",
+   "VIC"
+  ],
+  [
+   "Runcorn",
+   "QLD"
+  ],
+  [
+   "Bulla",
+   "VIC"
+  ],
+  [
+   "Hervey Bay",
+   "QLD"
+  ],
+  [
+   "Woongarrah",
+   "NSW"
+  ],
+  [
+   "Southbank",
+   "VIC"
+  ],
+  [
+   "Kilmore",
+   "VIC"
+  ],
+  [
+   "Mernda",
+   "VIC"
+  ],
+  [
+   "Lilywood",
+   "QLD"
+  ],
+  [
+   "Riverbend",
+   "QLD"
+  ],
+  [
+   "Mount Duneed",
+   "VIC"
+  ],
+  [
+   "Pimpama",
+   "QLD"
+  ],
+  [
+   "Coburg North",
+   "VIC"
+  ],
+  [
+   "Nirimba Fields",
+   "NSW"
+  ],
+  [
+   "Riverstone",
+   "NSW"
+  ],
+  [
+   "Springvale South",
+   "VIC"
+  ],
+  [
+   "Maddingley",
+   "VIC"
+  ],
+  [
+   "Denman",
+   "NSW"
+  ],
+  [
+   "Mornington",
+   "VIC"
+  ],
+  [
+   "Burpengary",
+   "QLD"
+  ],
+  [
+   "Shepparton North",
+   "VIC"
+  ],
+  [
+   "Sebastopol",
+   "VIC"
+  ],
+  [
+   "Greenvale",
+   "VIC"
+  ],
+  [
+   "Bellfield",
+   "VIC"
+  ],
+  [
+   "Redbank Plains",
+   "QLD"
+  ],
+  [
+   "Melton",
+   "VIC"
+  ],
+  [
+   "Ballarat",
+   "VIC"
+  ],
+  [
+   "Munno Para Downs",
+   "SA"
+  ],
+  [
+   "Raceview",
+   "QLD"
+  ],
+  [
+   "St Leonards",
+   "NSW"
+  ],
+  [
+   "Bayswater",
+   "VIC"
+  ],
+  [
+   "Toowoomba",
+   "QLD"
+  ],
+  [
+   "Wilton",
+   "NSW"
+  ],
+  [
+   "Smythes Creek",
+   "VIC"
+  ],
+  [
+   "Morwell",
+   "VIC"
+  ],
+  [
+   "Kalkallo",
+   "VIC"
+  ],
+  [
+   "Bahrs Scrub",
+   "QLD"
+  ],
+  [
+   "Lochinvar",
+   "NSW"
+  ],
+  [
+   "Tallawong",
+   "NSW"
+  ],
+  [
+   "Geelong",
+   "VIC"
+  ],
+  [
+   "South Ripley",
+   "QLD"
+  ],
+  [
+   "Cranbourne East",
+   "VIC"
+  ],
+  [
+   "Muswellbrook",
+   "NSW"
+  ],
+  [
+   "Flagstone",
+   "QLD"
+  ],
+  [
+   "Camira",
+   "QLD"
+  ],
+  [
+   "Merbein",
+   "VIC"
+  ],
+  [
+   "Nagambie",
+   "VIC"
+  ],
+  [
+   "Lowood",
+   "QLD"
+  ],
+  [
+   "Coopers Plains",
+   "QLD"
+  ],
+  [
+   "Bethania",
+   "QLD"
+  ],
+  [
+   "Weston",
+   "NSW"
+  ],
+  [
+   "Yarrabilba",
+   "QLD"
+  ],
+  [
+   "Parkinson",
+   "QLD"
+  ],
+  [
+   "Leopold",
+   "VIC"
+  ],
+  [
+   "Kyabram",
+   "VIC"
+  ],
+  [
+   "Oxford",
+   "QLD"
+  ],
+  [
+   "Deception Bay",
+   "QLD"
+  ],
+  [
+   "Gillieston Heights",
+   "NSW"
+  ],
+  [
+   "Munno Para West",
+   "SA"
+  ],
+  [
+   "Liverpool",
+   "NSW"
+  ],
+  [
+   "Traralgon",
+   "VIC"
+  ],
+  [
+   "Carseldine",
+   "QLD"
+  ],
+  [
+   "Cranbourne",
+   "VIC"
+  ],
+  [
+   "Bankstown",
+   "NSW"
+  ],
+  [
+   "Bundaberg",
+   "QLD"
+  ],
+  [
+   "Tamworth",
+   "NSW"
+  ],
+  [
+   "Ormiston",
+   "QLD"
+  ],
+  [
+   "Angle Vale",
+   "SA"
+  ],
+  [
+   "St Kilda Road",
+   "VIC"
+  ],
+  [
+   "Beaconsfield",
+   "VIC"
+  ],
+  [
+   "Deebing Heights",
+   "QLD"
+  ],
+  [
+   "Murray Bridge",
+   "SA"
+  ],
+  [
+   "Box Hill",
+   "VIC"
+  ],
+  [
+   "South Maclean",
+   "QLD"
+  ],
+  [
+   "Aintree",
+   "VIC"
+  ],
+  [
+   "North Kellyville",
+   "NSW"
+  ],
+  [
+   "Bonshaw",
+   "VIC"
+  ],
+  [
+   "Timbarra",
+   "VIC"
+  ],
+  [
+   "Junction Village",
+   "VIC"
+  ],
+  [
+   "Epping",
+   "VIC"
+  ],
+  [
+   "North Rothbury",
+   "NSW"
+  ],
+  [
+   "Williamstown North",
+   "VIC"
+  ],
+  [
+   "Gosford",
+   "NSW"
+  ],
+  [
+   "Hemmant",
+   "QLD"
+  ],
+  [
+   "Pitt Town",
+   "NSW"
+  ],
+  [
+   "Bellbird Park",
+   "QLD"
+  ],
+  [
+   "Thomastown",
+   "VIC"
+  ],
+  [
+   "Tatura",
+   "VIC"
+  ],
+  [
+   "Pakenham",
+   "VIC"
+  ],
+  [
+   "Farley",
+   "NSW"
+  ],
+  [
+   "Fawkner",
+   "VIC"
+  ],
+  [
+   "Kearneys Spring",
+   "QLD"
+  ],
+  [
+   "Nikenbah",
+   "QLD"
+  ],
+  [
+   "Virginia",
+   "SA"
+  ],
+  [
+   "Coral Cove",
+   "QLD"
+  ],
+  [
+   "Fraser",
+   "ACT"
+  ],
+  [
+   "Beaudesert",
+   "QLD"
+  ],
+  [
+   "Lockington",
+   "VIC"
+  ],
+  [
+   "Lyndale",
+   "VIC"
+  ],
+  [
+   "Kensington",
+   "VIC"
+  ],
+  [
+   "Marsden Park",
+   "NSW"
+  ],
+  [
+   "Keperra",
+   "QLD"
+  ],
+  [
+   "Bundamba",
+   "QLD"
+  ],
+  [
+   "Central Park",
+   "VIC"
+  ],
+  [
+   "Onkaparinga Heights",
+   "SA"
+  ],
+  [
+   "Grantham Farm",
+   "NSW"
+  ],
+  [
+   "Southside",
+   "QLD"
+  ],
+  [
+   "Loganlea",
+   "QLD"
+  ],
+  [
+   "Warwick",
+   "QLD"
+  ],
+  [
+   "Wynnum",
+   "QLD"
+  ],
+  [
+   "Wynnum West",
+   "QLD"
+  ],
+  [
+   "Gardenvale",
+   "VIC"
+  ],
+  [
+   "Riverleigh",
+   "QLD"
+  ],
+  [
+   "The Grove",
+   "NSW"
+  ],
+  [
+   "Banyan",
+   "VIC"
+  ],
+  [
+   "Gympie",
+   "QLD"
+  ],
+  [
+   "Highlands",
+   "VIC"
+  ],
+  [
+   "Parramatta",
+   "NSW"
+  ],
+  [
+   "Drouin",
+   "VIC"
+  ],
+  [
+   "Caboolture South",
+   "QLD"
+  ],
+  [
+   "Woolmer",
+   "QLD"
+  ],
+  [
+   "Emerald",
+   "VIC"
+  ],
+  [
+   "West Gosford",
+   "NSW"
+  ],
+  [
+   "Rosebery",
+   "NSW"
+  ],
+  [
+   "Buchanan",
+   "NSW"
+  ],
+  [
+   "Nunawading",
+   "VIC"
+  ],
+  [
+   "Drysdale",
+   "VIC"
+  ],
+  [
+   "Gleneagle",
+   "QLD"
+  ],
+  [
+   "Bald Hills",
+   "QLD"
+  ],
+  [
+   "Wellington Point",
+   "QLD"
+  ],
+  [
+   "Corio",
+   "VIC"
+  ],
+  [
+   "Eagleby",
+   "QLD"
+  ],
+  [
+   "Redland Bay",
+   "QLD"
+  ],
+  [
+   "Ormeau",
+   "QLD"
+  ],
+  [
+   "Moss Vale",
+   "NSW"
+  ],
+  [
+   "Southport",
+   "QLD"
+  ],
+  [
+   "Boondall",
+   "QLD"
+  ],
+  [
+   "Moe",
+   "VIC"
+  ],
+  [
+   "Heatherbrae",
+   "NSW"
+  ],
+  [
+   "Cooranbong",
+   "NSW"
+  ],
+  [
+   "Durack",
+   "QLD"
+  ],
+  [
+   "Seaford",
+   "SA"
+  ],
+  [
+   "Mount Barker",
+   "SA"
+  ],
+  [
+   "Upper Coomera",
+   "QLD"
+  ],
+  [
+   "Moore Park Beach",
+   "QLD"
+  ],
+  [
+   "Woodgate",
+   "QLD"
+  ],
+  [
+   "Bargara",
+   "QLD"
+  ],
+  [
+   "Grantville",
+   "VIC"
+  ],
+  [
+   "Craigieburn",
+   "VIC"
+  ],
+  [
+   "Ipswich",
+   "QLD"
+  ],
+  [
+   "Indooroopilly",
+   "QLD"
+  ],
+  [
+   "Brassall",
+   "QLD"
+  ],
+  [
+   "Campbelltown",
+   "NSW"
+  ],
+  [
+   "Balmoral",
+   "VIC"
+  ],
+  [
+   "Jubilee",
+   "QLD"
+  ],
+  [
+   "Yarrawonga",
+   "VIC"
+  ],
+  [
+   "Edgeworth",
+   "NSW"
+  ],
+  [
+   "Morisset",
+   "NSW"
+  ],
+  [
+   "Berwick",
+   "VIC"
+  ],
+  [
+   "Upper Caboolture",
+   "QLD"
+  ],
+  [
+   "Woodford",
+   "QLD"
+  ],
+  [
+   "Urangan",
+   "QLD"
+  ],
+  [
+   "Bringelly",
+   "NSW"
+  ],
+  [
+   "Nulkaba",
+   "NSW"
+  ],
+  [
+   "Boolaroo",
+   "NSW"
+  ],
+  [
+   "Koo Wee Rup",
+   "VIC"
+  ],
+  [
+   "Urraween",
+   "QLD"
+  ],
+  [
+   "Winchelsea",
+   "VIC"
+  ],
+  [
+   "Banya",
+   "QLD"
+  ],
+  [
+   "Heddon Greta",
+   "NSW"
+  ],
+  [
+   "Plumpton",
+   "VIC"
+  ],
+  [
+   "Brisbane",
+   "QLD"
+  ],
+  [
+   "Moggill",
+   "QLD"
+  ],
+  [
+   "One Mile",
+   "QLD"
+  ],
+  [
+   "Cobberas",
+   "VIC"
+  ],
+  [
+   "Gower",
+   "VIC"
+  ],
+  [
+   "Benalla",
+   "VIC"
+  ],
+  [
+   "Thomson",
+   "VIC"
+  ],
+  [
+   "Beauty Point",
+   "NSW"
+  ],
+  [
+   "Aberglasslyn",
+   "NSW"
+  ],
+  [
+   "Price",
+   "SA"
+  ],
+  [
+   "Norlane",
+   "VIC"
+  ],
+  [
+   "The Gap",
+   "QLD"
+  ],
+  [
+   "Lucas",
+   "VIC"
+  ],
+  [
+   "Bairnsdale",
+   "VIC"
+  ],
+  [
+   "Taigum",
+   "QLD"
+  ],
+  [
+   "Victoria Point",
+   "QLD"
+  ],
+  [
+   "Wistow",
+   "SA"
+  ],
+  [
+   "O'Halloran Hill",
+   "SA"
+  ],
+  [
+   "Hindmarsh",
+   "SA"
+  ],
+  [
+   "Riverhills",
+   "QLD"
+  ],
+  [
+   "Darley",
+   "VIC"
+  ],
+  [
+   "Nar Nar Goon",
+   "VIC"
+  ],
+  [
+   "Melonba",
+   "NSW"
+  ],
+  [
+   "Rochedale",
+   "QLD"
+  ],
+  [
+   "Innes Park",
+   "QLD"
+  ],
+  [
+   "Pialba",
+   "QLD"
+  ],
+  [
+   "Basalt",
+   "VIC"
+  ],
+  [
+   "Gellibrand",
+   "VIC"
+  ],
+  [
+   "Derby",
+   "VIC"
+  ],
+  [
+   "Armstrong",
+   "VIC"
+  ],
+  [
+   "Shortland",
+   "NSW"
+  ],
+  [
+   "Paddington",
+   "QLD"
+  ],
+  [
+   "Hampton",
+   "QLD"
+  ],
+  [
+   "Chisholm",
+   "NSW"
+  ],
+  [
+   "Newcastle",
+   "NSW"
+  ],
+  [
+   "Stream Hill",
+   "NSW"
+  ],
+  [
+   "Woolloongabba",
+   "QLD"
+  ],
+  [
+   "Longwarry",
+   "VIC"
+  ],
+  [
+   "Drouin West",
+   "VIC"
+  ],
+  [
+   "Nerang",
+   "QLD"
+  ],
+  [
+   "Tailem Bend",
+   "SA"
+  ],
+  [
+   "Yarrawonga",
+   "NSW"
+  ],
+  [
+   "Cranbourne West",
+   "VIC"
+  ],
+  [
+   "Pallara",
+   "QLD"
+  ],
+  [
+   "Fairfield",
+   "NSW"
+  ],
+  [
+   "Thornlands",
+   "QLD"
+  ],
+  [
+   "New Beith",
+   "QLD"
+  ],
+  [
+   "Burnett Heads",
+   "QLD"
+  ],
+  [
+   "Heathwood",
+   "QLD"
+  ],
+  [
+   "Howard",
+   "QLD"
+  ],
+  [
+   "Branyan",
+   "QLD"
+  ],
+  [
+   "Kawungan",
+   "QLD"
+  ],
+  [
+   "Rosebud",
+   "VIC"
+  ],
+  [
+   "Seaford",
+   "VIC"
+  ],
+  [
+   "Harkness",
+   "VIC"
+  ],
+  [
+   "St Leonards",
+   "VIC"
+  ],
+  [
+   "Ballan",
+   "VIC"
+  ],
+  [
+   "Birkdale",
+   "QLD"
+  ],
+  [
+   "Bunyip",
+   "VIC"
+  ],
+  [
+   "Officer South",
+   "VIC"
+  ],
+  [
+   "Avoca",
+   "QLD"
+  ],
+  [
+   "Bridgeman Downs",
+   "QLD"
+  ],
+  [
+   "Oran Park",
+   "NSW"
+  ],
+  [
+   "Darling",
+   "VIC"
+  ],
+  [
+   "Regents Park",
+   "QLD"
+  ],
+  [
+   "Abbotsford",
+   "NSW"
+  ],
+  [
+   "Gollan",
+   "NSW"
+  ],
+  [
+   "Armidale",
+   "NSW"
+  ],
+  [
+   "Emerald",
+   "QLD"
+  ],
+  [
+   "Sydney",
+   "NSW"
+  ],
+  [
+   "Gawler Belt",
+   "SA"
+  ],
+  [
+   "Fernvale",
+   "QLD"
+  ],
+  [
+   "Kellyville",
+   "NSW"
+  ],
+  [
+   "St Albans",
+   "VIC"
+  ],
+  [
+   "Tingalpa",
+   "QLD"
+  ],
+  [
+   "Rooty Hill",
+   "NSW"
+  ],
+  [
+   "Strathpine",
+   "QLD"
+  ],
+  [
+   "Mount Kynoch",
+   "QLD"
+  ],
+  [
+   "Huntly",
+   "VIC"
+  ],
+  [
+   "Windermere",
+   "VIC"
+  ],
+  [
+   "Cranbourne North",
+   "VIC"
+  ],
+  [
+   "Smithfield Plains",
+   "SA"
+  ],
+  [
+   "Kalkie",
+   "QLD"
+  ],
+  [
+   "Goulburn",
+   "NSW"
+  ],
+  [
+   "Minmi",
+   "NSW"
+  ],
+  [
+   "Cameron Park",
+   "NSW"
+  ]
+ ],
+ "estates": [
+  "Live Caringbah",
+  "Second Avenue",
+  "The Grande",
+  "Melbourne Square BLVD",
+  "THE MAYBELLE",
+  "Senso",
+  "The CARLING Carlingford",
+  "Sky Residence TMC",
+  "Olivine",
+  "SOUTH EAST",
+  "Cielo Epping",
+  "Paramount on Parkes",
+  "NORTH",
+  "Jensen Rise",
+  "Ahlei",
+  "Seventh Bend",
+  "BAIA",
+  "One Part Contracts",
+  "Smiths Lane",
+  "SAFA GATE",
+  "Trilogy Building B",
+  "La Vera",
+  "Banksia",
+  "Untitled Packages",
+  "Penrose Place",
+  "Grandview",
+  "Zetland Square",
+  "BRISBANE NORTH",
+  "A'LURE ESTATE",
+  "SMDC Gold Residences",
+  "SMDC Jade Residences",
+  "SMDC Sail Residences",
+  "SMDC Sands Residences",
+  "Bingara Gorge",
+  "THE HILLS COLLECTION",
+  "BRISBANE WEST",
+  "Ashbury Residence",
+  "KIARA NORTH MASCOT",
+  "Ceduna",
+  "Residences",
+  "Mandalay",
+  "The Future",
+  "Roselle",
+  "Heartford",
+  "NSW",
+  "Verve",
+  "Hargrove",
+  "Lakeview",
+  "VERTEX Zetland",
+  "Five Farms",
+  "Eternal Homes",
+  "Clearwater",
+  "Brochure Masterplan",
+  "Est Custom Corner",
+  "Maplewood",
+  "offer",
+  "North",
+  "Building B",
+  "Mambourin Green",
+  "BRISBANE EAST",
+  "Mt View Grange",
+  "Banksia Rise",
+  "Harpley",
+  "MPR",
+  "Lyra",
+  "Kinsford",
+  "FRASER COAST",
+  "Yarrabilba Yarrabilba",
+  "Westwood",
+  "Ashbury Terraces",
+  "Uptown",
+  "Highfields",
+  "GARAGE",
+  "Warralily",
+  "Est",
+  "BUNDEBURG LINK",
+  "WEST Draft HIA",
+  "REGIONAL",
+  "EOI Form",
+  "Jubilee",
+  "ADELAIDE NORTH",
+  "QLD",
+  "Hurstville Rise",
+  "Springridge",
+  "LAND ONLY",
+  "Samara",
+  "Kinship",
+  "Highland",
+  "The Fields",
+  "LAKE MACQUARIE",
+  "PARK RISE",
+  "Leighton Business Park",
+  "Cobble Springs",
+  "Austin",
+  "Atlas",
+  "Ooranya",
+  "RIVERLEIGH ESTATE",
+  "MAITLAND",
+  "Newhaven",
+  "Palomino",
+  "Yallarah",
+  "Warner Park",
+  "Evergreen",
+  "Available",
+  "Clara Place",
+  "Arcadia Estate",
+  "Clarke Grounds",
+  "Nautique",
+  "Springvale Double",
+  "Rathdowne",
+  "Double Story",
+  "Knew Street Pricelist",
+  "Cento",
+  "Riverfield",
+  "Regent Quarter",
+  "SOUTHERN HIGHLANDS",
+  "Woodsong",
+  "Katalia",
+  "Mattana",
+  "DUPLEX",
+  "INTERNAL BALCONY TOTAL",
+  "Cloverton Midtown",
+  "Mt Atkinson",
+  "Paradise in Parkinson",
+  "Arbourwood Morayfield",
+  "The Fields Bellfield",
+  "Estate Brochure",
+  "purchaser",
+  "Morayfield Kinma Valley",
+  "McMahons Place",
+  "Cloverton",
+  "Collection -",
+  "Westbrook",
+  "SG Langham",
+  "Atticus",
+  "Alluvium",
+  "Langham",
+  "Parklands",
+  "Ed Avenue Austral",
+  "G-Floor room Updated",
+  "BRISBANE SOUTH",
+  "Timbarra",
+  "BuildinaB No Available",
+  "Thornhill Gardens",
+  "Parkside",
+  "Lumina",
+  "Leppington Rise Estate",
+  "Car Storage Cage",
+  "Vesper SG Langham",
+  "SAGE ESTATE",
+  "COOLIBAH ESTATE",
+  "Drift",
+  "Sapphire Rouse Hill",
+  "Peppercorn Hill",
+  "Northside",
+  "Brochure Amenity Map",
+  "Ironbark",
+  "The Collective",
+  "Nova Reve",
+  "HABITAT",
+  "SIINGLE CONTRACT",
+  "Blossom Carlingford",
+  "Deanside Village",
+  "Banya Aura",
+  "Kemps",
+  "Bloomfield",
+  "Storage",
+  "Riverwalk",
+  "Meridian",
+  "The Grove",
+  "The Thornhill Gardens",
+  "Wollert Rise",
+  "Residence",
+  "Windermere Mambourin",
+  "TOOWOOMBA",
+  "WILLOWGLEN ESTATE",
+  "Highlands",
+  "The Macquarie Collection",
+  "Whiterock",
+  "Winterfield",
+  "Oaklands",
+  "Acclaim",
+  "Riverbank",
+  "Kubed",
+  "Kilmore Grounds",
+  "Rosewood Green Rosewood",
+  "Walloon Taylors Ridge",
+  "Sanctuary Park",
+  "Coopers Plains",
+  "Merrifield",
+  "Starling",
+  "Marran Run",
+  "Aberlyn",
+  "Harlow",
+  "Ascenta Living Coliving",
+  "Edge",
+  "Study",
+  "Coridale",
+  "Balmain",
+  "Bloom",
+  "Accolade",
+  "Lot Single",
+  "Dawn",
+  "Central Springs",
+  "Carseldine",
+  "Davis Vineyard",
+  "Montana",
+  "Thornhill Central",
+  "Hamilton Heights",
+  "Emerald",
+  "South-East",
+  "South Maclean Flourish",
+  "Ipswich City Council",
+  "Coridale Lara",
+  "CESSNOCK",
+  "Mambourin",
+  "The Avenue",
+  "Brookhaven",
+  "Titled Packages",
+  "Hamlet",
+  "West",
+  "Lilywood Aire Riverside",
+  "Toolern Waters Melton",
+  "ALFORD GROVE",
+  "LERA",
+  "Harvest Hill",
+  "Solara Residences",
+  "Park Lane",
+  "GYMPIE SOUTH",
+  "Aurora",
+  "Building A",
+  "Kingsfield",
+  "Silverwood",
+  "Rockcliffe",
+  "Fernlea",
+  "Sunnyvue",
+  "Bellevue Estate Austral",
+  "Bingara Gorge Spec",
+  "Jasmine Schofields",
+  "Yarrabilba",
+  "Settlers Place",
+  "Clyde North",
+  "Williamstown North",
+  "Archibald",
+  "Maplestone",
+  "Florian",
+  "Creekstone",
+  "BUNDABERG",
+  "Sebastopol",
+  "Bahrs Scrub Brookhaven"
+ ],
+ "designs": [
+  "Tropea",
+  "Walker",
+  "Cherry",
+  "Cura",
+  "Banksia",
+  "Denver",
+  "Enzo",
+  "Nex",
+  "Lincoln",
+  "Elwood",
+  "Vesper",
+  "Gower",
+  "Trinidad",
+  "Chelsea",
+  "Vanta",
+  "Gama",
+  "Lucas",
+  "Havana",
+  "Elara",
+  "Wentworth",
+  "Arden",
+  "Duval",
+  "Tallow",
+  "Zeta",
+  "Eyre",
+  "Heath",
+  "Rock",
+  "Drake",
+  "Hume",
+  "Cleveland",
+  "Rhodes",
+  "Mawson",
+  "Nexus",
+  "Juniper",
+  "Mackay",
+  "Rosewood",
+  "Verona",
+  "Kennedy",
+  "Washington",
+  "Atlanta",
+  "Harmony",
+  "Accord",
+  "Marco",
+  "Porto",
+  "Turin",
+  "Alder",
+  "Cabot",
+  "Florence",
+  "Nava",
+  "Leon",
+  "Cartier",
+  "Prague",
+  "Jarrow",
+  "Easton",
+  "Jackson",
+  "Selina",
+  "Beech",
+  "Verge",
+  "Torrens",
+  "Dundas",
+  "Marbella",
+  "Flinders",
+  "Eucalypt",
+  "Coolamon",
+  "Lucca",
+  "Volos",
+  "Georgia",
+  "Myrtle",
+  "Faro",
+  "Baker",
+  "Leigh",
+  "Hart",
+  "Barkley",
+  "Tampa",
+  "Illawarra",
+  "Abbott",
+  "Form",
+  "Ember",
+  "Eildon",
+  "Glenbrook",
+  "Lot",
+  "Onix",
+  "Titled",
+  "Sorrento",
+  "Santorini",
+  "Aspen",
+  "Cypress",
+  "Tuckeroo",
+  "Stanford",
+  "Madrid",
+  "Mitchell",
+  "Arklay",
+  "Canning",
+  "Brighton",
+  "Carmada",
+  "Freemont",
+  "Argyle",
+  "Vieste",
+  "Warrego",
+  "Willow",
+  "Oxley",
+  "Jasper",
+  "Talin",
+  "Silverbell",
+  "Sorento",
+  "Gibson",
+  "Novo",
+  "Barlee",
+  "Dove",
+  "Carey",
+  "Urban",
+  "Capri",
+  "Custom",
+  "Valletta",
+  "Neo",
+  "Balwyn",
+  "Doncaster",
+  "Solta",
+  "Aldine",
+  "Hudson",
+  "Trickett",
+  "Province",
+  "Domain",
+  "Troepa",
+  "Capricorn",
+  "Dunstone",
+  "Almada",
+  "Metro",
+  "Penda",
+  "Genesis",
+  "Polo",
+  "Regal"
+ ],
+ "facades": [
+  "Modern",
+  "Urban",
+  "Fortitude",
+  "Coastal",
+  "Carolina",
+  "Yamba",
+  "Contemporary",
+  "Facade",
+  "Paddington",
+  "Classic",
+  "Designer",
+  "Stage",
+  "Newstead",
+  "Custom",
+  "Padington",
+  "Design",
+  "Lennox",
+  "Fortitue",
+  "Caolina",
+  "Fortitdue"
+ ],
+ "streets": [
+  [
+   "Ellen",
+   "Street"
+  ],
+  [
+   "Portal",
+   "Link"
+  ],
+  [
+   "Allara",
+   "Street"
+  ],
+  [
+   "Hoff",
+   "Boulevard"
+  ],
+  [
+   "Zoe",
+   "Place"
+  ],
+  [
+   "Second",
+   "Avenue"
+  ],
+  [
+   "Parramatta",
+   "Road"
+  ],
+  [
+   "Talavera",
+   "Road"
+  ],
+  [
+   "Oxford",
+   "Street"
+  ],
+  [
+   "New",
+   "Road"
+  ],
+  [
+   "Trafalgar",
+   "Ave"
+  ],
+  [
+   "Pennant Hills",
+   "Road"
+  ],
+  [
+   "Northbourne",
+   "Avenue"
+  ],
+  [
+   "Parkes",
+   "Street"
+  ],
+  [
+   "Milton",
+   "Street"
+  ],
+  [
+   "Halifax",
+   "St"
+  ],
+  [
+   "Pitt",
+   "Street"
+  ],
+  [
+   "Halifax",
+   "Street"
+  ],
+  [
+   "Blaxland",
+   "Rd"
+  ],
+  [
+   "Delmar",
+   "Parade"
+  ],
+  [
+   "Main",
+   "Lane"
+  ],
+  [
+   "Commercial",
+   "Road"
+  ],
+  [
+   "Bundil",
+   "Boulevard"
+  ],
+  [
+   "Hinkler",
+   "Avenue"
+  ],
+  [
+   "Roxas",
+   "Boulevard"
+  ],
+  [
+   "Tingwell",
+   "Boulevard"
+  ],
+  [
+   "Gardeners",
+   "Road"
+  ],
+  [
+   "Jensen",
+   "Rise"
+  ],
+  [
+   "Defries",
+   "Avenue"
+  ],
+  [
+   "Harkness",
+   "Road"
+  ],
+  [
+   "Fishburn",
+   "Crescent"
+  ],
+  [
+   "Celia",
+   "St"
+  ],
+  [
+   "Banks",
+   "Avenue"
+  ],
+  [
+   "Forest",
+   "Road"
+  ],
+  [
+   "Jensen",
+   "Road"
+  ],
+  [
+   "Available Brochure",
+   "Link"
+  ],
+  [
+   "Smiths",
+   "Lane"
+  ],
+  [
+   "Bingara",
+   "Drive"
+  ],
+  [
+   "Titled",
+   "Vista"
+  ],
+  [
+   "Lemon Tree",
+   "Avenue"
+  ],
+  [
+   "Clarke",
+   "St"
+  ],
+  [
+   "Bridge",
+   "Street"
+  ],
+  [
+   "Kelly",
+   "Street"
+  ],
+  [
+   "Pittwater",
+   "Street"
+  ],
+  [
+   "Pilny",
+   "Street"
+  ],
+  [
+   "Tallawong",
+   "Road"
+  ],
+  [
+   "Bayswater",
+   "Road"
+  ],
+  [
+   "Tobruk",
+   "Drive"
+  ],
+  [
+   "Hobart",
+   "Street"
+  ],
+  [
+   "Ganga",
+   "Street"
+  ],
+  [
+   "Tulloh",
+   "St"
+  ],
+  [
+   "Partnership",
+   "Way"
+  ],
+  [
+   "Hunting",
+   "Dr"
+  ],
+  [
+   "Studio",
+   "Drive"
+  ],
+  [
+   "Hillier",
+   "Circuit"
+  ],
+  [
+   "Paynes",
+   "Road"
+  ],
+  [
+   "Stella",
+   "St"
+  ],
+  [
+   "Stonecrop",
+   "Dr"
+  ],
+  [
+   "Park",
+   "Rise"
+  ],
+  [
+   "Seastar",
+   "Street"
+  ],
+  [
+   "Boyd",
+   "Street"
+  ],
+  [
+   "Hickson",
+   "Road"
+  ],
+  [
+   "Perkins",
+   "Avenue"
+  ],
+  [
+   "Splitters",
+   "Rd"
+  ],
+  [
+   "Tidal",
+   "Circuit"
+  ],
+  [
+   "Golden Whistler",
+   "Road"
+  ],
+  [
+   "Murdochs",
+   "Road"
+  ],
+  [
+   "New",
+   "St"
+  ],
+  [
+   "Moody",
+   "Walk"
+  ],
+  [
+   "Prescott",
+   "Road"
+  ],
+  [
+   "Mustang",
+   "Avenue"
+  ],
+  [
+   "Madora Park",
+   "Rise"
+  ],
+  [
+   "Mount Carmel",
+   "Drive"
+  ],
+  [
+   "Atchison",
+   "Street"
+  ],
+  [
+   "Garthowen",
+   "Crescent"
+  ],
+  [
+   "Piebald",
+   "St"
+  ],
+  [
+   "Lemon Scented",
+   "Circuit"
+  ],
+  [
+   "Ayrshire",
+   "Street"
+  ],
+  [
+   "Tait",
+   "Street"
+  ],
+  [
+   "Meridie",
+   "Way"
+  ],
+  [
+   "Millfield",
+   "Rise"
+  ],
+  [
+   "Donald",
+   "Street"
+  ],
+  [
+   "Logan",
+   "Street"
+  ],
+  [
+   "Potter",
+   "Walk"
+  ],
+  [
+   "Feverfew",
+   "Rd"
+  ],
+  [
+   "Yankee",
+   "St"
+  ],
+  [
+   "Rigby",
+   "Dr"
+  ],
+  [
+   "Atlas",
+   "Crescent"
+  ],
+  [
+   "Damselfly",
+   "Way"
+  ],
+  [
+   "Kelly",
+   "St"
+  ],
+  [
+   "Hue Hue",
+   "Road"
+  ],
+  [
+   "Wildflower",
+   "Circuit"
+  ],
+  [
+   "Dapple",
+   "Ave"
+  ],
+  [
+   "Ingwe",
+   "Dr"
+  ],
+  [
+   "Seaberry",
+   "Street"
+  ],
+  [
+   "Terry",
+   "Road"
+  ],
+  [
+   "Gardenvale",
+   "Avenue"
+  ],
+  [
+   "Hinge",
+   "St"
+  ],
+  [
+   "Honniball",
+   "Dr"
+  ],
+  [
+   "Moorehen",
+   "Circuit"
+  ],
+  [
+   "Madison Park",
+   "Rise"
+  ],
+  [
+   "Jessica",
+   "Ave"
+  ],
+  [
+   "Fifteenth",
+   "Avenue"
+  ],
+  [
+   "Conferta",
+   "Avenue"
+  ],
+  [
+   "Corriente",
+   "Street"
+  ],
+  [
+   "Coorumbung",
+   "Road"
+  ],
+  [
+   "Solar",
+   "St"
+  ],
+  [
+   "Tatjana",
+   "Way"
+  ],
+  [
+   "Jullak",
+   "Drive"
+  ],
+  [
+   "Boyd",
+   "St"
+  ],
+  [
+   "Edmonson",
+   "Avenue"
+  ],
+  [
+   "Runner",
+   "Road"
+  ],
+  [
+   "Kinglea",
+   "Rd"
+  ],
+  [
+   "Empress",
+   "St"
+  ],
+  [
+   "Plumcot",
+   "Loop"
+  ],
+  [
+   "Leon",
+   "Dr"
+  ],
+  [
+   "Neale",
+   "Rd"
+  ],
+  [
+   "Brandy",
+   "Way"
+  ],
+  [
+   "Protea",
+   "Street"
+  ],
+  [
+   "Middleham",
+   "Street"
+  ],
+  [
+   "Archer",
+   "Drive"
+  ],
+  [
+   "Bowerbird",
+   "Crescent"
+  ],
+  [
+   "Mambourin",
+   "Green"
+  ],
+  [
+   "Golden",
+   "Rise"
+  ],
+  [
+   "Karkanah",
+   "Street"
+  ],
+  [
+   "Socket",
+   "Dr"
+  ],
+  [
+   "Twelfth",
+   "Avenue"
+  ],
+  [
+   "Donnison",
+   "Street"
+  ],
+  [
+   "Kitchener",
+   "Parade"
+  ],
+  [
+   "Dapple",
+   "Avenue"
+  ],
+  [
+   "Pound",
+   "Rd"
+  ],
+  [
+   "Taxon",
+   "Road"
+  ],
+  [
+   "Plumeria",
+   "Street"
+  ],
+  [
+   "Kalanka",
+   "Avenue"
+  ],
+  [
+   "Highline",
+   "Boulevard"
+  ],
+  [
+   "Vickers",
+   "Street"
+  ],
+  [
+   "Dream",
+   "Street"
+  ],
+  [
+   "Taylors",
+   "Rise"
+  ],
+  [
+   "Banksia",
+   "Rise"
+  ],
+  [
+   "Kewney",
+   "Street"
+  ],
+  [
+   "Advance",
+   "Street"
+  ],
+  [
+   "Norfolk",
+   "Street"
+  ],
+  [
+   "Barry",
+   "Road"
+  ],
+  [
+   "Camden",
+   "Place"
+  ],
+  [
+   "Sewells",
+   "Road"
+  ],
+  [
+   "Ballina",
+   "Crescent"
+  ],
+  [
+   "Whitecross",
+   "Dr"
+  ],
+  [
+   "Kinane",
+   "St"
+  ],
+  [
+   "Sheep",
+   "St"
+  ],
+  [
+   "Paneer",
+   "Rd"
+  ]
+ ]
+}

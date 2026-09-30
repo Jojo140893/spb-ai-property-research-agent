@@ -790,7 +790,26 @@ class Run:
                         and h not in self.warned_locality):
                     self.warned_locality.add(h)
                     hit = self.locality(h)
-                    if hit:
+                    if hit and len(hit) > 2 and hit[2] == "design":
+                        self.report.warn(where, "design: shortlisted %s is filed %s by %r, "
+                                                "and the only place it can rest on, %r, is "
+                                                "written in its own text as a house design"
+                                         % (name, row.get("state"), row.get("state_source"),
+                                            hit[0]))
+                    elif hit and len(hit) > 2 and hit[2] == "page-held":
+                        self.report.warn(where, "page-held: shortlisted %s is held %s on its "
+                                                "page (%r), and its label also names %s (%s)"
+                                                " -- a misfile if the page is wrong"
+                                         % (name, row.get("state"), row.get("state_source"),
+                                            hit[0], hit[1]))
+                    elif hit and len(hit) > 2 and hit[2] == "facade":
+                        self.report.warn(where, "facade: shortlisted %s is filed %s by %r, "
+                                                "its page's state, and its own text names "
+                                                "%s (%s) only as a house design with its "
+                                                "facade -- a misfile only if the page is"
+                                         % (name, row.get("state"), row.get("state_source"),
+                                            hit[0], hit[1]))
+                    elif hit:
                         self.report.warn(where, "text: shortlisted %s is filed %s from its "
                                                 "suburb column (%s), but its own text names "
                                                 "%s (%s)" % (name, row.get("state"),
@@ -815,6 +834,11 @@ class Run:
         The postcode is compared with each NUMBER in the lot, not with all its digits run
         together (review, 28 Sep 2026): Geocon's lot "GRD-T2-601" is 2 and 601, and 2601
         is its real Canberra postcode, not its lot number.
+
+        And with the number that OPENS the row's own line or label (29 Sep 2026), lot
+        number stored or not: AVIA 2234, "2120 Stage 21 ...", lot_number empty, postcode
+        2120 -- a NSW state from a QLD lot's number. Stated here without the resolver's
+        exception for a line written postcode-first, which no stored row has.
         """
         if row is None or h in self.warned_lot_postcode:
             return
@@ -822,6 +846,10 @@ class Run:
         signals = [p.strip() for p in str(rec.get("state_source") or "").split("+")]
         postcode = re.sub(r"\D", "", str(rec.get("postcode") or "")).lstrip("0")
         lot = {n.lstrip("0") for n in re.findall(r"\d+", str(rec.get("lot_number") or ""))}
+        for line in (rec.get("source_text"), rec.get("lot_address")):
+            opening = re.match(r"^[^\w$]*(\d+)(?![\d.,/])", str(line or ""))
+            if opening:
+                lot.add(opening.group(1).lstrip("0"))
         if "postcode" not in signals or not postcode or postcode not in lot:
             return
         self.warned_lot_postcode.add(h)
@@ -1144,6 +1172,25 @@ def locality_check(catalogue, report):
     """14905's shape, as a WARN: filed in a state by its suburb column alone, with its own
     text naming a locality of one other state the catalogue stocks (state_resolver's rule).
 
+    Same rule as enrich's, word for word (29 Sep 2026): origin/main's, which is what
+    text_locality_elsewhere scans with, and it warns wherever origin/main's warns (round 3,
+    29 Sep 2026). Rounds 1 and 2 kept quiet about a design the row writes ("... Rhodes
+    Paddington 180m2 ...", AVIA 7810: design Rhodes, facade Paddington, not Rhodes NSW) on
+    a row whose page backs the state it is filed in, and both reviews of round 2 found
+    that silence hiding genuine misfiles origin/main catches: the same words are Creation
+    Homes' "<suburb> <design> <size>" (7889 "66 Taylors Ridge Walloon Banksia 183" filed
+    NSW on its page with a heading column), and a design name is any place. The words
+    cannot tell those apart from the design's own; so the row is warned about as
+    origin/main warns, and where enrich's rule reads a design and its facade code on a row
+    its page backs ("Rhodes Paddington 180m2", "Rhodes Fortitude 180m2") the WARN says that
+    ("facade:", check() returns (name, state, "facade")) rather than calling it a misfile.
+
+    And a second WARN for the misfile that rule cannot see (state_resolver.
+    design_the_state_rests_on): the only place a suburb-match state can rest on is written
+    in the row's own text as a house design -- Hattan 14913/14914, filed NSW on "Verona SG
+    Corner", where no other state's place is named at all. check() returns (name, None,
+    "design") for it.
+
     geo imports config, whose module-level mkdir the read-only bundle refuses: the caller
     imports config through _bootstrap first, as the endpoint does."""
     try:
@@ -1165,9 +1212,46 @@ def locality_check(catalogue, report):
         if not str(row.get("state_source") or "").strip().lower().startswith("suburb"):
             return None
         try:
-            return state_resolver.text_locality_elsewhere(
-                catalogue.text(h), row.get("state"), geo, stocked,
-                estate=row.get("estate_name") or "")
+            # The suburb the state rests on -- the database's column, as enrich reads it
+            # -- so a name beside that very word is not let go as 'followed'.
+            rec = catalogue.db_row(h) or {}
+            column = str(rec.get("suburb") or row.get("suburb") or "").strip()
+            # The page's state, as far as this row shows it: the database's hint, or the
+            # state itself when its signal says the page voted for it (a snapshot without
+            # the database carries no hint). Round 2, 29 Sep 2026: text_locality_elsewhere
+            # keeps quiet about a design only where the page backs the filed state.
+            signals = [p.strip() for p in str(row.get("state_source") or "").split("+")]
+            page = rec.get("source_state_hint") or (row.get("state")
+                                                    if "e-agent page" in signals else "")
+            text = catalogue.text(h)
+            estate = row.get("estate_name") or ""
+            # origin/main's answer, always (round 3, 29 Sep 2026): a row it warns about is
+            # warned about. Where enrich's rule keeps quiet -- a design and its facade code
+            # on a row its page backs, a heading in its suburb column, no other place in
+            # its line -- the WARN says so ("facade:") instead of calling it a misfile.
+            hit = state_resolver.text_locality_elsewhere(text, row.get("state"), geo, stocked,
+                                                         estate=estate)
+            if hit:
+                quiet = state_resolver.text_locality_elsewhere(
+                    text, row.get("state"), geo, stocked, estate=estate, suburb=column,
+                    page=page or "") is None
+                return (hit[0], hit[1], "facade") if quiet else hit
+            # A row enrich HELD on its page (state_source 'suburb (page-held) + e-agent
+            # page') while its label also names a place of another state (integration, 30
+            # Sep 2026): round 3's review found neither enrich nor this check sees such a row
+            # again -- the check reads its line before its label -- so a genuine misfile of
+            # that shape on a wrong page ("Lot 27102, Windermere Mambourin" filed QLD) went
+            # unreported. The label is asked on its own, and a hit is a WARN, never a move.
+            if "page-held" in str(row.get("state_source") or ""):
+                label = str(row.get("lot_address") or rec.get("lot_address") or "")
+                held = state_resolver.text_locality_elsewhere(label, row.get("state"), geo,
+                                                              stocked, estate=estate)
+                if held:
+                    return (held[0], held[1], "page-held")
+            suburb = str(row.get("suburb") or rec.get("suburb") or "").strip()
+            design = state_resolver.design_the_state_rests_on(
+                catalogue.text(h), suburb, row.get("state"), geo)
+            return (design, None, "design") if design else None
         except Exception:                                             # noqa: BLE001
             return None
     return check
