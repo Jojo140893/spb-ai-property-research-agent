@@ -86,6 +86,54 @@ _DWELLING_POSTCODE_RANGES = (
 def _is_dwelling_postcode(val: int) -> bool:
     return any(low <= val <= high for low, high in _DWELLING_POSTCODE_RANGES)
 
+
+# A four-digit number that is only PART of something else is not a postcode (29 Sep 2026).
+# Two such numbers made stocklists national -- their rows proving two states, so E-Agent's
+# page state was void for every row on them that proves nothing itself:
+#   * APLACE 12153, "Yarrawonga 2077 Buloke Circuit Glanmire Park Titled 2064 39 x 54
+#     $390,000 ..." -- 2064 is the LAND AREA, 2064 m2 on a 39 x 54 m lot. Yarrawonga is in
+#     VIC and NSW and 2064 is a NSW code, so the row proved NSW by "suburb + postcode" on
+#     E-Agent's VIC page;
+#   * six Mornington storage units on two sheets, "... STORAGF Cold Shell 03-7076
+#     71,550.00$ ..." -- an OCR'd date read as TAS 7076, Mornington being in VIC and TAS.
+# Over the 29 Sep nightly this changes what 24 of 23,448 rows' own text parses to, every
+# one a misreading. 21 of the 24 are stored postcodes: decimals ("3815.58"), fees ("$2576.1
+# per year"), the land areas, the OCR'd dates and pieces of links ("...-de30-4137-9f59-").
+# The number is part of a longer one when a dash or a point joins it to another digit
+# ("03-7076", "0.3-7076", "2730.00", "2066.91m2", the "3653" of a link's "...-3653-47da"),
+# and it is an area when a unit follows it ("600 m2") or the frontage and depth of the
+# lot whose area it is ("2064 39 x 54": 39 x 54 = 2106). A postcode written before the
+# lot's dimensions stays one -- "Tarneit VIC 3029 12.5 x 32" is 3029 beside a 400 m2 lot --
+# so the dimensions only make it an area when their product is within a factor of two of
+# it.
+# A postcode already in hand is state_resolver.postcode_written_as_another_number's to
+# judge: database.record_building's write check and the nightly enrich apply it, so a value
+# stored before this rule is cleared there, not here. It decides the dimensions case
+# differently -- by a locality of the postcode's state written just before it, not by the
+# lot's area -- and on the 29 Sep copy the two agree: the only four-digit numbers before a
+# frontage x depth are APLACE's six, at 0.98 and 1.17 times it. A number this parser
+# returns and that check refuses is simply not stored, so the two cannot undo each other.
+# Measured there, this parser offers the check 21 fewer numbers to drop (377 -> 356; the
+# rest are lot numbers), among them AVIA 2235's OCR'd date "27.07.2926", and no new one.
+_JOINED_BEFORE = re.compile(r"\d[-.]\s?$")
+_JOINED_AFTER = re.compile(r"[-.]\d")
+_AREA_UNIT_AFTER = re.compile(r"\s*(?:m2|m²|sqm|sq)", re.I)
+_DIMENSIONS_AFTER = re.compile(r"\s+(\d{1,3}(?:\.\d+)?)\s*[xX×]\s*(\d{1,3}(?:\.\d+)?)(?![\d.])")
+
+
+def _part_of_another_number_or_area(text: str, start: int, end: int) -> bool:
+    """True when the four digits at text[start:end] belong to a longer number or are an area."""
+    before, after = text[:start], text[end:]
+    if _JOINED_BEFORE.search(before) or _JOINED_AFTER.match(after):
+        return True
+    if _AREA_UNIT_AFTER.match(after):
+        return True
+    dims = _DIMENSIONS_AFTER.match(after)
+    if dims:
+        lot = float(dims.group(1)) * float(dims.group(2))
+        return lot > 0 and 0.5 <= int(text[start:end]) / lot <= 2
+    return False
+
 # ---------- incentives ----------
 _INCENTIVE_CONTEXT = (r"rebate|incentive|bonus|cash\s*back|cashback|credit|discount|gift|"
                       r"free\s+upgrade|promo(?:tion)?|grant|contribution|allowance|saving|"
@@ -441,8 +489,7 @@ def parse_postcode(text: str) -> Optional[str]:
     for m in _FOUR_DIGIT.finditer(t):
         val = int(m.group(1))
         before = t[:m.start()]
-        after = t[m.end():m.end() + 6].lower()
-        if re.match(r"\s*(?:m2|m²|sqm|sq)", after):        # an area, not a postcode
+        if _part_of_another_number_or_area(t, m.start(), m.end()):
             continue
         if 2015 <= val <= 2035:                            # a bare year
             continue
