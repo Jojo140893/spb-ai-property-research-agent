@@ -184,3 +184,18 @@ def test_enrich_lists_every_live_row_held_on_its_page(tmp_path, monkeypatch, cap
     assert count == (1 if after == enrich_buildings.PAGE_HELD_SIGNAL else 0), (out, after)
     if count:
         assert "Windermere Mambourin" in out
+
+
+# ------------------------------------------------------------ 4. a year after a point
+
+@pytest.mark.parametrize("postcode, text, written", [
+    # AVIA 2235 (Flagstone, QLD): the year of "27.07.2926" is part of the date
+    ("2926", "Owner.Occ Only 27.07.2926", True),
+    ("2926", "Available 27.07.2926 Lot 5", True),
+    # unchanged: a trailing decimal, a land area, and a postcode written as one
+    ("2730", "West End Commercial 2730.00", True),
+    ("3029", "Lot 5 Tarneit VIC 3029", False),
+    ("3029", "Lot 5 Tarneit VIC. 3029", False),
+])
+def test_a_number_after_a_point_is_part_of_that_number(geo, postcode, text, written):
+    assert sr.postcode_written_as_another_number(postcode, text, geo) is written

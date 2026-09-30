@@ -196,7 +196,12 @@ def postcode_written_as_another_number(postcode: Any, row_text: Any, geo: Any = 
     seen = False
     for text in texts:
         text = str(text or "")
-        for m in re.finditer(r"(?<![\d.])" + pc + r"(?!\d)", text):
+        # Found after a point too (30 Sep 2026, a review from the parser-side fix): with the
+        # point in the look-behind, the year of a date written "27.07.2926" (AVIA 2235,
+        # "Owner.Occ Only 27.07.2926") was never seen, so it was never refused, and the write
+        # door would have stored 2926 (NSW) as the postcode of a Flagstone, QLD lot.
+        # _JOINED_BEFORE then reads it as part of that longer number.
+        for m in re.finditer(r"(?<!\d)" + pc + r"(?!\d)", text):
             seen = True
             before, after = text[:m.start()], text[m.end():]
             if _JOINED_BEFORE.search(before) or _JOINED_AFTER.match(after):
