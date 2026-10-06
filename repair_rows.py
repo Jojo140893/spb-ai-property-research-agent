@@ -417,6 +417,10 @@ _PAGE_PER_LOT = frozenset({"Direct Builder Portal (live)"})
 
 RELISTING_CHANNELS = frozenset({
     "E-Agent", "Proxima", "Direct Builder Portal (live)",
+    # E-Agent's Stocklist search (7 Oct 2026) lists every package it holds on every read,
+    # all from one endpoint -- one document, so a lot it stops listing is retired here and
+    # a half-read list is caught by partial_reads like any other.
+    "E-Agent Stocklist",
 })
 # How long a listing must be absent from its OWN list before we take the hint.
 WITHDRAWN_AFTER_DAYS = 14

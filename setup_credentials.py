@@ -48,6 +48,11 @@ _API_KEYS = (
     # myaccount.google.com/apppasswords (needs 2-Step Verification on that account),
     # and set IMAP_HOST=imap.gmail.com.
     ("email_inbox", "digital@ inbox (Gmail app password, not the account password)"),
+    # E-Agent's "Search All H&L" site, eagent.mekooflow.com (7 Oct 2026). Its login is a
+    # COMPANY name and a password from E-Agent's BDM, not the E-Agent member email, so it
+    # is its own key; type the company at the username prompt. See the runbook at the top
+    # of sources/eagent_stocklist.py.
+    ("eagent_stocklist", "EAgent Stocklist (E-Agent H&L search) -- COMPANY name as the username"),
 )
 
 

@@ -2196,6 +2196,20 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
         # test (CHANNEL_PUSH_SOURCES).
         c["login"] = ({"state": "not_applicable"} if c["channel"] in CHANNEL_PUSH_SOURCES
                       else _login_for(c["channel"], logins))
+    # A SOURCE WITH A LOGIN AND NO STOCK YET (7 Oct 2026). The table above is built from the
+    # stock, so a source that has never delivered a row has no line in it -- and E-Agent's
+    # Stocklist search cannot deliver one until the client gets its company login from her
+    # E-Agent BDM. The row that says so is the one thing that unblocks it, so a login row
+    # naming a channel (portal_login.py --check) gets a line of its own until stock arrives.
+    named = {_norm_source(c["channel"]) for c in channels}
+    for login in logins.values():
+        name = str(login.get("channel") or "").strip()
+        if name and _norm_source(name) not in named:
+            named.add(_norm_source(name))
+            channels.append({"channel": name, "live": 0, "last_stock": "",
+                             "days_ago": None, "hours_ago": None, "refreshed": 0,
+                             "refreshed_pct": 0, "state": "unknown",
+                             "login": _login_for(name, logins)})
 
     # THE DIRECT PORTALS, BY NAME. They all share one source_channel, so Bathla,
     # Hermitage and Torsion appeared as a single row called "Direct Builder Portal

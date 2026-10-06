@@ -235,6 +235,101 @@ def _detail(row):
     return (filled, benchmarked) + _freshness(row)
 
 
+# ---------------------------------------------------------------------------------------
+# THE SAME LOT FROM E-AGENT'S STOCKLIST SEARCH AND FROM A PRICE LIST (7 Oct 2026)
+# ---------------------------------------------------------------------------------------
+#
+# E-Agent publishes most stock twice: as a builder's price list on its category pages (the
+# "E-Agent" channel) and again in its Stocklist search (sources/eagent_stocklist.py, the
+# "E-Agent Stocklist" channel). The two never share a line of text or an address label --
+# one is a flattened spreadsheet row, the other is composed from JSON fields -- so none of
+# the three passes above can join them, and every such lot would be listed twice.
+#
+# The rule is the search lane's rule for a cross-channel merge: never two lines of one
+# document; across channels only when the LOT NUMBER and the ESTATE match. Plus the price,
+# because two designs on one lot are two packages at two prices (the VIC Regional list's
+# Lot 414), and no contradiction on the state or the rooms where both captures state them.
+# Only a Stocklist row is ever joined, and only to exactly one other lot: a key matched by
+# two price-list lines (two facades at one price) or by two Stocklist rows says nothing
+# about which is which, so it joins nothing.
+STOCKLIST_CHANNEL = "e-agent stocklist"   # sources.eagent_stocklist.CHANNEL, lower-cased
+_TWIN_SPEC = ("bedrooms", "bathrooms", "car_spaces")
+
+
+def _is_stocklist(row):
+    return _norm(row.get("source_channel")) == STOCKLIST_CHANNEL
+
+
+def _twin_lot(value):
+    """'Lot 0100' and '100' are one lot number; '' and '-' are none."""
+    s = re.sub(r"^\s*(?:lot|unit)\s*[:#.]?\s*", "", str(value or ""), flags=re.I)
+    s = re.sub(r"\s+", "", s).upper().lstrip("0")
+    return s if re.search(r"\d", s) else None
+
+
+def _twin_estate(value):
+    """'Aurora Estate', 'AURORA' and 'The Aurora' are one estate."""
+    words = re.sub(r"[^a-z0-9 ]", " ", str(value or "").lower()).split()
+    words = [w for w in words if w not in ("estate", "the")]
+    s = " ".join(words)
+    return s if len(re.sub(r"[^a-z]", "", s)) >= 3 else None
+
+
+def stocklist_twin_key(row):
+    lot, estate = _twin_lot(row.get("lot_number")), _twin_estate(row.get("estate_name"))
+    try:
+        price = round(float(row.get("price") or 0), 2)
+    except (TypeError, ValueError):
+        return None
+    if not (lot and estate and price > 0):
+        return None
+    return (estate, lot, price)
+
+
+def _twins_contradict(a, b):
+    """True when two captures state different things about the same fact."""
+    sa, sb = _norm(a.get("state")), _norm(b.get("state"))
+    if sa and sb and sa != sb:
+        return True
+    for f in _TWIN_SPEC:
+        va, vb = a.get(f), b.get(f)
+        if va not in (None, "") and vb not in (None, "") and str(va) != str(vb):
+            try:
+                if float(va) != float(vb):
+                    return True
+            except (TypeError, ValueError):
+                return True
+    return False
+
+
+def _stocklist_twins(rows, find):
+    """[(stocklist_row, price_list_row)] to join, given the components so far (find)."""
+    groups = defaultdict(list)
+    for r in rows:
+        if r.get("superseded_by") and not str(r.get("superseded_by")).startswith("v2:"):
+            continue            # a rule marker (a filter row, an email sentence) is no twin
+        k = stocklist_twin_key(r)
+        if k is not None:
+            groups[k].append(r)
+    out = []
+    for members in groups.values():
+        mine = [m for m in members if _is_stocklist(m)]
+        theirs = [m for m in members if not _is_stocklist(m)]
+        if not mine or not theirs:
+            continue
+        if (len({find(m["id"]) for m in mine}) != 1
+                or len({find(m["id"]) for m in theirs}) != 1):
+            continue
+        if any(_twins_contradict(a, b) for a in mine for b in theirs):
+            continue
+        out.append((mine[0], theirs[0]))
+    return out
+
+
+def _fresh_then_detail(row):
+    return (_parsed_date(row.get("date_checked")) or datetime.min,) + _detail(row)
+
+
 def find_superseded(rows):
     """[(loser_row, winner_row)] for every surplus capture.
 
@@ -300,6 +395,11 @@ def find_superseded(rows):
             for other in members[1:]:
                 union(members[0]["id"], other["id"])
 
+    # AFTER the three passes, so their components are what it reasons about: the three
+    # captures of one price-list line that text_key already joined are ONE twin, not three.
+    for a, b in _stocklist_twins(rows, find):
+        union(a["id"], b["id"])
+
     by_id = {r["id"]: r for r in rows}
     components = defaultdict(list)
     for r in rows:
@@ -316,6 +416,10 @@ def find_superseded(rows):
         # whole question, so the original rule is preserved there untouched.
         spans_channels = len({_norm(m.get("source_channel")) for m in members}) > 1
         rank = _detail if spans_channels else _freshness
+        if spans_channels and any(_is_stocklist(m) for m in members):
+            # A Stocklist row and a price list read on different nights: the newer read is
+            # what E-Agent shows today, so it wins; on the same night, the fuller one.
+            rank = _fresh_then_detail
         ordered = sorted(members, key=rank, reverse=True)
         winner = ordered[0]
         for loser in ordered[1:]:

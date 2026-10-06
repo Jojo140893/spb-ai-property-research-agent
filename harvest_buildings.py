@@ -4,6 +4,8 @@ Harvest ALL building stock from the credentialed sources into the DB.
 Unlike the client-research pipeline (which filters stock by a single client's
 budget/suburb), this pulls the full current stock list from:
   - E-Agent (one login, ~14 builders)
+  - E-Agent's Stocklist search (eagent.mekooflow.com; skipped until its company login,
+    from E-Agent's BDM, is stored -- see sources/eagent_stocklist.py)
   - the direct builder portals (Paramount, FRD, Torsion, Hermitage, Bathla, Proxima)
 
   - the digital@ inbox, where the nine builders with no portal send their stock
@@ -44,6 +46,8 @@ logger = logging.getLogger(__name__)
 import benchmarks
 from builder_registry import BuilderRegistry
 from sources.e_agent import EAgentSource
+from sources.eagent_stocklist import (EAgentStocklistSource, CHANNEL as STOCKLIST_CHANNEL,
+                                      MISSING_TEXT as STOCKLIST_MISSING)
 from sources.builder_portals import BuilderPortalSource
 from sources.email_inbox import EmailStocklistSource
 from sources.proxima import ProximaSource
@@ -91,8 +95,12 @@ def _require_readers():
 
 
 def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
-            email_days=90):
+            email_days=90, eagent_stocklist=None):
     logging.basicConfig(level=logging.INFO, format='    %(levelname)s %(message)s')
+    # The Stocklist is E-Agent's own stock, so it runs whenever E-Agent does unless asked
+    # for separately (--eagent-stocklist-only).
+    if eagent_stocklist is None:
+        eagent_stocklist = eagent
     if not _require_readers():
         return 1
     registry = BuilderRegistry()
@@ -131,6 +139,36 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
             total_new += new
             read["E-Agent"] = len(listings)
             print(f"    E-Agent: {len(listings)} listing(s) scraped, {new} new, {updated} updated.")
+
+    if eagent_stocklist:
+        # E-AGENT'S POOLED HOUSE-AND-LAND SEARCH (7 Oct 2026). On 24 Sep E-Agent moved its
+        # pooled H&L lists off the members' pages to "EAgent Stocklist" at
+        # eagent.mekooflow.com, behind a company login issued by its BDM, and from that
+        # night the log read "0 pooled listing(s)". Coleen compares the app against that
+        # search, which is why "E-Agent always shows more". Its own channel, so its rows
+        # never share an identity with the price-list rows the E-Agent pages give for the
+        # same lots (supersede_duplicates joins the two). No login -> one line and a skip,
+        # never a failed run: the login is the client's to obtain.
+        sl = EAgentStocklistSource()
+        if not sl.configured:
+            print(f"[i] E-Agent Stocklist: no company login stored -- skipped. "
+                  f"{STOCKLIST_MISSING}, then: python setup_credentials.py eagent_stocklist")
+            skipped[STOCKLIST_CHANNEL] = f"no company login ({STOCKLIST_MISSING})"
+        else:
+            print("[+] E-Agent Stocklist: signing in and reading the H&L search...")
+            listings = sl.search(ALL_STOCK_FILTERS)
+            # Counted whenever a login is stored, so a refused sign-in on a channel that
+            # holds stock is a dead channel like any other (_dead_channels).
+            read[STOCKLIST_CHANNEL] = len(listings)
+            outcomes = [db.record_building(L) for L in listings]
+            new, updated = outcomes.count("new"), outcomes.count("updated")
+            total_new += new
+            print(f"    E-Agent Stocklist: {len(listings)} listing(s), {new} new, "
+                  f"{updated} updated -- {getattr(sl, 'state', '?')}: "
+                  f"{getattr(sl, 'why', '')}")
+            if getattr(sl, "truncated", False):
+                print("    E-Agent Stocklist: the read STOPPED AT ITS CAP -- the list is "
+                      "longer than what was stored tonight.")
 
     if portals:
         bp = BuilderPortalSource(registry)
@@ -483,7 +521,10 @@ def _collapsed_channels(read: Dict[str, int], stored: Dict[str, int],
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--eagent-only", action="store_true")
+    ap.add_argument("--eagent-only", action="store_true",
+                    help="E-Agent's pages and its Stocklist search")
+    ap.add_argument("--eagent-stocklist-only", action="store_true",
+                    help="only E-Agent's Stocklist search (eagent.mekooflow.com)")
     ap.add_argument("--portals-only", action="store_true")
     ap.add_argument("--email-only", action="store_true")
     ap.add_argument("--proxima-only", action="store_true")
@@ -493,7 +534,7 @@ if __name__ == "__main__":
                     help="how far back to sweep the inbox (default 90)")
     args = ap.parse_args()
     only = (args.eagent_only or args.portals_only or args.email_only
-            or args.proxima_only or args.rea_only)
+            or args.proxima_only or args.rea_only or args.eagent_stocklist_only)
     # Non-zero when a channel that holds stock read nothing, OR read so much less than
     # usual that the run is a partial, so run_daily stops and the operator is told,
     # instead of publishing a stale snapshot as if it were fresh.
@@ -507,4 +548,6 @@ if __name__ == "__main__":
                      email=args.email_only or not only,
                      proxima=args.proxima_only or not only,
                      rea=args.rea_only or not only,
-                     email_days=args.email_days))
+                     email_days=args.email_days,
+                     eagent_stocklist=(args.eagent_stocklist_only or args.eagent_only
+                                       or not only)))

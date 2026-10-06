@@ -28,7 +28,7 @@ holds, and a row with nothing to point at gets no link rather than a guess.
 
 import re
 from typing import Any, Dict, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 # NO PROXIMA_PROJECT_URL. There used to be a "…/agent/projects/view/id/%s" here, built
 # from the plain data-project_id. It was never a route the harvest actually loads — it was
@@ -37,6 +37,15 @@ from urllib.parse import quote
 # the project name to search, is the only durable way in.
 PROXIMA_INDEX_URL = "https://portal.proxima.com.au/agent/projects/index/"
 GMAIL_SEARCH_URL = "https://mail.google.com/mail/u/0/#search/%s"
+# E-Agent's Stocklist search (7 Oct 2026, sources/eagent_stocklist.py). Its rows are read
+# from a JSON API behind a company login, and that endpoint is what source_url holds: opened
+# in a browser it answers 401 or raw JSON, never "the price list". The site's front door,
+# where Coleen signs in with the same company login, plus the lot and estate to search for,
+# is the honest link. Copied rather than imported: this module ships in the Vercel bundle
+# and sources/eagent_stocklist.py does not.
+STOCKLIST_CHANNEL = "E-Agent Stocklist"
+STOCKLIST_URL = "https://eagent.mekooflow.com/"
+_STOCKLIST_HOST = "eagent.mekooflow.com"
 
 # source_url on an emailed price list is stored as "email:<subject>", not a link.
 _EMAIL_REF = re.compile(r"^\s*email:\s*(.+)$", re.I)
@@ -297,11 +306,28 @@ def source_links(row: Dict[str, Any]) -> list:
             else "Proxima projects list", PROXIMA_INDEX_URL, "portal",
             search=project)  # the project name, never the lot address
 
+    if channel == STOCKLIST_CHANNEL:
+        lot_no = _clean_ref(row.get("lot_number"))
+        estate = _clean_ref(row.get("estate_name"))
+        place = estate or _clean_ref(row.get("suburb"))
+        term = (f"Lot {lot_no}, {place}" if lot_no and place else place or "")
+        add(f'EAgent Stocklist - find "{term}"' if term else "EAgent Stocklist",
+            STOCKLIST_URL, "portal", search=term)
+
     # The file the row was read out of. For E-Agent this is the price list itself and
     # it is the only e-agent destination that exists.
     for field, label in (("stocklist_file", "Price list"), ("source_url", "Source file")):
         value = str(row.get(field) or "").strip()
         if not value:
+            continue
+        try:
+            host = (urlsplit(value).hostname or "").lower()
+        except ValueError:
+            host = ""
+        # The Stocklist's API or export endpoint: see STOCKLIST_URL above. By channel as
+        # well as by host, so a move of the site to another address cannot put a raw API
+        # link back on the card.
+        if host == _STOCKLIST_HOST or channel == STOCKLIST_CHANNEL:
             continue
         match = _EMAIL_REF.match(value)
         if match:
