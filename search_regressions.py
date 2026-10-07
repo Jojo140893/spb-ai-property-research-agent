@@ -1043,25 +1043,37 @@ def obvious_candidates(catalogue, state, low, high, today, build_cells):
                       if d is not None]
             if firsts and (today - min(firsts)).days > OBVIOUS_MAX_DAYS:
                 continue
-        cells = build_cells(dict(rec))
-        if str(cells.get("price_kind") or "").lower() in ("build_only", "land_only"):
-            continue
-        # The row's own columns saying the price is only the land or only the house
-        # ("Wollert Land Price $143,389": land_price is the price, no build price).
-        land, build = _num(rec.get("land_price")), _num(rec.get("build_price"))
-        if bool(land) != bool(build) and abs((land or build) - price) <= 1.0:
-            continue
-        # A line of a price list that does not print the price it is stored at (an email
-        # sentence stored at $553,284) is not an obvious listing.
-        if (cells.get("price_in_text") is False
-                and str(rec.get("source_channel") or "").strip().lower() in (EMAIL_CHANNEL,
-                                                                             "e-agent")):
-            continue
-        printed = _num(cells.get("text_price_max"))
-        if printed is not None and printed > price * (1 + COMPONENT_TOLERANCE):
+        if not priced_as_a_home(rec, build_cells(dict(rec))):
             continue
         out.append(rec)
     return out
+
+
+def priced_as_a_home(rec, cells):
+    """Whether a database row's stored price is a whole home-and-land price its own line
+    prints, by the row's columns and its price evidence (cells: the bundle's
+    snapshot_build_cells of the row). Split out of obvious_candidates on 7 Oct 2026 so
+    parity_check.py picks its obvious lots by the same price rule, word for word."""
+    price = _num(rec.get("price"))
+    if not price or price <= 0:
+        return False
+    if str(cells.get("price_kind") or "").lower() in ("build_only", "land_only"):
+        return False
+    # The row's own columns saying the price is only the land or only the house
+    # ("Wollert Land Price $143,389": land_price is the price, no build price).
+    land, build = _num(rec.get("land_price")), _num(rec.get("build_price"))
+    if bool(land) != bool(build) and abs((land or build) - price) <= 1.0:
+        return False
+    # A line of a price list that does not print the price it is stored at (an email
+    # sentence stored at $553,284) is not an obvious listing.
+    if (cells.get("price_in_text") is False
+            and str(rec.get("source_channel") or "").strip().lower() in (EMAIL_CHANNEL,
+                                                                         "e-agent")):
+        return False
+    printed = _num(cells.get("text_price_max"))
+    if printed is not None and printed > price * (1 + COMPONENT_TOLERANCE):
+        return False
+    return True
 
 
 def obvious_rows_check(C, research, bootstrap, catalogue, snapshot_path):

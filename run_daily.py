@@ -24,8 +24,10 @@ ORDER MATTERS, and each dependency below is a bug that was actually hit:
   5. benchmark    — needs the whole set present to compute a median to compare against
   6. export       — CSV + Excel for Coleen
   7. build+deploy — the snapshot the deployed app reads, then Colin's searches replayed
-                    against it through the bundle that ships (search_regressions.py,
-                    optional: a failure marks the run DEGRADED after publishing)
+                    against it through the bundle that ships (search_regressions.py),
+                    then every state searched as Coleen searches it and compared with what
+                    the sources list (parity_check.py). Both optional: a failure marks the
+                    run DEGRADED after publishing
 
 WHAT THIS CANNOT DO UNATTENDED, stated plainly rather than left to fail at 3am:
 Paramount's login carries an invisible reCAPTCHA and Proxima enforces 2FA. Neither can be
@@ -37,6 +39,7 @@ Exit code is non-zero if a step fails, so Task Scheduler shows the run as failed
 """
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -72,6 +75,9 @@ SESSION_MAX_AGE_DAYS = 14
 # Optional steps that FAILED rather than being skipped. Reported at the end so a
 # partially-degraded run is never announced as a clean one.
 _DEGRADED: list = []
+# When this run's chain started (time.time()), so a report a step wrote tonight can be told
+# from one an earlier night left behind. See _parity_table.
+_RUN_STARTED = [0.0]
 
 
 def _run(label: str, args: list, optional: bool = False) -> bool:
@@ -146,6 +152,30 @@ def _lines_already_in_degraded_marker() -> list:
         if line and line not in _DEGRADED and line not in out:
             out.append(line)
     return out
+
+
+def _parity_table() -> str:
+    """Tonight's source-to-search parity table for the DEGRADED alert, or '' when the
+    parity step did not fail tonight.
+
+    7 Oct 2026. The log's last 40 lines end with the chain's own summary, so a parity
+    table printed before it can be cut off -- and the table IS the message: which state
+    shows how few of the lots its sources list, and why. Read from the report the step
+    writes, never re-derived here.
+    """
+    if not any("parity" in line.lower() for line in _DEGRADED):
+        return ""
+    path = APP / "data" / "parity_report.json"
+    try:
+        # Tonight's, or nothing: a step that died before writing leaves last night's table,
+        # and an alert carrying it would describe a different night as this one.
+        if path.stat().st_mtime < _RUN_STARTED[0]:
+            return ""
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    table = str((report or {}).get("table") or "").strip() if isinstance(report, dict) else ""
+    return ("Source-to-search parity:\n\n" + table + "\n\n") if table else ""
 
 
 def _session_report() -> None:
@@ -395,6 +425,18 @@ def _chain(args) -> int:
         # channel) or DEGRADED_EXIT (read as a fallback).
         ("7/7  Replay Colin's searches",
          ["search_regressions.py", "--snapshot", "vercel_site/stock.json"], True),
+        # DOES THE APP SHOW WHAT THE SOURCES LIST? Coleen, 7 Oct 2026: the same search in
+        # E-Agent and in the Research tab, and E-Agent always showed more. It was right: a
+        # state-wide search scored only the 600 cheapest lots in the state, and the replay
+        # above never noticed because Colin's briefs never reach that cap. This searches
+        # every state as she does and compares it with every lot read in the last three
+        # nights (parity_check.py). Same terms as the replay: OPTIONAL and after the build,
+        # so a miss never withholds the stock -- it exits 1, _run records the step, main()
+        # writes the DEGRADED marker and the alert carries the parity table, and CI goes red
+        # after publishing. --nightly keeps the drift history and publishes the table the
+        # Settings tab shows.
+        ("7/7  Source-to-search parity",
+         ["parity_check.py", "--snapshot", "vercel_site/stock.json", "--nightly"], True),
     ]
 
     print(f"SPB daily run — {datetime.now():%a %d %b %Y %H:%M}")
@@ -404,6 +446,7 @@ def _chain(args) -> int:
         print("  then: deploy.ps1" if not args.no_deploy else "  deploy: skipped")
         return 0
 
+    _RUN_STARTED[0] = time.time()
     _session_report()
     _benchmark_basis_report()
     failed = []
@@ -475,6 +518,7 @@ def _chain(args) -> int:
                "The run completed and published, but these steps failed:\n\n  - "
                + "\n  - ".join(_DEGRADED)
                + "\n\nAnything they produce is now stale in the published snapshot.\n\n"
+               + _parity_table()
                + "Last 40 lines of the log:\n\n" + _log_tail())
         # AND A MARKER, for the same reason _PARTIAL has one. The email above is the only
         # other signal and it needs SPB_ALERT_TO, which is not set on the runner — a real
