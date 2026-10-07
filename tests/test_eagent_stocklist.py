@@ -578,3 +578,86 @@ def test_the_harvest_stores_stocklist_rows_under_their_own_channel(monkeypatch, 
     hb.harvest(eagent=False, portals=False, email=False, proxima=False, rea=False,
                eagent_stocklist=True)
     assert len(db.get_buildings()) == 25
+
+
+def test_a_stocklist_lot_a_constraint_refuses_is_named_and_counted(monkeypatch, tmp_path,
+                                                                    capsys):
+    """7 Oct 2026, integration of the Stocklist and harvest lanes. record_building now says
+    "rejected" when a constraint refuses a lot, and every other channel's block counts it
+    -- the summary names the channel, and data/harvest_manifest.json records what each
+    source printed and stored, which the parity check's READ bar reads. The Stocklist block
+    was written before that and counted neither, so a refused Stocklist lot vanished with no
+    line anywhere: the silent loss the dedup_key trap fix was made to end."""
+    import config
+    import harvest_buildings as hb
+    import harvest_manifest
+    from database import ResearchDatabase
+    monkeypatch.setattr(config, "DATABASE_PATH", tmp_path / "h.db")
+    monkeypatch.setattr(hb, "ResearchDatabase",
+                        lambda *a, **k: ResearchDatabase(db_path=tmp_path / "h.db"))
+    rows = [es.map_record(r, "https://x", "https://x/api/p")[0] for r in make_records(25)]
+    for r in rows:
+        r.pop("_state_stated", None)
+    refused = {rows[i]["lot_address"] for i in (2, 7, 11)}
+    real = ResearchDatabase.record_building
+
+    def record(self, listing):
+        if listing.get("lot_address") in refused:
+            return "rejected"
+        return real(self, listing)
+
+    monkeypatch.setattr(ResearchDatabase, "record_building", record)
+
+    class Fake:
+        channel_name = es.CHANNEL
+        configured = True
+        signed_in = True
+        state, why, truncated = "ok", "25 of 25 rows priced and placed", False
+
+        def __init__(self, *a, **k):
+            pass
+
+        def search(self, filters):
+            return [dict(r) for r in rows]
+
+    monkeypatch.setattr(hb, "EAgentStocklistSource", Fake)
+    hb.harvest(eagent=False, portals=False, email=False, proxima=False, rea=False,
+               eagent_stocklist=True)
+    out = capsys.readouterr().out
+    assert "REJECTED" in out and "E-Agent Stocklist 3" in out
+    mine = [e for e in harvest_manifest.ENTRIES if e["channel"] == es.CHANNEL]
+    assert len(mine) == 1, harvest_manifest.ENTRIES
+    assert mine[0]["outcome"] == "read" and mine[0]["printed"] == 25
+    assert mine[0]["stored"]["rejected"] == 3 and mine[0]["stored"]["new"] == 22
+    assert "http" not in json.dumps(mine[0])
+
+
+def test_a_stocklist_night_that_reads_nothing_is_named_in_the_manifest(monkeypatch,
+                                                                       tmp_path):
+    """A stored login that is refused reads 0 lots. The manifest says so in its own words, so
+    the READ bar can name a source that yielded last week and nothing tonight."""
+    import config
+    import harvest_buildings as hb
+    import harvest_manifest
+    from database import ResearchDatabase
+    monkeypatch.setattr(config, "DATABASE_PATH", tmp_path / "h.db")
+    monkeypatch.setattr(hb, "ResearchDatabase",
+                        lambda *a, **k: ResearchDatabase(db_path=tmp_path / "h.db"))
+
+    class Refused:
+        channel_name = es.CHANNEL
+        configured = True
+        signed_in = False
+        state, why, truncated = "refused", "the site did not accept the stored login", False
+
+        def __init__(self, *a, **k):
+            pass
+
+        def search(self, filters):
+            return []
+
+    monkeypatch.setattr(hb, "EAgentStocklistSource", Refused)
+    hb.harvest(eagent=False, portals=False, email=False, proxima=False, rea=False,
+               eagent_stocklist=True)
+    mine = [e for e in harvest_manifest.ENTRIES if e["channel"] == es.CHANNEL]
+    assert [(e["outcome"], e["printed"]) for e in mine] == [("login failed", 0)]

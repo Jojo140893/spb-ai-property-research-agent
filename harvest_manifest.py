@@ -52,6 +52,11 @@ SCHEMA (version 1)
   kind "portal" (direct builder portals, one per builder) adds:
       host, cards_found, cards_read   priced cards on the page vs cards read
 
+  kind "search" (E-Agent Stocklist, one per night a company login is stored) adds:
+      state    the reader's own word: ok | refused | unreachable | no_endpoint |
+               gate_refused | error
+      short    true when the read stopped at its page or record cap
+
 OUTCOMES
       read                     at least one lot came out of it
       zero-yield               fetched and parsed, and no lot came out

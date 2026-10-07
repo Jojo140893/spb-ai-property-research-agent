@@ -168,7 +168,23 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
             # Counted whenever a login is stored, so a refused sign-in on a channel that
             # holds stock is a dead channel like any other (_dead_channels).
             read[STOCKLIST_CHANNEL] = len(listings)
+            # One manifest line for the search, and its refused lots counted like every
+            # other channel's (7 Oct 2026). This block predates record_building's
+            # "rejected", so a lot a constraint refused vanished with no line anywhere --
+            # and the parity check's READ bar could not see the source at all.
+            sl_state = str(getattr(sl, "state", "") or "")
+            sl_entry = harvest_manifest.entry(
+                STOCKLIST_CHANNEL, "search", "stocklist", name=STOCKLIST_CHANNEL,
+                state=sl_state, printed=len(listings),
+                short=bool(getattr(sl, "truncated", False)),
+                outcome=("read" if listings else
+                         "login failed" if sl_state == "refused" else
+                         "fetch failed" if sl_state in ("unreachable", "error") else
+                         "zero-yield"))
+            harvest_manifest.tag(listings, sl_entry)
             outcomes = [db.record_building(L) for L in listings]
+            harvest_manifest.count_outcomes(listings, outcomes)
+            rejected[STOCKLIST_CHANNEL] = outcomes.count("rejected")
             new, updated = outcomes.count("new"), outcomes.count("updated")
             total_new += new
             print(f"    E-Agent Stocklist: {len(listings)} listing(s), {new} new, "
