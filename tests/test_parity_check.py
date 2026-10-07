@@ -143,7 +143,9 @@ def _defects():
     no_state = dict(F.lot(501, estate="Parity Lost", doc="doc-lost"), state="",
                     state_source=None, postcode=None, lot_address="Lot 601 Parity Lost Way")
     # Two different units of one price list, carded with the same address and price: the
-    # audit's false merge (Atlas units 2302 and 1712, both "Melbourne VIC").
+    # audit's false merge (Atlas units 2302 and 1712, both "Melbourne VIC"). The search no
+    # longer merges them (rank 4, same_lot_key: two lines of one list naming no lot are two
+    # lots), so on the integrated tree they must both be SHOWN.
     unit_a = F.lot(502, estate="Parity Tower", doc="doc-tower", lot_number="",
                    lot_address="Parity Tower, Tarneit VIC 3029", price=700000,
                    line_key="unit-2302", source_text="Unit 2302 Parity Tower 2 1 1 $700,000")
@@ -152,7 +154,21 @@ def _defects():
                    line_key="unit-1712", source_text="Unit 1712 Parity Tower 2 1 1 $700,000",
                    suburb="Tarneit", postcode="3029")
     unit_a.update(suburb="Tarneit", postcode="3029")
-    return [no_suburb, no_state, unit_a, unit_b]
+    # Two packages on ONE lot at one price, two lines of one list (Goldstate lot 5710 on 6 Oct:
+    # Atlanta 206 m2 and Trinidad 210 m2, both $712,000). The design is not a column, so the
+    # search's dedupe (card address, design, price, lot) still folds one into the other --
+    # the merge the integrated search still makes, and which the bar must keep naming
+    # (integration, 7 Oct 2026: the units above stopped being one).
+    pair = dict(estate="Parity Pair", doc="doc-pair", lot_number="5710",
+                lot_address="5710 Piebald St, Tarneit VIC 3029", price=712000,
+                suburb="Tarneit", postcode="3029")
+    pkg_a = F.lot(504, line_key="pair-atlanta", house_sqm=206.0,
+                  source_text="Mar-27 5710 Piebald St North West 12.5 28 350 $340,000 Atlanta "
+                              "23 Panorama 4 Single 206 $372,000 $712,000 Available", **pair)
+    pkg_b = F.lot(505, line_key="pair-trinidad", house_sqm=210.0,
+                  source_text="Mar-27 5710 Piebald St North West 12.5 28 350 $340,000 Trinidad "
+                              "23 Sovereign 4 Single 210 $372,000 $712,000 Available", **pair)
+    return [no_suburb, no_state, unit_a, unit_b, pkg_a, pkg_b]
 
 
 def test_lots_hidden_without_an_allowed_reason_are_named_by_id(bundle, tmp_path):
@@ -163,7 +179,10 @@ def test_lots_hidden_without_an_allowed_reason_are_named_by_id(bundle, tmp_path)
     assert reasons["state_unknown"]["ids"] == [70501], out
     assert reasons["state_unknown"]["group"] == "blank"
     merged = reasons["merged_with_another_lot"]
-    assert merged["count"] == 1 and merged["ids"][0] in (70502, 70503), out
+    assert merged["count"] == 1 and merged["ids"][0] in (70504, 70505), out
+    # The two units of one tower are both shown now: no failure names either.
+    named = {i for f in body["failures"] for i in (f.get("ids") or [])}
+    assert not named & {70502, 70503}, out
 
 
 def test_two_captures_of_one_line_are_one_lot_and_two_packages_are_two():
