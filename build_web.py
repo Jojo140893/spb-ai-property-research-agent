@@ -1312,6 +1312,8 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     # exports further down: those run after the connection is closed.
     meta["channel_health"] = _export_channel_health(out_dir, conn)
     conn.close()
+    # The last source-to-search parity table, for the same tab (see _publish_parity_report).
+    meta["parity_report"] = _publish_parity_report(out_dir)
 
     # the app's own frontend, unmodified
     # Stamp the copy as the static build.
@@ -1378,7 +1380,8 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
             *[{"source": "/%s" % name,
                "headers": [{"key": "Cache-Control", "value": "private, no-cache"}]}
               for name in ("stock.json", "channels.json", "builders.json",
-                           "benchmarks.json", "vendor-assets.json", "suburbs.json")],
+                           "benchmarks.json", "vendor-assets.json", "suburbs.json",
+                           "parity_report.json")],
         ],
     }
     if fn:
@@ -1944,6 +1947,26 @@ def _sheet_check():
         "pages_not_files": sum(d.get("stored", 0) for d in docs
                                if d.get("a_page_not_a_file")),
     }
+
+
+def _publish_parity_report(out_dir: Path) -> bool:
+    """Put the last source-to-search parity report beside stock.json, for the Settings tab.
+
+    7 Oct 2026. parity_check.py runs AFTER this build (it searches the bundle this writes)
+    and drops tonight's report into the build itself. This copy is for every other build --
+    deploy.ps1 rebuilds before it publishes -- so a rebuild carries the latest report rather
+    than quietly losing the panel. The report says which night it describes, so an old one
+    reads as old. Absent or unreadable: nothing is published and the panel is not drawn.
+    """
+    path = Path(__file__).resolve().parent / "data" / "parity_report.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:                                  # pragma: no cover - absent is fine
+        return False
+    if not isinstance(payload, dict) or not isinstance(payload.get("rows"), list):
+        return False
+    (out_dir / "parity_report.json").write_text(json.dumps(payload), encoding="utf-8")
+    return True
 
 
 def _norm_source(name) -> str:
@@ -2523,7 +2546,7 @@ if __name__ == "__main__":
     # unreadable-stocklists panel had existed. A guard that checks one of five files
     # reads, from its passing, as though it checked all five.
     for _published in ("stock.json", "channels.json", "builders.json",
-                       "vendor-assets.json", "benchmarks.json"):
+                       "vendor-assets.json", "benchmarks.json", "parity_report.json"):
         _assert_no_folder_capability_urls(where / _published)
     _assert_a_benchmark_names_its_place(where / "stock.json")
     _assert_every_benchmark_listing_opens_somewhere(where / "benchmarks.json")

@@ -1398,6 +1398,80 @@
         return CHANNELS;
     }
 
+    /* PARITY-PANEL-BEGIN
+     * DOES THE APP SHOW WHAT THE SOURCES LIST? (7 Oct 2026)
+     *
+     * Coleen phoned on 7 Oct: the same search in E-Agent and in the Research tab, and E-Agent
+     * always showed more. It was right -- a state-wide search scored only the 600 cheapest
+     * lots in the state -- and nothing here said so. parity_check.py now searches every state
+     * nightly the way she does (whole state, no budget) and compares what comes back with
+     * every lot the builders' lists carried in the last three nights. This shows its table.
+     *
+     * parity_report.json is written AFTER the build (beside stock.json), so a build the check
+     * has not run against has none: the panel is then simply absent, never "all clear".
+     */
+    let PARITY = null;
+
+    async function loadParity() {
+        if (PARITY) return PARITY;
+        try {
+            const res = await fetch('parity_report.json', { cache: 'no-store' });
+            if (res.status === 401) { sessionExpired(); return null; }
+            if (!res.ok) return null;
+            PARITY = await res.json();
+        } catch (e) {
+            console.error('parity report:', e);
+            PARITY = null;
+        }
+        return PARITY;
+    }
+
+    function parityPanel(p) {
+        if (!p || !Array.isArray(p.rows) || !p.rows.length) return '';
+        const share = pair => (Array.isArray(pair) && pair[0])
+            ? `${Number(pair[1]).toLocaleString()} of ${Number(pair[0]).toLocaleString()}
+               <span style="color:var(--text-muted); white-space:nowrap;">(${(100 * pair[1] / pair[0]).toFixed(1)}%)</span>`
+            : '&mdash;';
+        const fails = Array.isArray(p.failures) ? p.failures : [];
+        const ok = p.verdict === 'PASS';
+        const td = 'padding:0.4rem 0.5rem;';
+        return `
+          <div id="parityPanel" style="margin-top:1rem; padding:0.9rem 1.1rem; border:1px solid var(--border-light);
+                      border-radius:8px; background:var(--bg-page);">
+            <strong style="color:var(--text-heading);">Does the app show what the sources
+              list?${p.night ? ` &mdash; ${esc(p.night)}` : ''}</strong>
+            <span class="pill ${ok ? 'pill-recommend' : 'pill-reject'}" style="margin-left:0.4rem;">${
+              ok ? 'everything shown' : `${fails.length} to fix`}</span>
+            <p style="margin:0.5rem 0 0.6rem; font-size:0.85rem; color:var(--text-body);">
+              Every night each state is searched the way you search it &mdash; the whole
+              state, no budget &mdash; and compared with every lot the builders&rsquo; lists
+              and portals carried in the last ${Number((p.bars || {}).recent_nights || 3)} nights.
+              A lot counts as shown when it is in the results or under &ldquo;Needs confirming&rdquo;.
+            </p>
+            <table style="width:100%; border-collapse:collapse; font-size:0.82rem;">
+              <thead><tr style="text-align:left; color:var(--text-muted);">
+                <th style="${td}">State</th><th style="${td}">E-Agent lots</th>
+                <th style="${td}">All lots</th><th style="${td}">Buildings</th>
+              </tr></thead>
+              <tbody>${p.rows.map(r => `
+                <tr style="border-top:1px solid var(--border-light);">
+                  <td style="${td}"><strong>${esc(r.state)}</strong>${r.pass === false
+                    ? ' <span style="color:var(--rose-red);">&#10007;</span>' : ''}</td>
+                  <td style="${td}">${share(r.e_agent_lots)}</td>
+                  <td style="${td}">${share(r.lots)}</td>
+                  <td style="${td}">${share(r.buildings)}</td>
+                </tr>`).join('')}</tbody>
+            </table>
+            ${fails.length ? `
+            <div style="margin-top:0.6rem; font-size:0.78rem; color:var(--text-body);
+                        max-height:11rem; overflow:auto; line-height:1.6;">
+              ${fails.slice(0, 15).map(f => `<div>&#10007; ${esc(f.group)}: ${esc(f.text)}</div>`).join('')}
+              ${fails.length > 15 ? `<div style="color:var(--text-muted);">and ${fails.length - 15} more in the nightly log</div>` : ''}
+            </div>` : ''}
+          </div>`;
+    }
+    /* PARITY-PANEL-END */
+
     // MODULE SCOPE, NOT INSIDE paintChannelBanner. These were first declared after
     // that function's early return, so they existed only within it — and the
     // channels table, which is rendered elsewhere, threw ReferenceError: agoText is
@@ -1571,6 +1645,7 @@
         const el = document.getElementById('settingsContent');
         const badge = document.getElementById('channelsBadge');
         await loadChannelHealth();
+        await loadParity();
         paintChannelBanner();
         if (!CHANNELS) {
             el.innerHTML = '<p style="color:var(--text-muted);">Could not read the source status.</p>';
@@ -1747,6 +1822,7 @@
               nothing, because not recognising a property is not the same as it being sold.
             </p>
           </div>` : ''}
+          ${parityPanel(PARITY)}
           ${(CHANNELS.unreadable_stocklists && CHANNELS.unreadable_stocklists.count) ? `
           <div style="margin-top:1rem; padding:0.9rem 1.1rem; border:1px solid var(--border-light);
                       border-radius:8px; background:var(--bg-page);">
