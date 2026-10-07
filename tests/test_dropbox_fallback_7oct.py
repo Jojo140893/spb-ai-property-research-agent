@@ -218,3 +218,84 @@ def test_a_good_night_writes_the_unreadable_list_too(tmp_path, monkeypatch):
     assert HB.harvest(eagent=False, portals=False, email=False, proxima=False,
                       rea=False) == 0
     assert written == {"unreadable": True, "manifest": True}, written
+
+
+# ------------------------------------------------- a guessed file must look like a list
+
+def _pdf(lines):
+    """A one-page PDF holding `lines`, built by hand (no PDF library needed)."""
+    def esc(s):
+        return s.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    content = ("BT /F1 10 Tf 40 800 Td 14 TL\n"
+               + "\n".join("(%s) Tj T*" % esc(line) for line in lines) + "\nET")
+    objs = ["<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font "
+            "<< /F1 5 0 R >> >> /Contents 4 0 R >>",
+            "<< /Length %d >>\nstream\n%s\nendstream" % (len(content), content),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+    out = b"%PDF-1.4\n"
+    offsets = []
+    for i, obj in enumerate(objs, 1):
+        offsets.append(len(out))
+        out += ("%d 0 obj\n%s\nendobj\n" % (i, obj)).encode("latin-1")
+    xref = len(out)
+    out += ("xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1)).encode()
+    for off in offsets:
+        out += ("%010d 00000 n \n" % off).encode()
+    out += ("trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n"
+            % (len(objs) + 1, xref)).encode()
+    return out
+
+
+GUESSED = {
+    "brochure": ["MURCIA RESIDENCES - COASTAL LIVING IN MORNINGTON",
+                 "One bedroom residences from $450,000",
+                 "Two bedroom residences from $650,000",
+                 "Three bedroom residences from $890,000",
+                 "Penthouse collection from $1,950,000"],
+    "types": ["RESIDENCE TYPES",
+              "Type A 1 Bed 1 Bath 1 Car 52 m2 internal 8 m2 balcony from $455,000",
+              "Type B 2 Bed 2 Bath 1 Car 76 m2 internal 12 m2 balcony from $655,000",
+              "Type C 3 Bed 2 Bath 2 Car 102 m2 internal 20 m2 balcony from $895,000",
+              "Type D 3 Bed 2 Bath 2 Car 118 m2 internal 35 m2 balcony from $1,050,000"],
+    "eoi": ["EXPRESSION OF INTEREST - STOCKLAND ALTROVE",
+            "Purchaser name: ______________________",
+            "Lot 1234 Altrove Estate $350,000 (example)"],
+}
+REAL = ["MURCIA RESIDENCES PRICE LIST 22/08/2026",
+        "Unit Bed Bath Car Internal External Price Status",
+        "G01 2 2 1 78 25 $690,000 Available",
+        "G02 1 1 1 54 12 $465,000 Available",
+        "101 2 2 1 80 10 $705,000 Sold",
+        "102 3 2 2 110 18 $935,000 Available",
+        "103 2 2 1 78 10 $699,000 Available"]
+
+
+@pytest.mark.parametrize("name", sorted(GUESSED))
+def test_a_guessed_brochure_or_form_stores_no_lots(name):
+    """Repair round 1, 7 Oct 2026 (data verifier): the fallback said the extractor
+    'already returns nothing for a brochure'. It does not: a project brochure gave 4 rows
+    ("One bedroom residences from $450,000"), a residence-types sheet 4, an EOI form 1. A
+    guessed file is kept only when it reads as a price list: lines that are not "from"
+    prices, each printing its own figures, and more than one of them."""
+    from sources.spreadsheet_extract import extract_stocklist
+    got = extract_stocklist(_pdf(GUESSED[name]),
+                            source_label="https://www.dropbox.com/scl/fo/x/%s.pdf" % name)
+    assert got, "the extractor no longer reads this shape at all -- the test proves nothing"
+    assert RS.guessed_price_list(got) == [], [g.get("lot_address") for g in got]
+
+
+def test_a_guessed_real_price_list_is_kept_whole():
+    from sources.spreadsheet_extract import extract_stocklist
+    got = extract_stocklist(_pdf(REAL), source_label="https://www.dropbox.com/scl/fo/x/r.pdf")
+    assert len(got) >= 4, [g.get("lot_address") for g in got]
+    assert RS.guessed_price_list(got) == got
+
+
+def test_the_harvest_applies_the_list_shape_to_a_guessed_file_only():
+    import inspect
+    from sources import e_agent
+    src = inspect.getsource(e_agent.EAgentSource._fetch_pieces)
+    assert "remote.guessed_price_list(got)" in src
+    assert src.index("guessed_price_list") > src.index('piece.meta.get("guessed")')

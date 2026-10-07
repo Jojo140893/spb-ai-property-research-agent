@@ -465,8 +465,9 @@ jobs:
       # answered, the first three JSON answers cut to 50 records, the key->field mapping and
       # why, and the pages with every form value blanked. Never cookies, headers or the
       # login; contact details inside records are masked. The repo is private, so the
-      # artifact is too. On a night with no Stocklist login it holds only the status file,
-      # which says "skipped".
+      # artifact is too. On a night with no Stocklist login the harvest skips the source
+      # before it reads anything, nothing is written, and there is no artifact at all
+      # (if-no-files-found: ignore) -- the Settings tab's login row says why.
       - name: Keep the EAgent Stocklist capture
         if: always()
         uses: actions/upload-artifact@v4

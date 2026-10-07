@@ -12,7 +12,8 @@ class DedupeEngine:
     @classmethod
     def deduplicate(cls, raw_packages: List[Dict[str, Any]],
                     lot_key: Optional[Callable[[Dict[str, Any]], Any]] = None,
-                    prefer: Optional[Callable[[Dict[str, Any]], Any]] = None
+                    prefer: Optional[Callable[[Dict[str, Any]], Any]] = None,
+                    merged_into: Optional[Dict[str, str]] = None
                     ) -> List[Dict[str, Any]]:
         """The packages with each (lot_address, house_design, price) kept once.
 
@@ -30,9 +31,14 @@ class DedupeEngine:
         neither was shown (Hermitage Springridge lot 1307, Tomorrow Homes 157 Hancock Way).
         api/_candidates.dedupe_packages keeps the freshest verified capture, as this
         module's own header always said.
+
+        merged_into (7 Oct 2026), when given a dict, is filled with {content_hash of a
+        package dropped: content_hash of the package kept in its place}, so a caller can
+        name the twin a hidden lot stands behind (parity_check).
         """
         seen_keys = {}
         unique_packages = []
+        members = {}
 
         for pkg in raw_packages:
             lot = str(pkg.get('lot_address', '')).strip().lower()
@@ -50,5 +56,14 @@ class DedupeEngine:
                 at = seen_keys[dedupe_key]
                 if prefer(pkg) > prefer(unique_packages[at]):
                     unique_packages[at] = pkg
+            if merged_into is not None:
+                members.setdefault(dedupe_key, []).append(pkg)
 
+        if merged_into is not None:
+            for dedupe_key, pkgs in members.items():
+                kept = str(unique_packages[seen_keys[dedupe_key]].get('content_hash') or '')
+                for pkg in pkgs:
+                    mine = str(pkg.get('content_hash') or '')
+                    if mine and kept and mine != kept:
+                        merged_into[mine] = kept
         return unique_packages

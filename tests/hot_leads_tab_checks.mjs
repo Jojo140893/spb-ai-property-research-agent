@@ -1370,6 +1370,27 @@ console.log("\n--- a re-run shows the whole shortlist, 25 at a time ---");
   check("Show more on a card with no live results does nothing", cards() === 60);
 }
 
+console.log("\n--- a re-run that found more than one server page says which ones it holds ---");
+{
+  // Repair round 1, 7 Oct 2026: a state-wide re-run found 3,244 lots and holds the best 500
+  // (one server page). The note said "Showing 25 of 3244" while Show more ran out at 500
+  // ("475 remaining of 500"): two counts that disagree, and no word that the rest exist.
+  const s = sandbox();
+  s.el("hotLeadsContent"); s.el("hotLeadsBadge"); s.el("hotLeadsRefresh");
+  s.respond(async () => reply(200, { status: "success", leads: [clean()] }));
+  await s.api.loadHotLeads();
+  const box = s.el("hlRecs-0"); s.el("hlRerun-0"); s.el("hlMsg-0");
+  const page = Array.from({ length: 500 }, (_, k) => liveProp({ content_hash: "v2:q" + k, lot_address: "Card " + k }));
+  s.respond(async () => reply(200, { status: "success", shortlist: page, shortlist_count: 3244 }));
+  await s.api.rerunHotLead(0);
+  check("the note names the best 500 of everything found",
+    box.innerHTML.includes("Showing 25 of the best 500 of 3,244"), box.innerHTML.slice(0, 600));
+  check("... Show more counts against the 500 it holds, and says so",
+    box.innerHTML.includes("Show 25 more (475 remaining of the best 500)"));
+  check("... and points to the Research tab for the rest",
+    box.innerHTML.includes("Research tab"));
+}
+
 console.log("\n--- each lead keeps its own picks, and none reach the Research tab's selection ---");
 {
   const store = memoryStorage();

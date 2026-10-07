@@ -165,7 +165,12 @@ def test_on_the_data_colin_searched_it_fails_naming_the_on_hold_lot(site):
     """Plan test 1: the pre-C5 subset. Howard 18491 is shortlisted as Available on 15/09
     while 15953, the same line of the same document read on 16/09, says On Hold: the sibling
     invariant names it. 14905 is filed QLD from its suburb column while its own line says
-    Wollert: a warning, not a failure, until it has been clean for 7 nights."""
+    Wollert: a failure here.
+
+    The round-1 fresh guard (7 Oct 2026) does NOT hide 18491 on this subset: the 16/09 read
+    of its list carried 26% fewer lots than the 15/09 one, more than FRESH_REREAD_DROP_MAX,
+    so the search does not take that read's silence as proof (a read cut short looks the
+    same). The invariant stays the net; with the data fixed (C5, plan test 3) it passes."""
     code, out, err = _harness("--snapshot", site.pre_c5, "--db", site.pre_c5_db,
                               "--today", TODAY, "--only", "qld_750k")
     assert code == 1, out + err
@@ -767,6 +772,22 @@ def test_a_card_filed_by_the_number_opening_its_own_line_warns():
     assert report.warnings == 1, out
 
 
+def test_a_shortlisted_lot_with_a_fresher_gone_sibling_fails():
+    """The sibling invariant over a search's answer: a shortlisted card whose same line on
+    the same document was read LATER saying On Hold fails, named. Canned answers, so it
+    holds whatever the search learns to hide by itself (repair round 1, 7 Oct 2026)."""
+    older = _row("v2:older000", lot_address="Howard Available 21 Howard Crossing Kinchant "
+                                            "Coastal 4 2 2 350 $224,000 $746,632 Due Septe",
+                 date_checked="15/09/2026", price=746632.0)
+    newer = _row("v2:newer000", lot_address="Howard ON HOLD 21 Howard Crossing Kinchant "
+                                            "Coastal 4 2 2 350 $224,000 $746,632 Due Septemb",
+                 date_checked="16/09/2026", availability_status="On Hold", price=746632.0)
+    report, out, _posted = _run([{"id": "b", "client_brief": {}}],
+                                lambda body: _response([_card(older)]), [older, newer])
+    assert report.failures == 1 and "sibling: shortlisted v2:older000" in out \
+        and "v2:newer000" in out, out
+
+
 def test_a_fresher_capture_of_the_same_line_that_says_gone_fails_the_older_one():
     """The sibling invariant, both ways round, and not for two lines of ONE read."""
     older = _row("v2:older000", lot_address="Howard Available 21 Howard Crossing Kinchant "
@@ -989,7 +1010,13 @@ def test_kommo_is_handed_shortlisted_cards_only():
                  price=721900.0, date_checked="20/08/2026", lot_number="1228")
     repriced = _row("v2:fresh1228", lot_address=stale["lot_address"], price=731900.0,
                     lot_number="1228")
-    rows = [fresh, stale, repriced]
+    wyee = _row("v2:wyee0017", lot_address="Lot 17, The Rise, Wyee NSW", price=654920.0,
+                lot_number="17", suburb="Wyee")
+    bare17 = _row("v2:bare0017", lot_address="Lot 17", price=708315.0,
+                  date_checked="20/08/2026", suburb="Newcastle West")
+    wyee_line = "7. Lot 17, The Rise, Wyee NSW, Wyee - $654,920 (Score: 87.5/100 - Recommend)"
+    bare17_line = "7. Lot 17, Newcastle West - $708,315 (Score: 80/100 - Recommend)"
+    rows = [fresh, stale, repriced, wyee, bare17]
 
     def payload(top, top_price, lines):
         return {"custom_fields_update": {"top_property_match": top,
@@ -1028,7 +1055,18 @@ def test_kommo_is_handed_shortlisted_cards_only():
         (_response([_card(fresh), _card(repriced)], confirming=[_card(stale)],
                    kommo_payload=payload(
             "Lot 162, Rosewood Green", 749900.0,
-            [good_line, leaked_line.replace("$721,900", "$731,900")])), None))
+            [good_line, leaked_line.replace("$721,900", "$731,900")])), None),
+        # A needs-confirming card carded only "Lot 17" is not "Lot 17, The Rise, Wyee NSW"
+        # on the note (repair round 1, 7 Oct 2026: nsw_any went red on that prefix once the
+        # freshness tie-break put The Rise's lot 17 in the top ten).
+        (_response([_card(fresh), _card(wyee, suburb="Wyee")],
+                   confirming=[_card(bare17, suburb="Newcastle West")],
+                   kommo_payload=payload("Lot 162, Rosewood Green", 749900.0,
+                                         [good_line, wyee_line])), None),
+        (_response([_card(fresh)], confirming=[_card(bare17, suburb="Newcastle West")],
+                   kommo_payload=payload("Lot 162, Rosewood Green", 749900.0,
+                                         [good_line, bare17_line])),
+         "needs confirming v2:bare0017 (Lot 17, $708,315) is written into the Kommo note"))
     for response, expected in cases:
         report, out, _posted = _run([brief], lambda body, r=response: r, rows)
         if expected is None:

@@ -106,6 +106,11 @@ def _pin(monkeypatch, mode):
     monkeypatch.setattr(C, "EXCEPTIONS_LIST_MODE", mode)
     monkeypatch.setattr(C, "MAX_CANDIDATES", 600)
     monkeypatch.setattr(C, "same_lot_key", lambda package, row: None)
+    # And repair round 1's (7 Oct 2026): a fresh row its own list no longer carries, or that
+    # is not a home at all, is no longer verified. Asserted by
+    # tests/test_fresh_rows_and_copies_7oct.py; pinned off here for the same reason.
+    monkeypatch.setattr(C, "fresh_row_guard", lambda *a, **k: None)
+    monkeypatch.setattr(C, "not_a_home", lambda *a, **k: None)
 
 
 # 20/09/2026 added one more always-present package field, availability_by_exception_list

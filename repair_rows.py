@@ -1005,11 +1005,18 @@ def apply_identity_repair(conn, plan, stamp):
 
 
 def undo_identity_repair(conn, stamp):
-    """Put back what apply_identity_repair wrote under `stamp`, compare-and-set."""
-    import json
+    """Put back what apply_identity_repair (or a harvest re-attach, logged by
+    database.record_building under 'harvest dd/mm/yyyy') wrote under `stamp`,
+    compare-and-set.
+
+    Repair round 1, 7 Oct 2026 (data verifier): a restore that matched no row -- the row
+    moved since -- still re-pointed its twins and deleted its log row, so the undo record
+    was lost; it is now said and KEPT. And every pointer aimed at the re-attached hash is
+    put back with it, not only the ones logged: a supersede run after the repair can point
+    a new twin at it, and that pointer dangled once the hash was restored."""
     _ensure_identity_log(conn)
     undone = 0
-    for log_id, row_id, col, old, new, repointed in conn.execute(
+    for log_id, row_id, col, old, new, _repointed in conn.execute(
             f"SELECT rowid, row_id, col, old, new, repointed FROM {IDENTITY_LOG_TABLE} "
             f"WHERE stamp=? ORDER BY rowid DESC", (stamp,)).fetchall():
         try:
@@ -1020,11 +1027,16 @@ def undo_identity_repair(conn, stamp):
             # back would make two rows claim one identity. Said, and kept in the log.
             print(f"   undo: row {row_id} keeps {col} {new} ({exc})")
             continue
+        if n != 1:
+            print(f"   undo: row {row_id} no longer holds {col} {new} -- it moved since; "
+                  f"left as it is, and kept in the log")
+            continue
         undone += n
-        ids = json.loads(repointed or "[]")
-        if ids and col == "content_hash":
-            conn.execute(f"UPDATE buildings SET superseded_by=? WHERE superseded_by=? AND id IN "
-                         f"({','.join('?' * len(ids))})", (old, new, *ids))
+        if col == "content_hash":
+            # No row holds `new` any more (it was this row's), so whatever points at it
+            # points at this row.
+            conn.execute("UPDATE buildings SET superseded_by=? WHERE superseded_by=?",
+                         (old, new))
         conn.execute(f"DELETE FROM {IDENTITY_LOG_TABLE} WHERE rowid=?", (log_id,))
     return undone
 
@@ -1445,15 +1457,13 @@ def find_suburbs_in_own_document(rows, fetch=None, extract=None):
     return found
 
 
-def main(apply_changes):
-    conn = sqlite3.connect(str(config.DATABASE_PATH))
-    # 0. IDENTITY FIRST, before anything below reads a content_hash: the duplicate and
-    #    twin passes write a keeper's hash into superseded_by, and a hash this repair is
-    #    about to move would leave that pointer dangling.
+def _identity_step(conn, apply_changes, when):
+    """Step 0, the stale dedup_key trap (see find_identity_traps): report, and with
+    apply_changes write it, over the rows as they stand now."""
     traps, trap_skipped = find_identity_traps(_rows(conn))
     reattach = sum(1 for p in traps if "content_hash" in p["set"])
-    print(f"0. identity: rows whose dedup_key is not their content_hash (the UNIQUE trap): "
-          f"{len(traps)} -- {reattach} live/withdrawn to re-attach, "
+    print(f"0. identity ({when}): rows whose dedup_key is not their content_hash (the UNIQUE "
+          f"trap): {len(traps)} -- {reattach} live/withdrawn to re-attach, "
           f"{len(traps) - reattach} superseded to align; "
           f"{len(trap_skipped)} left alone because the write would collide")
     for s in trap_skipped[:4]:
@@ -1464,6 +1474,20 @@ def main(apply_changes):
         conn.commit()
         print(f"   applied to {len(done['rows'])} row(s); undo with: "
               f"python repair_rows.py --undo-identity-repair {stamp}")
+
+
+def main(apply_changes):
+    conn = sqlite3.connect(str(config.DATABASE_PATH))
+    # 0. IDENTITY LAST, BY THE MARKS THE NIGHT LEAVES (repair round 1, 7 Oct 2026). It ran
+    #    first, but supersede_duplicates clears every mark before this script runs, so the
+    #    twins, withdrawn lots and filter rows retired below were momentarily live when it
+    #    classified them, and were RE-ATTACHED -- against its own rule that only a live or
+    #    withdrawn row is (data verifier: 8 superseded twins, 6 withdrawn rows and a filter
+    #    row on the first night). Run after the retirements, it sees what the night decided;
+    #    a keeper hash the passes below wrote into superseded_by is re-pointed with the row
+    #    it names (apply_identity_repair), so no pointer is left dangling. Reported here.
+    if not apply_changes:
+        _identity_step(conn, False, "report")
     rows = _rows(conn)
     live = [r for r in rows if not r["superseded_by"]]
     print(f"{len(rows)} rows stored, {len(live)} live\n")
@@ -1714,6 +1738,8 @@ def main(apply_changes):
           f"{len(oversupply)} portal lot(s) the project says are gone marked Sold, "
           f"{len(refuted)} refuted state(s) cleared, "
           f"{len(reread)} suburb(s) re-read from the row's own document")
+    # 0. identity, applied over the marks this night left (see the top of main).
+    _identity_step(conn, True, "after tonight's retirements")
     after = len([r for r in _rows(conn) if not r["superseded_by"]])
     print(f"live rows: {len(live)} -> {after}")
     return 0

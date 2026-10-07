@@ -72,6 +72,22 @@ def _today_aest() -> str:
     return datetime.now(_AEST).strftime("%d/%m/%Y")
 
 
+def shortlist_rank(candidate):
+    """The key score_candidates sorts on, descending: the Total Score, and AT EQUAL SCORES
+    THE FRESHER READ FIRST (7 Oct 2026).
+
+    Ties used to keep the input order, which for stored stock is cheapest first, so once
+    every candidate was scored AVIA lot 28's 27/09 package ($876,800) ranked ahead of the
+    same lot's 06/10 package ($896,200) at 86.0 each, and Clare told a caller the lot was
+    available "as at 27 September" -- the date of the first package she read. age_days is
+    set on stored stock only (None when the row has no readable date, ranked last among
+    equals); a live crawl's are all None, so its order is exactly as before. A module
+    function so a golden saved before it can pin the order it was saved under."""
+    age = getattr(candidate, 'age_days', None)
+    fresh = -age if isinstance(age, int) and not isinstance(age, bool) else -10 ** 6
+    return (candidate.scoring.total_score if candidate.scoring else 0, fresh)
+
+
 class KommoPropertyResearchAgent:
     def __init__(self, csv_filepath: Optional[str] = None):
         self.builder_registry = BuilderRegistry(csv_filepath or str(config.BUILDER_CSV_PATH))
@@ -508,8 +524,9 @@ class KommoPropertyResearchAgent:
             else:
                 processed_candidates.append(cand)
 
-        # Rank candidates by Total Score descending
-        processed_candidates.sort(key=lambda x: x.scoring.total_score if x.scoring else 0, reverse=True)
+        # Rank candidates by Total Score descending -- and at equal scores the fresher read
+        # first (shortlist_rank, 7 Oct 2026).
+        processed_candidates.sort(key=shortlist_rank, reverse=True)
         return processed_candidates, rejected_candidates
 
     def _build_kommo_update_payload(self, brief: ClientBrief, record_id: str, shortlist: List[CandidateProperty], rejected: List[Dict[str, str]]) -> Dict[str, Any]:

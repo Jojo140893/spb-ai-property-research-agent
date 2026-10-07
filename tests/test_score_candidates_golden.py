@@ -186,20 +186,28 @@ def packages_for(brief, rows):
     import _candidates
     from sources.dedupe import DedupeEngine
     was = (_candidates.EXCEPTIONS_LIST_MODE, _candidates.MAX_CANDIDATES,
-           _candidates.same_lot_key)
+           _candidates.same_lot_key, _candidates.fresh_row_guard, _candidates.not_a_home)
     _candidates.EXCEPTIONS_LIST_MODE = "confirm"
     # THE POOL THE GOLDEN WAS SAVED UNDER (7 Oct 2026), pinned the way the mode is: the
     # 600-row cap (an emergency valve now, off by default) and the card-only merge keys
     # (the collapse and api/research.py's dedupe now also ask whether two rows are the same
     # lot). This file pins that moving the loop changed no SCORING; the new pool rules are
     # asserted, on this same subset, by tests/test_one_price_list_two_lots.py.
+    # And repair round 1's (7 Oct 2026): a fresh row its own list no longer carries, or
+    # that is not a home at all, is no longer verified (fresh_row_guard, not_a_home) --
+    # 33 of qld_no_budget's 402 on this subset. The rules themselves are asserted by
+    # tests/test_fresh_rows_and_copies_7oct.py, and their effect on this subset by
+    # tests/test_explain_empty.py.
     _candidates.MAX_CANDIDATES = 600
     _candidates.same_lot_key = lambda package, row: None
+    _candidates.fresh_row_guard = lambda *a, **k: None
+    _candidates.not_a_home = lambda *a, **k: None
     try:
         packages, _counts = _candidates.build_packages(dict(brief), rows, today=gen.TODAY)
     finally:
         (_candidates.EXCEPTIONS_LIST_MODE, _candidates.MAX_CANDIDATES,
-         _candidates.same_lot_key) = was
+         _candidates.same_lot_key, _candidates.fresh_row_guard,
+         _candidates.not_a_home) = was
     return DedupeEngine.deduplicate(packages)
 
 
@@ -215,6 +223,17 @@ def _note_top(note, top=10):
     cut = len(numbered) - top
     keep = lines[:numbered[top]] + ["... and {:,} more on the shortlist.".format(cut)]
     return "\n".join(keep + lines[numbered[-1] + 1:])
+
+
+@pytest.fixture(autouse=True)
+def _the_order_the_golden_was_saved_in(monkeypatch):
+    """By score alone, ties in input order. Since repair round 1 (7 Oct 2026) the fresher
+    read ranks first among equal scores (kommo_agent.shortlist_rank, asserted by
+    tests/test_fresh_rows_and_copies_7oct.py); every test here compares with an order saved
+    before that, or with run_property_research's own order, so both are pinned alike."""
+    import kommo_agent
+    monkeypatch.setattr(kommo_agent, "shortlist_rank",
+                        lambda c: c.scoring.total_score if c.scoring else 0)
 
 
 def run(agent, brief, rows):

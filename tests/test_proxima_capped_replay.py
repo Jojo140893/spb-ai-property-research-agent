@@ -347,3 +347,56 @@ def test_a_project_proven_whole_is_not_named_even_on_a_signature():
     src, rows = _harvest(page)
     assert len(_by_project(rows)["730"]) == 83
     assert src.short_projects == [], src.short_projects
+
+
+# ------------------------------------------------- repair round 1 (7 Oct 2026): the walk
+
+def _tiles(pid, prices):
+    return [_tile(pid, i + 1, p) for i, p in enumerate(prices)]
+
+
+class _ExclusiveServer(_Server):
+    """The same endpoint with a price ceiling that EXCLUDES its own value -- what the live
+    portal does is unverified, and the walk must not depend on it."""
+
+    def answer(self, body):
+        f = _fields(body)
+        self.posts.append(f)
+        lots = list(self.projects.get(f.get("projectId", ""), []))
+        ceiling = f.get("property_range_filter[rop][range_two]")
+        if ceiling:
+            lots = [t for t in lots if float(t["rop"]) < float(ceiling)]
+        desc = f.get("sort[sort_attributes]") == "price-desc"
+        lots = sorted(lots, key=lambda t: -float(t["rop"]) if desc else float(t["rop"]))
+        return [dict(t) for t in lots[:_RENDER_CAP]]
+
+
+def test_eighty_lots_at_one_price_are_never_called_a_whole_read(caplog):
+    """240 lots, 90 of them at $600,000: the walk read 155, marked the read complete and
+    said nothing -- 'the band met the cheapest 80' was tested before 'the band cannot split
+    one price'. (data verifier)"""
+    prices = ([400000 + i * 1000 for i in range(75)] + [600000] * 90
+              + [700000 + i * 1000 for i in range(75)])
+    server = _Server({"761": _inventory("761", 3), "902": _tiles("902", prices)})
+    page = _Page(server, index=["761"], dropdown=[("902", "One Price Tower")])
+    with caplog.at_level(logging.WARNING, logger="spb.scraper.proxima"):
+        src, rows = _harvest(page)
+    read = len(_by_project(rows)["902"])
+    assert read < 240                                  # the portal cannot give more
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "One Price Tower" in said, said
+    assert any(s["pid"] == "902" for s in src.short_projects), src.short_projects
+
+
+def test_the_walk_reads_everything_whether_the_ceiling_is_inclusive_or_not():
+    """300 lots priced in blocks of 6. Against a server whose ceiling excludes its own
+    value, the lots sharing the boundary price were never asked for: 292 read and the read
+    called complete. (data verifier)"""
+    prices = [400000 + (i // 6) * 5000 for i in range(300)]
+    for cls in (_Server, _ExclusiveServer):
+        server = cls({"761": _inventory("761", 3), "904": _tiles("904", prices)})
+        page = _Page(server, index=["761"], dropdown=[("904", "Blocks of Six")])
+        src, rows = _harvest(page)
+        assert len(_by_project(rows)["904"]) == 300, (cls.__name__,
+                                                      len(_by_project(rows)["904"]))
+        assert src.short_projects == [], (cls.__name__, src.short_projects)

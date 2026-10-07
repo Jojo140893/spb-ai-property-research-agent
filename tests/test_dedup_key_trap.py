@@ -266,6 +266,91 @@ def test_the_repair_applies_compare_and_set_is_idempotent_and_undoable(tmp_path)
         assert restored[i] == before[i], (i, restored[i], before[i])
 
 
+def test_an_undo_that_cannot_restore_a_row_keeps_its_log_and_moves_no_pointer(tmp_path):
+    """Repair round 1, 7 Oct 2026 (data verifier): when the compare-and-set restore matched
+    no row (the row moved since), the undo still re-pointed its twins and DELETED the log
+    row -- the undo record was lost. And a pointer written AFTER the repair at the
+    re-attached hash dangled once the hash was put back."""
+    import repair_rows as RR
+    _db_, path = _db(tmp_path)
+    _plant(path, _trap_rows())
+    con = sqlite3.connect(str(path))
+    plan, _ = RR.find_identity_traps(_rows(path))
+    RR.apply_identity_repair(con, plan, stamp="S1")
+    con.commit()
+    # A supersede run after the repair points a new twin at the re-attached hash of row 1.
+    con.execute("INSERT INTO buildings (id, source_channel, lot_address, price, content_hash,"
+                " dedup_key, superseded_by) VALUES (20, 'E-Agent', 'Lot 20', 1, 'v2:t20',"
+                " 'v2:t20', 'v2:harv1')")
+    # ...and row 2 moved on after the repair: its restore cannot apply.
+    con.execute("UPDATE buildings SET content_hash='v2:moved-again' WHERE id=2")
+    con.commit()
+    RR.undo_identity_repair(con, "S1")
+    con.commit()
+    rows = {r["id"]: r for r in _rows(path)}
+    assert rows[1]["content_hash"] == "v2:mig1"
+    assert rows[20]["superseded_by"] == "v2:mig1", "a pointer written after the repair dangles"
+    assert rows[2]["content_hash"] == "v2:moved-again"
+    left = con.execute("SELECT row_id FROM identity_repair_log WHERE stamp='S1'").fetchall()
+    con.close()
+    assert left == [(2,)], "the log row of a restore that did not apply was deleted"
+
+
+def test_a_harvest_re_attach_is_logged_and_undone_like_the_repair(tmp_path):
+    """Repair round 1 (data verifier): on a real first night the HARVEST re-attaches the 41
+    trap rows it reads before repair_rows runs, and those never reached identity_repair_log
+    -- the release notes' 'undo with --undo-identity-repair STAMP' covered 604 rows, not 645.
+    record_building now logs each re-attach under a stamp of its own."""
+    import repair_rows as RR
+    db, path = _db(tmp_path)
+    db.record_building(_listing(45, 841000))
+    harvester = _rows(path)[0]["content_hash"]
+    moved = _migrate_the_30_jul_way(path, 1, suburb="Mernda", lot_number="0")
+    con = sqlite3.connect(str(path))
+    con.execute("INSERT INTO buildings (id, source_channel, lot_address, price, content_hash,"
+                " dedup_key, superseded_by) VALUES (9, 'E-Agent', 'old copy', 1, 'v2:c9',"
+                " 'v2:c9', ?)", (moved,))
+    con.commit()
+    assert db.record_building(_listing(45, 811000)) == "updated"
+    logged = con.execute("SELECT stamp, row_id, col, old, new FROM identity_repair_log"
+                         ).fetchall()
+    assert len(logged) == 1, logged
+    stamp, row_id, col, old, new = logged[0]
+    assert stamp.startswith("harvest ") and (row_id, col, old, new) == (
+        1, "content_hash", moved, harvester)
+    assert _rows(path)[1]["superseded_by"] == harvester      # the twin followed it
+    RR.undo_identity_repair(con, stamp)
+    con.commit()
+    rows = {r["id"]: r for r in _rows(path)}
+    con.close()
+    assert rows[1]["content_hash"] == moved and rows[9]["superseded_by"] == moved
+
+
+def test_a_row_this_night_retires_is_aligned_not_re_attached(tmp_path, monkeypatch):
+    """Repair round 1, 7 Oct 2026 (data verifier): supersede_duplicates clears every mark
+    before repair_rows runs, so a row repair_rows retires each night (a twin, a withdrawn
+    lot, a filter row) was momentarily live when the identity step classified it, and was
+    RE-ATTACHED -- against the step's own rule that only a live or withdrawn row is. The
+    identity step now classifies by the marks the night leaves."""
+    import config
+    import repair_rows as RR
+    _db_, path = _db(tmp_path)
+    # Each [v] is a dropdown arrow drawn from an icon font: a private-use code point.
+    filter_row = ("All \ue5cf Storage \ue5cf All \ue5cf All \ue5cf $225,500.00 $1,298,154.00 "
+                  "All \ue5cf")
+    _plant(path, [{"id": 1, "source_channel": "E-Agent", "lot_address": "All [v] Storage",
+                   "source_text": filter_row, "price": 225500, "content_hash": "v2:mig1",
+                   "dedup_key": "v2:harv1", "superseded_by": None}])
+    monkeypatch.setattr(config, "DATABASE_PATH", path)
+    monkeypatch.setenv("SPB_SKIP_REREAD", "1")
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert RR.main(True) == 0
+    row = _rows(path)[0]
+    assert row["superseded_by"] == "spreadsheet filter row, not a listing", row
+    assert (row["content_hash"], row["dedup_key"]) == ("v2:mig1", "v2:mig1"), \
+        "a row the night retired was re-attached as if it were the listing"
+
+
 def test_the_nightly_report_changes_nothing_and_apply_writes(tmp_path, monkeypatch):
     import config
     import repair_rows as RR

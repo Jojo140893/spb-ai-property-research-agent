@@ -57,7 +57,7 @@ const FAILING = {
   bars: { recent_nights: 3 },
   rows: [
     { state: "VIC", e_agent_lots: [2343, 256], lots: [2738, 306], buildings: [546, 84],
-      pass: false },
+      shortlisted: [2738, 290], obvious_lots: 2779, excused_lots: 41, pass: false },
     { state: "WA", e_agent_lots: [0, 0], lots: [22, 22], buildings: [1, 1], pass: true },
   ],
   failures: [
@@ -82,6 +82,11 @@ check("every state row is drawn", out.includes("<strong>VIC</strong>") && out.in
 check("a lot share reads 'shown of obvious'", out.includes("306 of 2,738") && out.includes("(11.2%)"),
   out.match(/306[^<]*/)?.[0]);
 check("a building share is drawn", out.includes("84 of 546"));
+// Repair round 1, 7 Oct 2026: "shown" counts Needs confirming too, which Clare and Agent 2
+// never read, and an excused lot leaves the count -- both said, not hidden in a ratio.
+check("the shortlist share is drawn", out.includes("290 of 2,738") && out.includes("On the shortlist"));
+check("the lots hidden for a reason are counted", out.includes("41 of 2,779") && out.includes("Hidden for a reason"));
+check("a report from before the columns draws a dash", /<strong>WA<\/strong>[\s\S]*?&mdash;/.test(out));
 check("an empty E-Agent share reads as a dash, not 0 of 0", !out.includes("0 of 0"));
 check("a failing row is marked", /VIC<\/strong> <span[^>]*>&#10007;/.test(out));
 check("every failure is listed", out.includes("2,160 obvious lots hidden as truncated")

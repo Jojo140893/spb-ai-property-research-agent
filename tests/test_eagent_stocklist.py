@@ -459,6 +459,95 @@ def test_the_gate_refuses_too_few_rows_and_non_australian_states():
     assert stats["priced_and_placed"] == 0
 
 
+def test_an_estate_list_is_never_stored_as_lots():
+    """Repair round 1, 7 Oct 2026: 40 estate records {name, suburb, state, price} -- a 'from'
+    price per estate -- passed the gate as 40 priced, placed 'lots' with no lot number, no
+    design and no build price. A package list names its lot or its design."""
+    base = "https://x"
+    estates = [{"id": "e%d" % i, "name": "Estate %d" % i, "suburb": "Wollert", "state": "VIC",
+                "price": 450_000 + 1_000 * i} for i in range(40)]
+    rows = [es.map_record(r, base, base)[0] for r in estates]
+    ok, why, stats = es.plausibility(rows, 40)
+    assert not ok and "lot number" in why, why
+    assert stats["named_lots_or_designs"] == 0
+    # Real packages still pass.
+    rows = [es.map_record(r, base, base)[0] for r in make_records(30)]
+    assert es.plausibility(rows, 30)[0] is True
+
+
+def test_a_record_with_no_place_at_all_is_not_stored(tmp_path):
+    """A record naming no suburb, estate, postcode or state cannot be placed by any search;
+    the gate let 12 of 40 such rows through (30% junk allowed)."""
+    recs = make_records(28) + [dict(r, estateName=None, suburb=None, postcode=None, state=None)
+                               for r in make_records(12)]
+    src = es.EAgentStocklistSource(base_url="https://x", capture_dir=None, status_path=None,
+                                   throttle=0)
+    rows = src._map_and_gate(recs, "https://x/api/p", "test")
+    assert len(rows) == 28, len(rows)
+    assert all(r["suburb"] or r["estate_name"] for r in rows)
+
+
+def test_an_endpoint_asking_for_paging_is_asked_again_before_a_lower_one_is_taken(
+        creds, tmp_path):
+    """Repair round 1: /api/packages answered a plain GET with 400 ('page required') and
+    /api/estates answered with 40 estates, so the probe took the estates. A higher-ranked
+    endpoint that asked for parameters is asked with them first."""
+    import json as _json
+    from urllib.parse import parse_qs as _pq, urlparse as _up
+
+    estates = [{"id": "e%d" % i, "name": "Estate %d" % i, "suburb": "Wollert", "state": "VIC",
+                "price": 450_000 + i} for i in range(40)]
+    packages = make_records(40)
+
+    class R:
+        def __init__(self, url, status, body):
+            self.url, self.status_code, self.text = url, status, body
+            self.content = body.encode("utf-8")
+            self.headers = {"Content-Type": "application/json"}
+
+        def json(self):
+            return _json.loads(self.text)
+
+    class S:
+        def get(self, url, params=None, headers=None, timeout=None, allow_redirects=True):
+            path = _up(url).path
+            q = dict(params or {})
+            q.update({k: v[0] for k, v in _pq(_up(url).query).items()})
+            if path == "/api/packages":
+                if "page" not in q:
+                    return R(url, 400, '{"ok":false,"error":"page required"}')
+                p = int(q["page"])
+                return R(url, 200, _json.dumps({"data": packages[(p - 1) * 20:p * 20],
+                                                "total": 40}))
+            if path == "/api/estates":
+                return R(url, 200, _json.dumps({"data": estates}))
+            return R(url, 404, "{}")
+
+    src = es.EAgentStocklistSource(base_url="https://site.example", session=S(),
+                                   capture_dir=None, status_path=None, throttle=0)
+    found = src._probe(["/api/packages", "/api/estates"])
+    assert found is not None and found[0] == "/api/packages", found and found[0]
+
+
+def test_price_only_siblings_keep_their_identities_whatever_order_the_api_sends():
+    """Repair round 1: two records identical but for the price took their variant ordinal
+    from the order the API listed them, so a reversed answer swapped which price each
+    identity held."""
+    from database import building_content_hash
+    twins = [dict(make_records(1)[0], _id="a", packagePrice=700_000, landPrice=None,
+                  buildPrice=None, designName=None, landSize=None),
+             dict(make_records(1)[0], _id="b", packagePrice=720_000, landPrice=None,
+                  buildPrice=None, designName=None, landSize=None)]
+    src = es.EAgentStocklistSource(base_url="https://x", capture_dir=None, status_path=None,
+                                   throttle=0)
+    fill = make_records(30)[5:]
+    one = src._map_and_gate(twins + fill, "https://x/api/p", "test")
+    two = src._map_and_gate(list(reversed(twins + fill)), "https://x/api/p", "test")
+    first = {building_content_hash(r): r["advertised_package_price"] for r in one}
+    second = {building_content_hash(r): r["advertised_package_price"] for r in two}
+    assert first == second
+
+
 # ------------------------------------------------------------------- the capture
 
 def test_the_capture_holds_nothing_secret(creds, site_factory, tmp_path):
@@ -483,6 +572,39 @@ def test_the_capture_holds_nothing_secret(creds, site_factory, tmp_path):
     disc = json.loads((folder / "discovery.json").read_text())
     assert "/api/v2/lots" in disc["api_paths_found"]
     assert disc["paging"]["records"] == 60
+
+
+def test_the_capture_keeps_no_session_secret_link_token_or_phone_number(tmp_path):
+    """Repair round 1, 7 Oct 2026 (data verifier): a signed-in page's inline state kept its
+    JWT, bearer and session ids, a download link kept its ?token=, a data-api-key attribute
+    and two phone numbers survived, a login form posting to '/login?_csrf=X' kept the token
+    in discovery.json, and presigned S3 brochure links kept their signatures. The capture is
+    a CI artifact kept 14 days."""
+    cap = es.Capture(tmp_path / "capture", secrets=("pw-Correct-Horse-91",))
+    home = ("<html><script>window.__STATE__={\"jwt\":\"eyJhbGciOiJIUzI1NiJ9.SECRETJWT.sig\","
+            "\"auth\":\"Bearer SECRETBEARER\",\"sid\":\"SECRETSID\",\"refresh\":\"SECRETREFRESH\","
+            "\"headers\":{\"Authorization\":\"Bearer SECRETAUTHZ\",\"X-Api-Key\":\"SECRETXAPI\"},"
+            "\"user\":{\"phone\":\"0412 345 678\"}};document.cookie='connect.sid=SECRETCOOKIE';"
+            "</script><p>Call your BDM on 0498765432</p>"
+            "<a href='/download?token=SECRETQUERYTOKEN'>Download</a>"
+            "<div data-api-key='SECRETDATAKEY' data-auth-token=\"SECRETDATAAUTH\"></div></html>")
+    cap.page("home.html", home)
+    cap.discovery["login_form"] = {"action": "/login?_csrf=SECRETACTION", "found": True}
+    cap.discovery["export_links_found"] = ["https://site.example/download?token=SECRETEXPORT"]
+    cap.payload("GET /api/packages", {"data": [{
+        "lotNumber": "100", "brochureUrl": "https://s3.example.test/b.pdf?X-Amz-Signature="
+                                           "SECRETSIG&X-Amz-Credential=AKIASECRET",
+        "salesNotes": "ring 0412 345 678"}]})
+    cap.finish()
+    blob = "\n".join(p.read_text(encoding="utf-8") for p in (tmp_path / "capture").iterdir())
+    for secret in ("SECRETJWT", "SECRETBEARER", "SECRETSID", "SECRETREFRESH", "SECRETAUTHZ",
+                   "SECRETXAPI", "SECRETCOOKIE", "SECRETQUERYTOKEN", "SECRETDATAKEY",
+                   "SECRETDATAAUTH", "SECRETACTION", "SECRETEXPORT", "SECRETSIG", "AKIASECRET",
+                   "0412 345 678", "0498765432"):
+        assert secret not in blob, secret
+    # What the capture is FOR stays readable: the paths, the keys, the shape.
+    assert "/download" in blob and "/login" in blob and "brochureUrl" in blob
+    assert "s3.example.test/b.pdf" in blob
 
 
 def test_a_capture_from_an_earlier_night_is_not_left_behind(creds, site_factory, tmp_path):

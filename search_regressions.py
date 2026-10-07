@@ -146,6 +146,9 @@ ALLOWED_VERDICTS = ("shortlist", "needs_confirming", "collapsed_into_visible",
                     # price (release review: Hattan lot 406 at its 17/08 price).
                     "newer_capture_repriced",
                     "document_reread_without_row", "builder_documents_reread",
+                    # A vendor's re-upload replaced the row's file in the same shared folder
+                    # (_candidates.fresh_row_guard, 7 Oct 2026: Victoria & Albert).
+                    "newer_upload_in_folder",
                     # W11's email guard (critique #9), the same kind of sold-stock evidence
                     # as builder_documents_reread for a list sent by email.
                     "newer_list_from_sender",
@@ -157,7 +160,10 @@ ALLOWED_VERDICTS = ("shortlist", "needs_confirming", "collapsed_into_visible",
 WARN_VERDICTS = ("no_suburb", "suburb_not_a_locality", "incomplete_facts",
                  # An office or a shop filed as a dwelling (release review: "Building A
                  # Ground Level Office", an Apartment row) -- the filing is the problem.
-                 "commercial")
+                 "commercial",
+                 # A fee, commission or deposit stored as a price, and a line that is only a
+                 # price (_candidates.not_a_home, 7 Oct 2026) -- the extraction is.
+                 "price_not_a_home", "fragment")
 EXPLAIN_KEYS = ("search_help", "needs_confirming", "needs_confirming_count",
                 "needs_confirming_hidden")
 # What every brief in data/colin_searches.json must say it searched (load_spec).
@@ -834,9 +840,16 @@ class Run:
             address = str(entry.get("lot_address") or "").strip()
             if not address or (address, price(entry)) in listed:
                 continue
+            # THE LINE'S OWN HEAD when the card states its suburb (repair round 1, 7 Oct
+            # 2026): kommo_agent writes "N. <lot_address>, <suburb> - $<total>", and a card
+            # carded only "Lot 17" is a prefix of every "Lot 17, <estate>" on the note --
+            # nsw_any went red on "Lot 17, The Rise, Wyee NSW" once that lot ranked top ten.
+            suburb = str(entry.get("suburb") or "").strip()
+            head = "%s, %s - " % (address, suburb) if suburb else None
             for line in lines:
-                if (address + ",") not in line or (address in addresses
-                                                   and _money(price(entry)) not in line):
+                body = line.split(". ", 1)[1] if re.match(r"^\s*\d+\.\s", line) else line
+                named = body.startswith(head) if head else (address + ",") in line
+                if not named or (address in addresses and _money(price(entry)) not in line):
                     continue
                 self.report.fail(where, "needs confirming %s (%s, %s) is written into the "
                                         "Kommo note as if shortlisted"
@@ -1179,7 +1192,19 @@ def priced_as_a_home(rec, cells):
     printed = _num(cells.get("text_price_max"))
     if printed is not None and printed > price * (1 + COMPONENT_TOLERANCE):
         return False
+    # A LINE THAT IS ONLY A PRICE ("$803,100" off Hermitage's portal page, "$667,418" off a
+    # Hattan email) names no lot, so it is not an obvious listing (7 Oct 2026; the search's
+    # _candidates.is_fragment, word for word).
+    if (not _norm(rec.get("lot_number")) and not _num(rec.get("bedrooms"))
+            and str(rec.get("lot_address") or "").strip()
+            and not re.search(r"[A-Za-z0-9]", _FRAGMENT_MONEY.sub(" ", str(rec.get(
+                "lot_address") or "")))):
+        return False
     return True
+
+
+_FRAGMENT_MONEY = re.compile(
+    r"[A-Za-z]?\$\s?\d[\d,]*(?:\.\d+)?|\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b")
 
 
 def obvious_rows_check(C, research, bootstrap, catalogue, snapshot_path):

@@ -102,6 +102,12 @@ EARLIER = ("29/09/2026", "30/09/2026", "01/10/2026", "02/10/2026", "03/10/2026",
            "04/10/2026", "05/10/2026")
 
 
+def _tonights_manifest():
+    """A clean data/harvest_manifest.json written tonight: a --nightly run without one
+    fails the READ bar since repair round 1 (7 Oct 2026)."""
+    return {"schema": 1, "generated": "06/10/2026 21:00", "entries": [_lane_entry()]}
+
+
 # ------------------------------------------------------------- the SHOWN bar, for real
 
 def test_a_catalogue_the_search_shows_whole_passes_every_bar(bundle, tmp_path):
@@ -155,20 +161,30 @@ def _defects():
                    suburb="Tarneit", postcode="3029")
     unit_a.update(suburb="Tarneit", postcode="3029")
     # Two packages on ONE lot at one price, two lines of one list (Goldstate lot 5710 on 6 Oct:
-    # Atlanta 206 m2 and Trinidad 210 m2, both $712,000). The design is not a column, so the
-    # search's dedupe (card address, design, price, lot) still folds one into the other --
-    # the merge the integrated search still makes, and which the bar must keep naming
-    # (integration, 7 Oct 2026: the units above stopped being one).
+    # Atlanta 206 m2 and Trinidad 210 m2, both $712,000). Since repair round 1 the search
+    # keys its dedupe on the house size and bedrooms as well, so those two are two cards.
+    # Two designs that state the SAME facts at one price are still folded into one -- the
+    # merge the search still makes, and which the bar must keep naming.
     pair = dict(estate="Parity Pair", doc="doc-pair", lot_number="5710",
                 lot_address="5710 Piebald St, Tarneit VIC 3029", price=712000,
                 suburb="Tarneit", postcode="3029")
     pkg_a = F.lot(504, line_key="pair-atlanta", house_sqm=206.0,
                   source_text="Mar-27 5710 Piebald St North West 12.5 28 350 $340,000 Atlanta "
                               "23 Panorama 4 Single 206 $372,000 $712,000 Available", **pair)
-    pkg_b = F.lot(505, line_key="pair-trinidad", house_sqm=210.0,
+    pkg_b = F.lot(505, line_key="pair-trinidad", house_sqm=206.0,
                   source_text="Mar-27 5710 Piebald St North West 12.5 28 350 $340,000 Trinidad "
-                              "23 Sovereign 4 Single 210 $372,000 $712,000 Available", **pair)
-    return [no_suburb, no_state, unit_a, unit_b, pkg_a, pkg_b]
+                              "23 Sovereign 4 Single 206 $372,000 $712,000 Available", **pair)
+    # ...and the 6 Oct pair itself, 206 m2 against 210 m2: two cards, named by nobody.
+    real = dict(pair, lot_number="5711", lot_address="5711 Piebald St, Tarneit VIC 3029",
+                price=713000)
+    gold_a = F.lot(506, line_key="gold-atlanta", house_sqm=206.0,
+                   source_text="Mar-27 5711 Piebald St North West 12.5 28 350 $341,000 Atlanta "
+                               "23 Panorama 4 Single 206 $372,000 $713,000 Available", **real)
+    gold_b = F.lot(507, line_key="gold-trinidad", house_sqm=210.0,
+                   source_text="Mar-27 5711 Piebald St North West 12.5 28 350 $341,000 "
+                               "Trinidad 23 Sovereign 4 Single 210 $372,000 $713,000 Available",
+                   **real)
+    return [no_suburb, no_state, unit_a, unit_b, pkg_a, pkg_b, gold_a, gold_b]
 
 
 def test_lots_hidden_without_an_allowed_reason_are_named_by_id(bundle, tmp_path):
@@ -180,9 +196,10 @@ def test_lots_hidden_without_an_allowed_reason_are_named_by_id(bundle, tmp_path)
     assert reasons["state_unknown"]["group"] == "blank"
     merged = reasons["merged_with_another_lot"]
     assert merged["count"] == 1 and merged["ids"][0] in (70504, 70505), out
-    # The two units of one tower are both shown now: no failure names either.
+    # The two units of one tower are both shown now, and so are the 206 / 210 m2 packages
+    # of one lot (repair round 1): no failure names any of them.
     named = {i for f in body["failures"] for i in (f.get("ids") or [])}
-    assert not named & {70502, 70503}, out
+    assert not named & {70502, 70503, 70506, 70507}, out
 
 
 def test_two_captures_of_one_line_are_one_lot_and_two_packages_are_two():
@@ -216,8 +233,10 @@ def _allowed():
     """Three obvious lots the search hides for a reason the bar allows."""
     sold_later = F.lot(510, estate="Parity Sold", doc="doc-sold", day="05/10/2026",
                        lot_number="777")
-    sold_capture = F.lot(511, estate="Parity Sold", doc="doc-sold", lot_number="777",
-                         status="Sold", line_key="line-510-sold")
+    # On ANOTHER list: a capture on the row's own list, read after it, would make the row
+    # one its list no longer carries, which is not obvious at all (repair round 1).
+    sold_capture = F.lot(511, estate="Parity Sold", doc="doc-sold-elsewhere",
+                         lot_number="777", status="Sold", line_key="line-510-sold")
     dead_page = F.lot(512, estate="Parity Gone", doc="doc-gone", lot_page_gone="05/10/2026",
                       lot_page_status="gone")
     # The same lot on two channels: identical facts, two documents.
@@ -240,10 +259,17 @@ def test_a_sold_stock_guard_a_dead_page_and_a_shown_twin_are_allowed(bundle, tmp
 # ------------------------------------------------------------------ NOT OVER-SERVED
 
 def _over_served():
-    """Three VIC lots read on 03/10 from a list the harvest read again on 06/10 without
-    them -- still fresh enough to be shortlisted."""
-    return [F.lot(520 + n, estate="Parity Rise 0", doc="doc-parity-rise-0", day="03/10/2026")
-            for n in range(3)]
+    """Three VIC lots read on 03/10 from a Proxima project the harvest read again on 06/10
+    without them -- still fresh enough to be shortlisted.
+
+    PROXIMA, since repair round 1 (7 Oct 2026): the search no longer shows an E-Agent lot
+    its own list was re-read without (fresh_row_guard), so only a channel it cannot judge
+    that way -- every Proxima row shares the portal's index page as its document -- still
+    provokes the bar."""
+    common = dict(estate="Parity Project", channel="Proxima", doc="doc-proxima-index",
+                  source_project_id="900")
+    return ([F.lot(530 + n, **common) for n in range(10)]
+            + [F.lot(520 + n, day="03/10/2026", **common) for n in range(3)])
 
 
 def test_lots_a_re_read_list_no_longer_carries_fail_over_two_percent(bundle, tmp_path):
@@ -251,11 +277,146 @@ def test_lots_a_re_read_list_no_longer_carries_fail_over_two_percent(bundle, tmp
     assert code == 1, out
     over = [f for f in body["failures"] if f["bar"] == "over-served"]
     assert len(over) == 1 and over[0]["group"] == "VIC", body["failures"]
-    assert "3 of 83 shown lots (3.6%, at most 2%)" in over[0]["text"], over[0]["text"]
+    assert "3 of 93 shown lots (3.2%, at most 2%)" in over[0]["text"], over[0]["text"]
     assert "70520, 70521, 70522" in over[0]["text"]
     # Everything else is clean: the three are not obvious (read 3 nights ago), so the
     # SHOWN bar is untouched by them.
     assert {f["bar"] for f in body["failures"]} == {"over-served"}
+
+
+def test_an_e_agent_list_re_read_without_its_lots_no_longer_shows_them(bundle, tmp_path):
+    """The same shape on an E-Agent price list: the search hides the three itself now
+    (document_reread_without_row), so nothing is over-served (repair round 1)."""
+    gone = [F.lot(520 + n, estate="Parity Rise 0", doc="doc-parity-rise-0", day="03/10/2026")
+            for n in range(3)]
+    code, out, body = _check(bundle, tmp_path, F.clean_catalogue() + gone)
+    assert code == 0, out
+    assert not [f for f in body["failures"] if f["bar"] == "over-served"], body["failures"]
+
+
+def test_a_lot_its_list_dropped_since_is_not_obvious():
+    """Read two nights ago, and the list read IN FULL last night without it: not something
+    the sources list tonight (repair round 1). A read cut short proves nothing."""
+    day = SR._day
+    reads = {"doc:a": {day("06/10/2026"): 40, day("04/10/2026"): 1},
+             "doc:b": {day("06/10/2026"): 5, day("04/10/2026"): 40}}
+    latest = {d: max(v) for d, v in reads.items()}
+    rec = {"date_checked": "04/10/2026"}
+    assert P.read_left_it_out(rec, "doc:a", latest, reads, set(), P._latest_read_is_full)
+    assert not P.read_left_it_out(rec, "doc:b", latest, reads, set(), P._latest_read_is_full)
+    assert not P.read_left_it_out(rec, "doc:a", latest, reads, {"doc:a"},
+                                  P._latest_read_is_full)
+    assert not P.read_left_it_out({"date_checked": "06/10/2026"}, "doc:a", latest, reads,
+                                  set(), P._latest_read_is_full)
+
+
+# ------------------------------------------------------- bars that could not fail (round 1)
+
+def test_an_excuse_has_a_ceiling(bundle, tmp_path):
+    """Repair round 1 (parity verifier, probe S4): a lot-page 404 storm hid 74 of SA's 113
+    lots and SA read '39/39 100.0%' -- excused lots leave the denominator. More than 3% of
+    a state's obvious lots (and more than 10) hidden for an allowed reason fails."""
+    dead = [F.lot(600 + n, estate="Parity Gone %d" % (n // 4), doc="doc-gone-%d" % (n // 4),
+                  lot_page_gone="05/10/2026", lot_page_status="gone") for n in range(20)]
+    code, out, body = _check(bundle, tmp_path, F.clean_catalogue() + dead)
+    assert code == 1, out
+    texts = [f["text"] for f in body["failures"]]
+    assert any("20 of 100 obvious lots are hidden for an allowed reason" in t
+               and "lot_page_gone 20" in t for t in texts), texts
+    row = {r["state"]: r for r in body["rows"]}["VIC"]
+    assert row["excused_lots"] == 20 and row["lots"] == [80, 80]
+    assert " excused " in out and "20/100" in out, out
+
+
+def test_a_stale_database_or_a_state_with_nothing_obvious_fails(bundle, tmp_path):
+    """Probe S1: today six nights after the newest read, no history -- 0 obvious lots, every
+    state 0/0, PASS. A bar over nothing is not a pass."""
+    code, out, body = _check(bundle, tmp_path, F.clean_catalogue(), "--today", "12/10/2026")
+    assert code == 1, out
+    cover = [f for f in body["failures"] if f["bar"] == "coverage"]
+    assert any("newest read in the database is 06/10/2026" in f["text"] for f in cover), cover
+    assert {f["group"] for f in cover} >= {"database", "VIC", "NSW", "QLD", "SA", "WA",
+                                           "E-Agent"}, cover
+
+
+def test_a_search_that_sends_every_lot_to_confirm_fails(bundle, tmp_path):
+    """Probe S2: SPB_SNAPSHOT_FRESH_DAYS=-1 sends every lot to Needs confirming -- which
+    Clare and Agent 2 never read -- and SA, WA and NSW still passed their lot bars."""
+    code, out, body = _check(bundle, tmp_path, F.clean_catalogue(),
+                             env={"SPB_SNAPSHOT_FRESH_DAYS": "-1"})
+    assert code == 1, out
+    on_list = [f for f in body["failures"] if "on the shortlist" in f["text"]]
+    assert {f["group"] for f in on_list} == {"VIC", "NSW", "QLD", "SA", "WA"}, body["failures"]
+    assert any("0 of 4 obvious lots are on the shortlist" in f["text"] for f in on_list)
+
+
+def test_copies_of_one_lot_on_the_page_fail_the_duplicates_bar(bundle, tmp_path):
+    """Parity verifier: about 2% of a state's cards were a second copy of a lot already
+    shown, and nothing counted them. Eleven lots each carded twice -- the same builder's
+    lot, price and suburb on two lists, too thinly described for the search to prove them
+    one -- is over the bar."""
+    copies = []
+    for n in range(11):
+        a = F.lot(700 + n, estate="Copy Rise A", doc="doc-copy-a", lot_number=str(7000 + n),
+                  price=800000 + n * 1000, builder_name="Copy Homes", land_sqm=None,
+                  bedrooms=None, suburb="Tarneit", postcode="3029")
+        b = dict(F.lot(750 + n, estate="Copy Rise B", doc="doc-copy-b",
+                       lot_number=str(7000 + n), price=800000 + n * 1000,
+                       builder_name="Copy Homes", land_sqm=None, bedrooms=None,
+                       suburb="Tarneit", postcode="3029"))
+        copies += [a, b]
+    code, out, body = _check(bundle, tmp_path, F.clean_catalogue() + copies)
+    assert code == 1, out
+    dup = [f for f in body["failures"] if f["bar"] == "duplicates"]
+    assert len(dup) == 1 and dup[0]["group"] == "VIC", body["failures"]
+    assert "11 of 102 shown cards" in dup[0]["text"], dup[0]["text"]
+
+
+def test_a_nightly_run_needs_tonights_manifest():
+    """Without one the READ bar said nothing on every run it was never fed."""
+    failures, summary, _notes = P.read_bar(None, [], TODAY, required=True)
+    assert len(failures) == 1 and "harvest_manifest.json" in failures[0]["text"]
+    stale = {"schema": 1, "generated": "01/10/2026 21:14", "entries": [_lane_entry()]}
+    failures, _s, _n = P.read_bar(stale, [], TODAY, required=True)
+    assert any("written 01/10/2026, not tonight" in f["text"] for f in failures), failures
+    # A manual run only says so.
+    assert P.read_bar(None, [], TODAY)[0] == []
+    assert P.read_bar(stale, [], TODAY)[0] == []
+
+
+def test_a_link_gone_from_the_page_is_named():
+    """A link that left E-Agent's page has no entry tonight at all; looping over tonight's
+    entries never saw it go."""
+    history = [{"night": "04/10/2026", "states": {},
+                "manifest": {"E-Agent:stocklist_key:feedfacefeedface": 120},
+                "manifest_labels": {"E-Agent:stocklist_key:feedfacefeedface":
+                                    "E-Agent - house-and-land-vic - Gone Homes"}}]
+    failures, summary, _notes = P.read_bar({"entries": [_lane_entry()]}, history, TODAY)
+    assert len(failures) == 1 and "Gone Homes" in failures[0]["text"], failures
+    assert summary["vanished"] == 1
+
+
+def test_a_shown_count_that_falls_under_its_median_fails_the_drift_bar():
+    """Repair round 1: the drift bar measured the obvious set only, so a search that
+    showed far fewer of a steady obvious set could not trip it."""
+    past = [{"night": d, "states": {"VIC": {"lots": 100, "buildings": 10, "shown": 100,
+                                            "channels": {}, "docs": {}}}} for d in EARLIER]
+    tonight = {"VIC": {"drift": {"lots": 100, "buildings": 10, "shown": 60, "channels": {},
+                                 "docs": {}, "doc_labels": {}}}}
+    failures, _cells, _notes = P.drift_bar(tonight, past, TODAY)
+    assert len(failures) == 1 and "shown 60 against a 7-night median of 100" in \
+        failures[0]["text"], failures
+
+
+def test_a_state_mostly_shown_off_unread_lists_fails():
+    served = {"shown": 100, "over": 0, "unjudged": 0, "ids": [], "docs": {}, "unread": 30,
+              "unread_docs": {"E-Agent - Gone Folder": 30}}
+    failures, _cells, notes = P.over_served_bar({"QLD": {"over_served": served}})
+    assert len(failures) == 1 and "30 of 100 shown lots (30.0%) sit on a list not read" in \
+        failures[0]["text"], failures
+    served = dict(served, unread=5)
+    failures, _cells, notes = P.over_served_bar({"QLD": {"over_served": served}})
+    assert failures == [] and any("5 of 100" in n for n in notes)
 
 
 def test_a_proxima_project_is_its_own_document():
@@ -311,7 +472,7 @@ def test_a_night_that_falls_15_percent_under_its_median_fails_naming_what_fell(b
 def test_a_steady_night_passes_and_nightly_keeps_the_history(bundle, tmp_path):
     history = [_night(d) for d in EARLIER]
     code, out, body = _check(bundle, tmp_path, F.clean_catalogue(), "--nightly",
-                             history=history)
+                             history=history, manifest=_tonights_manifest())
     assert code == 0, out
     assert {r["state"]: r["drift"] for r in body["rows"]}["VIC"] == "+0%"
     saved = json.loads((tmp_path / "parity_history.json").read_text(encoding="utf-8"))
@@ -427,8 +588,8 @@ def test_the_harvest_lanes_manifest_is_read_in_its_own_terms():
     history = [{"night": "03/10/2026", "states": {},
                 "manifest": {"E-Agent:stocklist_key:0123456789abcdef": 40}}]
     failures, _s, notes = P.read_bar({"entries": [gone]}, history, TODAY)
-    assert len(failures) == 1 and "0 tonight: E-Agent - house-and-land-vic" in \
-        failures[0]["text"], failures
+    assert len(failures) == 1 and "0 tonight (read empty, or no longer on the source's " \
+        "page): E-Agent - house-and-land-vic" in failures[0]["text"], failures
     assert any("zero-yield" in n for n in notes), notes
 
 
@@ -681,7 +842,8 @@ def test_nothing_printed_or_published_carries_a_link_or_a_keyed_file_name(bundle
 def test_the_database_and_the_bundle_are_left_as_they_were(bundle, tmp_path):
     snapshot, db = F.write(tmp_path, F.clean_catalogue())
     before = (SR._tree(bundle), db.read_bytes(), snapshot.read_bytes())
-    code, out, _body = _run_check(bundle, tmp_path, snapshot, db, "--nightly")
+    code, out, _body = _run_check(bundle, tmp_path, snapshot, db, "--nightly",
+                                  manifest=_tonights_manifest())
     assert code == 0, out
     assert (SR._tree(bundle), db.read_bytes(), snapshot.read_bytes()) == before
 
@@ -801,7 +963,13 @@ def test_the_build_publishes_the_last_report_with_no_cache(tmp_path, monkeypatch
     out = tmp_path / "site"
     out.mkdir()
     monkeypatch.setattr(build_web, "__file__", str(tmp_path / "build_web.py"))
-    assert build_web._publish_parity_report(out) is False          # none yet: nothing
+    assert build_web._publish_parity_report(out) is False          # none yet: no report
+    # ...but a file all the same (repair round 1, 7 Oct 2026): a build with no report --
+    # deploy.ps1 on a laptop that never ran the check -- published nothing, Vercel answered
+    # the Settings tab's fetch with a 404, and the browser logged it as a console error.
+    # An empty report is a 200 the panel reads as "no panel".
+    placeholder = json.loads((out / "parity_report.json").read_text(encoding="utf-8"))
+    assert placeholder["rows"] == [] and not placeholder.get("failures"), placeholder
     (tmp_path / "data").mkdir()
     (tmp_path / "data" / "parity_report.json").write_text(
         json.dumps({"verdict": "PASS", "rows": [{"state": "VIC"}]}), encoding="utf-8")

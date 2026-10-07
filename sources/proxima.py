@@ -898,15 +898,26 @@ class ProximaSource(PropertySource):
         # PROVEN WHOLE when the two ends met: one came back short, or they overlap and
         # between them hold more than one page. Two identical full pages prove nothing --
         # that is also what a server ignoring the sort returns.
+        # MET BY PRICE, NOT ONLY BY KEY (repair round 1, 7 Oct 2026): both ends cut at the
+        # SAME price share their boundary lots and still miss the rest at that price (90
+        # lots at $600,000: 155 of 240 read, called whole). The cheapest 80 hold every lot
+        # below their dearest, the dearest 80 every lot above their cheapest; only when the
+        # second is strictly below the first is every price covered.
         if asc is not None and desc is not None:
             union = len({key(d) for d in asc} | {key(d) for d in desc})
+            top_of_asc = max((p for p in (_rop(d) for d in asc) if p), default=None)
+            low_of_desc = min((p for p in (_rop(d) for d in desc) if p), default=None)
+            crossed = (top_of_asc is not None and low_of_desc is not None
+                       and low_of_desc < top_of_asc)
             self._topup["complete"] = (len(asc) < _RENDER_CAP or len(desc) < _RENDER_CAP
-                                       or (not disjoint and union > _RENDER_CAP))
+                                       or (not disjoint and union > _RENDER_CAP and crossed))
         # Bands when the two ends did not meet (a middle exists that neither reached), or
         # the read is still below the counter. Disjoint decides even with a counter: the
-        # stored one can be weeks old and lower than the project is tonight.
+        # stored one can be weeks old and lower than the project is tonight. And when they
+        # met only at one shared price, which the walk must try to split.
         needs_bands = desc is not None and len(desc) >= _RENDER_CAP and (
-            disjoint or bool(stated_available and len(props) < stated_available))
+            disjoint or bool(stated_available and len(props) < stated_available)
+            or not self._topup["complete"])
         if needs_bands:
             if not _has_field(body, _CEILING_FIELD):
                 logger.warning("     project %s: over 2 x %d lots but its POST body has no "
@@ -925,7 +936,19 @@ class ProximaSource(PropertySource):
         return props
 
     def _walk_bands(self, pid, body, asc, desc, replay, take) -> None:
-        """Walk the price ceiling down from the dearest 80 until it meets the cheapest 80."""
+        """Walk the price ceiling down from the dearest 80 until it meets the cheapest 80.
+
+        REPAIR ROUND 1 (7 Oct 2026, data verifier), three changes:
+          * the ceiling SENT is a dollar above the one meant, so the lots AT the boundary
+            price come back whether the portal's ceiling includes its own value or not
+            (unverified on the live portal; an exclusive one lost 8 of 300 lots priced in
+            blocks of six, and the read was called complete);
+          * a full band that cannot get below its own ceiling (80 or more lots at one
+            price) is asked FIRST, and is never a whole read: before, "the band met the
+            cheapest 80" was tested first, and 240 lots with 90 at $600,000 read 155 and
+            were called complete;
+          * the walk has met the cheapest 80 only when the band reaches STRICTLY below the
+            dearest of them: at one shared price either read may have been cut."""
         floor = max((p for p in (_rop(d) for d in (asc or [])) if p), default=None)
         prices = [p for p in (_rop(d) for d in desc) if p]
         if not prices:
@@ -933,7 +956,8 @@ class ProximaSource(PropertySource):
         ceiling = min(prices)
         by_desc = _with_field(body, _SORT_FIELD, "price-desc")
         while True:
-            label = f"{ceiling:.0f}" if float(ceiling).is_integer() else f"{ceiling}"
+            sent = ceiling + 1
+            label = f"{sent:.0f}" if float(sent).is_integer() else f"{sent}"
             band = replay(_with_field(by_desc, _CEILING_FIELD, label))
             if band is None:
                 break
@@ -943,15 +967,18 @@ class ProximaSource(PropertySource):
                 self._topup["complete"] = True
                 break                          # the band came back short: nothing below
             low = min((p for p in (_rop(d) for d in band) if p), default=None)
-            if low is not None and floor is not None and low <= floor:
-                self._topup["complete"] = True
-                break                          # met the cheapest 80 read by price-asc
             if low is None:
                 break
             if low >= ceiling:
+                self._topup["stuck"] = ceiling
                 logger.warning("     project %s: %d or more lots at $%s -- the price band "
-                               "cannot split them further", pid, _RENDER_CAP, label)
+                               "cannot split them further, so the read is NOT whole",
+                               pid, _RENDER_CAP, f"{ceiling:,.0f}")
+                self._bump("capped project, one price holds the cap")
                 break
+            if floor is not None and low < floor:
+                self._topup["complete"] = True
+                break                          # met the cheapest 80 read by price-asc
             if not added:
                 break
             ceiling = low
@@ -968,10 +995,19 @@ class ProximaSource(PropertySource):
         below = bool(stated) and read < stated
         # ...unless the top-up just proved the read whole: a project can hold 83 lots.
         signature = read in _CAP_SIGNATURES and not self._topup.get("complete")
-        if not (below or signature):
+        # A band walk that met 80 or more lots at one price could not read past them,
+        # whatever the count (repair round 1, 7 Oct 2026).
+        stuck = self._topup.get("stuck") is not None and not self._topup.get("complete")
+        if not (below or signature or stuck):
             return
         self.short_projects.append({"pid": pid, "name": name, "read": read,
                                     "stated": stated})
+        if stuck and not below and not signature:
+            logger.warning("Proxima: project %s '%s' read %d lot(s), but %d or more of its lots "
+                           "share the price $%s and the portal shows at most %d of them -- "
+                           "some may be missing from tonight's harvest.", pid, name, read,
+                           _RENDER_CAP, f"{self._topup['stuck']:,.0f}", _RENDER_CAP)
+            return
         if below:
             logger.warning("Proxima: project %s '%s' read %d lot(s) against the %d its "
                            "counter last stated -- %d may be missing from tonight's "

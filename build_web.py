@@ -153,7 +153,10 @@ BUILDING_DERIVED_FIELDS += EMAIL_LIST_FIELDS
 # 110-character lot_address might hide a status word past the cut (promotion_refusal's
 # line_truncated: 58 Silkwood / Gallery lots on 6 Oct, none of them gone). One word, not
 # the line, is published.
-LINE_KEY_FIELDS = ["line_key", "line_says_gone"]
+# source_folder (7 Oct 2026): a hash of the Dropbox shared folder the row's list sits in,
+# "" otherwise, so the search can tell a vendor's old upload from the file that replaced it
+# in the same folder (api/_candidates.fresh_row_guard). The folder id is never published.
+LINE_KEY_FIELDS = ["line_key", "line_says_gone", "source_folder"]
 BUILDING_DERIVED_FIELDS += LINE_KEY_FIELDS
 
 # benchmarks.json -- market comparables from realestate.com.au, which are NOT stock.
@@ -546,7 +549,7 @@ def _assert_no_contact_details(path: Path) -> None:
 # the first build that published it (release review). source_doc and email_list are
 # digests of the same kind.
 _NOT_FREE_TEXT = {"content_hash", "sha256", "dedup_key", "row_key", "superseded_by",
-                  "line_key", "source_doc", "email_list"}
+                  "line_key", "source_doc", "email_list", "source_folder"}
 
 
 def _walk_strings(node, field=""):
@@ -1956,14 +1959,20 @@ def _publish_parity_report(out_dir: Path) -> bool:
     and drops tonight's report into the build itself. This copy is for every other build --
     deploy.ps1 rebuilds before it publishes -- so a rebuild carries the latest report rather
     than quietly losing the panel. The report says which night it describes, so an old one
-    reads as old. Absent or unreadable: nothing is published and the panel is not drawn.
+    reads as old. Absent or unreadable: an EMPTY report is published (no rows), which the
+    panel reads as "no panel" -- never no file at all (repair round 1, 7 Oct 2026: with no
+    file Vercel answered the Settings tab's fetch with a 404, which the browser logs as a
+    console error on every visit to the tab).
     """
     path = Path(__file__).resolve().parent / "data" / "parity_report.json"
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:                                  # pragma: no cover - absent is fine
-        return False
+        payload = None
     if not isinstance(payload, dict) or not isinstance(payload.get("rows"), list):
+        (out_dir / "parity_report.json").write_text(
+            json.dumps({"version": 1, "rows": [], "failures": [], "notes": [],
+                        "verdict": "", "night": ""}), encoding="utf-8")
         return False
     (out_dir / "parity_report.json").write_text(json.dumps(payload), encoding="utf-8")
     return True

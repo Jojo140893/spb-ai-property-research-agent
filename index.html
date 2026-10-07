@@ -1446,12 +1446,15 @@
               Every night each state is searched the way you search it &mdash; the whole
               state, no budget &mdash; and compared with every lot the builders&rsquo; lists
               and portals carried in the last ${Number((p.bars || {}).recent_nights || 3)} nights.
-              A lot counts as shown when it is in the results or under &ldquo;Needs confirming&rdquo;.
+              A lot counts as shown when it is in the results or under &ldquo;Needs confirming&rdquo;;
+              &ldquo;On the shortlist&rdquo; is the part Clare and Agent 2 read, and a lot hidden
+              for a reason (sold elsewhere, its page gone, not a home's price) is counted apart.
             </p>
             <table style="width:100%; border-collapse:collapse; font-size:0.82rem;">
               <thead><tr style="text-align:left; color:var(--text-muted);">
                 <th style="${td}">State</th><th style="${td}">E-Agent lots</th>
-                <th style="${td}">All lots</th><th style="${td}">Buildings</th>
+                <th style="${td}">All lots</th><th style="${td}">On the shortlist</th>
+                <th style="${td}">Buildings</th><th style="${td}">Hidden for a reason</th>
               </tr></thead>
               <tbody>${p.rows.map(r => `
                 <tr style="border-top:1px solid var(--border-light);">
@@ -1459,7 +1462,11 @@
                     ? ' <span style="color:var(--rose-red);">&#10007;</span>' : ''}</td>
                   <td style="${td}">${share(r.e_agent_lots)}</td>
                   <td style="${td}">${share(r.lots)}</td>
+                  <td style="${td}">${share(r.shortlisted)}</td>
                   <td style="${td}">${share(r.buildings)}</td>
+                  <td style="${td}">${Number.isFinite(Number(r.obvious_lots)) && Number(r.obvious_lots) > 0
+                    ? `${Number(r.excused_lots || 0).toLocaleString()} of ${Number(r.obvious_lots).toLocaleString()}`
+                    : '&mdash;'}</td>
                 </tr>`).join('')}</tbody>
             </table>
             ${fails.length ? `
@@ -3228,9 +3235,16 @@ python state_sync.py push</pre>
         const lead = typeof o.lead === 'string' ? o.lead : '';
         const shown = Math.min(shortlist.length,
             (Number.isInteger(o.shown) && o.shown > 0) ? o.shown : HL_LIVE_PAGE);
+        // MORE FOUND THAN ONE PAGE HOLDS (repair round 1, 7 Oct 2026). A state-wide re-run
+        // found 3,244 lots and holds the best 500; "Showing 25 of 3244" beside "475 remaining
+        // of 500" were two counts that disagreed. Both now say which 500 they are.
+        const partial = found > shortlist.length;
+        const held = partial ? `the best ${shortlist.length.toLocaleString('en-AU')} of `
+                             + `${found.toLocaleString('en-AU')}` : esc(found);
         const head = `<div class="hl-recs-note"><span class="pill pill-conditions">Live results &mdash; not saved</span>
-                ${shown ? `Showing ${shown} of ${esc(found)} from today's stock, best first. Tick
+                ${shown ? `Showing ${shown} of ${held} from today's stock, best first. Tick
                 &ldquo;compare&rdquo; on any of them for this client's report.` : ''}
+                ${shown && partial ? 'Run the same brief on the Research tab to page through all of them.' : ''}
                 Press Refresh above to go back to the saved recommendations.</div>`;
         if (!shown) {
             return head + hlRecsBlock([], {
@@ -3246,7 +3260,8 @@ python state_sync.py push</pre>
                }).join('') + '</div>'
              + (left > 0
                  ? `<button type="button" class="btn-ghost btn-more" id="hlMore-${n}" onclick="hlShowMore(${n})">`
-                   + `Show ${Math.min(left, HL_LIVE_PAGE)} more (${left} remaining of ${shortlist.length})</button>`
+                   + `Show ${Math.min(left, HL_LIVE_PAGE)} more (${left} remaining of `
+                   + `${partial ? 'the best ' : ''}${shortlist.length})</button>`
                  : '');
     }
 
@@ -6228,6 +6243,7 @@ python state_sync.py push</pre>
         stale: "not checked at the source in the last 14 days",
         newer_capture: 'a newer capture of this lot exists',
         document_partially_read: 'its list was only partly read the last time',
+        conflicting_capture: 'another project on the portal lists this unit as Not Available',
     };
     const HIDDEN_WHY = {
         newer_capture_disagrees: 'a newer capture of the same lot says otherwise',
@@ -6237,6 +6253,9 @@ python state_sync.py push</pre>
         newer_list_from_sender: 'the builder has sent a newer list',
         over_confirm_limit: 'they are more than 45 days old',
         builder_documents_reread: "the builder's other lists were read again without them",
+        newer_upload_in_folder: 'a newer price list was uploaded in their place',
+        price_not_a_home: 'their price is a fee, a deposit or a commission, not a home',
+        fragment: 'their line is only a price, with no lot',
         no_capture_date: 'they have no capture date',
         untraceable: "they could not be traced back to their listing",
         no_document: "their list could not be identified",
@@ -6248,7 +6267,7 @@ python state_sync.py push</pre>
         larger_total_in_text: 'their list prints a larger total than their price',
         build_only: 'their price is for the build only',
         land_only: 'their price is for the land only',
-        commercial: 'they are commercial listings (an office, shop or warehouse)',
+        commercial: 'they are commercial listings (an office, shop, warehouse or storage unit)',
     };
 
     /* One needs-confirming listing. NOT renderShortlistCard, on purpose: no compare tick (a

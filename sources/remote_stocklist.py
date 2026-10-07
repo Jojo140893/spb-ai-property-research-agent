@@ -296,6 +296,40 @@ _DBX_NOT_PRICES = re.compile(
 _DBX_GUESS_MAX_BYTES = 2 * 1024 * 1024
 
 
+# A GUESSED FILE MUST READ AS A PRICE LIST (repair round 1, 7 Oct 2026). The fallback above
+# trusted the extractor to return nothing for a brochure; it does not. A project brochure
+# gave 4 rows ("One bedroom residences from $450,000"), a residence-types sheet 4 ("Type A
+# 1 Bed ... from $455,000"), an EOI form 1 ("Lot 1234 Altrove Estate $350,000"). A price
+# list's lines each print their own figures -- unit or lot, rooms, areas -- beside the
+# price; a brochure's lines print an indicative "from" price and little else.
+_FROM_PRICE = re.compile(r"\b(?:from|starting(?:\s+at)?|priced?\s+from)\s*(?:only\s*)?"
+                         r"(?:AUD\s*)?\$", re.I)
+_MONEY = re.compile(r"[A-Za-z]?\$\s?\d[\d,]*(?:\.\d+)?(?:\s?[kKmM]\b)?|\b\d{1,3}(?:,\d{3})+"
+                    r"(?:\.\d+)?\b")
+_FIGURE = re.compile(r"\d+(?:\.\d+)?")
+# Figures besides the price that a line of a price list prints, and lines a list has.
+GUESS_MIN_FIGURES = 3
+GUESS_MIN_ROWS = 2
+
+
+def guessed_price_list(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The rows of a GUESSED file worth storing: [] unless it reads as a price list.
+
+    A row is kept when its line is not a "from" price and prints GUESS_MIN_FIGURES figures
+    or more besides its money amounts; the file is kept only when GUESS_MIN_ROWS rows or
+    more survive. Everything else -- a brochure, a type sheet, a form -- stores nothing and
+    is reported as "no price list" by the caller."""
+    kept = []
+    for r in rows:
+        line = str(r.get("source_text") or r.get("lot_address") or "")
+        if _FROM_PRICE.search(line):
+            continue
+        if len(_FIGURE.findall(_MONEY.sub(" ", line))) < GUESS_MIN_FIGURES:
+            continue
+        kept.append(r)
+    return kept if len(kept) >= GUESS_MIN_ROWS else []
+
+
 def _download_capped(sess: Any, url: str, max_bytes: int):
     """(response, bytes or None, why) -- None when the file is larger than max_bytes."""
     r = sess.get(url, timeout=180, stream=True)

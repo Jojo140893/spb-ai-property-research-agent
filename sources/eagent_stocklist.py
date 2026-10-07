@@ -109,6 +109,11 @@ MIN_ROWS = 20
 MIN_GOOD_SHARE = 0.70
 GATE_PRICE_MIN, GATE_PRICE_MAX = 150_000, 10_000_000
 MIN_AU_STATE_SHARE = 0.95
+# A PACKAGE NAMES ITS LOT OR ITS HOUSE (repair round 1, 7 Oct 2026). An estate list --
+# {name, suburb, state, price}, a "from" price per estate -- is priced and placed on every
+# row and passed the gate as 40 "lots" with no lot number, no design and no build price.
+# At least this share of rows must name a lot, a house design or a build price.
+MIN_NAMED_SHARE = 0.50
 
 DEFAULT_ENDPOINTS = ("/api/packages", "/api/stock", "/api/listings", "/api/search",
                      "/api/properties")
@@ -514,7 +519,9 @@ def map_record(record: Dict[str, Any], base: str, source_url: str,
     product = pick("product_type", _product)
     storey = pick("storey", _storey)
     updated = pick("updated", lambda v: _clean_text(v, 40))
-    pick("record_id", lambda v: _clean_text(v, 80))     # counted for the capture only
+    # Counted for the capture, and kept on the row (popped before storing) so price-only
+    # siblings are numbered in the same order every night (_finish_rows).
+    record_id = pick("record_id", lambda v: _clean_text(v, 80))
     links = {f: pick(f, lambda v: _url(v, base))
              for f in ("listing_url", "brochure_url", "floorplan_url")}
     # A link on the Stocklist site itself is behind its login. link_check.py asks every
@@ -626,6 +633,7 @@ def map_record(record: Dict[str, Any], base: str, source_url: str,
         "extraction_confidence": 1.0,
         "verified": True,
         "_state_stated": state_stated,
+        "_record_id": record_id or "",
     }
     return row, ""
 
@@ -642,8 +650,11 @@ def plausibility(rows: List[Dict[str, Any]], records_seen: int) -> Tuple[bool, s
                and (str(r.get("suburb") or "").strip() or str(r.get("estate_name") or "").strip()))
     stated = [r for r in rows if r.get("_state_stated")]
     au = sum(1 for r in stated if r.get("state") in _AU_STATES)
+    named = sum(1 for r in rows if str(r.get("lot_number") or "").strip()
+                or str(r.get("house_design") or "").strip() or r.get("build_price"))
     stats = {"records_seen": records_seen, "rows_mapped": n, "priced_and_placed": good,
-             "states_stated": len(stated), "states_australian": au}
+             "states_stated": len(stated), "states_australian": au,
+             "named_lots_or_designs": named}
     if n < MIN_ROWS:
         return False, ("only %d row(s) mapped from %d record(s); at least %d are needed "
                        "before anything is stored" % (n, records_seen, MIN_ROWS)), stats
@@ -653,6 +664,11 @@ def plausibility(rows: List[Dict[str, Any]], records_seen: int) -> Tuple[bool, s
         return False, ("only %.0f%% of %d rows have a price between $150k and $10m AND a "
                        "suburb or an estate (need %.0f%%) -- the field mapping is probably "
                        "wrong" % (share * 100, n, MIN_GOOD_SHARE * 100)), stats
+    if named < n * MIN_NAMED_SHARE:
+        return False, ("only %d of %d rows name a lot number, a house design or a build "
+                       "price (need %.0f%%) -- this reads like a list of estates or "
+                       "projects with a 'from' price, not of packages" % (
+                           named, n, MIN_NAMED_SHARE * 100)), stats
     if stated and au / len(stated) < MIN_AU_STATE_SHARE:
         return False, ("%d of %d stated states are not Australian state codes -- the "
                        "'state' key probably means something else" % (len(stated) - au,
@@ -929,6 +945,34 @@ _META_TOKEN = re.compile(r"(<meta\b[^>]*?(?:csrf|token|xsrf)[^>]*?\bcontent\s*=\
                          r"(\"[^\"]*\"|'[^']*')", re.I)
 _SCRIPT_SECRET = re.compile(r"""((?:token|csrf|xsrf|secret|session|password|apikey|api_key)"""
                             r"""["']?\s*[:=]\s*)(["'`])[^"'`]*\2""", re.I)
+# REPAIR ROUND 1 (7 Oct 2026, data verifier): the capture still kept a page's inline
+# session state ("jwt", "auth": "Bearer ...", "sid", "refresh", headers.Authorization,
+# "X-Api-Key"), document.cookie='connect.sid=...', a data-api-key attribute, a download
+# link's ?token=, a login form posting to '/login?_csrf=...', presigned S3 brochure links
+# (X-Amz-Signature) and the BDM's phone numbers. The capture is a CI artifact kept 14 days.
+#   * any quoted value after a key that names a credential, however the key is spelt;
+_SECRET_WORDS = (r"token|csrf|xsrf|secret|session|passw(?:or)?d|api[_\-]?key|jwt|auth\w*|"
+                 r"bearer|sid|refresh|cookie|signature|credential|access[_\-]?key")
+_SCRIPT_KEYED = re.compile(
+    r"""((?:["'][\w\-.]*(?:%s)[\w\-.]*["']|\b[\w\-.]*(?:%s)[\w\-.]*)\s*[:=]\s*)"""
+    r"""(["'`])[^"'`]*\2""" % (_SECRET_WORDS, _SECRET_WORDS), re.I)
+#   * a bearer token and a JWT wherever they stand;
+_BEARER = re.compile(r"\bBearer\s+[A-Za-z0-9\-._~+/]+=*", re.I)
+_JWT = re.compile(r"\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]*")
+#   * a data-* attribute named for a credential;
+_DATA_SECRET = re.compile(r"""(\bdata-[\w\-]*(?:%s)[\w\-]*\s*=\s*)("[^"]*"|'[^']*'|[^\s>]+)"""
+                          % _SECRET_WORDS, re.I)
+#   * and the query string of every link -- a link's path says what it is; its query is
+#     where sites put tokens and signatures.
+_URL_QUERY = re.compile(r"((?:https?:)?//[^\s\"'<>?#`]+|(?<![\w/])/[\w\-./%]*)\?[^\s\"'<>`#]*",
+                        re.I)
+
+
+def scrub_links_and_tokens(text: str) -> str:
+    """`text` with every link's query string, bearer token and JWT taken out."""
+    text = _URL_QUERY.sub(lambda m: m.group(1) + "?[query removed]", str(text or ""))
+    text = _BEARER.sub("Bearer [redacted]", text)
+    return _JWT.sub("[jwt]", text)
 
 
 class Capture:
@@ -952,7 +996,11 @@ class Capture:
         html = _TEXTAREA.sub(lambda m: m.group(1) + m.group(3), html)
         html = _META_TOKEN.sub(lambda m: m.group(1) + '""', html)
         html = _SCRIPT_SECRET.sub(lambda m: m.group(1) + m.group(2) + m.group(2), html)
+        html = _SCRIPT_KEYED.sub(lambda m: m.group(1) + m.group(2) + m.group(2), html)
+        html = _DATA_SECRET.sub(lambda m: m.group(1) + '""', html)
+        html = scrub_links_and_tokens(html)
         html = _EMAIL.sub("[email]", html)
+        html = _PHONE.sub("[phone]", html)
         return self._scrub_text(html)
 
     def scrub_value(self, value: Any, key: str = "") -> Any:
@@ -970,6 +1018,7 @@ class Capture:
         if isinstance(value, str):
             v = _EMAIL.sub("[email]", value)
             v = _PHONE.sub("[phone]", v)
+            v = scrub_links_and_tokens(v)
             return self._scrub_text(v)
         return value
 
@@ -1306,11 +1355,16 @@ class EAgentStocklistSource:
         """
         tries = [{}, {"page": 1, "limit": 100}, {"q": "", "page": 1, "limit": 100}]
         answered: List[str] = []
+        # A LOWER-RANKED LIST IS ONLY A FALLBACK while a higher-ranked endpoint that asked
+        # for parameters has not been asked with them (repair round 1, 7 Oct 2026):
+        # /api/packages answered a plain GET with 400 "page required", /api/estates answered
+        # with 40 estates, and the estates were taken as the stock.
+        fallback = None
         probes = 0
         for n_try, params in enumerate(tries):
             for path in (candidates if n_try == 0 else answered):
                 if probes >= MAX_PROBES:
-                    return None
+                    return fallback
                 if params.get("q") is not None and "search" not in path.lower():
                     continue
                 probes += 1
@@ -1338,12 +1392,18 @@ class EAgentStocklistSource:
                 if r.status_code == 200 and records:
                     logger.info("EAgent Stocklist: %s answers with %d record(s) under %s",
                                 path, len(records), where)
-                    return path, params, payload, records, where
+                    hit = (path, params, payload, records, where)
+                    if n_try == 0 and answered:
+                        # Something ranked above it answered without listing: ask those
+                        # again with paging parameters before settling for this one.
+                        fallback = hit
+                        break
+                    return hit
                 if (n_try == 0 and path not in answered
                         and ((r.status_code == 200 and payload is not None)
                              or r.status_code in (400, 422))):
                     answered.append(path)
-        return None
+        return fallback
 
     def _page(self, path: str, params: Dict[str, Any]):
         try:
@@ -1533,6 +1593,13 @@ class EAgentStocklistSource:
             if row is None:
                 dropped[why] = dropped.get(why, 0) + 1
                 continue
+            if not any(str(row.get(f) or "").strip()
+                       for f in ("suburb", "estate_name", "postcode", "state")):
+                # NOWHERE AT ALL (repair round 1): no search can place it, and the gate's
+                # 70% bar let 12 of 40 such rows into the database.
+                why = "no suburb, estate, postcode or state"
+                dropped[why] = dropped.get(why, 0) + 1
+                continue
             if row.get("_state_stated") and not row.get("state"):
                 why = "state not Australian (row kept, state left blank)"
                 dropped[why] = dropped.get(why, 0) + 1
@@ -1577,8 +1644,16 @@ class EAgentStocklistSource:
 
     @staticmethod
     def _finish_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        # IN A STABLE ORDER BEFORE SIBLINGS ARE NUMBERED (repair round 1, 7 Oct 2026): two
+        # packages identical but for the price take their variant ordinal from where they
+        # stand, and the API's order is not a promise -- reversed, it swapped which price
+        # each identity held. By the record's own id, then the price.
+        rows.sort(key=lambda r: (str(r.get("_record_id") or ""),
+                                 float(r.get("advertised_package_price") or 0),
+                                 str(r.get("source_text") or "")))
         for r in rows:
             r.pop("_state_stated", None)
+            r.pop("_record_id", None)
         try:
             # Two packages identical in every identity field but the price stay two rows
             # (database.building_content_hash); the same numbering the file readers use.

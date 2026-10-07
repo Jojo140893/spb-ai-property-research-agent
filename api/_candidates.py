@@ -118,6 +118,9 @@ SNAPSHOT_FIELDS = [
     # source_text at build time: True / False, or null when the row had no text. The
     # 110-character lot_address is all a deployed search otherwise has to read.
     "line_says_gone",
+    # THE DROPBOX FOLDER THE ROW'S LIST SITS IN, hashed (source_folder_of), "" for any other
+    # document: a re-upload is a new file in the same folder (fresh_row_guard).
+    "source_folder",
     # THE DATE THE LOT'S OWN PAGE ANSWERED 404/410 (link_check.py via build_web), else "".
     # The gate refuses such a row as lot_page_gone.
     "lot_page_gone",
@@ -135,11 +138,12 @@ _OPTIONAL_SNAPSHOT_FIELDS = {"lot_page_gone": "", "lot_page_status": ""}
 # computes them from the columns they derive from, exactly as build_web does, instead of
 # failing the read over a column the snapshot could not have had.
 _COMPUTED_SNAPSHOT_FIELDS = ("price_kind", "text_price_max", "price_in_text",
-                             "email_list", "email_first_seen", "line_key", "line_says_gone")
+                             "email_list", "email_first_seen", "line_key", "line_says_gone",
+                             "source_folder")
 # What those computations read. Selected when the table has them, then dropped before a
 # row is returned: source_text on a row changes what suburb_quality resolves, and the
 # JSON reader's rows never carry it.
-_COMPUTE_INPUTS = ("source_text", "source_url", "first_seen")
+_COMPUTE_INPUTS = ("source_text", "source_url", "first_seen", "stocklist_file")
 
 # The field rows are grouped by when asking "what do this document's other rows say?".
 _DOC_KEY = "source_doc"
@@ -635,7 +639,8 @@ def snapshot_line_cells(row):
     blank row whose address sat on the cut (line_truncated) -- 58 Silkwood and Gallery lots
     on 6 Oct, none of whose full lines say sold or contract. This cell is that check made
     while the whole line is still in hand."""
-    out = {"line_key": None, "line_says_gone": None}
+    out = {"line_key": None, "line_says_gone": None,
+           "source_folder": source_folder_of(row)}
     try:
         out["line_key"] = line_text_key(row.get("source_text"))
     except Exception:                                                   # noqa: BLE001
@@ -644,6 +649,25 @@ def snapshot_line_cells(row):
     if text.strip():
         out["line_says_gone"] = _says_gone(text)
     return out
+
+
+# A Dropbox shared folder's id, from a file link inside it or the folder link itself.
+_DROPBOX_FOLDER = re.compile(r"dropbox\.com/(?:scl/fo|sh)/([A-Za-z0-9_-]{10,})/", re.I)
+
+
+def source_folder_of(row):
+    """A short hash of the Dropbox shared folder a row's price list sits in, or "".
+
+    7 Oct 2026. A vendor's re-upload gets a new file link but stays in its folder (88
+    Dropbox folders in the 6 Oct database, 19 re-uploaded, every one still a single
+    project -- document_suburb._rule_for_folder). fresh_row_guard reads it to tell an old
+    upload from the list that replaced it. Hashed like source_doc: the folder id is half of
+    a capability link and this snapshot is public."""
+    for field in ("stocklist_file", "source_url"):
+        m = _DROPBOX_FOLDER.search(str(row.get(field) or ""))
+        if m:
+            return hashlib.sha256(m.group(1).encode("utf-8")).hexdigest()[:16]
+    return ""
 
 
 def snapshot_email_cells(row):
@@ -1086,17 +1110,37 @@ def same_lot_key(package, row):
     return ("row", str(row.get("content_hash") or package.get("content_hash") or id(row)))
 
 
+class _LotKey:
+    """DedupeEngine's lot_key over one snapshot (see lot_key_for), holding the snapshot's
+    rows by content_hash for collapse_same_lot as well."""
+
+    def __init__(self, rows):
+        self.by_hash = {}
+        for r in rows:
+            h = str(r.get("content_hash") or "").strip()
+            if h and (h not in self.by_hash or not r.get("superseded_by")):
+                self.by_hash[h] = r
+
+    def row(self, package):
+        return self.by_hash.get(str(package.get("content_hash") or "").strip()) or {}
+
+    def __call__(self, package):
+        # THE FACTS AS WELL AS THE LOT (7 Oct 2026). Goldstate prints two packages on lot
+        # 5710 at one price, Atlanta 206 m2 and Trinidad 210 m2: one card, one lot, one
+        # price, so the lot key alone made them one and the parity check named the
+        # Trinidad as merged into a different package (6 such pairs on the 6 Oct VIC
+        # search). A house size or a bedroom count that differs is another package; the
+        # same line printed twice ("Nava 180 Paddington" / "Nava Paddington") has the same.
+        return (same_lot_key(package, self.row(package)),
+                _num(package.get("house_size_sqm")), _num(package.get("bedrooms")))
+
+
 def lot_key_for(rows):
     """DedupeEngine's lot_key over a snapshot: same_lot_key of a package and its row, found
-    by content_hash (the live row when a hash has a superseded twin). Built once per
-    snapshot, so a caller deduplicating many times (trace_listing) indexes the rows once."""
-    by_hash = {}
-    for r in rows:
-        h = str(r.get("content_hash") or "").strip()
-        if h and (h not in by_hash or not r.get("superseded_by")):
-            by_hash[h] = r
-    return lambda p: same_lot_key(p, by_hash.get(str(p.get("content_hash") or "").strip())
-                                  or {})
+    by content_hash (the live row when a hash has a superseded twin), with the package's
+    house size and bedrooms. Built once per snapshot, so a caller deduplicating many times
+    (trace_listing) indexes the rows once."""
+    return _LotKey(rows)
 
 
 def fresher_capture(package):
@@ -1114,15 +1158,225 @@ def fresher_capture(package):
             1 if str(package.get("source_url_or_ref") or "").startswith("http") else 0)
 
 
-def dedupe_packages(packages, rows, lot_key=None):
+def dedupe_packages(packages, rows, lot_key=None, merged_into=None):
     """DedupeEngine.deduplicate over a search's packages, keyed on the lot as well as the
-    card (same_lot_key) and keeping the fresher capture (fresher_capture). `rows` is the
-    snapshot the packages were built from; `lot_key`, lot_key_for(rows) built once by a
-    caller that deduplicates many times. The one dedupe the search, the needs-confirming
-    pass and trace_listing all run, so none of them can merge what another keeps apart."""
+    card (same_lot_key) and keeping the fresher capture (fresher_capture), then
+    collapse_same_lot. `rows` is the snapshot the packages were built from; `lot_key`,
+    lot_key_for(rows) built once by a caller that deduplicates many times. The one dedupe
+    the search, the needs-confirming pass and trace_listing all run, so none of them can
+    merge what another keeps apart.
+
+    merged_into, when given a dict, is filled with {content_hash dropped: content_hash
+    kept} for every package collapse_same_lot folded into another (parity_check names the
+    twin a hidden lot stands behind)."""
     from sources.dedupe import DedupeEngine
-    return DedupeEngine.deduplicate(packages, lot_key=lot_key or lot_key_for(rows),
-                                    prefer=fresher_capture)
+    key = lot_key if isinstance(lot_key, _LotKey) else lot_key_for(rows)
+    kept = DedupeEngine.deduplicate(packages, lot_key=lot_key or key, prefer=fresher_capture,
+                                    merged_into=merged_into)
+    out = collapse_same_lot(kept, key, merged_into)
+    if merged_into:
+        # A package the first pass folded into one the second pass then folded: name the
+        # package that is finally kept.
+        for mine in list(merged_into):
+            seen, twin = {mine}, merged_into[mine]
+            while twin in merged_into and twin not in seen:
+                seen.add(twin)
+                twin = merged_into[twin]
+            merged_into[mine] = twin
+    return out
+
+
+# ------------------------------------------------------------- one lot, two cards
+#
+# 7 Oct 2026, repair round 1. Both merges above key on the CARD's address, so the same lot
+# read twice under two card spellings stayed two cards -- about 2% of a state-wide answer,
+# most of it hidden by the old 600-row cap until the cap went:
+#   * one line of one list read twice: 'G-Floor room Updated' as an estate on one capture
+#     of the Celia St NSW list and not on the other ("32 Celia St" / "32 Celia St, G-Floor
+#     room Updated", same line, same price, same night); Aria's units with and without the
+#     "Aria Collection - Interest on Deposit." heading glued to the line;
+#   * one lot on two channels: Hattan lot 3208 Olivine on E-Agent ("Lot 3208, Olivine") and
+#     in the sub-$650k email ("Lot 3208, Olivine", no state), Hermitage 283 Recreation
+#     Circuit on E-Agent and on its portal ("LOT 283 RECREATION CIRCUIT, CLYDE 3978") --
+#     and Hattan lot 212 Thornhill Park, whose email copy has no suburb, so the search
+#     inferred "Patterson" from its house design and Clare confirmed the lot as Patterson.
+#
+# The rules, each also asking that the two captures' facts do not contradict (bedrooms,
+# house and land size where both state them):
+#   same line    the same document, the same price, and the same line (line_key) or the
+#                same stored line (a lot_address of 60 characters or more printing three
+#                numbers or more: the list's line flattened, not a card address) -- one
+#                list read twice, never two lines of it;
+#   same lot     the same builder, the same lot (lot_identity), the same state and price,
+#                and either the same land/build split of the price to the dollar, or no
+#                two different estates (lot 12 of Raceview Rise is not lot 12 of Ormeau
+#                Vue; a release heading such as "Q2 Single" names no estate) with the land
+#                size agreeing, or the bedrooms and the suburb -- research._same_listing's
+#                rule for a copy of a shown card, with the builder, estate and split added.
+# The fresher capture is kept (fresher_capture), in the place the first one had.
+_SAME_FACT_SQM = 1.0
+# A stored lot_address that is the price list's own line flattened (most E-Agent sheets):
+# long, and printing several numbers. A card-style address ("Lot 3208, Olivine") is not.
+_STORED_LINE_MIN = 60
+
+
+def _facts_agree(a, b):
+    x, y = _num(a.get("bedrooms")), _num(b.get("bedrooms"))
+    if x and y and x != y:
+        return False
+    for field in ("house_size_sqm", "land_size_sqm"):
+        x, y = _num(a.get(field)) or 0.0, _num(b.get(field)) or 0.0
+        if x > 0 and y > 0 and abs(x - y) > _SAME_FACT_SQM:
+            return False
+    return True
+
+
+# Words a list prints in its estate column that name a release or a product, not a place:
+# Hattan's emailed lists file lot 3236 under "Q2 Single" and lot 3208 under "Hattan".
+_ESTATE_HEADING_WORDS = frozenset((
+    "q1", "q2", "q3", "q4", "single", "double", "storey", "story", "lot", "lots", "stage",
+    "release", "titled", "title", "house", "land", "package", "packages", "townhouse",
+    "townhouses", "stock", "list", "available", "price", "prices", "new", "the", "and"))
+
+
+def _estate_says_nothing(estate, builder):
+    words = [w for w in _norm(estate).split() if not w.isdigit()]
+    return (not words or all(w in _ESTATE_HEADING_WORDS for w in words)
+            or (builder and set(words) <= set(_norm(builder).split())))
+
+
+def _same_split(a, b):
+    """The same land and build prices, to the dollar, stated on both."""
+    split_a = (_num(a.get("land_price")) or 0.0, _num(a.get("build_price")) or 0.0)
+    split_b = (_num(b.get("land_price")) or 0.0, _num(b.get("build_price")) or 0.0)
+    return (min(split_a) > 0 and min(split_b) > 0
+            and abs(split_a[0] - split_b[0]) < 1.0 and abs(split_a[1] - split_b[1]) < 1.0)
+
+
+def _same_lot_evidence(a, b, ra, rb):
+    """Evidence that two cards of one builder's lot number at one price are one lot.
+
+    THE SAME LIST'S OWN SPLIT of the price into land and build, to the dollar, is enough on
+    its own (Hattan lot 212: "The Thornhill Gardens" on E-Agent, "Thornhill Single" in the
+    email, $423,000 + $426,150 on both). Otherwise the two must not name two different
+    estates -- lot 12 of Raceview Rise is not lot 12 of Ormeau Vue -- (a blank estate, a
+    release heading or the builder's own name names none) and must agree as
+    research._same_listing asks: the land size, or the bedrooms and the suburb."""
+    if _same_split(a, b):
+        return True
+    ea, eb = (ra or {}).get("estate_name") or a.get("estate_context"), \
+        (rb or {}).get("estate_name") or b.get("estate_context")
+    builder = (ra or {}).get("builder_name") or ""
+    if (_norm(ea) != _norm(eb) and not _estate_says_nothing(ea, builder)
+            and not _estate_says_nothing(eb, builder)):
+        return False
+    la, lb = _num(a.get("land_size_sqm")) or 0.0, _num(b.get("land_size_sqm")) or 0.0
+    if la > 0 and lb > 0 and abs(la - lb) <= _SAME_FACT_SQM:
+        return True
+    beds = _num(a.get("bedrooms"))
+    return bool(beds and beds == _num(b.get("bedrooms")) and _norm(a.get("suburb"))
+                and _norm(a.get("suburb")) == _norm(b.get("suburb")))
+
+
+def stored_line(row):
+    """A row's stored lot_address, normalised, when it is its price list's own line
+    flattened (60 characters or more, three numbers or more), else "". ONLY a stored line,
+    never a short card address: Celia St's list stores "30 Celia St, G-Floor room Updated"
+    for two different lines at one price."""
+    stored = _norm((row or {}).get("lot_address"))
+    if len(stored) >= _STORED_LINE_MIN and len(re.findall(r"\d+", stored)) >= 3:
+        return stored
+    return ""
+
+
+def _same_lot_keys(package, row):
+    """(rule, key) pairs a package files under; two packages sharing one are compared."""
+    price = _num(package.get("advertised_package_price"))
+    if not price:
+        return []
+    price = int(round(price))
+    out = []
+    doc = str(row.get(_DOC_KEY) or "").strip()
+    if doc:
+        line = str(row.get("line_key") or "").strip()
+        if line:
+            out.append(("line", ("line", doc, line, price)))
+        stored = stored_line(row)
+        if stored:
+            out.append(("line", ("text", doc, stored, price)))
+    builder = _norm(row.get("builder_name"))
+    ident = lot_identity(package, row)
+    state = str(package.get("state") or row.get("state") or "").strip().upper()
+    if builder and ident and state:
+        out.append(("lot", ("lot", builder, ident, state, price)))
+    return out
+
+
+def collapse_same_lot(packages, lot_key, merged_into=None):
+    """The packages with each lot kept once by the rules in the section comment above.
+    `lot_key` is lot_key_for(rows) of the snapshot the packages came from."""
+    if len(packages) < 2:
+        return list(packages)
+    parent = list(range(len(packages)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    groups = {}
+    idents = []
+    for index, package in enumerate(packages):
+        row = lot_key.row(package)
+        idents.append(lot_identity(package, row))
+        for rule, key in _same_lot_keys(package, row):
+            groups.setdefault(key, []).append((index, rule))
+    # The lots each merged set names, so a chain of merges (a line read twice, then one of
+    # its captures matched by lot) can never put two lot numbers in one set.
+    lots_of = {i: ({idents[i]} if idents[i] else set()) for i in range(len(packages))}
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        reps = []
+        for index, rule in members:
+            package = packages[index]
+            for rep in reps:
+                other = packages[rep]
+                # Two lot numbers are two lots, whatever else the lines share: Verv prints
+                # lots 542 and 550 of Fraser Rise as "1056 Fraser Rise" at one price.
+                if idents[index] and idents[rep] and idents[index] != idents[rep]:
+                    continue
+                if not _facts_agree(package, other):
+                    continue
+                if rule == "lot" and not _same_lot_evidence(
+                        package, other, lot_key.row(package), lot_key.row(other)):
+                    continue
+                a, b = find(index), find(rep)
+                if (a != b and _facts_agree(packages[a], packages[b])
+                        and len(lots_of[a] | lots_of[b]) <= 1):
+                    root, child = min(a, b), max(a, b)
+                    parent[child] = root
+                    lots_of[root] = lots_of[root] | lots_of.pop(child)
+                break
+            else:
+                reps.append(index)
+    best = {}
+    for index, package in enumerate(packages):
+        root = find(index)
+        if root not in best or fresher_capture(package) > fresher_capture(packages[best[root]]):
+            best[root] = index
+    out = []
+    for index, package in enumerate(packages):
+        root = find(index)
+        if root == index:
+            out.append(packages[best[root]])
+        if merged_into is not None and best[root] != index:
+            kept = str(packages[best[root]].get("content_hash") or "")
+            mine = str(package.get("content_hash") or "")
+            if mine and kept and mine != kept:
+                merged_into[mine] = kept
+    return out
 
 
 # A group must have more than one located row before it can name the rest. See the note
@@ -1408,7 +1662,11 @@ class PreparedRows:
                  # superseded ones and other states included, because the capture that
                  # says a lot is On Hold is often exactly the row a search would skip.
                  "captures", "doc_reads", "builder_reads", "email_lists",
-                 "doc_statements", "doc_lines")
+                 "doc_statements", "doc_lines",
+                 # The fresh-row guards' (fresh_row_guard, 7 Oct 2026): the newest read of
+                 # each document in a shared folder, every live Proxima capture of a unit
+                 # address, and the share of each document its newest read dropped.
+                 "folder_reads", "unit_reads", "doc_night_drop")
 
     def __init__(self, **fields):
         for name in self.__slots__:
@@ -1552,9 +1810,15 @@ COMPONENT_PRICE_TOLERANCE = 1.0
 PRICE_LINE_CHANNELS = ("e-agent", EMAIL_CHANNEL)
 # An office, a shop or a warehouse. Only on a row that states no bedrooms, and never
 # "home office" or "study/office": those are rooms in a house.
+# A STORAGE UNIT IS NOT A HOME EITHER (7 Oct 2026). The Huntingdale / Coburg North /
+# Mornington storage lists print "Unit 33 ... STORAGF Cold Shell ... $764,000" and
+# "Storege Lot G.01 ... STORAGE Cold Shell": "cold shell" / "warm shell" is a commercial
+# fit-out stage that no dwelling is sold at, so it names the unit for what it is however
+# the OCR spelled "storage". An apartment's "Storage Cage" is an inclusion, not a unit,
+# and its line states bedrooms anyway, which this test never reads.
 _TEXT_COMMERCIAL = re.compile(
     r"(?<!home )(?<!study )(?<!study/)(?<!sales )(?<!post )(?<!display )"
-    r"\b(?:office|retail|shop|warehouse|tenancy)\b", re.I)
+    r"\b(?:office|retail|shop|warehouse|tenancy|(?:cold|warm)\s*shell)\b", re.I)
 
 
 def _norm(value):
@@ -1613,12 +1877,15 @@ def latest_read_is_full(reads_by_day, share=FULL_READ_SHARE, runs=FULL_READ_RUNS
 
 def _guard_indexes(rows):
     """The PreparedRows fields confirm_guard reads. See PreparedRows.__slots__."""
-    captures = {}          # capture_key -> [(day, availability, price, line_key)]
+    captures = {}          # capture_key -> [(day, availability, price, line_key, suburb)]
     doc_lines = {}         # (source_doc, line_key) -> [(day, availability, price)]
     reads = {}             # source_doc -> {day: rows}
     builder_reads = {}     # (relisting channel, builder) -> newest day
     email_lists = {}       # email_list -> {source_doc: newest day}
     doc_statements = {}    # source_doc -> [live rows stated available, rows marked gone]
+    folder_reads = {}      # source_folder -> {source_doc: newest day}
+    unit_reads = {}        # (state, Proxima unit address) -> [(day, availability, project)]
+    live_reads = {}        # source_doc -> {day: LIVE rows last read that day}
     for row in rows:
         avail = str(row.get("availability_status") or "").strip().lower()
         doc = str(row.get(_DOC_KEY) or "").strip()
@@ -1636,14 +1903,27 @@ def _guard_indexes(rows):
         key = capture_key(row)
         if key is not None:
             captures.setdefault(key, []).append(
-                (seen, avail, _num(row.get("price")), str(row.get("line_key") or "")))
+                (seen, avail, _num(row.get("price")), str(row.get("line_key") or ""),
+                 _norm(row.get("suburb"))))
         line = str(row.get("line_key") or "")
         if doc and line:
             doc_lines.setdefault((doc, line), []).append((seen, avail, _num(row.get("price"))))
         if doc:
             days = reads.setdefault(doc, {})
             days[seen] = days.get(seen, 0) + 1
+            if not row.get("superseded_by"):
+                live = live_reads.setdefault(doc, {})
+                live[seen] = live.get(seen, 0) + 1
+            folder = str(row.get("source_folder") or "").strip()
+            if folder:
+                docs_in = folder_reads.setdefault(folder, {})
+                if seen > docs_in.get(doc, datetime.min):
+                    docs_in[doc] = seen
         channel = _channel(row)
+        unit = _proxima_unit(row)
+        if unit is not None and not row.get("superseded_by"):
+            unit_reads.setdefault(unit, []).append(
+                (seen, avail, str(row.get("source_project_id") or "")))
         if _is_relisting(channel):
             builder = _norm(row.get("builder_name"))
             if builder and seen > builder_reads.get((channel, builder), datetime.min):
@@ -1657,7 +1937,25 @@ def _guard_indexes(rows):
     doc_reads = {doc: (max(days), latest_read_is_full(days)) for doc, days in reads.items()}
     return {"captures": captures, "doc_reads": doc_reads, "builder_reads": builder_reads,
             "email_lists": email_lists, "doc_statements": doc_statements,
-            "doc_lines": doc_lines}
+            "doc_lines": doc_lines, "folder_reads": folder_reads, "unit_reads": unit_reads,
+            "doc_night_drop": {doc: night_drop_share(days) for doc, days in live_reads.items()}}
+
+
+def night_drop_share(live_days):
+    """The share of a document's lots its newest read did not carry, of those the read
+    before it did: live rows last read on the read before the newest, over those plus the
+    rows the newest read carried. 0.0 for a document read on one day only.
+
+    A NIGHT THAT DROPS A QUARTER OF A LIST IS MORE LIKELY A READ CUT SHORT than a quarter
+    of the lots sold (repair round 1, 7 Oct 2026). latest_read_is_full compares the newest
+    day with rows LAST read on earlier days, which a re-read empties, so on the 17 Sep
+    subset a G Developments list read 31 lots on 16/09 and 11 more on 15/09 alone, and was
+    called whole. This asks the night-over-night question directly."""
+    order = sorted(live_days, reverse=True)
+    if len(order) < 2:
+        return 0.0
+    newest, before = live_days[order[0]], live_days[order[1]]
+    return before / float(newest + before)
 
 
 def _confirm_age_days(row, today):
@@ -1708,7 +2006,7 @@ def _newer_capture(row, prepared, seen):
     if key is None:
         return None
     exists = repriced = False
-    for when, avail, other_price, other_line in prepared.captures.get(key, ()):
+    for when, avail, other_price, other_line, _suburb in prepared.captures.get(key, ()):
         if when <= seen:
             continue
         # Any later capture marked gone, at any price: a lot re-priced and then put on
@@ -1751,9 +2049,12 @@ def price_covers(row):
     kind = str(row.get("price_kind") or "").strip().lower()
     if kind in NOT_ADMITTABLE_PRICE_KINDS:
         return kind
-    if not _num(row.get("bedrooms")) and any(
-            _TEXT_COMMERCIAL.search(str(row.get(f) or ""))
-            for f in ("lot_address", "title_status", "source_text")):
+    if not _num(row.get("bedrooms")) and (
+            # Filed Commercial by its own list (Seaford / Coburg Industries' warehouses,
+            # 7 Oct 2026), whatever words its line uses.
+            str(row.get("product_type") or "").strip().lower() == "commercial"
+            or any(_TEXT_COMMERCIAL.search(str(row.get(f) or ""))
+                   for f in ("lot_address", "title_status", "source_text"))):
         return "commercial"
     return kind
 
@@ -1782,7 +2083,66 @@ def price_evidence_refusal(row):
     if printed is not None and printed > price * (1 + TEXT_PRICE_TOLERANCE):
         return "larger_total_in_text"
     kind = price_covers(row)
-    return kind if kind in NOT_ADMITTABLE_PRICE_KINDS else None
+    if kind in NOT_ADMITTABLE_PRICE_KINDS:
+        return kind
+    return not_a_home(row)
+
+
+# ------------------------------------------------------------- not a home at all
+#
+# 7 Oct 2026 (repair round 1 of the parity release). Once every candidate was scored, rows
+# the 600-row cap used to hide reached the shortlist as VERIFIED results, and some are not
+# homes at all: "4 SE- Chapel St x1 available $50,000bonus.Purchaserrebate" (an agent's
+# commission line, filed an Apartment at $50,000), Goldstate's "The conversion fee is
+# $60,000" sentence, Eastbury's 5% deposits ($67,500 of $1,350,000), a Hattan email line
+# that is only "$667,418" (a fragment of lot 4705's line above it), storage units and
+# warehouses. The guards above ran only on rows offered to CONFIRM; a stated "Available"
+# row was never asked whether its price is a home's.
+#
+# NOT_A_HOME_PRICE_FLOOR: nothing in the 6 Oct database priced under it is a home -- all 9
+# live rows are fees, commissions, deposits or a garbled OCR line -- and the two live rows
+# between $100,000 and $200,000 are a land price and a storage unit, which the rules here
+# already name. A home-and-land package or an apartment for under $100,000 is a misread,
+# never stock.
+NOT_A_HOME_PRICE_FLOOR = 100_000.0
+# Money as price lists print it, for the fragment test: "$667,418", "667,418.00".
+_FRAGMENT_MONEY = re.compile(
+    r"[A-Za-z]?\$\s?\d[\d,]*(?:\.\d+)?|\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b")
+
+
+def is_fragment(row):
+    """True when a row's whole line is a price and nothing else: no lot, no bedrooms, and
+    its lot_address holds nothing once its amounts are taken out ("$667,418"). Such a line
+    names no lot a client could buy; it is a piece of another lot's line."""
+    if _norm(row.get("lot_number")) or _num(row.get("bedrooms")):
+        return False
+    text = str(row.get("lot_address") or "").strip()
+    if not text:
+        return False
+    return not re.search(r"[A-Za-z0-9]", _FRAGMENT_MONEY.sub(" ", text))
+
+
+def not_a_home(row, allow_commercial=False):
+    """'price_not_a_home', 'commercial', 'fragment' or None: whether this row is not a
+    home a client can buy at its stored price, from what the row itself says.
+
+      price_not_a_home  priced under NOT_A_HOME_PRICE_FLOOR (a fee, a commission, a deposit)
+      commercial        price_covers says office / shop / warehouse / storage unit, or the
+                        list files it Commercial, and it states no bedrooms -- unless the
+                        brief asked for Commercial (allow_commercial)
+      fragment          is_fragment: its line is only a price
+
+    Applied to EVERY row the search would show -- the verified shortlist as well as the
+    rows offered to confirm (price_evidence_refusal) -- so a junk line is hidden the same
+    way whichever list it would have reached."""
+    price = _num(row.get("price")) or 0.0
+    if 0 < price < NOT_A_HOME_PRICE_FLOOR:
+        return "price_not_a_home"
+    if not allow_commercial and price_covers(row) == "commercial":
+        return "commercial"
+    if is_fragment(row):
+        return "fragment"
+    return None
 
 
 def confirm_verdict(row, prepared, today=None):
@@ -1790,10 +2150,10 @@ def confirm_verdict(row, prepared, today=None):
 
     reason is why the row must stay HIDDEN rather than be shown to confirm, first match:
 
-      price_not_in_text, larger_total_in_text, build_only, land_only, commercial
-                                   what the row's own price evidence says: its price is
+      price_not_in_text, larger_total_in_text, build_only, land_only, commercial,
+      price_not_a_home, fragment   what the row's own price evidence says: its price is
                                    not a home and land at that price
-                                   (price_evidence_refusal)
+                                   (price_evidence_refusal, not_a_home)
 
       newer_capture_disagrees      a later capture of the same lot says it is gone
       newer_capture_exists         a later capture of the same lot at the same price
@@ -1859,6 +2219,138 @@ def confirm_guard(row, prepared, today=None):
     snapshot the row belongs to.
     """
     return confirm_verdict(row, prepared, today)[0]
+
+
+# ------------------------------------------------------------- fresh, and still not so
+#
+# 7 Oct 2026, repair round 1 of the parity release. A row read inside FRESH_DAYS was
+# "verified" by its age alone, so once every candidate was scored the shortlist carried
+# lots the sources had already moved past: of 7,923 state-wide cards, 1,514 were read 3 to
+# 14 days ago, and most of those sat on a price list the builder had REPLACED -- E-Agent
+# hosts each upload under a new file name, so the old list is simply never read again
+# while the builder's new one is read every night (Hudson Homes QLD, 35 lots of a list last
+# read 24/09; Goldstate 28; FRD 30). E-Agent shows only the new list. Others were on a list
+# re-read in full without them (AVIA Homes QLD: Clare read lot 28's 27/09 package aloud,
+# a package the 06/10 read of the same list no longer carried), or were an older capture
+# of a lot read again since at another price (Ausbuild Lot 25 Honour Place, $1,626,800 on
+# 24/09 beside $1,594,400 on 06/10).
+#
+# The confirm path has asked these questions of STALE rows since September (confirm_verdict);
+# fresh_row_guard asks them of fresh ones, narrowly:
+#
+#   newer_capture_exists / newer_capture_repriced   a later capture of the same lot
+#         (capture_key) IN THE SAME SUBURB at the same price / on the same line at another
+#         price. The suburb, because capture_key's estate can be a list heading ("Ausbuild
+#         Stock List.") under which two suburbs' lot 25s would otherwise be one lot.
+#   document_reread_without_row   E-Agent only: the row's own document was read again,
+#         IN FULL (latest_read_is_full), on a later day, and this row was not on it -- and
+#         that newest read dropped at most FRESH_REREAD_DROP_MAX of the list night over
+#         night (night_drop_share): a read that lost a quarter of a list is a read cut short
+#         more often than a quarter of a list sold.
+#   builder_documents_reread      E-Agent only: the row's document has not been read in
+#         REREAD_WITHIN_DAYS while the same builder's other E-Agent documents have.
+#   newer_upload_in_folder        E-Agent only: the row's document has not been read in
+#         REREAD_WITHIN_DAYS, and another file in the SAME shared folder was read later
+#         than it -- a re-upload. Victoria & Albert, Broadbeach: 'VandA Pricelist' (178
+#         rows, last read 22/09) and 'Victoria & Albert - Sales List - 22 Sep' (114, 24/09)
+#         sit in one Dropbox folder under two builder names, and both were shown: 292
+#         cards for 127 apartments.
+#
+# E-Agent ONLY for the three document rules. Every Proxima row shares the portal's index
+# page as its document and a project can stop at its render cap; Hermitage's portal is one
+# document per package and was read 200 cards at a time; an emailed list is never re-sent.
+# None of those can say "this list was re-read without the lot".
+#
+# A row that trips one of these is no longer verified and stays out of "Needs confirming"
+# too (the reason is its confirm_guard), exactly as a stale row with the same evidence.
+#
+#   conflicting_capture   Proxima: another live project of the portal lists the same unit
+#         address and, read the same day or later, says it is Not Available ("Lot 259 Unit
+#         B-1702, 30 Ellen Street, WOLLONGONG": For Sale in project 793 and Not Available
+#         in project 161 on 06/10). The sources disagree, so it is shown to CONFIRM, not
+#         recommended and not hidden.
+# The most of a list its newest read may have dropped, night over night, for that read to
+# be taken as "re-read without" the rest (night_drop_share). 6 Oct: AVIA 1%, Tomorrow Homes
+# 5%, Kew 5% -- sold lots coming off -- and Verv Projects 19%, the sheet whose reads are
+# known to disagree (plan rank 19: 22 lots one way, 53 the other), which is left shown.
+FRESH_REREAD_DROP_MAX = 0.15
+FRESH_GUARD_HIDES = ("newer_capture_exists", "newer_capture_repriced",
+                     "document_reread_without_row", "builder_documents_reread",
+                     "newer_upload_in_folder")
+FRESH_GUARD_CONFIRMS = ("conflicting_capture",)
+# A Proxima card's address names its unit: "Lot 259 Unit B-1702, 30 Ellen Street, ...".
+_UNIT_ADDRESS = re.compile(r"^\s*(?:lot|unit)\s*[a-z0-9-]+.*\d", re.I)
+
+
+def _proxima_unit(row):
+    """(state, address) naming one Proxima unit, or None for any other row."""
+    if not _channel(row).startswith("proxima"):
+        return None
+    address = _norm(row.get("lot_address"))
+    if len(address) < 20 or not _UNIT_ADDRESS.match(str(row.get("lot_address") or "")):
+        return None
+    return (str(row.get("state") or "").strip().upper(), address)
+
+
+def _same_place_capture(row, prepared, seen):
+    """'newer_capture_exists' / 'newer_capture_repriced' from a later capture of the same
+    lot in the row's own suburb, or None (see fresh_row_guard)."""
+    key = capture_key(row)
+    suburb = _norm(row.get("suburb"))
+    price = _num(row.get("price"))
+    if key is None or not suburb or not price:
+        return None
+    line = str(row.get("line_key") or "")
+    exists = repriced = False
+    for when, avail, other_price, other_line, other_suburb in prepared.captures.get(key, ()):
+        if when <= seen or other_suburb != suburb or avail in NOT_AVAILABLE:
+            continue
+        if other_price and abs(other_price - price) <= price * NEWER_CAPTURE_PRICE_TOLERANCE:
+            exists = True
+        elif other_price and line and other_line == line:
+            repriced = True
+    if exists:
+        return "newer_capture_exists"
+    return "newer_capture_repriced" if repriced else None
+
+
+def fresh_row_guard(row, prepared, today=None):
+    """None, or why a row read inside FRESH_DAYS is still not a verified result -- one of
+    FRESH_GUARD_HIDES (hidden, as confirm_guard hides a stale row) or FRESH_GUARD_CONFIRMS
+    (shown to confirm). See the section comment. A gone status on a later capture is
+    _newer_capture's 'newer_capture_disagrees', which _gate asks first."""
+    today = today or _now_aest()
+    seen = _parse_day(row.get("date_checked"))
+    if seen is None:
+        return None
+    same = _same_place_capture(row, prepared, seen)
+    if same:
+        return same
+    channel = _channel(row)
+    if channel.startswith("e-agent"):
+        doc = str(row.get(_DOC_KEY) or "").strip()
+        read = prepared.doc_reads.get(doc) if doc else None
+        if read is not None:
+            if (read[0] > seen and read[1]
+                    and prepared.doc_night_drop.get(doc, 0.0) <= FRESH_REREAD_DROP_MAX):
+                return "document_reread_without_row"
+            if (today - read[0]).days > REREAD_WITHIN_DAYS:
+                builder = _norm(row.get("builder_name"))
+                newest = prepared.builder_reads.get((channel, builder)) if builder else None
+                if newest is not None and (today - newest).days <= REREAD_WITHIN_DAYS:
+                    return "builder_documents_reread"
+                folder = str(row.get("source_folder") or "").strip()
+                if folder and any(day > read[0] for other, day in
+                                  (prepared.folder_reads.get(folder) or {}).items()
+                                  if other != doc):
+                    return "newer_upload_in_folder"
+    unit = _proxima_unit(row)
+    if unit is not None:
+        project = str(row.get("source_project_id") or "")
+        for when, avail, other_project in prepared.unit_reads.get(unit, ()):
+            if when >= seen and avail in NOT_AVAILABLE and other_project != project:
+                return "conflicting_capture"
+    return None
 
 
 def _truthy(value):
@@ -1949,7 +2441,7 @@ def promotion_refusal(row, prepared):
     """
     key = capture_key(row)
     if key is not None:
-        for _when, avail, _price, _line in prepared.captures.get(key, ()):
+        for _when, avail, _price, _line, _suburb in prepared.captures.get(key, ()):
             if avail in NOT_AVAILABLE:
                 return "gone_at_any_date"
     price = _num(row.get("price"))
@@ -2139,6 +2631,34 @@ def _age_days(row, today=None):
     return (today - seen).days
 
 
+# A state written out in full, spaces optional ("SouthAustralia", "New South Wales"), then a
+# comma or not, then a four-digit postcode: an address, not a street or a design named
+# after a state ("Victoria Street", "Queensland Collection").
+_STATE_WORDS = {"newsouthwales": "NSW", "victoria": "VIC", "queensland": "QLD",
+                "southaustralia": "SA", "westernaustralia": "WA", "tasmania": "TAS",
+                "northernterritory": "NT", "australiancapitalterritory": "ACT"}
+_STATE_THEN_POSTCODE = re.compile(
+    r"\b(new\s*south\s*wales|victoria|queensland|south\s*australia|western\s*australia|"
+    r"tasmania|northern\s*territory|australian\s*capital\s*territory)\s*[,\uff0c]?\s*"
+    r"(\d{4})\b", re.I)
+
+
+def state_named_in_text(row):
+    """The state a row's own text writes out in full, followed by one of its postcodes
+    ("MurrayBridge,SouthAustralia,5253" -> SA), or "" -- and "" when the text names two."""
+    try:
+        from state_resolver import state_from_postcode
+    except Exception:                                                   # noqa: BLE001
+        return ""
+    found = set()
+    for field in ("lot_address", "estate_name", "title_status", "source_text"):
+        for m in _STATE_THEN_POSTCODE.finditer(str(row.get(field) or "")):
+            state = _STATE_WORDS.get(re.sub(r"\s+", "", m.group(1).lower()))
+            if state and state_from_postcode(m.group(2)) == state:
+                found.add(state)
+    return found.pop() if len(found) == 1 else ""
+
+
 def _gate(ctx, row, prepared, today):
     """Every gate build_packages applies to one row, in the order it has always applied
     them. Returns GateResult(code, package or None, tags, detail, seen_at):
@@ -2170,6 +2690,19 @@ def _gate(ctx, row, prepared, today):
         return GateResult("superseded", None, tags,
                           {"superseded_by": row.get("superseded_by")})
     row_state = str(row.get("state") or "").strip().upper()
+    if not row_state:
+        # THE ROW'S OWN ADDRESS BEFORE ITS NEIGHBOURS' (7 Oct 2026, repair round 1). A row
+        # with no state was given the state of the other rows on its list, and on the
+        # "1 Part & Under Construction" list -- Merbein and Tarneit lots, all VIC -- that
+        # put "Lot64HillStreet ... MurrayBridge,SouthAustralia,5253" on the VIC shortlist.
+        # A state written out in full and followed by a postcode of that state is the
+        # row's own address saying where it is.
+        own = state_named_in_text(row)
+        if own:
+            row = {**row, "state": own, "suburb_source": ""}
+            row_state = own
+            tags.append("state_from_own_address")
+            detail["state_from_own_address"] = own
     if not row_state:
         # BORROW THE STATE BEFORE DROPPING THE ROW FOR NOT HAVING ONE.
         #
@@ -2530,6 +3063,22 @@ def _gate(ctx, row, prepared, today):
         confirm.append("newer_capture")
         guard = "newer_capture_disagrees"
         tags.append("newer_capture_demoted")
+    elif not admitted:
+        # NOT A HOME, OR NO LONGER ON ITS LIST, THOUGH READ INSIDE FRESH_DAYS (7 Oct 2026):
+        # see not_a_home and fresh_row_guard. Hidden the way a stale row with the same
+        # evidence is hidden -- the reason becomes its confirm_guard -- except a Proxima
+        # unit two projects disagree about, which is shown to confirm.
+        fresh = (not_a_home(row, allow_commercial="commercial" in (ctx.want_product or ()))
+                 or fresh_row_guard(row, prepared, today))
+        if fresh:
+            verified = False
+            tags.append("fresh_guard_demoted")
+            detail["fresh_guard"] = fresh
+            if fresh in FRESH_GUARD_CONFIRMS:
+                confirm.append(fresh)         # the card says why (index.html CONFIRM_WHY)
+            else:
+                confirm.append("fresh_guard")
+                guard = fresh
     confirm.extend(n for n in notes if n not in confirm)
     email = _is_email(row)
     email_first_seen = str(row.get("email_first_seen") or "").strip() if email else ""

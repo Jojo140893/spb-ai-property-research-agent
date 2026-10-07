@@ -753,7 +753,10 @@ class EAgentSource(PropertySource):
             if piece.meta.get("guessed"):
                 # A file tried only because nothing in its folder was NAMED a price list.
                 # One that yields nothing was not a price list, and listing it as an
-                # unreadable price list would fill the Settings tab with brochures.
+                # unreadable price list would fill the Settings tab with brochures. And
+                # what it yields must read as a price list (repair round 1, 7 Oct 2026):
+                # a brochure's "from $450,000" lines are not lots.
+                got = remote.guessed_price_list(got)
                 guessed += 1
                 if not got:
                     guessed_empty += 1

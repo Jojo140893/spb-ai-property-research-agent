@@ -260,8 +260,11 @@ def _paging(payload):
 
 def _page_info(offset, limit, returned, total, **extra):
     nxt = offset + returned
+    # A page that cannot move on names no next page (7 Oct 2026): limit 0 handed back
+    # next_offset == offset, and a caller walking pages by next_offset asked for the same
+    # empty page for ever.
     out = {"offset": offset, "limit": limit, "returned": returned, "total": total,
-           "next_offset": nxt if nxt < total else None}
+           "next_offset": nxt if nxt < total and returned > 0 else None}
     out.update(extra)
     return out
 
@@ -1144,6 +1147,13 @@ def _card_identity(cand, row):
         "doc": str(row.get("source_doc") or "").strip(),
         "email": (str(row.get("source_channel") or "").strip().lower()
                   == _candidates.EMAIL_CHANNEL),
+        # The list's own land and build prices: the same split of the same total is the
+        # same package (7 Oct 2026; see _candidates.collapse_same_lot).
+        "split": (_float(row.get("land_price")), _float(row.get("build_price"))),
+        # The row's own line on its document (line_key), and its stored line when that is
+        # the list's line flattened: one line read twice is one lot (collapse_same_lot).
+        "line": str(row.get("line_key") or "").strip(),
+        "stored": _candidates.stored_line(row),
     }
 
 
@@ -1157,7 +1167,12 @@ def _same_listing(x, y):
     the email's fragment "$617,000 TITLE DATE Q2 2027 HOUSE SIZE 167.77sqm". Same price
     always, then any one of:
       * the same lot number in the same state, with the land size agreeing, or the
-        bedrooms and the suburb agreeing;
+        bedrooms and the suburb agreeing, or the same land and build prices (7 Oct 2026:
+        Hattan's emailed lot 3208 carries neither a land size nor bedrooms, and its
+        $331,000 + $368,990 is the E-Agent line's to the dollar);
+      * the same line of the same document read twice under two card spellings (its
+        line_key, or its stored line when that is the list's line flattened) -- Aria's units
+        read with and without the "Collection -" heading (7 Oct 2026, collapse_same_lot);
       * the same street address in the same state (and no two different lot numbers);
       * on the same EMAIL, x names no lot and no bedrooms and its house size is y's: a
         fragment of y's listing. An email's body breaks one lot over several lines; a price
@@ -1178,6 +1193,14 @@ def _same_listing(x, y):
         if (x["bedrooms"] and x["bedrooms"] == y["bedrooms"]
                 and x["suburb"] and x["suburb"] == y["suburb"]):
             return True
+        split_x, split_y = x.get("split") or (0, 0), y.get("split") or (0, 0)
+        if (min(split_x) > 0 and min(split_y) > 0
+                and abs(split_x[0] - split_y[0]) < 1 and abs(split_x[1] - split_y[1]) < 1):
+            return True
+    if x["doc"] and x["doc"] == y["doc"] and (
+            (x.get("line") and x.get("line") == y.get("line"))
+            or (x.get("stored") and x.get("stored") == y.get("stored"))):
+        return True
     if x["street"] and x["street"] == y["street"] and same_state:
         return True
     return bool(x.get("email") and x["doc"] and x["doc"] == y["doc"] and not x["lot"]
@@ -1226,7 +1249,8 @@ def _needs_confirming_entry(cand, pkg, row):
         "advisories": cand.scoring.advisories if cand.scoring else "",
         "source_link": getattr(cand, "source_link", None),
         # What a consultant has to confirm: 'stale', 'availability_unstated',
-        # 'document_partially_read' (see _candidates._gate).
+        # 'document_partially_read', 'conflicting_capture' (two portal projects disagree
+        # about the unit; 7 Oct 2026) -- see _candidates._gate.
         "confirm": list(pkg.get("confirm") or ()),
         # The availability exactly as the source row stated it; None when it stated none.
         "availability_as_stated": stated or None,

@@ -647,9 +647,26 @@ class ResearchDatabase:
                 # whatever was superseded in its favour follows it, so no pointer is left
                 # aimed at a hash no row holds.
                 upd["content_hash"] = h
+                repointed = []
                 if stored_hash:
+                    repointed = [i for (i,) in conn.execute(
+                        "SELECT id FROM buildings WHERE superseded_by=?", (stored_hash,))]
                     conn.execute("UPDATE buildings SET superseded_by=? WHERE superseded_by=?",
                                  (h, stored_hash))
+                # LOGGED LIKE repair_rows' identity repair (repair round 1, 7 Oct 2026): on
+                # a real first night the harvest re-attaches the trap rows it reads before
+                # repair_rows runs, and those 41 never reached identity_repair_log, so
+                # `repair_rows.py --undo-identity-repair "harvest dd/mm/yyyy"` could not put
+                # them back. Same table, same columns; never fatal to the harvest.
+                try:
+                    conn.execute("CREATE TABLE IF NOT EXISTS identity_repair_log (stamp TEXT, "
+                                 "row_id INTEGER, col TEXT, old TEXT, new TEXT, "
+                                 "repointed TEXT)")
+                    conn.execute("INSERT INTO identity_repair_log VALUES (?,?,?,?,?,?)",
+                                 ("harvest " + now_date, rid, "content_hash", stored_hash, h,
+                                  json.dumps(repointed)))
+                except sqlite3.Error as e:
+                    logger.warning("buildings: re-attach of row %s not logged (%s)", rid, e)
                 logger.info("buildings: %r re-attached to its identity (content_hash had "
                             "been rewritten; dedup_key still held it)", b.get("lot_address"))
             # A LOT THE SOURCE IS LISTING AGAIN IS FOR SALE AGAIN. repair_rows retires a

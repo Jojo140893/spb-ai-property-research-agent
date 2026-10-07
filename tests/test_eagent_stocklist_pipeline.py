@@ -66,6 +66,25 @@ def test_the_fresher_capture_survives_even_when_the_older_one_knows_more():
     assert [(l["id"], w["id"]) for l, w in find_superseded([pdf, sl])] == [(1, 2)]
 
 
+def test_a_night_one_channel_missed_does_not_swap_the_card():
+    """Repair round 1, 7 Oct 2026 (data verifier, six simulated nights): with the price list
+    skipped one night, its Stocklist twin was the fresher capture and won; the next night
+    the fuller price-list row won back. 24 lots changed card and content_hash twice, and a
+    lead pick saved under one hash stopped matching. Last night's survivor keeps the card
+    unless the other capture is newer by MORE than one night."""
+    pdf = _row(1, "E-Agent", date=_days_ago(1), land_sqm=448.0, house_sqm=210.0,
+               postcode="3750", superseded_by=None)
+    sl = _row(2, STOCKLIST, url=API, superseded_by="v2:h1")
+    assert [(l["id"], w["id"]) for l, w in find_superseded([pdf, sl])] == [(2, 1)]
+    # Two nights behind is a list that stopped being read: the fresher capture takes over.
+    pdf = dict(pdf, date_checked=_days_ago(2), last_seen=_days_ago(2))
+    assert [(l["id"], w["id"]) for l, w in find_superseded([pdf, sl])] == [(1, 2)]
+    # And the other way round: a Stocklist survivor is kept the same way.
+    sl_live = dict(sl, superseded_by=None, date_checked=_days_ago(1), last_seen=_days_ago(1))
+    pdf_today = dict(pdf, superseded_by="v2:h2", date_checked=TODAY, last_seen=TODAY)
+    assert [(l["id"], w["id"]) for l, w in find_superseded([pdf_today, sl_live])] == [(1, 2)]
+
+
 def test_lot_and_estate_are_matched_as_written_not_byte_for_byte():
     pdf = _row(1, "E-Agent", lot="Lot 0100", estate="Aurora Estate")
     sl = _row(2, STOCKLIST, url=API, lot="100", estate="AURORA")

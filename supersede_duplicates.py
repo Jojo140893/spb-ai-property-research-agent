@@ -330,6 +330,32 @@ def _fresh_then_detail(row):
     return (_parsed_date(row.get("date_checked")) or datetime.min,) + _detail(row)
 
 
+# A capture newer than last night's survivor by this many nights or fewer does not take
+# its card. One night is a channel that missed a read; more is a list that stopped.
+_KEEP_SURVIVOR_NIGHTS = 1
+
+
+def _keep_last_survivor(members, ranked_winner):
+    """The member that survived last night, when the newest capture is at most
+    _KEEP_SURVIVOR_NIGHTS newer than it; else `ranked_winner`.
+
+    Repair round 1, 7 Oct 2026 (data verifier, six simulated nights): a Stocklist row and
+    its price-list twin swapped the live card whenever either channel missed one night --
+    the fresher capture won, then the fuller one won it back -- so 24 lots changed
+    content_hash twice and a lead pick saved under one hash stopped matching. The rows
+    handed in still carry last night's marks; exactly one live member is last night's
+    survivor."""
+    live = [m for m in members if not str(m.get("superseded_by") or "").strip()]
+    if len(live) != 1 or live[0]["id"] == ranked_winner["id"]:
+        return ranked_winner
+    newest = max((_parsed_date(m.get("date_checked")) for m in members
+                  if _parsed_date(m.get("date_checked"))), default=None)
+    kept = _parsed_date(live[0].get("date_checked"))
+    if newest is None or kept is None or (newest - kept).days > _KEEP_SURVIVOR_NIGHTS:
+        return ranked_winner
+    return live[0]
+
+
 def find_superseded(rows):
     """[(loser_row, winner_row)] for every surplus capture.
 
@@ -422,6 +448,9 @@ def find_superseded(rows):
             rank = _fresh_then_detail
         ordered = sorted(members, key=rank, reverse=True)
         winner = ordered[0]
+        if rank is _fresh_then_detail:
+            winner = _keep_last_survivor(members, winner)
+            ordered = [winner] + [m for m in ordered if m["id"] != winner["id"]]
         for loser in ordered[1:]:
             out.append((by_id[loser["id"]], winner))
     return out
