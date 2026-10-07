@@ -1,12 +1,19 @@
 {
- "_README": "Suburbs a stock document cannot state for itself, checked by hand against the developer's own published address. Each rule may match three ways, most precise first: `url` is the exact source_url; `project` is a lowercase substring tested against the row's builder_name and estate_name; `title` is a lowercase substring tested against the document's own front page. url alone is NOT enough -- builders re-upload price lists to fresh links and the rows follow the new URL, so a url-only rule silently stops applying and those listings go back to having no suburb. Keep `evidence` filled in: it is what lets the next person re-check the claim instead of trusting it.",
+ "_README": "Suburbs a stock document cannot state for itself, checked by hand against the developer's own published address. Each rule may match four ways, most precise first: `url` is the exact source_url; `folder` is the Dropbox shared-folder id (the path segment after /scl/fo/) the price list sits in; `project` is a lowercase substring tested against the row's builder_name and estate_name; `title` is a lowercase substring tested against the document's own front page. url alone is NOT enough -- builders re-upload price lists to fresh links and the rows follow the new URL, so a url-only rule silently stops applying and those listings go back to having no suburb. A re-upload can rename the file too (22 Sep 2026: 'VandA Pricelist' became 'Victoria & Albert - Sales List', so builder_name changed and 'vanda' stopped matching 114 rows); the folder stayed the same, which is why Dropbox rules carry `folder`. A matching rule here outranks the automatic front-page map (document_suburbs.json). Keep `evidence` filled in: it is what lets the next person re-check the claim instead of trusting it.",
  "rules": [
   {
    "suburb": "Broadbeach",
    "state": "QLD",
-   "evidence": "Victoria & Albert, 20 Albert Ave Broadbeach QLD 4218",
+   "evidence": "Victoria & Albert, 20 Albert Ave Broadbeach QLD 4218. Re-checked 7 Oct 2026: apartments.com.au/new-apartments/victoria-albert-broadbeach-20-albert-avenue-broadbeach-qld-4218 reads '20 Albert Avenue, Broadbeach QLD 4218' (425 apartments, two towers, Iris); dbi.com.au/project/victoria-albert-v-a gives the location 'Albert Avenue, Broadbeach'. The folder holds both uploads seen so far: 'VandA Pricelist (2) (1).pdf' and 'Victoria & Albert - Sales List - 22 Sep 2026 4.55pm.pdf'.",
    "url": "https://www.dropbox.com/scl/fo/db9kwomup9qkyxo5c9ifo/AMldxx73oGFLOC976V04r_w/VandA%20Pricelist%20%282%29%20%281%29.pdf?rlkey=mdymvdm5qqm5usogxo3qntzbm&dl=1",
+   "folder": "db9kwomup9qkyxo5c9ifo",
    "project": "vanda"
+  },
+  {
+   "suburb": "Broadbeach",
+   "state": "QLD",
+   "project": "victoria & albert",
+   "evidence": "Same development as the 'vanda' rule above: Victoria & Albert, 20 Albert Avenue, Broadbeach QLD 4218 (apartments.com.au; dbi.com.au 'Albert Avenue, Broadbeach'). The 22 Sep 2026 re-upload is stored as builder 'Victoria & Albert 22 20 Pm', which 'vanda' never matched -- 114 apartments lost their suburb. This is the project's own name, for a re-upload that lands outside the known folder."
   },
   {
    "suburb": "Docklands",
@@ -88,7 +95,8 @@
    "suburb": "Maroochydore",
    "state": "QLD",
    "project": "millwell",
-   "evidence": "The Millwell, 2 Millwell Road East, Maroochydore QLD 4558 (Habitat Development Group). Millwell Road is in Maroochydore, not Morayfield"
+   "folder": "h72z22dz9lm2srrao2jde",
+   "evidence": "The Millwell, 2 Millwell Road East, Maroochydore QLD 4558 (Habitat Development Group). Millwell Road is in Maroochydore, not Morayfield. 7 Oct 2026: the same folder now also holds 'MasterPriceList (1) Millwill MD.pdf' -- the builder's misspelling, stored as builder 'Millwill Md', which 'millwell' does not match (44 rows had no suburb). Its rows read 'The Millwell: Tower 1 1104 ...', and apartments.com.au/new-apartments/the-millwell-2-millwell-road-east-maroochydore-qld-4558 lists The Millwell as two eight-level towers at 2 Millwell Road East, Maroochydore."
   },
   {
    "suburb": "Bayswater",
@@ -204,6 +212,73 @@
    "state": "NSW",
    "evidence": "Millfield Rise, 1721 Mount View Road, Millfield NSW - a 217-lot estate on the outskirts of Cessnock (Newcastle Herald).",
    "project": "millfield rise"
+  },
+  {
+   "suburb": "Caloundra",
+   "state": "QLD",
+   "project": "suncourt",
+   "folder": "205f2bzzrhzz0xt9bcgvi",
+   "evidence": "Suncourt Residences, 70-76 Omrah Avenue, Caloundra QLD 4551 - 77 residences across 4 buildings (apartments.com.au/new-apartments/suncourt-residences-70-76-omrah-avenue-caloundra-qld-4551); the price list ('Suncourt Residences - Sales List - 22 Sep 2026') has exactly 77 lots, A-201 onward. Second source: Sunshine Coast News 15 Jul 2026 (sunshinecoastnews.com.au/2026/07/15/town-centre-170-unit-development-approved/) - the former Suncourt Motel site at 139 Bulcock Street and 70, 72, 74 and 76 Omrah Avenue, Caloundra."
+  },
+  {
+   "suburb": "South Yarra",
+   "state": "VIC",
+   "folder": "ezut7t4ndyvuk9q1cyszo",
+   "evidence": "671 Chapel Street, South Yarra VIC 3141 (Kapitol Group; apartments.com.au/new-apartments/671-chapel-street-south-yarra and urban.com.au/new-apartments/671-chapel-street-south-yarra), 'where the Yarra River meets South Yarra's Domain precinct'. The price list is 'Pricelist New Agent.pdf', so its rows carry builder 'Agent' and no usable project name (hence no project key); the same Dropbox folder holds '671 Chapel Street - 1 Bedroom - Options Price List.pdf' and '671 Chapel Street - 2 Bedroom - Options Price List.pdf' (nightly log 6 Oct 2026), and the rows' own aspect column reads 'NE-Chapel St', 'NE-river' and 'SW-city views'."
+  },
+  {
+   "suburb": "Kew",
+   "state": "VIC",
+   "folder": "qln704nvvhfapqbazovy6",
+   "evidence": "The price list names its own suburb: it is 'Price Kew.pdf', listed on E-Agent's VIC apartments page (Kew is also a NSW town; VIC settles it). The building matches Piccolo House, 18 Barry Street, Kew VIC 3101 (apartments.com.au Kew listings; urban.com.au 'First look exclusive: Piccolo plot new Kew apartment development'): five three-level buildings, 60 two- to four-bedroom apartments, optional den layouts, a subterranean wine cellar, from $2,200,000. The rows are levels G, 1 and 2 only, 2-3 bed with 'Den' and 'Cellar', cheapest $2,200,000. The builder name is blank and the estate column holds headings ('Car Storage Cage'), hence no project key."
+  },
+  {
+   "suburb": "Rouse Hill",
+   "state": "NSW",
+   "project": "babylon",
+   "folder": "zat100ndfygzuyupdqnu6",
+   "evidence": "Babylon by Denvell Group, 41 Terry Road, Rouse Hill NSW 2155 (apartments.com.au/buildings/babylon-41-terry-road-rouse-hill-nsw-2155). apartments.com.au news 'From Hanging Gardens inspiration to 364 homes: Babylon completes in Rouse Hill': one-, two- and three-bedroom apartments alongside terraces and townhomes, 'between $560,000 and $1.025 million'. The price list ('Price Babylon.pdf') carries APT and TH lots at $590,000-$650,000."
+  },
+  {
+   "suburb": "Docklands",
+   "state": "VIC",
+   "project": "regatta",
+   "folder": "8p8lruccyddd81x4vc0c5",
+   "evidence": "Regatta at Collins Wharf (Lendlease), 951 Collins St, Docklands VIC 3008 (hickory.com.au/project/regatta: '951 Collins St, Docklands, Victoria 3008', 317 waterfront apartments, townhomes and skyhomes; urban.com.au 'Regatta at Collins Wharf, Docklands, 951 Collins Street'). The rows themselves say 'Riverhome', 'Completing in 2027 (est.) with Ancora' and 'Contract is under CW3' (Collins Wharf stage 3); Ancora's own rule above is Docklands too."
+  },
+  {
+   "suburb": "North Ipswich",
+   "state": "QLD",
+   "folder": "duov329z4z0ous320f44a",
+   "evidence": "The Foundry, 22 W.M Hughes St, North Ipswich QLD 4305 - 28 three- and four-bedroom terrace homes in a gated community (capitalpropertyfunds.com.au/cpf-property-debt-fund-offers-the-foundry-ipswich-second-mortgage). Independently, the nightly front-page read of this price list named North Ipswich (6 Oct 2026 log: '18 rows -> North Ipswich (QLD) The_Foundry_StockList_2026-09-18'). No project key on purpose: 'The Foundry' is also a 16-hectare precinct in Runcorn, Brisbane, so the name alone would misplace a future Runcorn list."
+  },
+  {
+   "suburb": "St Kilda",
+   "state": "VIC",
+   "project": "95skr",
+   "folder": "y7euxnm1zy6mgeok7twlo",
+   "evidence": "'95SKR' is 95 St Kilda Road: Fareham by Gamuda Land, 95 St Kilda Road, St Kilda VIC 3182 (apartments.com.au/new-apartments/fareham-95-st-kilda-road-st-kilda: 2 and 3 bed, from $975,000; apartments.com.au news 'Gamuda Land get sign off for St Kilda apartment development, Fareham': '95 St Kilda Road, St Kilda VIC 3182'). The list's 2-3 bed lots run L3-L13 and its cheapest is $975,000, the published from-price. The nightly front-page read named this list 'Waterways' (6 Oct 2026 log), which is wrong -- Waterways is about 20 km south-east -- and this rule outranks it."
+  },
+  {
+   "suburb": "Loganholme",
+   "state": "QLD",
+   "project": "timor residences",
+   "folder": "3vf7am41yoxnur45n8hkp",
+   "evidence": "A 30-townhouse project at 65 Timor Avenue, Loganholme QLD 4129 (apartments.com.au/new-townhouses/65-timor-avenue-loganholme-qld-4129) - 'Timor Residences' is named for its street, and the list is 3-bed townhouses. Independently, the nightly front-page read of the price list itself named Loganholme (6 Oct 2026 log: '9 rows -> Loganholme (QLD) Timor_Residences_StockList_2026-09-22')."
+  },
+  {
+   "suburb": "Brunswick",
+   "state": "VIC",
+   "project": "prince parade",
+   "folder": "xuqmyipm7fqkff1891zfk",
+   "evidence": "Prince & Parade by Mirvac, 701 Park Street, Brunswick VIC 3056 (apartments.com.au news 'Display Suite Tour Video: Prince & Parade by Mirvac 701 Park Street, Brunswick'; urban.com.au 'Mirvac reveal latest Melbourne apartment development, Prince & Parade Brunswick'): one- to four-bedroom apartments opposite Princes Park, interior palettes 'Sanctuary' and 'Celestial'. The price list ('18032026 - Prince  Parade Agent Price List.pdf') runs 1B1B to 4B3B and its rows name the 'Sanctuary' scheme. Brunswick is also a WA locality; VIC pins it."
+  },
+  {
+   "suburb": "Fraser Rise",
+   "state": "VIC",
+   "project": "westwood hattan",
+   "folder": "2zmq210wctd1k0u50mbo2",
+   "evidence": "Westwood estate, 235 Beattys Road, Fraser Rise VIC 3336 - townhomes (apartments.com.au/new-townhouses/westwood-235-beattys-road-fraser-rise-vic-3336; Dahua's Westwood, Fraser Rise). The rows' own text names it too: 'AvailableFraserRise Q4 Townhouse 1053 ...' -- glued to 'Available', which is why the reader misses it."
   }
  ]
 }
