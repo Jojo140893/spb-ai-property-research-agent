@@ -1494,6 +1494,24 @@ def obvious_rows_check(C, research, bootstrap, catalogue, snapshot_path):
                         > len(resp.get("needs_confirming") or []))
         shown_copy = shown_copy_finder(research, resp, catalogue)
         evidence = guard_evidence(catalogue)
+        replayed = {}
+
+        def merged_twins(brief_dict):
+            """{hash dropped: hash kept} by the bundle's own dedupe, replayed once a brief
+            and only when a row needs it (parity_check's _dedupe_twins, same idea)."""
+            if "map" not in replayed:
+                merged = {}
+                dedupe = getattr(C, "dedupe_packages", None)
+                if dedupe is not None:
+                    packages, _counts = C.build_packages(
+                        brief_dict, catalogue.rows,
+                        prepared=C.prepared_for_snapshot(catalogue.rows, snapshot_path))
+                    try:
+                        dedupe(list(packages), catalogue.rows, merged_into=merged)
+                    except TypeError:                     # a bundle from before 7 Oct 2026
+                        merged = {}
+                replayed["map"] = merged
+            return replayed["map"]
         demoted_for = {_hash(e): [c for c in (e.get("confirm") or ())
                                   if c in GUARD_EVIDENCE_REASONS]
                        for e in resp.get("needs_confirming") or []}
@@ -1515,6 +1533,12 @@ def obvious_rows_check(C, research, bootstrap, catalogue, snapshot_path):
             else:
                 outcome, detail = _obvious_outcome(verdicts.get(h), visible, research,
                                                    bootstrap, used, listed_short, shown_copy)
+                if outcome == "scored_not_shown" and merged_twins(brief_dict).get(h) in shown:
+                    # MERGED BY THE PIPELINE'S OWN DEDUPE INTO A CARD THAT IS SHOWN (repair
+                    # round 2): Hermitage's E-Agent "283 Recreation Circuit" folded into the
+                    # portal's "LOT 283 RECREATION CIRCUIT, CLYDE 3978", the same lot at the
+                    # same price -- a spelling no card key and no lot number can pair.
+                    outcome, detail = "collapsed_into_visible", ""
                 if outcome in WARN_VERDICTS:
                     run.report.warn(where, "obvious row %s is hidden as %s (data quality)"
                                     % (name, outcome))

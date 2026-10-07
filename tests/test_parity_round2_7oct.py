@@ -282,6 +282,58 @@ def test_the_settings_tables_scroll_inside_their_own_box():
     assert re.search(r'overflow-x:\s*auto[^>]*>\s*<table', panel)
 
 
+# ------------------------------------------------------------- a copy folded into a shown card
+
+def test_a_lot_the_dedupe_folded_into_a_shown_card_is_not_reported_lost(tmp_path, monkeypatch):
+    """Hermitage lot 283 on 6 Oct: its 01/10 E-Agent copy, now sent to confirm (its list was
+    replaced), is folded by the pipeline's dedupe into the portal's shown 'LOT 283
+    RECREATION CIRCUIT, CLYDE 3978' -- the same lot, price and land. No card key and no lot
+    number pairs the two spellings, so the obvious-rows check called the lot lost
+    (scored_not_shown) until it replayed the dedupe."""
+    import io
+    from datetime import date
+    from types import SimpleNamespace
+    sys.path.insert(0, str(APP / "api"))
+    import _candidates as C
+    import _synthetic_stock as S
+    common = dict(builder_name="Hermitage Homes", price=728100.0, land_sqm=290.0,
+                  suburb="Clyde", state="VIC")
+    rows = [
+        S.row("v2:ea283", lot_number="283", estate_name="Fernlea , Clyde 3978",
+              lot_address="283 Recreation Circuit, Fernlea , Clyde 3978",
+              source_doc="doc-herm-old", date_checked="12/09/2026", line_key="k-ea283",
+              source_text="283 Recreation Circuit 290 Drake 19 Duke 4 Single $374,000 "
+                          "$354,100 $728,100 Available", **common),
+        S.row("v2:po283", lot_number=None, estate_name=None, bedrooms=None, house_sqm=None,
+              lot_address="LOT 283 RECREATION CIRCUIT, CLYDE 3978", availability_status=None,
+              source_channel="Direct Builder Portal (live)", source_doc="doc-portal",
+              date_checked="15/09/2026", line_key="k-po283", **common),
+        # the builder's newer E-Agent list, read last night
+        S.row("v2:new1", builder_name="Hermitage Homes", lot_number="900",
+              lot_address="Lot 900, Fernlea", source_doc="doc-herm-new",
+              date_checked="15/09/2026", line_key="k-new1", suburb="Clyde"),
+    ]
+    for n, r in enumerate(rows):
+        r["id"] = 800 + n
+    path = S.write(tmp_path, rows)
+    monkeypatch.setenv("SPB_SNAPSHOT_JSON", str(path))
+    monkeypatch.delenv("SPB_FRESH_GUARD", raising=False)
+    monkeypatch.setattr(C, "datetime", S.Sep16)
+    import _bootstrap
+    import research
+    resp = S.run(research, explain=True)
+    shown = {e["content_hash"] for e in resp["shortlist"] + (resp.get("needs_confirming") or [])}
+    assert "v2:po283" in shown and "v2:ea283" not in shown, shown
+    catalogue = SR.Catalogue(rows, rows)
+    out = io.StringIO()
+    run = SimpleNamespace(report=SR.Report(out), today=date(2026, 9, 16))
+    hook = SR.obvious_rows_check(C, research, _bootstrap, catalogue, str(path))
+    hook(run, "synthetic", {}, {}, resp)
+    text = out.getvalue()
+    assert "v2:ea283" not in "".join(l for l in text.splitlines() if "[FAIL]" in l), text
+    assert "collapsed_into_visible 1" in text, text
+
+
 # ------------------------------------------------------------- end to end, made to fail
 
 @pytest.fixture(scope="module")
