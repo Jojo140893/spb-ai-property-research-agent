@@ -2073,6 +2073,12 @@ def _login_for(name, logins):
     hit = logins.get(key)
     if hit is None:
         for k, row in logins.items():
+            # A row that names its channel (E-Agent's Stocklist search, 7 Oct 2026) belongs
+            # to that channel alone. "eagent" is a prefix of "eagentstocklist", so on a night
+            # with no E-Agent session row the E-Agent line took the Stocklist's and told the
+            # owner E-Agent needed "the EAgent Stocklist company login from your E-Agent BDM".
+            if row.get("channel") and _norm_source(row["channel"]) != key:
+                continue
             if k and (key.startswith(k) or k.startswith(key)):
                 hit = row
                 break

@@ -230,6 +230,36 @@ def test_the_settings_tab_names_the_missing_login_before_any_stock_arrives(
     assert any(c["channel"] == STOCKLIST for c in written["channels"])
 
 
+def test_the_e_agent_row_never_borrows_the_stocklist_login(tmp_path, monkeypatch):
+    """Integration, 7 Oct 2026 (UI drive of the merged tree). _login_for falls back to a
+    normalised PREFIX match, and "eagent" is a prefix of "eagentstocklist": on a night with
+    no E-Agent session row (portal_login --check reads the vendor sheet for it), the E-Agent
+    line borrowed the Stocklist's row and told the owner E-Agent "Needs the EAgent Stocklist
+    company login from your E-Agent BDM". A row that names its channel belongs to that
+    channel only."""
+    import build_web
+    from sources import eagent_stocklist as es
+    stocklist_login = es.login_row(None, configured=False)
+    only = {build_web._norm_source(stocklist_login["label"].split("(")[0]): stocklist_login}
+    monkeypatch.setattr(build_web, "_login_status", lambda: only)
+    payload = build_web._export_channel_health(
+        tmp_path, _db([("E-Agent", "", None, TODAY, None)] * 3))
+    eagent = next(c for c in payload["channels"] if c["channel"] == "E-Agent")
+    assert eagent["login"]["state"] == "unknown", eagent["login"]
+    assert "Stocklist" not in json.dumps(eagent["login"])
+    stock = next(c for c in payload["channels"] if c["channel"] == STOCKLIST)
+    assert stock["login"]["state"] == "missing"
+    # The prefix match still serves the rows it was written for ('Bathla Development' and
+    # its 'Bathla' session).
+    assert build_web._login_for("Bathla Development",
+                                {"bathla": {"label": "Bathla", "state": "ok"}})["state"] == "ok"
+    # With both rows, each line takes its own.
+    both = dict(only, **{build_web._norm_source("E-Agent"): {"label": "E-Agent",
+                                                              "state": "ok"}})
+    assert build_web._login_for("E-Agent", both)["state"] == "ok"
+    assert build_web._login_for("E-Agent Stocklist", both)["state"] == "missing"
+
+
 def test_once_it_has_stock_the_channel_row_carries_its_own_login(tmp_path, monkeypatch):
     import build_web
     from sources import eagent_stocklist as es
