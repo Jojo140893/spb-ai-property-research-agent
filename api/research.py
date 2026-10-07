@@ -3,10 +3,11 @@ POST /api/research on Vercel — the Research & Scoring tab, without the local a
 
 Same request and same response as server.py's do_POST, so index.html needs no change:
 it posts {"client_brief": {...}} and reads status / research_record_id /
-shortlist_count / rejected_count / rejected_log / shortlist[] / reports /
+shortlist_count / rejected_count / rejected_log / shortlist[] /
 search_area / builder_coverage / client_report_html / qa_passed / qa_failures /
 kommo_payload. It also returns location_resolution (see _location_resolver), which
-server.py does not.
+server.py does not. Two differences since 7 Oct 2026: no 'reports' (nothing read them),
+and a caller may page the shortlist with offset/limit (see the paging section below).
 
 The one difference is where the candidates come from. Locally, run_property_research
 is called with candidate_packages=None and crawls E-Agent and the builder portals.
@@ -25,6 +26,7 @@ is a fresh ephemeral file there (see _bootstrap). The stock snapshot is opened
 read-only and never written.
 """
 
+import itertools
 import json
 import os
 import re
@@ -166,6 +168,258 @@ def _shortlist_entry(p, availability=None):
                    'description': r.description, 'mitigation': r.proposed_mitigation}
                   for r in p.risks],
     }
+
+
+# ------------------------------------------------------------------------------- paging
+#
+# EVERY CANDIDATE IS SCORED NOW, SO A RESPONSE CAN NO LONGER CARRY EVERY CARD. Coleen,
+# 7 Oct 2026: the app shows far fewer buildings than E-Agent for the same search. The root
+# was the 600-row candidate cap (api/_candidates.MAX_CANDIDATES); lifted, a state-wide VIC
+# search shortlists ~3,100 lots, and its response measured 14.9 MB against Vercel's 4.5 MB
+# response limit. So the shortlist is PAGED on the server:
+#
+#   {"client_brief": ..., "offset": 0, "limit": 100}
+#       -> shortlist[0:100] as full cards, each with its rank and building; shortlist_count
+#          (every lot), buildings (every building on the shortlist, with its lot count and
+#          price range) and buildings_count; page {offset, limit, returned, total,
+#          next_offset}. "building": <key> narrows the page to one building's lots.
+#   with explain: needs_confirming_offset / needs_confirming_limit page the amber group the
+#          same way (needs_confirming_page), instead of stopping at 50.
+#
+# A CALLER THAT SENDS NONE OF THESE -- Clare's hook (vapi-kommo-hook lib/research.js and
+# lib/tools/verify.js), which matches a caller's lot against the WHOLE json.shortlist -- gets
+# the whole shortlist, as it always has, and never less than it got before: up to
+# UNPAGED_FULL_MAX cards exactly as before (today's cap kept every shortlist under 600), and
+# past that a compact card holding every field its stock match reads (COMPACT_FIELDS); the
+# fields Agent 2's top 3 also read are on the full cards, which always lead. Only a
+# response still over RESPONSE_BYTES_MAX loses cards, from the bottom of the ranking, and
+# says so in shortlist_detail (search_regressions fails a hook-shaped answer that did).
+# Measured on the 6 Oct database, unpaged and with no budget, as the hook's widest brief:
+# VIC 3,091 lots in 2.9 MB, NSW 2,900 in 2.9 MB, QLD 1,245 in 1.9 MB, SA and WA under
+# 0.5 MB -- every state whole. Only a search of every state at once (the hook never sends
+# one: it always names a state) is cut, and says so. A lot captured twice can come back
+# under its fresher capture's hash (_candidates.fresher_capture), the same lot either way.
+
+# The page the dashboard asks for when it names no limit, and the most one page may hold:
+# 500 full cards is about 1.4 MB.
+DEFAULT_PAGE_LIMIT = 100
+PAGE_LIMIT_MAX = int(os.environ.get("SPB_PAGE_LIMIT_MAX", "500"))
+# Cards an UNPAGED response carries in full before the rest go compact.
+UNPAGED_FULL_MAX = int(os.environ.get("SPB_UNPAGED_FULL_MAX", "600"))
+# Under Vercel's 4.5 MB response limit with room for headers, and under the owner's 4 MB.
+RESPONSE_BYTES_MAX = int(os.environ.get("SPB_RESPONSE_BYTES_MAX", "3900000"))
+# "Read in the last 3 nights" for the needs-confirming group: age_days 0, 1 or 2.
+RECENT_NIGHTS = 3
+# What a compact card keeps: every shortlist field Clare's availability check reads, checked
+# on 7 Oct 2026 against the vapi-kommo-hook's lib/tools/stock-match.js (decideMatch,
+# describeListing, formatAddress, tellApart) and lib/tools/verify.js (the availability
+# flags and the date it says aloud). source_address arrives with the Stage B row labels and
+# is kept when an entry has it. Agent 2's hand-off (lib/research.js mapRecommendation) also
+# reads realistic_total_price, car_spaces, recommendation(_reason), design_label and
+# source_link, but only for the top 3, which are always full cards.
+COMPACT_FIELDS = (
+    "content_hash", "builder_name", "house_design", "lot_address", "source_address",
+    "lot_number", "estate_context", "suburb", "state", "advertised_package_price",
+    "bedrooms", "bathrooms", "land_size_sqm", "house_size_sqm", "score", "date_checked",
+    "availability_by_the_sheet", "availability_by_exception_list",
+)
+_PAGING_KEYS = ("offset", "limit", "needs_confirming_offset", "needs_confirming_limit",
+                "building")
+
+
+def _paging(payload):
+    """The paging the caller asked for, or None when it sent none of _PAGING_KEYS.
+
+    Whole numbers of 0 or more; a limit above PAGE_LIMIT_MAX is lowered to it (and the page
+    says so), anything that is not a whole number is a 400."""
+    if not any(payload.get(k) is not None for k in _PAGING_KEYS):
+        return None
+
+    def whole(name, default):
+        value = payload.get(name)
+        if value is None:
+            return default
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise BadRequest("'%s' must be a whole number of 0 or more, got %r"
+                             % (name, value))
+        return value
+
+    building = payload.get("building")
+    if building is not None and not isinstance(building, str):
+        raise BadRequest("'building' must be a building key (text), got %s"
+                         % type(building).__name__)
+    return {"offset": whole("offset", 0),
+            "limit": min(whole("limit", DEFAULT_PAGE_LIMIT), PAGE_LIMIT_MAX),
+            "needs_confirming_offset": whole("needs_confirming_offset", 0),
+            "needs_confirming_limit": min(whole("needs_confirming_limit",
+                                                MAX_NEEDS_CONFIRMING), PAGE_LIMIT_MAX),
+            "building": (building or "").strip() or None}
+
+
+def _page_info(offset, limit, returned, total, **extra):
+    nxt = offset + returned
+    out = {"offset": offset, "limit": limit, "returned": returned, "total": total,
+           "next_offset": nxt if nxt < total else None}
+    out.update(extra)
+    return out
+
+
+# ---------------------------------------------------------------------------- buildings
+#
+# "N LOTS IN M BUILDINGS", the way E-Agent presents stock. A building is the development a
+# lot belongs to: Proxima's project (its estate_name is the project's name), an E-Agent
+# project-scope list's development (builder_name holds it there; its estate_name is often a
+# column heading such as "IN TERNAL BALCONY TOTAL"), else the estate, else the price list
+# the lot was read from. An estate name that spans more than WIDE_ESTATE_SUBURBS suburbs in
+# its state is a region or page heading ("NORTH", "SOUTH EAST", "Ausbuild Stock List.",
+# "Stock highlighted in orange below...") and is not a building. Display only: nothing is
+# filtered or ranked by it. What Coleen counts as one building is an open question to her
+# (audit client_asks, 7 Oct 2026); this is the plan's definition until she answers.
+WIDE_ESTATE_SUBURBS = 3
+# THE SAME ESTATE UNDER TWO SPELLINGS IS ONE BUILDING. Lists write their estate column as
+# "Olivine", "Estate : Olivine Donnybrook" or "Olivine - Donnybrook", and a development
+# named off a file carries the file's time ("The Fields 7 20 Pm"); on the 6 Oct VIC search
+# each spelling was a building of its own, so the count read higher than E-Agent's. And a
+# column holding only a release heading ("Q3 Lot Single", "Q1 Single") names no building,
+# so the lot falls back to its price list (7 Oct 2026).
+_ESTATE_PREFIX = re.compile(r"^\s*estate\s*:\s*", re.I)
+_FILE_TIME = re.compile(r"\s+\d{1,2}\s+\d{2}\s*[ap]m\s*$", re.I)
+_HEADING_WORDS = frozenset((
+    "q1", "q2", "q3", "q4", "lot", "lots", "single", "double", "storey", "story", "level",
+    "townhouse", "townhouses", "stage", "release", "titled", "title", "house", "land",
+    "package", "packages", "stock", "list", "available", "price", "prices", "new", "the",
+    "and", "of"))
+
+
+def _norm(value):
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).split())
+
+
+def _building_name(name, suburb):
+    """`name` as a building is called: without an "Estate :" prefix, a trailing suburb or a
+    file's time; '' when what is left is only a release heading."""
+    name = _FILE_TIME.sub("", _ESTATE_PREFIX.sub("", " ".join(str(name or "").split())))
+    sub = " ".join(str(suburb or "").split())
+    if sub and len(name) > len(sub) + 1 and name.lower().endswith(sub.lower()) \
+            and not name[-len(sub) - 1].isalnum():
+        name = name[:-len(sub)].rstrip(" ,-/")
+    words = _norm(name).split()
+    if not words or all(w in _HEADING_WORDS or w.isdigit() for w in words):
+        return ""
+    return name
+
+
+def _wide_estates(rows):
+    """{(state, estate)} whose live rows sit in more than WIDE_ESTATE_SUBURBS suburbs."""
+    seen = {}
+    for r in rows:
+        if r.get("superseded_by"):
+            continue
+        estate = _norm(r.get("estate_name"))
+        if not estate:
+            continue
+        key = (str(r.get("state") or "").strip().upper(), estate)
+        suburb = _norm(r.get("suburb"))
+        if suburb:
+            seen.setdefault(key, set()).add(suburb)
+    return {k for k, subs in seen.items() if len(subs) > WIDE_ESTATE_SUBURBS}
+
+
+def _building_of(cand, row, wide):
+    """(key, name) of the building a shortlisted candidate belongs to."""
+    row = row or {}
+    state = (str(row.get("state") or getattr(cand, "state", "") or "").strip().upper())
+    channel = str(row.get("source_channel") or "").strip().lower()
+    scope = str(row.get("attribution_scope") or "").strip().lower()
+    estate = " ".join(str(row.get("estate_name") or getattr(cand, "estate_context", "")
+                          or "").split())
+    builder = " ".join(str(row.get("builder_name") or "").split())
+    suburb = " ".join(str(getattr(cand, "suburb", "") or row.get("suburb") or "").split())
+    name = ""
+    if channel == "proxima" and (estate or row.get("source_project_id")):
+        name = (_building_name(estate, suburb)
+                or "Proxima project %s" % (row.get("source_project_id") or estate))
+    elif scope == "project" and builder:
+        name = _building_name(builder, suburb)
+    if not name and estate and (state, _norm(estate)) not in wide:
+        name = _building_name(estate, suburb)
+    if name and _norm(name):
+        return "%s|%s" % (state, _norm(name)), name
+    doc = str(row.get("source_doc") or "").strip()
+    who = builder or str(getattr(cand, "builder_name", "") or "").strip()
+    if who == NO_BUILDER:
+        who = ""
+    if doc:
+        return ("%s|doc:%s" % (state, doc),
+                "%s price list" % who if who else "Price list (builder not named)")
+    who = who or NO_BUILDER
+    return ("%s|builder:%s|%s" % (state, _norm(who), _norm(suburb)),
+            "%s%s" % (who, (", " + suburb) if suburb else ""))
+
+
+def _buildings(shortlist, live, wide):
+    """([building], [key per candidate]) for a ranked shortlist: each building with its lot
+    count, price range, commonest suburb and the rank of its best lot, best first."""
+    index, keys = {}, []
+    for rank, cand in enumerate(shortlist, 1):
+        h = str(getattr(cand, "content_hash", "") or "")
+        key, name = _building_of(cand, live.get(h), wide)
+        keys.append((key, name))
+        price = cand.price_breakdown.advertised_package_price
+        b = index.get(key)
+        if b is None:
+            b = index[key] = {"key": key, "name": name, "suburbs": {},
+                              "state": str(getattr(cand, "state", "") or ""),
+                              "lots": 0, "price_min": price, "price_max": price,
+                              "first_rank": rank}
+        b["lots"] += 1
+        if price:
+            b["price_min"] = min(b["price_min"] or price, price)
+            b["price_max"] = max(b["price_max"] or price, price)
+        suburb = str(getattr(cand, "suburb", "") or "").strip()
+        if suburb:
+            b["suburbs"][suburb] = b["suburbs"].get(suburb, 0) + 1
+    out = []
+    for b in sorted(index.values(), key=lambda x: x["first_rank"]):
+        subs = b.pop("suburbs")
+        b["suburb"] = max(subs.items(), key=lambda kv: (kv[1], kv[0]))[0] if subs else ""
+        out.append(b)
+    return out, keys
+
+
+def _compact(entry):
+    """A full shortlist entry cut to COMPACT_FIELDS, with compact: true."""
+    out = {k: entry[k] for k in COMPACT_FIELDS if k in entry}
+    out["compact"] = True
+    return out
+
+
+def _dumps(value):
+    """The response body as handler._send writes it: no spaces after separators, which a
+    thousand-card shortlist would otherwise pay for 50,000 times (7 Oct 2026)."""
+    return json.dumps(value, default=str, separators=(",", ":"))
+
+
+def _json_size(value):
+    """Bytes as handler._send writes them."""
+    return len(_dumps(value).encode("utf-8"))
+
+
+def _fit_shortlist(response, entries):
+    """How many of `entries` (in order) response['shortlist'] can hold under
+    RESPONSE_BYTES_MAX, given everything else the response already carries."""
+    response["shortlist"] = []
+    room = RESPONSE_BYTES_MAX - _json_size(response)
+    n, used = 0, 0
+    for e in entries:
+        cost = _json_size(e) + 1                     # the "," between list items
+        if used + cost > room:
+            break
+        used += cost
+        n += 1
+    return n
 
 
 # Bounded so a large shortlist cannot balloon the response: 5 options is 10 pairs.
@@ -825,9 +1079,19 @@ def _listing_key(lot_address, house_design, price):
 _SNAPSHOT_CHANNEL_SUFFIX = " - database snapshot"
 
 
-def _candidate_key(cand):
-    return _listing_key(cand.lot_address, cand.house_design,
-                        cand.price_breakdown.advertised_package_price)
+def _candidate_key(cand, row=None):
+    """DedupeEngine's key for a candidate, and with its snapshot row, the lot as well
+    (_candidates.same_lot_key): two units of one building on one price list, carded alike
+    at one price, are two lots, so a shortlisted one does not hide the other from "Needs
+    confirming" (7 Oct 2026)."""
+    key = _listing_key(cand.lot_address, cand.house_design,
+                       cand.price_breakdown.advertised_package_price)
+    if not row:
+        return key
+    return key, _candidates.same_lot_key(
+        {"lot_number": getattr(cand, "lot_number", "") or "", "lot_address": cand.lot_address,
+         "estate_context": getattr(cand, "estate_context", "") or "",
+         "content_hash": str(getattr(cand, "content_hash", "") or "")}, row)
 
 
 # "18 Wiltipoll Road, Mambourin" -> "18 wiltipoll road". A street number, one to three
@@ -878,6 +1142,8 @@ def _card_identity(cand, row):
         "house": _float(getattr(cand, "house_size_sqm", 0)),
         "street": _street_of(cand.lot_address),
         "doc": str(row.get("source_doc") or "").strip(),
+        "email": (str(row.get("source_channel") or "").strip().lower()
+                  == _candidates.EMAIL_CHANNEL),
     }
 
 
@@ -893,8 +1159,13 @@ def _same_listing(x, y):
       * the same lot number in the same state, with the land size agreeing, or the
         bedrooms and the suburb agreeing;
       * the same street address in the same state (and no two different lot numbers);
-      * on the same document, x names no lot and no bedrooms and its house size is y's:
-        a fragment of y's listing.
+      * on the same EMAIL, x names no lot and no bedrooms and its house size is y's: a
+        fragment of y's listing. An email's body breaks one lot over several lines; a price
+        list does not -- each of its lines is a lot. On a price list this rule hid lot 406
+        Sama Promenade as a "fragment" of lot 408 (one price, one house size, neither lot
+        number parsed) and Lot 21372 Rind Crescent as one of 45 Pulchella Crescent (6 Oct
+        database), which is the two-lines-of-one-list merge the owner ruled out on 7 Oct
+        2026 (plan rank 4).
     """
     if not x["price"] or abs(x["price"] - y["price"]) > _SAME_PRICE_DOLLARS:
         return False
@@ -909,8 +1180,9 @@ def _same_listing(x, y):
             return True
     if x["street"] and x["street"] == y["street"] and same_state:
         return True
-    return bool(x["doc"] and x["doc"] == y["doc"] and not x["lot"] and not x["bedrooms"]
-                and x["house"] > 0 and abs(x["house"] - y["house"]) <= _SAME_AREA_SQM)
+    return bool(x.get("email") and x["doc"] and x["doc"] == y["doc"] and not x["lot"]
+                and not x["bedrooms"] and x["house"] > 0
+                and abs(x["house"] - y["house"]) <= _SAME_AREA_SQM)
 
 
 def _needs_confirming_entry(cand, pkg, row):
@@ -969,11 +1241,11 @@ def _needs_confirming_entry(cand, pkg, row):
     }
 
 
-def _score_packages(agent, brief_dict, packages):
-    """(processed, rejected) for packages, deduped the way the search dedupes them. Writes
+def _score_packages(agent, brief_dict, packages, rows):
+    """(processed, rejected) for packages, deduped the way the search dedupes them (by lot,
+    _candidates.dedupe_packages, over the snapshot `rows` they were built from). Writes
     nothing: score_candidates keeps no audit and builds no report."""
-    from sources.dedupe import DedupeEngine
-    packages = DedupeEngine.deduplicate(packages)
+    packages = _candidates.dedupe_packages(packages, rows)
     if not packages:
         return [], []
     return agent.score_candidates(brief_dict, packages)
@@ -1009,7 +1281,7 @@ def _refused_matches(agent, brief_dict, rows, prepared):
         return {}, False
     packages, counts = _candidates.build_packages(brief_dict, patched, prepared=prepared)
     stand_ins = [p for p in packages if str(p.get("content_hash") or "") in real_row]
-    processed, _rejected = _score_packages(agent, brief_dict, stand_ins)
+    processed, _rejected = _score_packages(agent, brief_dict, stand_ins, patched)
     hidden = {}
     for cand in processed:
         reason, _notes = _candidates.admission_refusal(real_row[cand.content_hash], prepared)
@@ -1025,12 +1297,12 @@ def _needs_confirming(agent, brief_dict, rows, prepared, packages, result, short
       (a) the pipeline's Pending Confirmation candidates -- stale or demoted rows that passed
           every requirement -- kept when their package's confirm_guard is None;
       (b) a SEPARATE admit pass over exceptions-only lists (build_packages with
-          admit=availability_unstated and only_admitted=True: its own collapse and its own
-          600 cap, so it cannot push a confirmed row out of the search), scored against the
-          same brief, survivors only.
+          admit=availability_unstated and only_admitted=True: its own collapse and, when
+          SPB_MAX_CANDIDATES is set, its own cap, so it cannot push a confirmed row out of
+          the search), scored against the same brief, survivors only.
     Merged, with anything already shown dropped -- on the shortlist or offered above, by
     content_hash, as the same lot, design and price, or as the same lot under another hash
-    and address (_same_listing) -- sorted by score, listed up to MAX_NEEDS_CONFIRMING.
+    and address (_same_listing) -- and sorted by score. ALL of them: the caller lists a page.
 
     hidden is {reason: n} over matches that were NOT offered: (a) candidates a guard hides
     (newer_capture_disagrees, over_confirm_limit, ...) and unstated rows refused admission
@@ -1042,25 +1314,44 @@ def _needs_confirming(agent, brief_dict, rows, prepared, packages, result, short
     """
     live = _live_rows_by_hash(rows)
     taken_hashes = {str(getattr(p, "content_hash", "") or "") for p in shortlist} - {""}
-    taken_keys = {_candidate_key(p) for p in shortlist}
+    taken_keys = {_candidate_key(p, live.get(str(getattr(p, "content_hash", "") or "")))
+                  for p in shortlist}
     # Every card shown or standing for one: the shortlist, then each candidate as it is
-    # offered or found to be a copy of one already shown.
-    shown = [_card_identity(p, live.get(str(getattr(p, "content_hash", "") or "")))
-             for p in shortlist]
+    # offered or found to be a copy of one already shown -- FILED BY PRICE. _same_listing
+    # never matches two prices more than $1 apart, so only the neighbouring whole-dollar
+    # buckets can hold a match. Comparing every offer with every card was 1.76 million
+    # calls once a state-wide search shortlisted thousands (7 Oct 2026); the answer is the
+    # same, it is only found without looking at cards that cannot match.
+    shown_at = {}
+
+    def file_card(table, ident):
+        if ident["price"]:
+            table.setdefault(int(ident["price"] // 1), []).append(ident)
+
+    def near(table, ident):
+        if not ident["price"]:
+            return
+        at = int(ident["price"] // 1)
+        for k in (at - 1, at, at + 1):
+            yield from table.get(k, ())
+
+    for p in shortlist:
+        file_card(shown_at, _card_identity(p, live.get(str(getattr(p, "content_hash", "") or ""))))
     entries = []
     hidden = {}
     offers = []
 
-    def offer(cand, pkg, ident, named):
+    def offer(cand, pkg, ident, named_at):
         h = str(cand.content_hash or "")
-        key = _candidate_key(cand)
+        key = _candidate_key(cand, live.get(h))
         # A candidate that names neither its lot nor its bedrooms is checked against every
         # card that does -- shown, or about to be offered or found a copy -- so a fragment
         # meets the listing it came from whichever of the two is offered first.
-        others = shown if (ident["lot"] or ident["bedrooms"]) else shown + named
+        others = (near(shown_at, ident) if (ident["lot"] or ident["bedrooms"])
+                  else itertools.chain(near(shown_at, ident), near(named_at, ident)))
         copy = ((h and h in taken_hashes) or key in taken_keys
                 or any(_same_listing(ident, other) for other in others if other is not ident))
-        shown.append(ident)
+        file_card(shown_at, ident)
         if copy:
             return
         taken_keys.add(key)
@@ -1083,7 +1374,7 @@ def _needs_confirming(agent, brief_dict, rows, prepared, packages, result, short
     admitted, admit_counts = _candidates.build_packages(
         brief_dict, rows, prepared=prepared, admit=ADMIT_UNSTATED, only_admitted=True)
     admitted_by_hash = {str(p.get("content_hash") or ""): p for p in admitted}
-    processed, _rejected = _score_packages(agent, brief_dict, admitted)
+    processed, _rejected = _score_packages(agent, brief_dict, admitted, rows)
     for cand in processed:
         pkg = admitted_by_hash.get(str(cand.content_hash or ""))
         if pkg is None:
@@ -1096,9 +1387,12 @@ def _needs_confirming(agent, brief_dict, rows, prepared, packages, result, short
 
     # Pending before admitted, each in the order it came.
     idents = [_card_identity(cand, live.get(str(cand.content_hash or ""))) for cand, _ in offers]
-    named = [i for i in idents if i["lot"] or i["bedrooms"]]
+    named_at = {}
+    for i in idents:
+        if i["lot"] or i["bedrooms"]:
+            file_card(named_at, i)
     for (cand, pkg), ident in zip(offers, idents):
-        offer(cand, pkg, ident, named)
+        offer(cand, pkg, ident, named_at)
 
     capped = {"admit_pass": bool(admit_counts.get("truncated")), "refusal_pass": False}
     if admit_counts.get("unstated_not_admitted"):
@@ -1108,7 +1402,10 @@ def _needs_confirming(agent, brief_dict, rows, prepared, packages, result, short
 
     entries.sort(key=lambda e: (-(e["score"] or 0), e["advertised_package_price"] or 0,
                                 e["content_hash"]))
-    return entries[:max(0, MAX_NEEDS_CONFIRMING)], len(entries), hidden, capped
+    # EVERY ENTRY, ranked. The caller lists a page of them (_with_explain): stopping at
+    # MAX_NEEDS_CONFIRMING here hid 92 QLD lots past the 50th on 6 Oct with no way to see
+    # them (search-funnel audit, 7 Oct 2026).
+    return entries, len(entries), hidden, capped
 
 
 _PRICE_FIELDS = ("budget_min", "budget_max", "preferred_spending_cap")
@@ -1224,7 +1521,7 @@ def _shortlist_count_for(agent, brief_dict, rows, prepared):
     SPB_SHORTLIST_MAX -- without the audit write, reports or Kommo payload."""
     from schema import VerificationStatus
     packages, counts = _candidates.build_packages(brief_dict, rows, prepared=prepared)
-    processed, _rejected = _score_packages(agent, brief_dict, packages)
+    processed, _rejected = _score_packages(agent, brief_dict, packages, rows)
     final = [c for c in processed
              if c.verification_status == VerificationStatus.VERIFIED or c.consultant_approved]
     cap = int(os.environ.get("SPB_SHORTLIST_MAX", "0") or 0)
@@ -1271,9 +1568,11 @@ def _relaxations(agent, brief_dict, rows, prepared, counts, base_count,
     return out
 
 
-def _with_explain(response, brief_dict, rows, prepared, counts, packages, result):
+def _with_explain(response, brief_dict, rows, prepared, counts, packages, result,
+                  paging=None):
     """Add search_help, needs_confirming, needs_confirming_count and needs_confirming_hidden
-    to a finished response. Never raises, and never replaces a key already in it."""
+    to a finished response -- and needs_confirming_page when the caller paged (`paging`,
+    from _paging). Never raises, and never replaces a key already in it."""
     started = time.monotonic()
     errors = []
     help_ = {"version": SEARCH_HELP_VERSION,
@@ -1294,24 +1593,46 @@ def _with_explain(response, brief_dict, rows, prepared, counts, packages, result
     except Exception as exc:                                          # noqa: BLE001
         traceback.print_exc(file=sys.stderr)
         errors.append("funnel: %s" % type(exc).__name__)
+    if counts.get("truncated"):
+        # The emergency valve (SPB_MAX_CANDIDATES) bound: said here as well as in the
+        # funnel's 'capped', so a consultant is told the search did not see everything.
+        help_["candidate_cap"] = {"limit": _candidates.MAX_CANDIDATES,
+                                  "cut": counts["truncated"]}
     if agent is not None:
         try:
-            listed, total, hidden, capped = _needs_confirming(
+            every, total, hidden, capped = _needs_confirming(
                 agent, brief_dict, rows, prepared, packages, result,
                 (result or {}).get("shortlist") or [])
+            # A PAGE OF THEM. Unpaged, the first MAX_NEEDS_CONFIRMING as before; paged, the
+            # page asked for, so the dashboard can list every one (7 Oct 2026).
+            if paging is None:
+                start, cap = 0, MAX_NEEDS_CONFIRMING
+            else:
+                start, cap = (paging["needs_confirming_offset"],
+                              paging["needs_confirming_limit"])
+            listed = every[start:start + max(0, cap)]
             extra.update(needs_confirming=listed, needs_confirming_count=total,
                          needs_confirming_hidden=hidden)
+            if paging is not None:
+                extra["needs_confirming_page"] = _page_info(start, cap, len(listed), total)
             # EXACT OVER WHAT WAS SCORED. The Pending candidates come from the search's own
             # pool, so when the candidate cap cut that pool (VIC <= $900k, 4 bed: 933 rows)
             # stale matches beyond it were never scored and cannot be counted. Said, not
             # implied: the count is complete only when nothing was cut.
             pool_cut = bool(counts.get("truncated"))
             help_["needs_confirming"] = {
-                "count": total, "listed": len(listed), "list_cap": MAX_NEEDS_CONFIRMING,
+                "count": total, "listed": len(listed), "list_cap": cap,
                 "hidden": dict(hidden),
                 "count_may_be_short": pool_cut or capped["admit_pass"],
                 "hidden_may_be_short": (pool_cut or capped["admit_pass"]
                                         or capped["refusal_pass"]),
+                # READ IN THE LAST 3 NIGHTS, of all of them (not only the page): the
+                # dashboard opens the group by default when there are any, because a lot
+                # read last night is no older than the shortlist beside it.
+                "recent": sum(1 for e in every
+                              if isinstance(e.get("age_days"), int)
+                              and 0 <= e["age_days"] < RECENT_NIGHTS),
+                "recent_nights": RECENT_NIGHTS,
                 "ms": _elapsed_ms(started)}
         except Exception as exc:                                      # noqa: BLE001
             traceback.print_exc(file=sys.stderr)
@@ -1359,6 +1680,8 @@ def run_research(payload):
                          % type(brief_dict).__name__)
     # The literal JSON true and nothing else -- see EXPLAIN_KEYS.
     explain = payload.get('explain') is True
+    # None for a caller that sent no paging keys (Clare's hook); see the paging section.
+    paging = _paging(payload)
     brief_dict, adjustments = _normalised_brief(brief_dict)
 
     agent = _bootstrap.get_agent()
@@ -1453,10 +1776,11 @@ def run_research(payload):
 
     # The local run dedupes captured packages before scoring (kommo_agent.py:79). Stored
     # stock holds price-only variant siblings of the same lot, so without this the same
-    # address can occupy two shortlist cards. Same engine, same key.
-    from sources.dedupe import DedupeEngine
+    # address can occupy two shortlist cards. Same engine -- keyed on the LOT as well as the
+    # card since 7 Oct 2026 (_candidates.dedupe_packages), so two units of one building
+    # carded "Melbourne VIC" at one price are no longer one card.
     before_dedupe = len(packages)
-    packages = DedupeEngine.deduplicate(packages)
+    packages = _candidates.dedupe_packages(packages, rows)
     counts['duplicates_merged'] = before_dedupe - len(packages)
     counts['scored'] = len(packages)
 
@@ -1528,7 +1852,6 @@ def run_research(payload):
             'brief_adjustments': adjustments,
             'rejected_log': [coverage_entry],
             'shortlist': [],
-            'reports': [],
             'search_area': agent.geo.expand_search_suburbs(
                 [s for s in suburbs if s], str(brief_dict.get('state') or '').upper(),
                 coerce_number(brief_dict.get('search_radius_km'), 0) or 0),
@@ -1545,23 +1868,51 @@ def run_research(payload):
             'qa_failures': ['QA Item 2 Failed: No candidate packages evaluated.'],
             'kommo_payload': _empty_kommo_payload(brief_dict, record_id, coverage),
         }
+        if paging is not None:
+            response['page'] = _page_info(paging['offset'], paging['limit'], 0, 0,
+                                          building=paging['building'])
+            response['buildings'] = []
+            response['buildings_count'] = 0
+        _with_cap_note(response, counts)
         _log_search(response, counts)
         if explain:
-            _explained(response, brief_dict, rows, prepared, counts, packages, None)
+            _explained(response, brief_dict, rows, prepared, counts, packages, None,
+                       paging=paging)
         return response
 
-    result = agent.run_property_research(brief_dict, packages)
+    # No per-property markdown reports: no caller of this endpoint reads them (see
+    # kommo_agent.run_property_research, with_reports).
+    result = agent.run_property_research(brief_dict, packages, with_reports=False)
+    shortlist = result['shortlist']
 
-    # The competitive check runs over the SHORTLIST only, not the whole pool: it is a
-    # pre-send safety check on what a consultant is about to show, and running it over
-    # every scored candidate would burn provider quota on listings nobody will see.
+    # WHICH CARDS GO OUT, AND WHICH IN FULL (see the paging section at the top). A paged
+    # caller gets its page, every card full, with its rank and building; an unpaged one gets
+    # every card, the first UNPAGED_FULL_MAX in full.
+    served = list(enumerate(shortlist))
+    page_total = len(served)
+    building_of = buildings = None
+    if paging is not None:
+        buildings, building_of = _buildings(shortlist, _live_rows_by_hash(rows),
+                                            _wide_estates(rows))
+        if paging["building"]:
+            served = [(i, c) for i, c in served if building_of[i][0] == paging["building"]]
+            page_total = len(served)
+        served = served[paging["offset"]:paging["offset"] + paging["limit"]]
+        in_full = [c for _i, c in served]
+    else:
+        in_full = shortlist[:max(0, UNPAGED_FULL_MAX)]
+
+    # The competitive check runs over the cards SENT IN FULL only, not the whole pool: it is
+    # a pre-send safety check on what a consultant is about to show, and running it over
+    # every scored candidate would burn provider quota on listings nobody will see -- with
+    # every candidate scored, a state-wide search shortlists thousands (7 Oct 2026).
     try:
         from datetime import datetime
         from benchmark_competitive import evaluate as _competitive
         from benchmark_market import evaluate as _market
         from comp_provider import get_provider as _get_provider
         _provider = _get_provider()
-        for _p in result['shortlist']:
+        for _p in in_full:
             _row_for_benchmark = {
                 'suburb': _p.suburb, 'state': _p.state,
                 # HOW WE KNOW THE SUBURB, or the gate below cannot refuse anything.
@@ -1632,6 +1983,19 @@ def run_research(payload):
     shortlist_capped = max(0, len(packages) - result['rejected_count']
                            - result['shortlist_count'])
     availability = _availability_by_hash(result['shortlist'], packages, rows)
+    if paging is not None:
+        entries = []
+        for i, cand in served:
+            entry = _shortlist_entry(cand, availability)
+            # Where this card sits in the whole ranking, and the building it belongs to,
+            # so a page can be drawn in place and grouped (index.html, Group by building).
+            entry['rank'] = i + 1
+            entry['building_key'], entry['building_name'] = building_of[i]
+            entries.append(entry)
+    else:
+        full_n = len(in_full)
+        entries = [_shortlist_entry(p, availability) for p in in_full]
+        entries += [_compact(_shortlist_entry(p, availability)) for p in shortlist[full_n:]]
 
     response = {
         'status': 'success',
@@ -1645,8 +2009,9 @@ def run_research(payload):
         # Every change made to the brief as sent, and why. See _normalised_brief.
         'brief_adjustments': adjustments,
         'rejected_log': rejected_log,
-        'shortlist': [_shortlist_entry(p, availability) for p in result['shortlist']],
-        'reports': result['reports'],
+        'shortlist': entries,
+        # 'reports' is gone (7 Oct 2026): per-property markdown no caller read -- not
+        # index.html, not the vapi-kommo-hook -- and 43% of an uncapped VIC response.
         'search_area': result.get('search_area', []),
         'region_expansion': result.get('region_expansion') or _expanded,
         # Every primary suburb as said, what was searched for it, and how that was decided
@@ -1668,17 +2033,75 @@ def run_research(payload):
         'qa_failures': result.get('qa_failures', []),
         'kommo_payload': result['kommo_payload'],
     }
+    if paging is not None:
+        response['page'] = _page_info(paging['offset'], paging['limit'], len(entries),
+                                      page_total, building=paging['building'])
+        response['buildings'] = buildings
+        response['buildings_count'] = len(buildings)
+    elif len(entries) > len(in_full):
+        response['shortlist_detail'] = {
+            'full': len(in_full), 'compact': len(entries) - len(in_full), 'cut': 0,
+            'compact_fields': list(COMPACT_FIELDS),
+            'why': ('every shortlisted lot is listed; past the first %d each card carries '
+                    'only the fields a stock match reads. Send offset/limit for full cards.'
+                    % len(in_full))}
+    _with_cap_note(response, counts)
     _log_search(response, counts)
     if explain:
-        _explained(response, brief_dict, rows, prepared, counts, packages, result)
+        _explained(response, brief_dict, rows, prepared, counts, packages, result,
+                   paging=paging)
+    _fit_response(response, paging)
     return response
 
 
-def _explained(response, *args):
+def _with_cap_note(response, counts):
+    """candidate_cap on a response whose pool the emergency valve (SPB_MAX_CANDIDATES) cut:
+    only then, so a response is never silent about a binding cap and otherwise unchanged."""
+    if counts.get('truncated'):
+        response['candidate_cap'] = {'limit': _candidates.MAX_CANDIDATES,
+                                     'cut': counts['truncated'],
+                                     'why': 'SPB_MAX_CANDIDATES is set: only the first %d '
+                                            'candidates were scored, so this search did '
+                                            'not see every listing'
+                                            % _candidates.MAX_CANDIDATES}
+
+
+def _fit_response(response, paging):
+    """Keep the serialised response under RESPONSE_BYTES_MAX by listing fewer cards, from the
+    bottom of the ranking (the page's end, or the unpaged list's compact tail), and SAY so:
+    page.returned / page.next_offset, or shortlist_detail.cut. Nothing else is trimmed."""
+    entries = response.get('shortlist') or []
+    if not entries:
+        return
+    n = _fit_shortlist(response, entries)
+    response['shortlist'] = entries[:n]
+    if n >= len(entries):
+        return
+    print("response over %d bytes: %d of %d cards listed"
+          % (RESPONSE_BYTES_MAX, n, len(entries)), file=sys.stderr)
+    if paging is not None and isinstance(response.get('page'), dict):
+        page = response['page']
+        response['page'] = _page_info(page['offset'], page['limit'], n, page['total'],
+                                      building=page.get('building'))
+        return
+    detail = response.setdefault('shortlist_detail', {
+        'full': min(n, len(entries)), 'compact': 0, 'cut': 0,
+        'compact_fields': list(COMPACT_FIELDS)})
+    detail['cut'] = len(entries) - n
+    detail['full'] = min(detail.get('full', n), n)
+    detail['compact'] = max(0, n - detail['full'])
+    detail['why'] = ('the first %d of %d shortlisted lots are listed (the response is kept '
+                     'under %d bytes); send offset/limit to page through the rest.'
+                     % (n, len(entries), RESPONSE_BYTES_MAX))
+
+
+def _explained(response, *args, paging=None):
     """_with_explain, and if even that raises, the search's own response with the error
     named -- the results a consultant asked for are never lost to an explanation."""
     try:
-        return _with_explain(response, *args)
+        # paging only when the caller paged, so a wrapper with the old signature still fits.
+        return _with_explain(response, *args,
+                             **({"paging": paging} if paging is not None else {}))
     except Exception as exc:                                          # noqa: BLE001
         traceback.print_exc(file=sys.stderr)
         if "search_help" not in response:
@@ -1691,7 +2114,7 @@ class handler(BaseHTTPRequestHandler):
     """Vercel Python runtime entrypoint (a BaseHTTPRequestHandler named `handler`)."""
 
     def _send(self, code, body):
-        raw = json.dumps(body, default=str).encode('utf-8')
+        raw = _dumps(body).encode('utf-8')
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))

@@ -767,8 +767,10 @@ console.log("\n--- All / Hot / Warm / Nurture ---");
   let posted = null;
   s.respond(async (url, opts) => { posted = JSON.parse(opts.body); return reply(200, { status: "success", shortlist: [] }); });
   await s.api.rerunHotLead(Number(idx));
+  // 7 Oct 2026: with a page of 500 full cards -- the endpoint scores every candidate now.
   check("re-run from a filtered list sends that caller's brief",
-    posted && JSON.stringify(posted) === JSON.stringify({ client_brief: warmBrief }), JSON.stringify(posted));
+    posted && JSON.stringify(posted) === JSON.stringify({ client_brief: warmBrief, offset: 0, limit: 500 }),
+    JSON.stringify(posted));
 
   // A grade with nobody in it says so.
   s.respond(async () => reply(200, { status: "success", count: 1, leads: [who("Only Hot", { grade: "hot" })] }));
@@ -1170,8 +1172,11 @@ console.log("\n--- Re-run with today's stock ---");
   });
   await s.api.rerunHotLead(0);
   check("POSTs /api/research", seen && seen.url === "/api/research" && seen.opts.method === "POST");
-  check("body is exactly {client_brief: lead.brief}",
-    seen && JSON.stringify(JSON.parse(seen.opts.body)) === JSON.stringify({ client_brief: lead.brief }));
+  // 7 Oct 2026: and the first page of 500 full cards. Every candidate is scored now, so a
+  // lead's state-wide brief shortlists thousands; unpaged, cards past the 600th come compact.
+  check("body is exactly {client_brief: lead.brief, offset: 0, limit: 500}",
+    seen && JSON.stringify(JSON.parse(seen.opts.body))
+      === JSON.stringify({ client_brief: lead.brief, offset: 0, limit: 500 }));
   // Part C W14: explain:true makes the research add search_help and needs_confirming, which
   // are for the Research tab only. A re-run here must never ask for them.
   check("re-run never asks for explain",

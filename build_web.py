@@ -148,7 +148,12 @@ BUILDING_DERIVED_FIELDS += EMAIL_LIST_FIELDS
 # when the later line differs (another design on the lot); and it does not recommend a
 # row whose own document's same line, read on a later day, says the lot has gone (Howard
 # lot 21: Available 15/09, On Hold 16/09). The line is not published.
-LINE_KEY_FIELDS = ["line_key"]
+# line_says_gone (7 Oct 2026): whether that WHOLE line says the lot has gone -- True, False,
+# or null with no text. The search reads it instead of refusing every blank row whose
+# 110-character lot_address might hide a status word past the cut (promotion_refusal's
+# line_truncated: 58 Silkwood / Gallery lots on 6 Oct, none of them gone). One word, not
+# the line, is published.
+LINE_KEY_FIELDS = ["line_key", "line_says_gone"]
 BUILDING_DERIVED_FIELDS += LINE_KEY_FIELDS
 
 # benchmarks.json -- market comparables from realestate.com.au, which are NOT stock.

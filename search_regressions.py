@@ -104,6 +104,16 @@ OBVIOUS_MAX_DAYS = 45
 COMPONENT_TOLERANCE = 0.02
 # The warm call's limit (critique #13: warm calls took 1.7-2.5 s, explain adds up to 4 s).
 WARM_CALL_LIMIT_S = 8.0
+# PAGED SINCE 7 OCT 2026. The search scores every candidate now (the 600-row cap that hid
+# most of a state from Coleen is gone), so the dashboard asks for a page and the replay does
+# the same: the Research tab's first page, then every further page, until it holds every
+# shortlisted and needs-confirming card -- the obvious-rows check needs them all.
+FIRST_PAGE = {"offset": 0, "limit": 100, "needs_confirming_offset": 0,
+              "needs_confirming_limit": 50}
+REPLAY_PAGE = 500
+# Vercel refuses a response body over 4.5 MB; the owner's bar is 4 MB, for every response,
+# paged or not (the hook's state-wide brief included).
+RESPONSE_LIMIT_BYTES = 4_000_000
 # Two captures of one document within this many seconds are one read of it, not a later
 # read (supersede_duplicates.SAME_READ_WINDOW_S: two lots on one page are stamped apart).
 SAME_READ_S = 600
@@ -310,9 +320,14 @@ def client_brief_for(spec, brief):
 
 
 def body_for(spec, brief):
+    """The body as its caller posts it: a dashboard brief with the Research tab's first page
+    (index.html researchBody, 7 Oct 2026), a hook-shaped one exactly as the hook sends it --
+    no paging, so the endpoint's unpaged answer is the one checked for it."""
     body = {"client_brief": client_brief_for(spec, brief)}
     if brief.get("explain", True):
         body["explain"] = True
+    if not brief.get("hook_shaped"):
+        body.update(FIRST_PAGE)
     return body
 
 
@@ -550,10 +565,67 @@ class Run:
         status, payload, seconds = self.post(body)
         if not isinstance(payload, dict):
             payload = {"status": "error", "message": "not a JSON object"}
+        # EVERY RESPONSE UNDER THE LIMIT, measured as the endpoint writes it (no spaces
+        # after separators). A shortlist of thousands once every candidate is scored made an
+        # unpaged VIC answer 14.9 MB, over Vercel's 4.5 MB (search-funnel audit, 7 Oct 2026).
+        size = len(json.dumps(payload, default=str, separators=(",", ":")).encode("utf-8"))
+        if size > RESPONSE_LIMIT_BYTES:
+            self.report.fail(where_of(brief), "a response is %s bytes, over the %s-byte limit"
+                             % (format(size, ","), format(RESPONSE_LIMIT_BYTES, ",")))
         return status, payload, seconds
 
+    def _every_page(self, brief, body, payload):
+        """The payload with every shortlist and needs-confirming page in it: the further pages
+        are posted as the Research tab posts them (same brief, the next offset) and appended.
+        Fails when the pages do not add up to the counts the first one gave."""
+        where = where_of(brief)
+        page = payload.get("page")
+        if isinstance(page, dict):
+            shortlist = list(payload.get("shortlist") or [])
+            nxt = page.get("next_offset")
+            # Further shortlist pages are not explained, as the tab's are not.
+            plain = {k: v for k, v in body.items() if k != "explain"}
+            while nxt is not None:
+                status, more, _s = self._post(brief, dict(plain, offset=nxt, limit=REPLAY_PAGE))
+                got = more.get("shortlist") or []
+                if status != 200 or more.get("status") != "success" or not got:
+                    self.report.fail(where, "the shortlist page at offset %s did not come: "
+                                            "HTTP %s" % (nxt, status))
+                    break
+                shortlist += got
+                nxt = (more.get("page") or {}).get("next_offset")
+            payload["shortlist"] = shortlist
+            if len(shortlist) != (payload.get("shortlist_count") or 0):
+                self.report.fail(where, "the pages hold %d shortlisted cards, shortlist_count "
+                                        "says %s" % (len(shortlist), payload.get("shortlist_count")))
+            hashes = [_hash(e) for e in shortlist]
+            if len(set(hashes)) != len(hashes):
+                self.report.fail(where, "a card is on two pages of the shortlist")
+        nc_page = payload.get("needs_confirming_page")
+        if isinstance(nc_page, dict):
+            listed = list(payload.get("needs_confirming") or [])
+            nxt = nc_page.get("next_offset")
+            while nxt is not None:
+                status, more, _s = self._post(brief, dict(
+                    body, offset=0, limit=0, needs_confirming_offset=nxt,
+                    needs_confirming_limit=REPLAY_PAGE))
+                got = more.get("needs_confirming") or []
+                if status != 200 or more.get("status") != "success" or not got:
+                    self.report.fail(where, "the needs-confirming page at offset %s did not "
+                                            "come: HTTP %s" % (nxt, status))
+                    break
+                listed += got
+                nxt = (more.get("needs_confirming_page") or {}).get("next_offset")
+            payload["needs_confirming"] = listed
+            if len(listed) != (payload.get("needs_confirming_count") or 0):
+                self.report.fail(where, "the pages hold %d needs-confirming cards, "
+                                        "needs_confirming_count says %s"
+                                 % (len(listed), payload.get("needs_confirming_count")))
+        return payload
+
     def response(self, brief_id):
-        """(body, status, payload, seconds) for a brief, posted on first use."""
+        """(body, status, payload, seconds) for a brief, posted on first use, with every
+        page of a paged answer gathered into it."""
         if brief_id not in self.responses:
             brief = self.briefs[brief_id]
             body = body_for(self.spec, brief)
@@ -571,6 +643,8 @@ class Run:
                     else:
                         self.report.warn(where, say + "; timed on this machine, not Vercel")
                 seconds = warm
+            if status == 200 and payload.get("status") == "success":
+                payload = self._every_page(brief, body, payload)
             self.responses[brief_id] = (body, status, payload, seconds)
         return self.responses[brief_id]
 
@@ -604,6 +678,7 @@ class Run:
         used = resp.get("brief_used") or {}
 
         self.explain_answered(where, body, resp)
+        self.everything_was_searched(where, brief, resp)
         self.card_invariants(where, used, shortlist, confirming)
         self.kommo(where, resp, shortlist, confirming)
         if expect.get("never"):
@@ -689,6 +764,37 @@ class Run:
                 # count, every night, for a reason nobody is told.
                 self.report.fail(where, "relaxation %s failed to price: %s"
                                  % (offer.get("id"), offer.get("error") or "error"))
+
+    def everything_was_searched(self, where, brief, resp):
+        """No candidate went unscored, and a hook-shaped answer lists every shortlisted lot.
+
+        THE CAP THAT HID MOST OF A STATE (7 Oct 2026). Until then the search scored only the
+        600 cheapest candidates in a state, and nothing here noticed: the obvious-rows check
+        fails a 'truncated' row, but only ran where the cap never bound. Now any search the
+        emergency valve (SPB_MAX_CANDIDATES) cut fails, named, whatever its expect says.
+        And Clare's hook matches a caller's lot against the WHOLE unpaged shortlist, so an
+        unpaged answer that had to leave cards out to stay under the size limit fails too."""
+        help_ = resp.get("search_help") if isinstance(resp.get("search_help"), dict) else {}
+        funnel = help_.get("funnel") if isinstance(help_.get("funnel"), dict) else {}
+        cap = resp.get("candidate_cap") or help_.get("candidate_cap")
+        if cap or funnel.get("capped"):
+            # A server from before 7 Oct 2026 says it only in the funnel's pool gates.
+            cut = (cap or {}).get("cut") or next(
+                (g.get("count") for g in funnel.get("gates") or ()
+                 if isinstance(g, dict) and g.get("code") == "truncated"), None)
+            self.report.fail(where, "the candidate cap cut the search: %s candidate(s) were "
+                                    "never scored (SPB_MAX_CANDIDATES=%s)"
+                             % (cut if cut is not None else "some",
+                                (cap or {}).get("limit", "unstated")))
+        detail = resp.get("shortlist_detail")
+        if isinstance(detail, dict) and detail.get("cut"):
+            self.report.fail(where, "the unpaged answer left %s shortlisted lot(s) out to stay "
+                                    "under the size limit" % detail.get("cut"))
+        if brief.get("hook_shaped"):
+            listed = len(resp.get("shortlist") or [])
+            if listed != (resp.get("shortlist_count") or 0):
+                self.report.fail(where, "the hook's answer lists %d of %s shortlisted lots"
+                                 % (listed, resp.get("shortlist_count")))
 
     def kommo(self, where, resp, shortlist, confirming):
         """What the search hands Kommo names shortlisted cards only: the lead's top property
@@ -1099,6 +1205,7 @@ def obvious_rows_check(C, research, bootstrap, catalogue, snapshot_path):
         tally = {}
         listed_short = ((resp.get("needs_confirming_count") or 0)
                         > len(resp.get("needs_confirming") or []))
+        shown_copy = shown_copy_finder(research, resp, catalogue)
         for rec in rows_:
             h = _hash(rec)
             name = catalogue.name(h)
@@ -1110,13 +1217,20 @@ def obvious_rows_check(C, research, bootstrap, catalogue, snapshot_path):
                 continue
             else:
                 outcome, detail = _obvious_outcome(verdicts.get(h), visible, research,
-                                                   bootstrap, used, listed_short)
+                                                   bootstrap, used, listed_short, shown_copy)
                 if outcome in WARN_VERDICTS:
                     run.report.warn(where, "obvious row %s is hidden as %s (data quality)"
                                     % (name, outcome))
                 elif outcome == "needs_confirming_unlisted":
-                    run.report.warn(where, "obvious row %s needs confirming beyond the "
-                                           "listed cap" % name)
+                    # A FAIL since 7 Oct 2026: every page of the group is fetched now, so a
+                    # row past the listed ones is a row the consultant cannot reach.
+                    run.report.fail(where, "obvious row %s needs confirming but is past every "
+                                           "page of the listed group" % name)
+                elif outcome == "truncated":
+                    # Said by name: this is the failure Coleen phoned about on 7 Oct 2026.
+                    run.report.fail(where, "obvious row %s -- %s, %s -- was cut by the "
+                                           "candidate cap before it was scored" % (
+                                               name, rec.get("state"), _money(rec.get("price"))))
                 elif outcome not in ALLOWED_VERDICTS:
                     run.report.fail(where, "obvious row %s -- %s, %s, stated %r, checked %s -- "
                                            "is hidden as %s%s" % (
@@ -1131,28 +1245,82 @@ def obvious_rows_check(C, research, bootstrap, catalogue, snapshot_path):
     return hook
 
 
-def _obvious_outcome(verdict, visible, research, bootstrap, used, listed_short=False):
+def _as_candidate(card):
+    """A shortlist card, needs-confirming card or package, shaped as the scored candidate
+    research._card_identity reads."""
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        state=card.get("state"), suburb=card.get("suburb"), lot_number=card.get("lot_number"),
+        bedrooms=card.get("bedrooms"), land_size_sqm=card.get("land_size_sqm"),
+        house_size_sqm=card.get("house_size_sqm"), lot_address=card.get("lot_address") or "",
+        content_hash=card.get("content_hash"),
+        price_breakdown=SimpleNamespace(
+            advertised_package_price=card.get("advertised_package_price")))
+
+
+def shown_copy_finder(research, resp, catalogue):
+    """package -> True when the search itself reads the package as a copy of a card it
+    shows: the bundle's own research._same_listing (the same lot number, or street, at the
+    same price) -- the rule by which the needs-confirming pass leaves such a row out. A copy
+    shown under another address spelling ("10 Rind Crescent, Donnybrook" / "10 Rind
+    Crescent, Tarneit"; "CC-0127, Bairnsdale Brookfield Lakes" / "CC-0127, Bairnsdale")
+    is a lot Coleen can see, not one she lost (7 Oct 2026). Never True against a bundle
+    without the rule."""
+    ident_of = getattr(research, "_card_identity", None)
+    same = getattr(research, "_same_listing", None)
+    if ident_of is None or same is None:
+        return lambda package: False
+    by_price = {}
+    for card in list(resp.get("shortlist") or []) + list(resp.get("needs_confirming") or []):
+        try:
+            y = ident_of(_as_candidate(card), catalogue.row(_hash(card)))
+        except Exception:                                             # noqa: BLE001
+            continue
+        if y.get("price"):
+            by_price.setdefault(int(y["price"] // 1), []).append(y)
+
+    def find(package):
+        try:
+            x = ident_of(_as_candidate(package), catalogue.row(_hash(package)))
+        except Exception:                                             # noqa: BLE001
+            return False
+        if not x.get("price"):
+            return False
+        at = int(x["price"] // 1)
+        return any(same(x, y) for k in (at - 1, at, at + 1) for y in by_price.get(k, ()))
+    return find
+
+
+def _obvious_outcome(verdict, visible, research, bootstrap, used, listed_short=False,
+                     shown_copy=None):
     """(outcome, detail) for an obvious row the response does not show.
 
     A stale row no guard hides and no twin stands in for belongs in needs_confirming: when
     the list was cut at its cap it may simply be past the cap; otherwise it was lost, and
-    the scorer is asked why."""
+    the scorer is asked why. shown_copy (shown_copy_finder) recognises a row the search
+    reads as a copy of a card it shows under another address spelling."""
     if verdict is None:
         return "not_explained", ""
     gate = verdict.get("gate")
     package = verdict.get("package") or {}
     twin = (str(package.get("lot_address") or "").strip().lower(),
             round(_num(package.get("advertised_package_price")) or 0))
+    copied = shown_copy or (lambda _package: False)
     if gate == "same_listing_collapsed":
-        if twin in visible:
+        if twin in visible or copied(package):
             return "collapsed_into_visible", ""
+        # Merged into a capture that is itself hidden -- and its own guard would hide it
+        # unmerged too (9048: a later capture of the lot at its price exists), so that is
+        # its verdict, named, not a lost lot.
+        if package.get("confirm_guard"):
+            return package["confirm_guard"], ""
         return gate, "merged into a twin that is not shown"
     if gate != "scored":
         return gate, ""
     guard = package.get("confirm_guard")
     if guard:
         return guard, ""
-    if twin in visible:
+    if twin in visible or copied(package):
         return "collapsed_into_visible", ""
     if package.get("confirm") and listed_short:
         return "needs_confirming_unlisted", ""

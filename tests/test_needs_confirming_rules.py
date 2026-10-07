@@ -799,11 +799,13 @@ def test_the_line_key_is_a_snapshot_field_computed_where_the_text_is():
             "16.8 Double Storey 4 2 2 $180,000 $408,950 $588,950")
     failures = []
     cells = build_web._line_key_cells({"lot_number": "406", "source_text": text}, failures)
-    assert cells == {"line_key": C.line_text_key(text)} and cells["line_key"]
+    # 7 Oct 2026: with line_says_gone beside it -- the whole line's gone-word verdict.
+    assert cells == {"line_key": C.line_text_key(text), "line_says_gone": False}
+    assert cells["line_key"]
     # No lot number still keys the line (Howard lot 21 has none); no text keys nothing.
     assert build_web._line_key_cells({"lot_number": "", "source_text": text}, failures) == cells
     assert build_web._line_key_cells({"lot_number": "406", "source_text": ""}, failures) == \
-        {"line_key": None}
+        {"line_key": None, "line_says_gone": None}
     assert failures == []
     body = (APP / "build_web.py").read_text(encoding="utf-8")
     body = body[body.index("def build(out_dir"):]

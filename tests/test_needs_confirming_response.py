@@ -256,19 +256,32 @@ def test_the_list_is_capped_and_the_count_stays_exact(research, monkeypatch):
     assert out["search_help"]["needs_confirming"]["listed"] == 2
 
 
-def test_the_count_says_when_the_candidate_cap_may_have_cut_it_short(research, budgets):
-    """Pending matches come from the search's own pool. When the 600-candidate cap cut that
+def test_the_count_says_when_the_candidate_cap_may_have_cut_it_short(research, budgets,
+                                                                    monkeypatch):
+    """Pending matches come from the search's own pool. When the candidate cap cut that
     pool, stale matches beyond it were never scored, so the count is exact only over what
-    was scored -- and search_help says so rather than implying a complete count."""
+    was scored -- and search_help says so rather than implying a complete count.
+
+    7 Oct 2026: every candidate is scored by default, so the widest search is exact; the
+    cap is an emergency valve (SPB_MAX_CANDIDATES), and when it is set and bites, the
+    response and the explanation both say so (candidate_cap)."""
     _plain, colin = budgets[750000]
     assert colin["search_help"]["funnel"]["capped"] is False
     assert colin["search_help"]["needs_confirming"]["count_may_be_short"] is False
     assert colin["search_help"]["needs_confirming"]["hidden_may_be_short"] is False
-    wide = _run(research, _brief(state="", budget_max=NO_CEILING,
-                                 preferred_spending_cap=NO_CEILING), explain=True)
-    assert wide["search_help"]["funnel"]["capped"] is True, "premise: the cap bites"
-    assert wide["search_help"]["needs_confirming"]["count_may_be_short"] is True
-    assert wide["search_help"]["needs_confirming"]["hidden_may_be_short"] is True
+    brief = _brief(state="", budget_max=NO_CEILING, preferred_spending_cap=NO_CEILING)
+    wide = _run(research, brief, explain=True)
+    assert wide["search_help"]["funnel"]["capped"] is False, "every candidate is scored"
+    assert "candidate_cap" not in wide and "candidate_cap" not in wide["search_help"]
+    assert wide["search_help"]["needs_confirming"]["count_may_be_short"] is False
+    monkeypatch.setattr(_candidates, "MAX_CANDIDATES", 600)
+    cut = _run(research, brief, explain=True)
+    assert cut["search_help"]["funnel"]["capped"] is True, "premise: the valve bites"
+    assert cut["candidate_cap"]["limit"] == 600 and cut["candidate_cap"]["cut"] > 0
+    assert cut["search_help"]["candidate_cap"] == {"limit": 600,
+                                                   "cut": cut["candidate_cap"]["cut"]}
+    assert cut["search_help"]["needs_confirming"]["count_may_be_short"] is True
+    assert cut["search_help"]["needs_confirming"]["hidden_may_be_short"] is True
 
 
 def test_without_its_row_an_entry_still_knows_it_came_by_email(research):
@@ -511,14 +524,16 @@ def synthetic(tmp_path_factory):
     the two that pass admission_refusal are promoted to results and only the Build Only pair
     is refused. `stale_exceptions_snapshot` is the same list read a month ago."""
     rows = [
-        # A confirmed lot, on a list that says "Available".
-        _listing("v2:syn-confirmed"),
+        # A confirmed lot, on a list that says "Available". Lot 12 of Example Rise: since
+        # 7 Oct 2026 two documents' rows are one lot only when they name the same lot in the
+        # same estate (_candidates.same_lot_key), so the twin below names it too.
+        _listing("v2:syn-confirmed", lot_number="12"),
         # An exceptions-only list: one lot it marked Sold (since retired), the rest blank.
         _listing("v2:syn-sold", lot_address="99 Example Street", availability_status="Sold",
                  source_doc="doc-exceptions", superseded_by="v2:syn-sold-later",
                  date_checked="01/09/2026"),
         # ...the SAME lot, design and price as the confirmed one, under another hash.
-        _listing("v2:syn-same-lot", **EXCEPTIONS),
+        _listing("v2:syn-same-lot", lot_number="12", **EXCEPTIONS),
         # ...a different lot: offered to confirm until 20 Sep, promoted and badged since.
         _listing("v2:syn-admitted", lot_address="14 Example Street", price=590000.0,
                  **EXCEPTIONS),

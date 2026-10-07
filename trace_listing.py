@@ -666,20 +666,25 @@ def scored_outcomes(brief, catalogue, today, agent):
     (detail: the scorer's reason) or 'deduped' (detail: the package kept). Two pools, as
     a search runs them: the confirmed search, and the needs-confirming admission pass.
     """
-    from sources.dedupe import DedupeEngine
+    # The search's own dedupe (_candidates.dedupe_packages, 7 Oct 2026): keyed on the lot,
+    # keeping the fresher capture. Without it this said "merged" of a lot the search now
+    # shows on its own card, and named the wrong twin as the one kept.
+    lot_key = C.lot_key_for(catalogue.rows)
     out = {}
     for admitted in (False, True):
         packages, _counts = C.build_packages(
             dict(brief), catalogue.rows, today=today, prepared=catalogue.prepared,
             admit=C.ADMITTABLE_GATES if admitted else (), only_admitted=admitted)
-        deduped = DedupeEngine.deduplicate(packages)
+        deduped = C.dedupe_packages(packages, catalogue.rows, lot_key=lot_key)
         kept = {id(p) for p in deduped}
         for p in packages:
             if id(p) in kept:
                 continue
             twin = next((k for k in deduped
                          if k["advertised_package_price"] == p["advertised_package_price"]
-                         and len(DedupeEngine.deduplicate([p, k])) == 1), None)
+                         and len(C.dedupe_packages([p, k], catalogue.rows,
+                                                   lot_key=lot_key)) == 1),
+                        None)
             out[p["content_hash"]] = ("deduped", (twin or {}).get("content_hash"))
         if not deduped:
             continue
@@ -883,7 +888,9 @@ class Tracer:
                     or verdict["package"]["advertised_package_price"]
                     != package["advertised_package_price"]):
                 continue
-            if len(same([(None, package), (None, verdict["package"])])) == 1:
+            # With both rows, so the collapse asks what the search asks: the same LOT, not
+            # only a card that reads alike (7 Oct 2026, _candidates.same_lot_key).
+            if len(same([(None, package), (None, verdict["package"])], [row, other])) == 1:
                 inner = self.trace(other, depth + 1) if depth < 4 else None
                 name = _row_name(other)
                 if inner is None:

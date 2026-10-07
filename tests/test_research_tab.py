@@ -178,19 +178,18 @@ MUTANTS = {
         "a minimum alone says 'and above'"),
 
     # --- Part C W14: who asks for the explanation
-    "the page-load search asks for explain": (
-        "search found what it found.\n    runResearchAgent();",
-        "search found what it found.\n    runResearchAgent({ explain: true });",
-        "the page-load search does not ask for explain"),
+    # 7 Oct 2026: the page-load search asks for it too (the same totals as an Execute).
+    "the page-load search does not ask for explain": (
+        "not a re-run each.\n    runResearchAgent({ explain: true });",
+        "not a re-run each.\n    runResearchAgent();",
+        "the page-load search asks for explain"),
     "a form submit does not ask for explain": (
         "e.preventDefault();\n        runResearchAgent({ explain: true });",
         "e.preventDefault();\n        runResearchAgent();",
         "a form submit asks for explain"),
     "every search asks for explain": (
-        "body: JSON.stringify(explain ? { client_brief: brief, explain: true }\n"
-        "                                                     : { client_brief: brief })",
-        "body: JSON.stringify({ client_brief: brief, explain: true })",
-        "a search without explain sends only client_brief"),
+        "explain ? { explain: true } : {},", "{ explain: true },",
+        "a search without explain sends client_brief and the first page, nothing else"),
     "any truthy explain option counts": (
         "const explain = !!(options && options.explain === true);",
         "const explain = !!(options && options.explain);",
@@ -266,8 +265,8 @@ MUTANTS = {
         "the preferred price, left blank, follows the new maximum"),
     # --- Needs confirming
     "the needs-confirming group opens by default": (
-        "<details class=\"nc-group\"><summary class=\"nc-summary\">",
-        "<details class=\"nc-group\" open><summary class=\"nc-summary\">",
+        "<details class=\"nc-group\"${recent ? ' open' : ''}>",
+        "<details class=\"nc-group\" open>",
         "with no open attribute"),
     "a needs-confirming card gets a compare tick (renderShortlistCard reused)": (
         "<div class=\"nc-title\">${esc(text(x.lot_address) || NOT_STATED)}</div>",
@@ -276,14 +275,14 @@ MUTANTS = {
         "it has no .cmp-box"),
     # The plan's own mutation: the amber rows drawn with the shortlist's card renderer.
     "needs-confirming rows are drawn with renderShortlistCard": (
-        "const ncHtml = renderNeedsConfirming(data);",
+        "let ncList = needsConfirmingEntries(data);",
         "(data.needs_confirming || []).forEach((p, i) => renderShortlistCard({ recommendation: '', "
         "missing_inclusions: [], scoring_details: {}, ...p }, data.shortlist.length + i));\n"
-        "                const ncHtml = renderNeedsConfirming(data);",
+        "                let ncList = needsConfirmingEntries(data);",
         "needs-confirming rows appear nowhere but the group"),
     "needs-confirming rows are put into LAST_SHORTLIST": (
-        "LAST_SHORTLIST = data.shortlist || [];",
-        "LAST_SHORTLIST = (data.shortlist || []).concat(data.needs_confirming || []);",
+        "place(loaded);",
+        "place(loaded.concat(data.needs_confirming || []));",
         "LAST_SHORTLIST holds only the shortlist"),
     "a needs-confirming address is not escaped": (
         "<div class=\"nc-title\">${esc(text(x.lot_address) || NOT_STATED)}</div>",
@@ -300,7 +299,7 @@ MUTANTS = {
         "+ (toConfirm ? ` · ${toConfirm}${confirmCountShort(data) ? '+' : ''} to confirm` : '')", "+ ''",
         "the badge reads '2 Qualified · 3 to confirm (1438 Filtered)'"),
     "a 'Show more' page lands below the needs-confirming group": (
-        "cardsBox.appendChild(card);", "resultsDiv.appendChild(card);",
+        "(into || cardsBox).appendChild(card);", "resultsDiv.appendChild(card);",
         "after 'Show more' every card is still above the needs-confirming group"),
     "a javascript: source link becomes a link": (
         r"if (!/^https?:\/\//i.test(String(link.url).trim())) return '';", "",
@@ -313,10 +312,8 @@ MUTANTS = {
     # --- W14 review of its own checks: one mutant per check that had none, so no check
     # --- here passes only because nothing could make it fail
     "explain is never sent": (
-        "body: JSON.stringify(explain ? { client_brief: brief, explain: true }\n"
-        "                                                     : { client_brief: brief })",
-        "body: JSON.stringify({ client_brief: brief })",
-        "a search asked to explain sends {client_brief, explain:true}"),
+        "explain ? { explain: true } : {},", "{},",
+        "a search asked to explain sends {client_brief, explain:true} and the first page"),
     "a relaxation click does not ask for explain": (
         "if (applyBriefPatch(r.patch)) runResearchAgent({ explain: true, focusResults: true });",
         "if (applyBriefPatch(r.patch)) runResearchAgent({ focusResults: true });",
@@ -581,6 +578,36 @@ MUTANTS = {
         "${Array.isArray(prop.missing_inclusions) && prop.missing_inclusions.length === 0 ?",
         "${prop.missing_inclusions.length === 0 ?",
         "a shortlist row missing its breakdown, inclusions and price still paints"),
+
+    # --- paged results (Coleen, 7 Oct 2026: "E-Agent always shows more")
+    "the lots-in-buildings headline is never shown": (
+        "const headText = lotsInBuildingsText(data);", "const headText = '';",
+        "the results say '250 lots in 3 buildings'"),
+    "'Show more' counts only the cards sent so far": (
+        "const left = total - shortlistShown;", "const left = loaded.length - shortlistShown;",
+        "'Show more' counts against the server's total"),
+    "the next page is never asked for": (
+        "if (shortlistShown + SHORTLIST_PAGE > loaded.length && nextOffset !== null",
+        "if (false && nextOffset !== null",
+        "the fourth asks the server for the next page of the same search"),
+    "Group by building is on by default": (
+        "let GROUP_BY_BUILDING = false;", "let GROUP_BY_BUILDING = true;",
+        "Group by building is offered, and off"),
+    "the grouped view leaves the flat cards on the page": (
+        "cardsBox.innerHTML = '';\n                        cardsBox.hidden = true;", "",
+        "no flat card left on the page"),
+    "a building's lots not in hand are never asked for": (
+        "if (cards.length < want) {", "if (false) {",
+        "opening a building whose lots are not all in hand asks for that building"),
+    "the amber group never opens by itself": (
+        "<details class=\"nc-group\"${recent ? ' open' : ''}>", "<details class=\"nc-group\">",
+        "a group holding a lot read in the last 3 nights opens by itself"),
+    "the rest of the amber group has no button": (
+        "const more = ncMoreLabel(d);", "const more = '';",
+        "the rest of the group is a button away"),
+    "the amber group's next page starts at the top again": (
+        "needs_confirming_offset: ncList.length }", "needs_confirming_offset: 0 }",
+        "which asks for the next page of the group"),
 }
 
 

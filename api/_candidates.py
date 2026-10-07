@@ -114,6 +114,10 @@ SNAPSHOT_FIELDS = [
     # later with a status saying gone is the lot gone -- see _newer_capture. The text
     # itself is not published.
     "line_key",
+    # WHETHER THE WHOLE LINE SAYS THE LOT HAS GONE (snapshot_line_cells), read from the full
+    # source_text at build time: True / False, or null when the row had no text. The
+    # 110-character lot_address is all a deployed search otherwise has to read.
+    "line_says_gone",
     # THE DATE THE LOT'S OWN PAGE ANSWERED 404/410 (link_check.py via build_web), else "".
     # The gate refuses such a row as lot_page_gone.
     "lot_page_gone",
@@ -131,7 +135,7 @@ _OPTIONAL_SNAPSHOT_FIELDS = {"lot_page_gone": "", "lot_page_status": ""}
 # computes them from the columns they derive from, exactly as build_web does, instead of
 # failing the read over a column the snapshot could not have had.
 _COMPUTED_SNAPSHOT_FIELDS = ("price_kind", "text_price_max", "price_in_text",
-                             "email_list", "email_first_seen", "line_key")
+                             "email_list", "email_first_seen", "line_key", "line_says_gone")
 # What those computations read. Selected when the table has them, then dropped before a
 # row is returned: source_text on a row changes what suburb_quality resolves, and the
 # JSON reader's rows never carry it.
@@ -392,9 +396,20 @@ def _now_aest(utc_now=None):
         now = now.replace(tzinfo=timezone.utc)
     return now.astimezone(AEST).replace(tzinfo=None)
 
-# Upper bound on rows handed to the pipeline, so one enormous state cannot blow the
-# function's time limit. Truncation is reported, never silent.
-MAX_CANDIDATES = int(os.environ.get("SPB_MAX_CANDIDATES", "600"))
+# AN EMERGENCY VALVE, NOT A LIMIT. 0 (the default) scores every candidate.
+#
+# This was 600, and it cut BEFORE anything was scored: the pool was sorted by price and
+# everything past the 600th cheapest was dropped. On the 6 Oct database a state-wide,
+# no-budget search showed 684 of the 4,252 E-Agent lots Coleen could see on E-Agent, and in
+# VIC nothing above $645,500 could ever be shown -- she phoned on 7 Oct 2026 because E-Agent
+# always shows more. It existed to protect the function's 30 s limit; scored uncapped the
+# slowest state measures well inside it once kommo_agent's quadratic Pending split was
+# fixed (7 Oct 2026), and api/research.py pages the response so its size stays bounded.
+#
+# Set SPB_MAX_CANDIDATES only to rescue a deployment that is timing out. Whenever it binds,
+# counts['truncated'] says how many were cut, the response carries candidate_cap, explain's
+# funnel says capped, and search_regressions fails -- a binding cap is never silent.
+MAX_CANDIDATES = int(os.environ.get("SPB_MAX_CANDIDATES", "0") or 0)
 
 # Facts a mandatory filter reads. Missing -> the row is not scored.
 # (bedrooms_min, bathrooms_min, car_spaces_min, house_size_min_sqm in ScoringEngine.)
@@ -607,13 +622,28 @@ def line_text_key(text):
 
 
 def snapshot_line_cells(row):
-    """{line_key} from a row's source_text; null when the text leaves too little to compare.
-    On every row, lot number or not: the same line on the same document read later is
-    evidence about a lot the line names without a lot column (Howard lot 21)."""
+    """{line_key, line_says_gone} from a row's source_text.
+
+    line_key: null when the text leaves too little to compare. On every row, lot number or
+    not: the same line on the same document read later is evidence about a lot the line
+    names without a lot column (Howard lot 21).
+
+    line_says_gone (7 Oct 2026): True when the FULL source line says the lot has gone
+    (text_marks_unavailable's words), False when it was read and says nothing of the kind,
+    null when the row has no source text. The deployed snapshot carries no source_text, and
+    lot_address is the line cut at 110 characters, so promotion_refusal used to refuse every
+    blank row whose address sat on the cut (line_truncated) -- 58 Silkwood and Gallery lots
+    on 6 Oct, none of whose full lines say sold or contract. This cell is that check made
+    while the whole line is still in hand."""
+    out = {"line_key": None, "line_says_gone": None}
     try:
-        return {"line_key": line_text_key(row.get("source_text"))}
+        out["line_key"] = line_text_key(row.get("source_text"))
     except Exception:                                                   # noqa: BLE001
-        return {"line_key": None}
+        pass
+    text = str(row.get("source_text") or "")
+    if text.strip():
+        out["line_says_gone"] = _says_gone(text)
+    return out
 
 
 def snapshot_email_cells(row):
@@ -951,11 +981,16 @@ def _collapse_same_listing(entries):
     return [entries[i][1] for i in kept], len(entries) - len(kept)
 
 
-def _collapse_kept(entries):
+def _collapse_kept(entries, rows=None):
     """Indexes into `entries` of the packages _collapse_same_listing keeps, in its order.
 
     Indexes rather than packages so a caller can also say WHICH rows were merged away --
     explain_row needs that to tell a consultant their lot was folded into its twin.
+
+    `rows` is the snapshot row behind each entry, in the same order. With it, two entries
+    must also be the same LOT (same_lot_key) to merge, not only read alike on a card; the
+    search always passes it. Without it (a caller holding packages only) the card is the
+    whole key, as before 7 Oct 2026.
     """
     groups = {}
     order = []
@@ -964,6 +999,8 @@ def _collapse_kept(entries):
                pkg["suburb"].lower(), pkg["advertised_package_price"],
                pkg["bedrooms"], pkg["bathrooms"], pkg["car_spaces"],
                pkg["house_size_sqm"], pkg["land_size_sqm"])
+        if rows is not None:
+            key = key + (same_lot_key(pkg, rows[index]),)
         rank = (seen or datetime.min,
                 1 if pkg["house_design"] else 0,
                 1 if pkg["source_url_or_ref"].startswith("http") else 0)
@@ -973,6 +1010,119 @@ def _collapse_kept(entries):
         elif rank > groups[key][0]:
             groups[key] = (rank, index)
     return [groups[k][1] for k in order]
+
+
+# ------------------------------------------------------------- which lot a row names
+#
+# TWO LINES OF ONE PRICE LIST ARE TWO LOTS. The same-listing collapse above and the
+# DedupeEngine pass in api/research.py both used to key on the CARD: the address a client
+# reads, which for a row with no street and no lot number is only "Melbourne VIC" or "Double
+# Story, Donnybrook VIC". So units 2302 and 1712 of Atlas (both 'Atlas Price New.pdf', same
+# price and specs) became one card, and Balmain lots 827 and 822 at $350,000 another. On the
+# 6 Oct database 226 distinct lots were folded into a twin this way, 214 of them two lines
+# of the same document (search-funnel audit, 7 Oct 2026).
+#
+# The rule (owner, 7 Oct 2026: stop merging different lots on one price list):
+#   * two lines of one document are two lots unless they name the same lot -- units 2302
+#     and 1712 of Atlas, lots 40 to 44 of "1 Potter Walk", stay apart;
+#   * a row that names its lot merges only with a row naming the same lot in the same
+#     estate, whichever document or channel read it -- so the same lot captured twice
+#     (E-Agent and Proxima, one list re-read, one lot printed twice) still collapses;
+#   * a row that names no lot merges only with the same line of the same document.
+# It has to be ONE key (both merges group in a dict), so "the same lot" outranks "a
+# different line": two lines of one list that both say lot 12 of one estate, at one price
+# with the same facts, are one lot -- on 6 Oct every such pair was one lot's line printed
+# twice ("Nava 180 Paddington" / "Nava Paddington", Raceview lot 12).
+# same_lot_key turns that into a key part.
+
+# "Lot 100", "Unit 2302", "Apt 5", "Townhouse 14" at the start of a card: the source's own
+# words for the lot, carried onto the card when no lot_number column was read.
+_LOT_ON_CARD = re.compile(
+    r"^\s*(?:lot|unit|apt|apartment|townhouse|villa)\s*(?:no\.?|number|#)?\s*"
+    r"([a-z]?\d+[a-z]?)\b", re.I)
+_NOT_ALNUM = re.compile(r"[^a-z0-9]+")
+# "Lot 12" and "12" in a lot_number column are one lot.
+_LOT_WORD = re.compile(r"^(?:lot|unit|apt|apartment|townhouse|villa|no|number)\s+")
+
+
+def _token(value):
+    return " ".join(_NOT_ALNUM.sub(" ", str(value or "").lower()).split())
+
+
+def lot_identity(package, row=None):
+    """The lot a package names -- its stated lot number, else the "Lot N" / "Unit N" its
+    card starts with -- as 'lot:<n>', or '' when it names none.
+
+    NOT a street address. "1 Potter Walk, Alphington" is four lots on one price list, and
+    a street shared by the units of one site would merge two different lines of one
+    document, which the rule above forbids. So a row with no lot number is matched by its
+    line (same_lot_key), and two lists that both carry "45 Pulchella Crescent" without a lot
+    number stay two cards -- the price of never hiding a different lot behind a twin."""
+    row = row or {}
+    lot = _LOT_WORD.sub("", _token(package.get("lot_number") or row.get("lot_number")))
+    if lot:
+        return "lot:" + lot
+    m = _LOT_ON_CARD.match(str(package.get("lot_address") or ""))
+    return ("lot:" + m.group(1).lower()) if m else ""
+
+
+def same_lot_key(package, row):
+    """The part of a merge key that says WHICH LOT, so two rows merge only as one lot.
+
+      ('lot', identity, estate)  the row names its lot: the same lot in the same estate is
+                                 one lot whichever document or channel read it.
+      ('line', doc, line_key)    it names none: only the same line of the same document
+                                 (one list read twice) is the same lot. A row with no line
+                                 to compare is its own key, so it merges with nothing.
+    """
+    row = row or {}
+    ident = lot_identity(package, row)
+    if ident:
+        return ("lot", ident, _token(row.get("estate_name") or package.get("estate_context")))
+    line = str(row.get("line_key") or "").strip()
+    doc = str(row.get(_DOC_KEY) or "").strip()
+    if line and doc:
+        return ("line", doc, line)
+    return ("row", str(row.get("content_hash") or package.get("content_hash") or id(row)))
+
+
+def lot_key_for(rows):
+    """DedupeEngine's lot_key over a snapshot: same_lot_key of a package and its row, found
+    by content_hash (the live row when a hash has a superseded twin). Built once per
+    snapshot, so a caller deduplicating many times (trace_listing) indexes the rows once."""
+    by_hash = {}
+    for r in rows:
+        h = str(r.get("content_hash") or "").strip()
+        if h and (h not in by_hash or not r.get("superseded_by")):
+            by_hash[h] = r
+    return lambda p: same_lot_key(p, by_hash.get(str(p.get("content_hash") or "").strip())
+                                  or {})
+
+
+def fresher_capture(package):
+    """Which of two captures of one lot DedupeEngine keeps (its `prefer`): a verified one,
+    then the one read most recently, then the one whose list states the lot available, then
+    the one naming a design, then the one with a link -- the first on a tie. Before 7 Oct
+    2026 it kept whichever came first, and on the 6 Oct database that was sometimes an
+    August capture a guard then hid, with the lot read that night merged into it."""
+    age = package.get("age_days")
+    return (1 if package.get("verified") else 0,
+            -age if isinstance(age, int) and not isinstance(age, bool) else -10 ** 6,
+            0 if (package.get("availability_by_the_sheet")
+                  or package.get("availability_by_exception_list")) else 1,
+            1 if package.get("house_design") else 0,
+            1 if str(package.get("source_url_or_ref") or "").startswith("http") else 0)
+
+
+def dedupe_packages(packages, rows, lot_key=None):
+    """DedupeEngine.deduplicate over a search's packages, keyed on the lot as well as the
+    card (same_lot_key) and keeping the fresher capture (fresher_capture). `rows` is the
+    snapshot the packages were built from; `lot_key`, lot_key_for(rows) built once by a
+    caller that deduplicates many times. The one dedupe the search, the needs-confirming
+    pass and trace_listing all run, so none of them can merge what another keeps apart."""
+    from sources.dedupe import DedupeEngine
+    return DedupeEngine.deduplicate(packages, lot_key=lot_key or lot_key_for(rows),
+                                    prefer=fresher_capture)
 
 
 # A group must have more than one located row before it can name the rest. See the note
@@ -1738,12 +1888,23 @@ _TEXT_UNAVAILABLE_NEGATED = re.compile(
 _TEXT_STATUS_COLUMNS = ("lot_address", "title_status", "source_text")
 
 
+def _says_gone(text):
+    text = str(text or "")
+    return bool(_TEXT_UNAVAILABLE.search(text) and not _TEXT_UNAVAILABLE_NEGATED.search(text))
+
+
 def text_marks_unavailable(row):
-    """True when the row's own text says the lot has gone, whatever its status cell says."""
+    """True when the row's own text says the lot has gone, whatever its status cell says.
+
+    On a snapshot row, which carries no source_text, the full line's verdict is the
+    line_says_gone cell build_web computed from it (7 Oct 2026). Without it the deployed
+    search read only the line cut at 110 characters, and a word past the cut was admitted
+    to "Needs confirming" here while the SQLite reader, holding the whole line, refused it."""
     for field in _TEXT_STATUS_COLUMNS:
-        text = str(row.get(field) or "")
-        if _TEXT_UNAVAILABLE.search(text) and not _TEXT_UNAVAILABLE_NEGATED.search(text):
+        if _says_gone(row.get(field)):
             return True
+    if not str(row.get("source_text") or "").strip() and _truthy(row.get("line_says_gone")):
+        return True
     return False
 
 
@@ -1776,6 +1937,12 @@ def promotion_refusal(row, prepared):
                         check saw nothing. When the untruncated source_text is missing and
                         lot_address sits on the cut, the row's own status may be past the
                         end, and a row we cannot fully read is not recommended.
+                        UNLESS THE SNAPSHOT SAYS WHAT THE WHOLE LINE SAYS (7 Oct 2026): a
+                        line_says_gone cell (build_web, from the full source_text) settles
+                        it -- True still refuses, False promotes -- and only a row without
+                        the cell is refused for its length. Every one of the 58 Silkwood /
+                        Gallery lots refused on 6 Oct had a 110-character address and a
+                        full line with no gone word in it.
 
     Neither changes the confirm path: a row refused here falls back to "Needs confirming"
     exactly as it did before, so this can only narrow what is newly shown.
@@ -1794,7 +1961,11 @@ def promotion_refusal(row, prepared):
                     and abs(other_price - price) <= price * NEWER_CAPTURE_PRICE_TOLERANCE):
                 return "gone_at_any_date"
     if not str(row.get("source_text") or "").strip():
-        if len(str(row.get("lot_address") or "")) >= _TRUNCATED_AT:
+        says = row.get("line_says_gone")
+        if says is None:
+            if len(str(row.get("lot_address") or "")) >= _TRUNCATED_AT:
+                return "line_truncated"
+        elif _truthy(says):
             return "line_truncated"
     return None
 
@@ -2631,7 +2802,7 @@ def _pass(brief_dict, rows, today=None, prepared=None, admit=(), only_admitted=F
         entries = [entries[i] for i in keep]
         entry_rows = [entry_rows[i] for i in keep]
 
-    kept = _collapse_kept(entries)
+    kept = _collapse_kept(entries, entry_rows)
     counts["same_listing_collapsed"] = len(entries) - len(kept)
     kept_set = set(kept)
     for i, row in enumerate(entry_rows):
@@ -2640,7 +2811,7 @@ def _pass(brief_dict, rows, today=None, prepared=None, admit=(), only_admitted=F
     packages = [entries[i][1] for i in kept]
     row_of_package = {id(entries[i][1]): entry_rows[i] for i in kept}
     packages.sort(key=lambda p: p["advertised_package_price"])
-    if len(packages) > MAX_CANDIDATES:
+    if MAX_CANDIDATES > 0 and len(packages) > MAX_CANDIDATES:
         # A PROMOTED ROW NEVER EVICTS A STATED ONE, AND NEVER REORDERS THEM EITHER.
         # Held out of everything below and appended at the end, because the reorderings
         # are SELECTIONS over the whole list -- _spread_across_the_budget especially --

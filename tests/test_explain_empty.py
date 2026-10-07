@@ -51,9 +51,11 @@ FORM = {
 }
 
 # The response W12 shipped, on both returns. Nothing may be added to it without the flag.
+# 7 Oct 2026: less "reports" -- per-property markdown nothing read (not index.html, not the
+# hook) and 43% of an uncapped state-wide response.
 W12_KEYS = {
     "status", "research_record_id", "shortlist_count", "rejected_count", "in_state_rows",
-    "brief_used", "brief_adjustments", "rejected_log", "shortlist", "reports",
+    "brief_used", "brief_adjustments", "rejected_log", "shortlist",
     "search_area", "region_expansion", "location_resolution", "builder_coverage",
     "client_report_html", "comparisons", "client_report_path", "qa_passed", "qa_failures",
     "kommo_payload",

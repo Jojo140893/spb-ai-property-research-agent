@@ -139,9 +139,15 @@ MUTANTS = {
     # Part C W14: explain:true adds search_help and needs_confirming, which belong to the
     # Research tab. A re-run from a lead card must not ask for them, or show them.
     "a re-run asks for explain": (
-        "body: JSON.stringify({ client_brief: lead.brief })",
-        "body: JSON.stringify({ client_brief: lead.brief, explain: true })",
+        "body: JSON.stringify({ client_brief: lead.brief, offset: 0, limit: HL_LIVE_LIMIT })",
+        "body: JSON.stringify({ client_brief: lead.brief, offset: 0, limit: HL_LIVE_LIMIT, explain: true })",
         "re-run never asks for explain"),
+    # 7 Oct 2026: a re-run asks for a page of 500 full cards; unpaged, a lead's state-wide
+    # brief would bring cards past the 600th in their compact form.
+    "a re-run sends no page": (
+        "body: JSON.stringify({ client_brief: lead.brief, offset: 0, limit: HL_LIVE_LIMIT })",
+        "body: JSON.stringify({ client_brief: lead.brief })",
+        "body is exactly {client_brief: lead.brief, offset: 0, limit: 500}"),
     "the live block falls back to the needs-confirming listings": (
         "const shortlist = Array.isArray(d.shortlist) ? d.shortlist : [];",
         "const shortlist = (Array.isArray(d.shortlist) && d.shortlist.length) ? d.shortlist "
