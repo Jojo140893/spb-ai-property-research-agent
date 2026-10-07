@@ -1,0 +1,38 @@
+{
+ "version": 1,
+ "note": "Known data issues parity_check.py reports as a note, not a failure, until each entry's date (repair round 2, 7 Oct 2026). Every entry names the rows or lists, why they fail, and who has to act. After its date the failure is back. Renew an entry only with a reason; delete it when the data is fixed. Measured on the 6 Oct database.",
+ "acknowledged": [
+  {
+   "group": "VIC",
+   "reason": "no_suburb",
+   "ids": [17450, 17451, 17452, 17453, 17454, 17465, 17466, 17467, 17468, 17469],
+   "why": "the E-Agent 'Pitt Street' project list prints no suburb, estate or postcode on its lines, and no other row names one; the owner to find the development's address and add a document_suburbs_manual.json rule",
+   "until": "21/10/2026"
+  },
+  {
+   "group": "QLD",
+   "reason": "availability_unstated:no_document",
+   "ids": [12748, 12765, 12768, 17334, 20461, 20559, 23543],
+   "why": "Torsion Homes portal rows carry only a suburb ('HEMMANT', 'JOYNER') and no listing link, so no document says they are for sale; harvest-side (owner): capture each package's link",
+   "until": "21/10/2026"
+  },
+  {
+   "group": "blank",
+   "reason": "state_unknown",
+   "ids": [20473],
+   "why": "Hattan's weekly email files lot 4317 under 'Wyndham' with no state; the email names no state for it (owner to confirm the estate: Jubilee, Wyndham Vale VIC)",
+   "until": "21/10/2026"
+  },
+  {
+   "group": "QLD",
+   "bar": "unread",
+   "docs": ["E-Agent - Victoria & Albert", "E-Agent - Gardner Rd Stage 3",
+            "E-Agent - The Waverley Residences", "E-Agent - Murcia", "E-Agent - Solara",
+            "E-Agent - St Clair", "E-Agent - Waler Heights", "E-Agent - BUNDEBURG LINK",
+            "E-Agent - Highgate", "E-Agent - Bloom", "E-Agent - Drift",
+            "E-Agent - Canvas Cooroy", "E-Agent - Trinidad Terrace"],
+   "why": "QLD project lists on Dropbox not read since 22-24 Sep (Waverley since 1 Oct): their folders list empty to the harvest; their lots leave the 14-day shortlist by 8 Oct on their own. Owner to open the folder links the harvest manifest names",
+   "until": "14/10/2026"
+  }
+ ]
+}

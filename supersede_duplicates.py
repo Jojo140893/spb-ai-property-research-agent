@@ -317,6 +317,16 @@ def _stocklist_twins(rows, find):
         theirs = [m for m in members if not _is_stocklist(m)]
         if not mine or not theirs:
             continue
+        # THE LIVE CAPTURES DECIDE (repair round 2, 7 Oct 2026, data verifier). A lot's
+        # older price-list captures, already retired by the status pass or by another group,
+        # can sit in components of their own; counting them called 457 of 8,727 keys
+        # ambiguous on the 6 Oct database, so about 5% of Stocklist lots would have been
+        # listed twice beside their own price-list line. A superseded capture is a capture
+        # that lost already; only when every one of them has, do they all speak.
+        live_theirs = [m for m in theirs if not m.get("superseded_by")]
+        live_mine = [m for m in mine if not m.get("superseded_by")]
+        theirs = live_theirs or theirs
+        mine = live_mine or mine
         if (len({find(m["id"]) for m in mine}) != 1
                 or len({find(m["id"]) for m in theirs}) != 1):
             continue

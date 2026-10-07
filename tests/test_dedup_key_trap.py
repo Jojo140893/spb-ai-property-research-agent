@@ -129,9 +129,10 @@ def test_a_withdrawn_trap_row_comes_back_when_its_list_carries_it(tmp_path):
     assert r["availability_status"] == "Available"
 
 
-def test_a_superseded_twin_is_re_attached_but_never_revived(tmp_path):
+def test_a_superseded_twin_is_updated_but_never_revived(tmp_path):
     """Reviving a duplicate would double-count stock: only the WITHDRAWN marker clears,
-    exactly as on a content_hash hit."""
+    exactly as on a content_hash hit. (Nor is it re-attached since repair round 2: see
+    test_repair_round2_data_7oct.)"""
     db, path = _db(tmp_path)
     db.record_building(_listing(9))
     _migrate_the_30_jul_way(path, 1, suburb="Mernda")

@@ -1450,6 +1450,7 @@
               &ldquo;On the shortlist&rdquo; is the part Clare and Agent 2 read, and a lot hidden
               for a reason (sold elsewhere, its page gone, not a home's price) is counted apart.
             </p>
+            <div class="table-scroll" style="overflow-x:auto; max-width:100%;">
             <table style="width:100%; border-collapse:collapse; font-size:0.82rem;">
               <thead><tr style="text-align:left; color:var(--text-muted);">
                 <th style="${td}">State</th><th style="${td}">E-Agent lots</th>
@@ -1469,6 +1470,7 @@
                     : '&mdash;'}</td>
                 </tr>`).join('')}</tbody>
             </table>
+            </div>
             ${fails.length ? `
             <div style="margin-top:0.6rem; font-size:0.78rem; color:var(--text-body);
                         max-height:11rem; overflow:auto; line-height:1.6;">
@@ -1730,7 +1732,11 @@
             return '<span class="pill pill-muted">not checked</span>'
                 + (l.note ? `<div style="font-size:0.72rem; color:var(--text-muted); margin-top:0.15rem;">${esc(l.note)}</div>` : '');
         };
+        // WRAPPED TO SCROLL SIDEWAYS (7 Oct 2026): six columns of pills and dates are wider
+        // than a phone, and the table pushed the whole Settings tab 191 px past a 375 px
+        // screen. The page stays put; the table scrolls inside its own box.
         const table = (rows, firstCol) => `
+          <div class="table-scroll" style="overflow-x:auto; max-width:100%;">
           <table style="width:100%; border-collapse:collapse;">
             <thead><tr style="text-align:left; color:var(--text-muted); font-size:0.8rem;">
               <th style="padding:0.45rem 0.5rem;">${firstCol}</th>
@@ -1753,7 +1759,8 @@
                              ? 'color:var(--rose-red); font-weight:600;' : ''}">
                   ${c.refreshed_pct}%</td>
               </tr>`).join('')}</tbody>
-          </table>`;
+          </table>
+          </div>`;
         const portals = CHANNELS.portals || [];
         el.innerHTML = `
           ${table(chans, 'Source')}
@@ -6244,12 +6251,18 @@ python state_sync.py push</pre>
         newer_capture: 'a newer capture of this lot exists',
         document_partially_read: 'its list was only partly read the last time',
         conflicting_capture: 'another project on the portal lists this unit as Not Available',
+        // 7 Oct 2026, repair round 2: shown to confirm rather than hidden
+        // (_candidates.FRESH_GUARD_ACTIONS).
+        builder_documents_reread: "the builder's newer lists were read since and this list was not",
+        newer_upload_in_folder: 'a newer price list was uploaded beside this one',
+        project_reread_uncounted: 'the portal project was read again since without this lot',
     };
     const HIDDEN_WHY = {
         newer_capture_disagrees: 'a newer capture of the same lot says otherwise',
         newer_capture_exists: 'a newer capture of the same lot exists',
         newer_capture_repriced: 'a newer capture of the same lot asks a different price',
         document_reread_without_row: 'their list was read again without them',
+        project_reread_without_row: 'their portal project was read again in full without them',
         newer_list_from_sender: 'the builder has sent a newer list',
         over_confirm_limit: 'they are more than 45 days old',
         builder_documents_reread: "the builder's other lists were read again without them",
@@ -7347,6 +7360,33 @@ python state_sync.py push</pre>
      * would turn every link sent so far into a blank page. They are adapters now, so an
      * old link renders the new document.
      */
+    /* AN ESTATE COLUMN THAT IS THE LIST'S OWN HEADING IS NOT A PLACE A CLIENT READS (7 Oct
+       2026, repair round 2). A builder's price list puts its banner where its estate column
+       is read from, and the report headlined it: "SPB PREFERRED OPTION: OPTION 1 - STOCK
+       HIGHLIGHTED IN ORANGE BELOW IS ELIGIBLE FOR THE 100% COMMISSION OFFER., COLAC". The
+       owner's rule is that a client document never shows an internal field, and an agent's
+       commission is the most internal of all. Dropped: commission / agent / eligibility /
+       FIRB / guaranteed-income wording, a "stock list" or "price list" title, "28 items" and
+       "Page 1 of 2" counters, contract and completion small print, a table's header row (three
+       or more column words), and anything over 70 characters. The label then reads the
+       suburb alone. Inside the app the card still shows the column as read. */
+    const LIST_HEADING = /commission|eligib|highlight|\bfirb\b|guaranteed|\bagent|purchaser|stock\s*list|price\s*list|pricelist|\b\d+\s+(?:stock\s+)?items?\b|\bpage\s+\d+\s+of\b|contract|completion|timeframe|scheduled|outgoings|\bbudget\b|\bbelow\b/i;
+    const TABLE_HEADER_WORD = /\b(?:lot|unit|level|bed|beds|bath|car|price|total|type|status|size|aspect|int|ext|m2|sqm|frontage|rent|yield|config|configuration|notes|store|ground|mezzanine|balcony|stock|id)\b/gi;
+    function clientEstate(v) {
+        const s = String(v ?? '').trim();
+        if (!s || s.length > 70 || LIST_HEADING.test(s)) return '';
+        return (s.match(TABLE_HEADER_WORD) || []).length >= 3 ? '' : s;
+    }
+    /* And the card's own title, which on a flattened price-list line can carry the same
+       small print: "Agent commission=6%plus, South Yarra VIC" was a shortlisted title on
+       6 Oct. The comma-separated parts that speak to an agent are dropped; the rest of the
+       address stays exactly as read. client_report.py does the same for its document. */
+    const INTERNAL_TEXT = /commission|\bagent|purchaser|eligib|highlight|\bfirb\b|guaranteed\s+income/i;
+    function clientAddress(v) {
+        return String(v ?? '').split(',').map(s => s.trim())
+            .filter(s => s && !INTERNAL_TEXT.test(s)).join(', ');
+    }
+
     function packageReportDocument(props, shareUrl, opts) {
         const o = opts || {};
         const dash = '<span class="na">&mdash;</span>';
@@ -7374,8 +7414,9 @@ python state_sync.py push</pre>
         // The street address if the source gave one, otherwise the estate and suburb.
         // Never blank: this is the only thing in the row that names the property.
         const addr = p => {
-            if (raw(p.lot_address)) return esc(p.lot_address);
-            const l = [raw(p.estate_context), raw(p.suburb)].filter(Boolean).join(', ');
+            const own = clientAddress(p.lot_address);
+            if (own) return esc(own);
+            const l = [clientEstate(p.estate_context), raw(p.suburb)].filter(Boolean).join(', ');
             return l ? esc(l) : dash;
         };
         /* ESCAPED, and uppercased BEFORE escaping. This feeds an <h3> and the preferred-
@@ -7383,8 +7424,8 @@ python state_sync.py push</pre>
            puts `"><img src=x onerror=...>` in exactly that field. Uppercasing after
            escaping would also turn `&amp;` into `&AMP;`, which browsers still parse but
            which has no business being in a document a client receives. */
-        const labelRaw = p => [raw(p.estate_context), raw(p.suburb)].filter(Boolean).join(', ')
-                              || raw(p.lot_address);
+        const labelRaw = p => [clientEstate(p.estate_context), raw(p.suburb)].filter(Boolean).join(', ')
+                              || clientAddress(p.lot_address);
         const label = p => labelRaw(p) ? esc(labelRaw(p)) : dash;
         const labelUpper = p => labelRaw(p) ? esc(labelRaw(p).toUpperCase()) : dash;
 
@@ -7408,7 +7449,7 @@ python state_sync.py push</pre>
             const bbc = [p.bedrooms, p.bathrooms, p.car_spaces];
             const bbcText = bbc.some(v => raw(v))
                 ? bbc.map(v => raw(v) ? esc(v) : '&ndash;').join(' / ') : '';
-            const street = raw(p.lot_address) ? esc(p.lot_address) : '';
+            const street = clientAddress(p.lot_address) ? esc(clientAddress(p.lot_address)) : '';
             const cells = [
                 `<strong>${i + 1}</strong>`,
                 (place(p) ? esc(place(p)) : dash)

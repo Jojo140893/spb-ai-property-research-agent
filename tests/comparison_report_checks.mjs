@@ -335,5 +335,38 @@ console.log('\n--- one document, one page (Coleen and Colin, 18 Aug) ---');
       null, {}).includes('&AMP;'));
 }
 
+console.log('\n--- a price list\'s own heading is not an estate a client reads (7 Oct 2026) ---');
+{
+  // Repair round 2, callers verifier: the report and its /r link headlined "SPB PREFERRED
+  // OPTION: OPTION 1 - STOCK HIGHLIGHTED IN ORANGE BELOW IS ELIGIBLE FOR THE 100%
+  // COMMISSION OFFER., COLAC". An agent's commission is internal; so is a table's header.
+  const heading = Object.assign({}, full, { suburb: 'Colac', score: 99,
+    estate_context: 'Stock highlighted in orange below is eligible for the 100% commission offer.' });
+  for (const [name, doc] of [['comparison', comparisonDocument([heading, sparse], null, {})],
+                             ['client report', clientReportDocument([heading, sparse], null, '')]]) {
+    check(name + ': no commission heading reaches the client', !/commission|highlighted/i.test(doc));
+    check(name + ': the label falls back to the suburb', /PREFERRED OPTION: OPTION 1[^<]*COLAC/.test(doc));
+  }
+  const header = Object.assign({}, full, {
+    estate_context: 'Lot Type Frontage(m) Land Size (m2) Land Rego Land Price Status' });
+  check('a table header row is no estate either',
+    !comparisonDocument([header], null, {}).includes('Frontage(m)'));
+  const agent = Object.assign({}, full, { estate_context: 'Single Car Space & OB Storage Agent commission=6%plus' });
+  check('an agent commission line is no estate',
+    !/commission/i.test(clientReportDocument([agent], null, '')));
+  const real = Object.assign({}, full, { estate_context: 'Estate : Alluvium $25k Land Discount Winter Valley' });
+  check('a real estate name still reaches the client',
+    comparisonDocument([real], null, {}).includes('ALLUVIUM'));
+  // The card's title can carry it too (a flattened line): "Agent commission=6%plus, South
+  // Yarra VIC" was a shortlisted title on 6 Oct.
+  const titled = Object.assign({}, full, { suburb: 'South Yarra',
+    lot_address: 'Single Car Space & OB Storage Agent commission=6%plus, 12 Toorak Rd' });
+  for (const [name, doc] of [['comparison', comparisonDocument([titled], null, {})],
+                             ['client report', clientReportDocument([titled], null, '')]]) {
+    check(name + ': no agent commission in the title', !/commission|agent/i.test(doc));
+    check(name + ': the rest of the address stays', doc.includes('12 Toorak Rd'));
+  }
+}
+
 console.log(bad === 0 ? '\nALL CHECKS PASSED' : '\n' + bad + ' FAILED');
 process.exit(bad ? 1 : 0);

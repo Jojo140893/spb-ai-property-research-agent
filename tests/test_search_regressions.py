@@ -59,6 +59,7 @@ def _subset_rows():
 
 
 def _c5(rows):
+    import suburb_quality
     out = []
     for row in rows:
         h = str(row.get("content_hash") or "")[:11]
@@ -67,6 +68,12 @@ def _c5(rows):
         elif h in C5_TO_VIC:
             row = dict(row, state="VIC",
                        state_source="row text locality (over suburb column)")
+        # AND THE SUBURB TODAY'S BUILD READS OFF A ROW'S OWN WRITTEN ADDRESS (repair round 2,
+        # 7 Oct 2026). The subset was published by the 17 Sep build, which carded "Mt
+        # Duneed,Victoria,3217" as Tarneit; the replay now fails such a card by name.
+        if SR.written_place_contradicts(row, row.get("suburb"), row.get("state")):
+            sub, why = suburb_quality.resolve(dict(row, suburb_source=""))
+            row = dict(row, suburb=sub, suburb_source=why)
         out.append(row)
     return out
 

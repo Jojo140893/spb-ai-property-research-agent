@@ -105,3 +105,34 @@ def test_every_report_shipped_before_today_carried_the_score():
                   if re.search(r"Why we recommend it</h3>\s*<p>[^<]*\d+(?:\.\d)?/100",
                                f.read_text(encoding="utf-8", errors="replace"))]
     assert with_score, "expected the archived reports to demonstrate the old behaviour"
+
+
+def test_the_builder_is_not_named_to_the_buyer(tmp_path, monkeypatch):
+    """Colin, 17 Aug: "when we give them, we don't give them that information" -- the
+    builder. The dashboard's report dropped its builder column then; the report the search
+    attaches to every answer (client_report_html) still printed "149 m2 house - APLACE by
+    Glenville" (repair round 2, 7 Oct 2026, callers verifier)."""
+    import _candidates as C
+    from tests import _synthetic_stock as S
+    rows = [S.row("v2:r%d" % i, builder_name="Glenville Secret Builders",
+                  lot_number=str(10 + i), lot_address="Lot %d, Example Rise" % (10 + i),
+                  price=600000.0 + i) for i in range(4)]
+    monkeypatch.setenv("SPB_SNAPSHOT_JSON", str(S.write(tmp_path, rows)))
+    monkeypatch.setattr(C, "datetime", S.Sep16)
+    import research
+    out = S.run(research)
+    html = out.get("client_report_html") or ""
+    assert out.get("shortlist") and "Example Rise" in html, html[:400]
+    assert "Glenville Secret Builders" not in html, "the builder reached the client report"
+
+
+def test_an_agents_small_print_in_a_lots_title_is_not_shown_to_the_buyer():
+    """A flattened price-list line carries the agent's terms into the lot's title:
+    "Single Car Space & OB Storage Agent commission=6%plus, South Yarra VIC" was a
+    shortlisted title on 6 Oct (repair round 2)."""
+    got = client_report._client_address(
+        "Single Car Space & OB Storage Agent commission=6%plus, 12 Toorak Rd")
+    assert got == "12 Toorak Rd", got
+    assert client_report._client_address("Lot 5, Example Rise") == "Lot 5, Example Rise"
+    src = (APP / "client_report.py").read_text(encoding="utf-8")
+    assert "_esc(p.lot_address)" not in src, "the title reaches the buyer unfiltered"

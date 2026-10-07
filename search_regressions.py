@@ -83,7 +83,7 @@ import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 APP = Path(__file__).resolve().parent
@@ -149,6 +149,9 @@ ALLOWED_VERDICTS = ("shortlist", "needs_confirming", "collapsed_into_visible",
                     # A vendor's re-upload replaced the row's file in the same shared folder
                     # (_candidates.fresh_row_guard, 7 Oct 2026: Victoria & Albert).
                     "newer_upload_in_folder",
+                    # Its Proxima project was read again, whole, without it (repair round
+                    # 2). Every guard reason here is held to its evidence: guard_evidence.
+                    "project_reread_without_row",
                     # W11's email guard (critique #9), the same kind of sold-stock evidence
                     # as builder_documents_reread for a list sent by email.
                     "newer_list_from_sender",
@@ -468,6 +471,229 @@ def gone_sibling(catalogue, h):
         if same_line(text, status_free(catalogue.text(oh))):
             return other
     return None
+
+
+# ------------------------------------------------------- does the catalogue back the excuse?
+#
+# 7 Oct 2026, repair round 2 (parity verifier). An obvious row hidden -- or sent to "Needs
+# confirming" -- for a sold-stock reason passed every check as soon as the reason was in
+# ALLOWED_VERDICTS, whether or not anything in the catalogue says so: a search made to call
+# 35 Fawkner Park West lots "builder_documents_reread", read that very night on a list read
+# that very night, passed this check and parity_check alike. So the reason is now held to
+# its own evidence, stated here and not imported (the harness does not borrow the rule it
+# is checking):
+#   document_reread_without_row, project_reread_*   its own list (a Proxima project, else
+#        the snapshot's source_doc) was read on a LATER day than the row
+#   builder_documents_reread   its builder's lists on its channel, in its state, were read
+#        on a later day than the newest read of its own list
+#   newer_upload_in_folder     another file in its shared folder was read on a later day
+#        than the newest read of its own list
+#   newer_capture_*            another capture of the same lot (builder or list, estate,
+#        lot number) was read on a later day
+#   conflicting_capture        another Proxima project lists the same unit address Not
+#        Available, read that day or later
+# Any other reason (the row's own text, its own page, its own price) is the row's own word
+# and is not second-guessed here.
+GUARD_EVIDENCE_REASONS = ("document_reread_without_row", "project_reread_without_row",
+                          "project_reread_uncounted", "builder_documents_reread",
+                          "newer_upload_in_folder", "newer_capture_exists",
+                          "newer_capture_repriced", "newer_capture_disagrees",
+                          "conflicting_capture")
+_UNIT_CARD = re.compile(r"^\s*(?:lot|unit)\s*[a-z0-9-]+.*\d", re.I)
+
+
+def _lot_who(row):
+    lot = _norm(row.get("lot_number"))
+    if not lot:
+        return None
+    builder = _norm(row.get("builder_name"))
+    who = ("builder:" + builder) if builder else (
+        "doc:" + str(row.get("source_doc") or "").strip())
+    if who == "doc:":
+        return None
+    return (who, _norm(row.get("estate_name")), lot)
+
+
+def _own_doc(row):
+    channel = str(row.get("source_channel") or "").strip().lower()
+    pid = str(row.get("source_project_id") or "").strip()
+    if channel.startswith("proxima") and pid:
+        return "proxima:" + pid
+    doc = str(row.get("source_doc") or "").strip()
+    return ("doc:" + doc) if doc else ""
+
+
+class _Evidence:
+    """The catalogue's reads, indexed once: what a guard reason may rest on."""
+
+    def __init__(self, catalogue):
+        self.doc_last = {}        # own document -> newest day read
+        self.builder_last = {}    # (channel, builder, state or "") -> newest day read
+        self.folder_docs = {}     # source_folder -> {own document: newest day}
+        self.lot_days = {}        # _lot_who -> [day read]
+        self.units = {}           # (state, unit address) -> [(day, gone, project)]
+        for row in catalogue.rows:
+            seen = _day(row.get("date_checked"))
+            if seen is None:
+                continue
+            doc = _own_doc(row)
+            if doc and seen > self.doc_last.get(doc, date.min):
+                self.doc_last[doc] = seen
+            channel = str(row.get("source_channel") or "").strip().lower()
+            builder = _norm(row.get("builder_name"))
+            if builder:
+                state = str(row.get("state") or "").strip().upper()
+                for key in ((channel, builder, state), (channel, builder, "")):
+                    if seen > self.builder_last.get(key, date.min):
+                        self.builder_last[key] = seen
+            folder = str(row.get("source_folder") or "").strip()
+            if folder and doc:
+                docs = self.folder_docs.setdefault(folder, {})
+                if seen > docs.get(doc, date.min):
+                    docs[doc] = seen
+            who = _lot_who(row)
+            if who is not None:
+                self.lot_days.setdefault(who, []).append(seen)
+            if (channel.startswith("proxima") and not row.get("superseded_by")
+                    and _UNIT_CARD.match(str(row.get("lot_address") or ""))):
+                self.units.setdefault(
+                    (str(row.get("state") or "").strip().upper(), _norm(row.get("lot_address"))),
+                    []).append((seen, str(row.get("availability_status") or "").strip().lower()
+                                in NOT_AVAILABLE, str(row.get("source_project_id") or "")))
+
+    def unsupported(self, row, reason):
+        """None when the catalogue backs `reason` for this row, else what it lacks."""
+        seen = _day(row.get("date_checked"))
+        if reason not in GUARD_EVIDENCE_REASONS or seen is None:
+            return None
+        doc = _own_doc(row)
+        doc_last = self.doc_last.get(doc) if doc else None
+        if reason in ("document_reread_without_row", "project_reread_without_row",
+                      "project_reread_uncounted"):
+            if doc_last is None or doc_last <= seen:
+                return "its own list was not read after %s" % seen.strftime("%d/%m/%Y")
+            return None
+        if reason == "builder_documents_reread":
+            channel = str(row.get("source_channel") or "").strip().lower()
+            state = str(row.get("state") or "").strip().upper()
+            newest = self.builder_last.get((channel, _norm(row.get("builder_name")), state))
+            mine = doc_last or seen
+            if newest is None or newest <= mine:
+                return ("its builder's lists were not read after its own list (%s)"
+                        % mine.strftime("%d/%m/%Y"))
+            return None
+        if reason == "newer_upload_in_folder":
+            mine = doc_last or seen
+            folder = str(row.get("source_folder") or "").strip()
+            if not any(day > mine for other, day in (self.folder_docs.get(folder) or {}).items()
+                       if other != doc):
+                return "no other file in its folder was read after %s" % mine.strftime(
+                    "%d/%m/%Y")
+            return None
+        if reason == "conflicting_capture":
+            key = (str(row.get("state") or "").strip().upper(), _norm(row.get("lot_address")))
+            project = str(row.get("source_project_id") or "")
+            if not any(day >= seen and gone and other != project
+                       for day, gone, other in self.units.get(key, ())):
+                return "no other project lists the unit as gone"
+            return None
+        who = _lot_who(row)
+        if who is None or not any(day > seen for day in self.lot_days.get(who, ())):
+            return "no capture of the same lot was read after %s" % seen.strftime("%d/%m/%Y")
+        return None
+
+
+def guard_evidence(catalogue):
+    """The catalogue's _Evidence, built once per catalogue."""
+    got = getattr(catalogue, "_guard_evidence", None)
+    if got is None:
+        got = _Evidence(catalogue)
+        catalogue._guard_evidence = got
+    return got
+
+
+# ------------------------------------------------- where the row itself says it is
+#
+# 7 Oct 2026, repair round 2 (parity verifier): nine VIC cards whose row writes "Mt
+# Duneed,Victoria,3217", "ClydeNorth,Victoria,3978" or "Bonniebrook,Victoria,3335" were
+# carded Tarneit -- their builder's commonest suburb -- and a Tarneit search shortlisted
+# them. A card's suburb must not contradict the place its own row writes out with the state
+# in full and a postcode. Compared by sound, the way a place is said ("MtDuneed" is Mount
+# Duneed, "StLeonards" St Leonards), allowing one letter ("Tarniet" is Tarneit); stated here
+# rather than imported from suburb_quality, which is what is being checked.
+_WRITTEN_PLACE = re.compile(
+    r"([A-Za-z][A-Za-z.'\-]*(?:\s+[A-Za-z][A-Za-z.'\-]*){0,3})\s*[,\uff0c]\s*"
+    r"(new\s*south\s*wales|victoria|queensland|south\s*australia|western\s*australia|"
+    r"tasmania|northern\s*territory|australian\s*capital\s*territory)\s*[,\uff0c]?\s*"
+    r"(\d{4})\b", re.I)
+_WRITTEN_STATE = {"newsouthwales": "NSW", "victoria": "VIC", "queensland": "QLD",
+                  "southaustralia": "SA", "westernaustralia": "WA", "tasmania": "TAS",
+                  "northernterritory": "NT", "australiancapitalterritory": "ACT"}
+# The first digit of a postcode, by state (Australia Post's ranges, coarse on purpose).
+_POSTCODE_FIRST = {"NSW": "12", "ACT": "02", "VIC": "38", "QLD": "49", "SA": "5", "WA": "6",
+                   "TAS": "7", "NT": "0"}
+
+
+def _said(name):
+    folded = re.sub(r"\bsaint\b", "st", re.sub(r"\bmount\b", "mt", str(name or "").lower()))
+    return re.sub(r"[^a-z]", "", folded)
+
+
+def _one_letter_apart(a, b):
+    if a == b:
+        return True
+    if abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        diffs = [i for i in range(len(a)) if a[i] != b[i]]
+        return len(diffs) == 1 or (len(diffs) == 2 and diffs[1] == diffs[0] + 1
+                                   and a[diffs[0]] == b[diffs[1]] and a[diffs[1]] == b[diffs[0]])
+    short, long_ = (a, b) if len(a) < len(b) else (b, a)
+    return any(long_[:i] + long_[i + 1:] == short for i in range(len(long_)))
+
+
+def written_place_contradicts(rec, suburb, state):
+    """The place a row writes out ('Mt Duneed, VIC') when the card's `suburb` is not it,
+    else ''. '' when the row writes no such address, or writes it in another state than the
+    card's (that is the state check's business)."""
+    want = _said(suburb)
+    state = str(state or "").strip().upper()
+    if not rec or not want:
+        return ""
+    written = []
+    for field in ("lot_address", "estate_name", "title_status", "source_text"):
+        for m in _WRITTEN_PLACE.finditer(str((rec or {}).get(field) or "")[:700]):
+            st = _WRITTEN_STATE.get(re.sub(r"\s+", "", m.group(2).lower()))
+            if not st or (state and st != state):
+                continue
+            if m.group(3)[0] not in _POSTCODE_FIRST.get(st, ""):
+                continue
+            words = [w for w in m.group(1).split()
+                     if w.upper() not in ("NSW", "VIC", "QLD", "SA", "WA", "TAS", "NT", "ACT")]
+            if any(_one_letter_apart(_said(" ".join(words[-k:])), want)
+                   for k in range(1, min(3, len(words)) + 1)):
+                return ""
+            if words:
+                written.append("%s, %s" % (" ".join(words[-2:]), st))
+    return written[0] if written else ""
+
+
+# A title that names its lot ("Lot 12", "Unit 2302", "TH17") or a street ("12 Hollins
+# Street", "1386 Peter Thomson Circuit"), money taken out first.
+_TITLE_LOT = re.compile(r"\b(?:lot|unit|apt|apartment|townhouse|villa|th)\s*[#:.]?\s*[a-z]?\d",
+                        re.I)
+_TITLE_STREET = re.compile(r"\b\d+[a-z]?(?:\s*/\s*\d+[a-z]?)?\s+[A-Za-z][A-Za-z'\-]{2,}", re.I)
+_TITLE_MONEY = re.compile(r"[A-Za-z]?\$\s?\d[\d,]*(?:\.\d+)?|\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b")
+
+
+def no_lot_and_no_street(entry):
+    """True when a card's title names no lot (lot_number or "Lot N" / "Unit N") and no
+    street number and name -- 'GOLF $3,497,500', 'PARK RIDGE', '... Click here Click here'
+    (repair round 2: the row labels are Stage B's work; this says how many reach a list)."""
+    if _norm(entry.get("lot_number")):
+        return False
+    title = _TITLE_MONEY.sub(" ", str(entry.get("lot_address") or ""))
+    return not (_TITLE_LOT.search(title) or _TITLE_STREET.search(title))
 
 
 # ---------------------------------------------------------------------------- the Dawn lots
@@ -861,6 +1087,10 @@ class Run:
         low = _num(used.get("budget_min")) or 0.0
         high = _num(used.get("budget_max"))
         cat = self.catalogue
+        # Cards that name no lot and no street (repair round 2): one line a brief, not one
+        # a card -- on 6 Oct a VIC answer held about a thousand ("Melbourne VIC"), which is
+        # the row labels' work, not something this replay can fail on.
+        unlabelled = []
         for kind, entries in (("shortlisted", shortlist), ("needs confirming", confirming)):
             for entry in entries:
                 h = _hash(entry)
@@ -889,8 +1119,18 @@ class Run:
                         self.report.fail(where, "%s %s is shown, but its row says %r"
                                          % (kind, name, said))
                 self.lot_number_postcode(where, kind, name, h, row)
+                # NOT SOMEWHERE ITS OWN ROW SAYS IT IS NOT (repair round 2): "Mt Duneed,
+                # Victoria,3217" shortlisted as a Tarneit lot.
+                written = written_place_contradicts(cat.db_row(h) or row,
+                                                    entry.get("suburb"), entry.get("state"))
+                if written:
+                    self.report.fail(where, "%s %s is shown in %s, but its own row writes its "
+                                            "address as %r" % (kind, name,
+                                                               entry.get("suburb"), written))
                 if kind != "shortlisted":
                     continue
+                if no_lot_and_no_street(entry):
+                    unlabelled.append(name)
                 age = _age(card_date, self.today)
                 if age is None or age > FRESH_DAYS:
                     self.report.fail(where, "shortlisted %s was checked %r, more than %d days "
@@ -934,6 +1174,9 @@ class Run:
                                                 "%s (%s)" % (name, row.get("state"),
                                                              row.get("state_source"), hit[0],
                                                              hit[1]))
+        if unlabelled:
+            self.report.note(where, "labels: %d shortlisted card(s) name no lot and no street, "
+                                    "e.g. %s" % (len(unlabelled), ", ".join(unlabelled[:5])))
 
     def lot_number_postcode(self, where, kind, name, h, row):
         """WARN when a card's state was read off its own lot number as a postcode.
@@ -1178,6 +1421,13 @@ def priced_as_a_home(rec, cells):
         return False
     if str(cells.get("price_kind") or "").lower() in ("build_only", "land_only"):
         return False
+    # FILED COMMERCIAL BY ITS OWN LIST, AND NO BEDROOMS: a warehouse or a shop, not a home
+    # (repair round 2, 7 Oct 2026; the search's _candidates.price_covers, word for word).
+    # 191 Leakes Rd's and Rockwater's units, with no state on their lists, failed parity
+    # every night as "no state search reaches them" -- no home search should.
+    if (str(rec.get("product_type") or "").strip().lower() == "commercial"
+            and not _num(rec.get("bedrooms"))):
+        return False
     # The row's own columns saying the price is only the land or only the house
     # ("Wollert Land Price $143,389": land_price is the price, no build price).
     land, build = _num(rec.get("land_price")), _num(rec.get("build_price"))
@@ -1243,11 +1493,21 @@ def obvious_rows_check(C, research, bootstrap, catalogue, snapshot_path):
         listed_short = ((resp.get("needs_confirming_count") or 0)
                         > len(resp.get("needs_confirming") or []))
         shown_copy = shown_copy_finder(research, resp, catalogue)
+        evidence = guard_evidence(catalogue)
+        demoted_for = {_hash(e): [c for c in (e.get("confirm") or ())
+                                  if c in GUARD_EVIDENCE_REASONS]
+                       for e in resp.get("needs_confirming") or []}
         for rec in rows_:
             h = _hash(rec)
             name = catalogue.name(h)
             if h in shown:
                 outcome = shown[h]
+                # SENT TO "NEEDS CONFIRMING" BY A GUARD (repair round 2): only on evidence.
+                for reason in demoted_for.get(h) or ():
+                    lacking = evidence.unsupported(catalogue.row(h) or rec, reason)
+                    if lacking:
+                        run.report.fail(where, "obvious row %s was sent to needs confirming as "
+                                               "%s, but %s" % (name, reason, lacking))
             elif catalogue.row(h) is None:
                 run.report.fail(where, "obvious row %s is in the database but not in the "
                                        "snapshot" % name)
@@ -1275,6 +1535,12 @@ def obvious_rows_check(C, research, bootstrap, catalogue, snapshot_path):
                                                rec.get("availability_status"),
                                                rec.get("date_checked"), outcome,
                                                (": " + detail) if detail else ""))
+                elif outcome in GUARD_EVIDENCE_REASONS:
+                    # An allowed reason is allowed only on its evidence (repair round 2).
+                    lacking = evidence.unsupported(catalogue.row(h), outcome)
+                    if lacking:
+                        run.report.fail(where, "obvious row %s is hidden as %s, but %s"
+                                        % (name, outcome, lacking))
             tally[outcome] = tally.get(outcome, 0) + 1
         run.report.note(where, "obvious rows: %d (%s)" % (
             len(rows_), ", ".join("%s %d" % kv for kv in sorted(tally.items())) or "none"))

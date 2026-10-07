@@ -84,6 +84,13 @@ def _a_status_cell_figure(prev: str) -> bool:
         return False
 
 
+# A percentage or a dollar amount right AFTER the word is the deposit's size, so a payment
+# term: "$500,000 DEPOSIT 10% Available" -- repair round 2, 7 Oct 2026 (data verifier): read
+# as Not Available, with Available on the same line, because gone words outrank it. A bare
+# number is NOT a size: "4402 DEPOSIT 4 2 2" is the status cell, then beds, baths and cars.
+_DEPOSIT_SIZE = re.compile(r"^\$\d[\d,]*(?:\.\d+)?[KkMm]?$|^\d+(?:\.\d+)?%$")
+
+
 def _deposit_is_a_status(t: str) -> bool:
     toks = t.split()
     for i, tok in enumerate(toks):
@@ -91,6 +98,9 @@ def _deposit_is_a_status(t: str) -> bool:
             continue
         prev = toks[i - 1] if i else ""
         nxt = toks[i + 1].strip(".,;:()[]-").upper() if i + 1 < len(toks) else ""
+        after = toks[i + 2].strip(".,;:()[]") if i + 2 < len(toks) else ""
+        if _DEPOSIT_SIZE.match(nxt) or (re.match(r"^\d+(?:\.\d+)?$", nxt) and after == "%"):
+            continue
         if _a_status_cell_figure(prev) and nxt not in _DEPOSIT_TERMS:
             return True
     return False

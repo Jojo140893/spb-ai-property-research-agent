@@ -277,7 +277,7 @@ def test_lots_a_re_read_list_no_longer_carries_fail_over_two_percent(bundle, tmp
     assert code == 1, out
     over = [f for f in body["failures"] if f["bar"] == "over-served"]
     assert len(over) == 1 and over[0]["group"] == "VIC", body["failures"]
-    assert "3 of 93 shown lots (3.2%, at most 2%)" in over[0]["text"], over[0]["text"]
+    assert "3 of 93 shortlisted lots (3.2%, at most 2%)" in over[0]["text"], over[0]["text"]
     assert "70520, 70521, 70522" in over[0]["text"]
     # Everything else is clean: the three are not obvious (read 3 nights ago), so the
     # SHOWN bar is untouched by them.
@@ -412,7 +412,7 @@ def test_a_state_mostly_shown_off_unread_lists_fails():
     served = {"shown": 100, "over": 0, "unjudged": 0, "ids": [], "docs": {}, "unread": 30,
               "unread_docs": {"E-Agent - Gone Folder": 30}}
     failures, _cells, notes = P.over_served_bar({"QLD": {"over_served": served}})
-    assert len(failures) == 1 and "30 of 100 shown lots (30.0%) sit on a list not read" in \
+    assert len(failures) == 1 and "30 of 100 shortlisted lots (30.0%) sit on a list not read" in \
         failures[0]["text"], failures
     served = dict(served, unread=5)
     failures, _cells, notes = P.over_served_bar({"QLD": {"over_served": served}})

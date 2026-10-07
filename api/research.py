@@ -1250,7 +1250,9 @@ def _needs_confirming_entry(cand, pkg, row):
         "source_link": getattr(cand, "source_link", None),
         # What a consultant has to confirm: 'stale', 'availability_unstated',
         # 'document_partially_read', 'conflicting_capture' (two portal projects disagree
-        # about the unit; 7 Oct 2026) -- see _candidates._gate.
+        # about the unit; 7 Oct 2026), and the fresh-guard reasons whose action is
+        # "confirm" -- 'builder_documents_reread', 'newer_upload_in_folder',
+        # 'project_reread_uncounted' (repair round 2) -- see _candidates._gate.
         "confirm": list(pkg.get("confirm") or ()),
         # The availability exactly as the source row stated it; None when it stated none.
         "availability_as_stated": stated or None,

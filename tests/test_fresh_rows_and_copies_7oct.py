@@ -50,6 +50,14 @@ def _hidden_as(package):
     return None if package.get("verified") else package.get("confirm_guard")
 
 
+def _to_confirm_as(package):
+    """The fresh-guard reason a row is shown to CONFIRM for (not verified, not hidden)."""
+    if package.get("verified") or package.get("confirm_guard"):
+        return None
+    reasons = [c for c in package.get("confirm") or () if c in C.FRESH_GUARD_ACTIONS]
+    return reasons[0] if reasons else None
+
+
 # ------------------------------------------------------------------- not a home at all
 
 def _junk():
@@ -150,7 +158,9 @@ def test_a_list_the_builder_replaced_is_not_a_verified_result():
             + _list("hudson-new", 5, "15/09/2026", builder_name="Lineage Homes")
             + _list("alone", 5, "05/09/2026", builder_name="Only One List Homes"))
     pk = _packages(rows)
-    assert all(_hidden_as(pk["v2:hudson-old-%02d" % i]) == "builder_documents_reread"
+    # Repair round 2 (7 Oct 2026): off the shortlist, and shown to CONFIRM rather than
+    # hidden -- see test_repair_round2_7oct and _candidates.FRESH_GUARD_ACTIONS.
+    assert all(_to_confirm_as(pk["v2:hudson-old-%02d" % i]) == "builder_documents_reread"
                for i in range(5))
     assert all(pk["v2:hudson-new-%02d" % i]["verified"] for i in range(5))
     # A builder whose only list has not been read for days: nothing says it was replaced.
@@ -169,7 +179,7 @@ def test_a_re_upload_in_the_same_folder_replaces_the_old_file():
     new = _list("va", 6, "07/09/2026", builder_name="Victoria & Albert 22 20 Pm",
                 source_folder="f-va")
     pk = _packages(old + new)
-    assert all(_hidden_as(pk["v2:vanda-%02d" % i]) == "newer_upload_in_folder"
+    assert all(_to_confirm_as(pk["v2:vanda-%02d" % i]) == "newer_upload_in_folder"
                for i in range(6))
     assert all(pk["v2:va-%02d" % i]["verified"] for i in range(6))
 

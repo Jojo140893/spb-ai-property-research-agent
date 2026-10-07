@@ -115,7 +115,21 @@ OVER_SERVED_MAX = 0.02
 # Lots hidden for an allowed reason, of a state's obvious lots: an excuse leaves the
 # denominator, so it needs a ceiling of its own (6 Oct: VIC 6, NSW 11, QLD 2 excused).
 EXCUSED_MAX = 0.03
-EXCUSED_FLOOR = 10
+# REPAIR ROUND 2: 10 let a small state hide most of itself under an excuse (WA 10 of 22 is
+# 45%, SA 10 of 113). Two is a lot or two; the evidence check below does the rest.
+EXCUSED_FLOOR = 2
+# An excuse is allowed only on its evidence (search_regressions.guard_evidence), and an
+# obvious building of this many lots or more hidden ENTIRELY for its own list's sake (the
+# document and project reasons) fails outright: on 6 Oct no such building existed, and a
+# search made to call Fawkner Park West's 35 lots "builder_documents_reread" passed.
+WHOLE_BUILDING_MIN = 5
+WHOLE_BUILDING_REASONS = ("document_reread_without_row", "builder_documents_reread",
+                          "newer_upload_in_folder", "project_reread_without_row",
+                          "project_reread_uncounted")
+# KNOWN DATA ISSUES, written down with a reason and a date they stop being excused (repair
+# round 2, callers verifier): bars that fail every night for a row the client or owner
+# must fix trained everyone to ignore the alert. data/parity_acknowledged.json
+ACKNOWLEDGED = APP / "data" / "parity_acknowledged.json"
 # Of the obvious lots a state shows or should, the share on the SHORTLIST (6 Oct, branch:
 # every state over 99%).
 SHORTLISTED_MIN = 0.95
@@ -162,7 +176,9 @@ SOLD_STOCK_GUARDS = ("newer_capture_disagrees", "newer_capture_exists",
                      "text_marks_unavailable", "gone_at_any_date",
                      # A re-upload replaced the row's file in its shared folder (the search's
                      # fresh_row_guard, repair round 1, 7 Oct 2026).
-                     "newer_upload_in_folder")
+                     "newer_upload_in_folder",
+                     # Its Proxima project was read again, whole, without it (round 2).
+                     "project_reread_without_row")
 # The lot's own page answered 404/410 or names it gone (link_check.py).
 DEAD_LOT_PAGE = ("lot_page_gone",)
 # The stored price is not a home and land at that price. The obvious set already leaves
@@ -192,6 +208,7 @@ REASON_TEXT = {
     "incomplete_facts": "a fact the brief needs is missing",
     "search_failed": "the search itself failed",
     SHOWN_TWIN: "a copy of a lot that is shown",
+    "unsupported": "hidden for a sold-stock reason the database does not back",
 }
 
 
@@ -313,14 +330,20 @@ def building_of(rec, group, doc, label):
     return "%s|%s" % (group, key), _plain(name)[:80]
 
 
-def obvious_lots(catalogue, today, build_cells, overseas, left_out=None):
+def obvious_lots(catalogue, today, build_cells, overseas, left_out=None, blank_stating=None):
     """[lot] for every obvious lot, picked from the database (see the module docstring).
     Each lot is a dict: hash, id, group (a searched state, BLANK or OTHER), channel,
     e_agent, building, building_label, doc, doc_label, price.
 
     left_out(rec, doc) -> True drops a row its own document's latest full read did not
     carry (see read_left_it_out): read two nights ago, then the list was read again in full
-    last night without it -- not something the sources list tonight."""
+    last night without it -- not something the sources list tonight.
+
+    blank_stating, when given a dict, is filled {group: Counter(doc label)} with the rows
+    left out ONLY for being blank on a list that states "Available" beside them (repair
+    round 2, 7 Oct 2026, parity verifier): E-Agent's PDF still shows those lots -- AVIA's 35
+    'EOI' lines, a status column the parser missed -- and a 100% read against a set that
+    leaves them out says nothing about them, so the report names how many and where."""
     nights = {today - timedelta(days=i) for i in range(RECENT_NIGHTS)}
     live = [r for r in catalogue.db.values() if not r.get("superseded_by")]
     docs = {}
@@ -341,7 +364,8 @@ def obvious_lots(catalogue, today, build_cells, overseas, left_out=None):
             continue
         h = SR._hash(rec)
         doc = docs[h]
-        if not status and doc in states_available:
+        blank_beside_stated = not status and doc in states_available
+        if blank_beside_stated and blank_stating is None:
             continue
         if left_out is not None and left_out(rec, doc):
             continue
@@ -354,6 +378,9 @@ def obvious_lots(catalogue, today, build_cells, overseas, left_out=None):
             continue
         group = state if state in SEARCHED_STATES else (BLANK if not state else OTHER)
         label = doc_label(rec)
+        if blank_beside_stated:
+            blank_stating.setdefault(group, Counter())[label] += 1
+            continue
         building, building_label = building_of(rec, group, doc, label)
         out.append({"hash": h, "id": rec.get("id"), "group": group, "state": state,
                     "channel": _channel(rec) or "?", "e_agent": _is_e_agent(rec),
@@ -782,10 +809,15 @@ def measure(args):
     def left_out(rec, doc):
         return read_left_it_out(rec, doc, latest_read, reads, cut_short, full)
 
-    lots = obvious_lots(catalogue, today, C.snapshot_build_cells, overseas, left_out)
+    blank_stating = {}
+    lots = obvious_lots(catalogue, today, C.snapshot_build_cells, overseas, left_out,
+                        blank_stating=blank_stating)
     by_group = defaultdict(list)
     for lot in lots:
         by_group[lot["group"]].append(lot)
+    evidence = SR.guard_evidence(catalogue)
+    fresh_guard = _fresh_guard_counts(C, rows, prepared, suburb_quality)
+    hand_checked = getattr(suburb_quality, "FROM_VERIFIED", None)
     newest = max(latest_read.values()) if latest_read else None
     print("parity: %s obvious lots from the database (%s), today %s; ready in %.1f s" % (
         _n(len(lots)), ", ".join("%s %s" % (g, _n(len(v))) for g, v in sorted(by_group.items())),
@@ -870,12 +902,33 @@ def measure(args):
             for lot in hidden_out:
                 if lot["reason"] in REPLAYED:
                     _name_twin(lot, dropped_twins(), shown, catalogue, docs)
+        # AN EXCUSE ONLY ON ITS EVIDENCE (repair round 2): a sold-stock reason the
+        # database does not back is a lot hidden for nothing.
+        for lot in hidden_out:
+            if lot["allowed"] and lot["reason"] in SR.GUARD_EVIDENCE_REASONS:
+                lacking = evidence.unsupported(catalogue.row(lot["hash"]) or {}, lot["reason"])
+                if lacking:
+                    lot.update(reason="unsupported:" + lot["reason"], allowed=False,
+                               lacking=lacking)
+        result["demoted_unsupported"] = _demoted_without_evidence(
+            got["needs_confirming"], {lot["hash"] for lot in mine}, catalogue, evidence)
+        result["whole_buildings_excused"] = _whole_buildings_excused(mine, hidden_out)
+        result["precision"] = _precision(entries, state, catalogue, hand_checked)
+        result["unlabelled"] = _unlabelled(got["shortlist"], catalogue)
+        result["blank_on_stating_list"] = {
+            "count": sum((blank_stating.get(state) or Counter()).values()),
+            "docs": dict((blank_stating.get(state) or Counter()).most_common(6))}
+        result["fresh_guard"] = fresh_guard.get(state) or {}
         result.update(_tally(mine, shown, {lot["hash"] for lot in hidden_out if lot["allowed"]},
                              shortlisted={SR._hash(e) for e in got["shortlist"]} - {""},
                              twins=_twins_of(hidden_out, got["shortlist"])))
         result["hidden"] = hidden_out
-        result["over_served"] = _over_served(entries, catalogue, docs, latest_read, today,
-                                             cut_short)
+        # THE SHORTLIST ONLY (repair round 2): a card under "Needs confirming" already says
+        # its list may have moved on -- that is why it is there. Counted over both lists,
+        # QLD read 46.6% "unread" once the fresh guard sent old lists' lots to confirm
+        # instead of hiding them.
+        result["over_served"] = _over_served(got["shortlist"], catalogue, docs, latest_read,
+                                             today, cut_short)
         result["duplicates"] = _duplicates(entries, catalogue, docs)
         result["drift"] = _drift_counts(mine)
         # SHOWN LOTS, beside the obvious ones, for the drift bar: a night the search shows
@@ -924,6 +977,110 @@ def measure(args):
            "seconds": round(time.monotonic() - started, 1)}
     Path(args.out).write_text(json.dumps(out, default=str), encoding="utf-8")
     return 0
+
+
+def _fresh_guard_counts(C, rows, prepared, suburb_quality):
+    """{state: {"hidden": {reason: n}, "confirm": {reason: n}}}: live rows read inside the
+    search's FRESH_DAYS that its fresh-row guard keeps off the shortlist -- hidden, or sent to
+    "Needs confirming" (repair round 2, callers verifier: on 6 Oct the guard hid about 1,050
+    such rows with no flag, and the obvious set, three nights deep, never saw them). {} for a
+    bundle without the guard."""
+    guard = getattr(C, "fresh_row_guard", None)
+    fresh = getattr(C, "_fresh", None)
+    if guard is None or fresh is None:
+        return {}
+    actions = C.fresh_guard_actions() if callable(getattr(C, "fresh_guard_actions", None)) \
+        else {r: "hide" for r in getattr(C, "FRESH_GUARD_HIDES", ())}
+    now = C._now_aest()
+    out = {}
+    for row in rows:
+        if row.get("superseded_by"):
+            continue
+        verified, _seen, _raw = fresh(row, now)
+        if not verified:
+            continue
+        why = guard(row, prepared, now)
+        if not why:
+            continue
+        state = str(row.get("state") or "").strip().upper() or BLANK
+        cell = out.setdefault(state, {"hidden": Counter(), "confirm": Counter()})
+        cell["confirm" if actions.get(why) == "confirm" else "hidden"][why] += 1
+    return {s: {k: dict(v) for k, v in cell.items()} for s, cell in out.items()}
+
+
+def _demoted_without_evidence(confirming, obvious, catalogue, evidence):
+    """[{id, reason, lacking}] for obvious lots sent to "Needs confirming" for a guard reason
+    the database does not back (repair round 2): off the shortlist Clare reads, for nothing."""
+    out = []
+    for e in confirming:
+        h = SR._hash(e)
+        if h not in obvious:
+            continue
+        for reason in e.get("confirm") or ():
+            if reason not in SR.GUARD_EVIDENCE_REASONS:
+                continue
+            lacking = evidence.unsupported(catalogue.row(h) or {}, reason)
+            if lacking:
+                out.append({"id": (catalogue.db_row(h) or {}).get("id"), "reason": reason,
+                            "lacking": lacking})
+    return out
+
+
+def _whole_buildings_excused(mine, hidden):
+    """[{building, lots, ids}] for obvious buildings of WHOLE_BUILDING_MIN lots or more whose
+    every lot is hidden for a document or project reason (see WHOLE_BUILDING_REASONS)."""
+    by_hash = {lot["hash"]: lot for lot in hidden}
+    buildings = defaultdict(list)
+    for lot in mine:
+        buildings[lot["building"]].append(lot)
+    out = []
+    for lots_ in buildings.values():
+        if len(lots_) < WHOLE_BUILDING_MIN:
+            continue
+        reasons = [str((by_hash.get(lot["hash"]) or {}).get("reason") or "").split(":")[-1]
+                   for lot in lots_]
+        if all(r in WHOLE_BUILDING_REASONS for r in reasons):
+            out.append({"building": lots_[0]["building_label"], "lots": len(lots_),
+                        "ids": [lot["id"] for lot in lots_[:NAME_FIRST]],
+                        "reasons": dict(Counter(reasons))})
+    return out
+
+
+def _precision(entries, state, catalogue, hand_checked=None):
+    """{wrong_state, gone, retired, missing}: ids of shown cards that are not what the search
+    was asked for (repair round 2, parity verifier): a card in another state than the one
+    searched -- by the card or by its database row, unless the row is blank or a hand-checked
+    rule moved it -- one whose row says it has gone, one whose row is superseded, or one the
+    database does not hold. Every one of these must be 0. The other bars count what is
+    MISSING; without this one a search that also returned NSW lots for VIC passed them."""
+    out = {"wrong_state": [], "gone": [], "retired": [], "missing": []}
+    for e in entries:
+        h = SR._hash(e)
+        rec = catalogue.db_row(h)
+        if rec is None:
+            out["missing"].append(h[:11])
+            continue
+        ident = rec.get("id")
+        stored = str(rec.get("state") or "").strip().upper()
+        snap = catalogue.row(h) or {}
+        moved_by_hand = hand_checked and snap.get("suburb_source") == hand_checked
+        if (str(e.get("state") or "").strip().upper() != state
+                or (stored and stored != state and not moved_by_hand)):
+            out["wrong_state"].append(ident)
+        if str(rec.get("availability_status") or "").strip().lower() in SR.NOT_AVAILABLE:
+            out["gone"].append(ident)
+        if rec.get("superseded_by"):
+            out["retired"].append(ident)
+    return out
+
+
+def _unlabelled(shortlist, catalogue):
+    """{count, ids}: shortlisted cards whose title names no lot and no street (repair round
+    2): 'GOLF $3,497,500', 'PARK RIDGE'. Reported, not failed -- the row labels are their
+    own piece of work -- so how many reach Clare's list is in front of the owner nightly."""
+    ids = [(catalogue.db_row(SR._hash(e)) or {}).get("id") for e in shortlist
+           if SR.no_lot_and_no_street(e)]
+    return {"count": len(ids), "ids": ids[:NAME_FIRST]}
 
 
 def _twins_of(hidden, shortlist):
@@ -1001,10 +1158,21 @@ def _duplicates(entries, catalogue, docs):
                          str(e.get("lot_address") or ""), re.I)
             lot = m.group(1).lower() if m else ""
         if builder and lot:
-            by_key[("lot", builder, lot, _norm(e.get("suburb")), price)].append(h)
+            # NOT KEYED BY THE CARD'S SUBURB (repair round 2, parity verifier): the same
+            # Hattan lot 58 is carded "Springvale" off one list's "Springvale Double" heading
+            # and "Springvale South" off the other, so 11 copies went uncounted. The suburbs
+            # are compared loosely, pair by pair, below.
+            by_key[("lot", builder, lot, price)].append(h)
         line = SR.status_free(rec.get("source_text") or "")
         if len(line) >= SR._SAME_LINE_MIN and docs.get(h):
             by_key[("line", docs[h], line, price)].append(h)
+    suburb_of = {SR._hash(e): set(_norm(e.get("suburb")).split()) for e in entries}
+
+    def places_agree(a, b):
+        """One card's suburb words inside the other's ('springvale' in 'springvale
+        south'), or either blank."""
+        x, y = suburb_of.get(a) or set(), suburb_of.get(b) or set()
+        return not x or not y or x <= y or y <= x
     parent = {}
 
     def find(x):
@@ -1026,7 +1194,7 @@ def _duplicates(entries, catalogue, docs):
         for i, a in enumerate(members):
             for b in members[i + 1:]:
                 if (a != b and find(a) != find(b) and not facts_differ(a, b)
-                        and same_lot(catalogue, docs, a, b)):
+                        and places_agree(a, b) and same_lot(catalogue, docs, a, b)):
                     parent[find(b)] = find(a)
     sets = defaultdict(list)
     for h in parent:
@@ -1072,9 +1240,11 @@ def _over_served(entries, catalogue, docs, latest_read, today, cut_short=()):
         by_doc[doc_label(rec)] += 1
         if len(examples) < NAME_FIRST:
             examples.append(rec.get("id"))
+    # EVERY unread list, not the first ten (repair round 2): an acknowledged list is taken
+    # out of the share by name (see acknowledged).
     return {"shown": shown, "over": over, "unjudged": unjudged, "ids": examples,
             "docs": dict(by_doc.most_common(10)), "unread": unread,
-            "unread_docs": dict(unread_docs.most_common(10))}
+            "unread_docs": dict(unread_docs.most_common())}
 
 
 def _drift_counts(lots):
@@ -1090,7 +1260,56 @@ def _drift_counts(lots):
 
 # ------------------------------------------------------------------- the bars (parent)
 
-def shown_bar(groups):
+def load_acknowledged(path, today):
+    """([acknowledgement in force tonight], [note]).
+
+    Repair round 2 (7 Oct 2026, callers verifier): the bars failed every night on rows only
+    the client or the owner can fix (a price list with no suburb on it, lots filed with no
+    state), so CI went red and the DEGRADED alert fired daily -- which trains people to stop
+    reading it. data/parity_acknowledged.json names them, each with why and an `until`
+    date: {"acknowledged": [{"group": "VIC", "reason": "no_suburb", "ids": [17450, ...],
+    "why": "...", "until": "21/10/2026"}, {"group": "QLD", "bar": "unread", "docs":
+    ["E-Agent - Victoria & Albert"], ...}]}. An acknowledged row or list is reported as a
+    note, not a failure, until that date; after it the failure is back and a note says the
+    acknowledgement expired. Anything not named still fails."""
+    return _acks_in_force(load_json(path) if path and Path(path).is_file() else None, today)
+
+
+def _acks_in_force(data, today):
+    """load_acknowledged over an already-parsed file."""
+    entries = data.get("acknowledged") if isinstance(data, dict) else None
+    live, notes = [], []
+    tonight = SR._day(today)
+    for entry in entries or ():
+        if not isinstance(entry, dict):
+            continue
+        until = SR._day(entry.get("until"))
+        what = "%s %s" % (entry.get("group") or "any state",
+                          entry.get("reason") or entry.get("bar") or "")
+        if until is None or tonight is None or until < tonight:
+            notes.append("acknowledgement %s (%s) expired %s -- it fails again until fixed "
+                         "or renewed" % (what.strip(), _plain(entry.get("why") or "")[:80],
+                                         entry.get("until") or "(no date)"))
+            continue
+        live.append(entry)
+    return live, notes
+
+
+def _acked(acks, group, reason=None, bar=None):
+    """The acknowledgements in force for this group and reason (or bar)."""
+    out = []
+    for entry in acks or ():
+        if entry.get("group") not in (None, "", group):
+            continue
+        if reason is not None and entry.get("reason") not in (None, "", reason):
+            continue
+        if bar is not None and entry.get("bar") != bar:
+            continue
+        out.append(entry)
+    return out
+
+
+def shown_bar(groups, acks=None):
     """([failure], [table row], [note]) for the SHOWN bar."""
     failures, rows, notes = [], [], []
     for state in [g for g in SEARCHED_STATES if g in groups] + [BLANK]:
@@ -1171,11 +1390,40 @@ def shown_bar(groups):
                     row["pass"] = False
         by_reason = defaultdict(list)
         allowed_tally = Counter()
+        acked = defaultdict(list)
         for lot in result.get("hidden") or ():
             if lot["allowed"]:
                 allowed_tally[lot["reason"]] += 1
+                continue
+            known = [e for e in _acked(acks, state, reason=lot["reason"])
+                     if lot["id"] in set(e.get("ids") or ())]
+            if known:
+                acked[(lot["reason"], known[0].get("until"),
+                       _plain(known[0].get("why") or "")[:120])].append(lot["id"])
             else:
                 by_reason[lot["reason"]].append(lot)
+        for (reason, until, why), ids in sorted(acked.items()):
+            notes.append("%s: %s obvious lot(s) hidden as %s, acknowledged until %s (%s): "
+                         "ids %s" % (state if state != BLANK else "no state", _n(len(ids)),
+                                     reason, until, why,
+                                     ", ".join(str(i) for i in ids[:NAME_FIRST])))
+        # SOLD ON NOTHING, AND WHOLE BUILDINGS (repair round 2).
+        for item in result.get("demoted_unsupported") or ():
+            failures.append({"bar": "shown", "group": state, "reason": "demoted_unsupported",
+                             "ids": [item["id"]],
+                             "text": "obvious lot %s was sent to Needs confirming as %s, but %s"
+                                     % (item["id"], item["reason"], item["lacking"])})
+            row["pass"] = False
+        for item in result.get("whole_buildings_excused") or ():
+            failures.append({"bar": "shown", "group": state, "reason": "whole_building",
+                             "ids": item["ids"],
+                             "text": "all %s obvious lots of %s are hidden for their own "
+                                     "list's sake (%s) -- a whole building is not sold in a "
+                                     "night: ids %s" % (
+                                         _n(item["lots"]), item["building"],
+                                         ", ".join("%s %s" % kv for kv in item["reasons"].items()),
+                                         ", ".join(str(i) for i in item["ids"][:10]))})
+            row["pass"] = False
         for reason, lots in sorted(by_reason.items(), key=lambda kv: -len(kv[1])):
             ids = ", ".join(str(lot["id"]) for lot in lots[:NAME_FIRST])
             e_agent = sum(1 for lot in lots if lot["e_agent"])
@@ -1193,8 +1441,60 @@ def shown_bar(groups):
             notes.append("%s: hidden for an allowed reason -- %s" % (
                 state if state != BLANK else "no state",
                 ", ".join("%s %s" % (r, _n(n)) for r, n in allowed_tally.most_common())))
+        # WHAT THE BARS DO NOT COUNT, named every night (repair round 2).
+        blank = result.get("blank_on_stating_list") or {}
+        if blank.get("count"):
+            row["blank_on_stating_list"] = blank["count"]
+            notes.append("%s: %s lot(s) read in the last %d nights are blank on a list that "
+                         "states 'Available' beside them, so they are not counted obvious -- "
+                         "E-Agent still shows them (a status the parser does not read, or "
+                         "'EOI'): %s" % (state, _n(blank["count"]), RECENT_NIGHTS,
+                                         "; ".join("%s (%d)" % kv
+                                                   for kv in list(blank["docs"].items())[:5])))
+        guard = result.get("fresh_guard") or {}
+        if guard.get("hidden") or guard.get("confirm"):
+            row["fresh_guard_hidden"] = sum((guard.get("hidden") or {}).values())
+            row["fresh_guard_confirm"] = sum((guard.get("confirm") or {}).values())
+            notes.append("%s: read in the last 14 days and kept off the shortlist by the fresh-"
+                         "row guard -- hidden %s (%s); sent to Needs confirming %s (%s)" % (
+                             state, _n(row["fresh_guard_hidden"]),
+                             ", ".join("%s %s" % kv for kv in sorted(
+                                 (guard.get("hidden") or {}).items())) or "none",
+                             _n(row["fresh_guard_confirm"]),
+                             ", ".join("%s %s" % kv for kv in sorted(
+                                 (guard.get("confirm") or {}).items())) or "none"))
+        unlabelled = result.get("unlabelled") or {}
+        if unlabelled.get("count"):
+            notes.append("%s: %s shortlisted card(s) name no lot and no street (row labels): "
+                         "ids %s" % (state, _n(unlabelled["count"]),
+                                     ", ".join(str(i) for i in unlabelled["ids"][:10])))
         rows.append(row)
     return failures, rows, notes
+
+
+def precision_bar(groups):
+    """[failure]: shown cards that are not what was searched for (_precision). Every one
+    fails: a card in another state, gone by its own row, superseded, or not in the
+    database. Repair round 2, parity verifier: a bundle that put NSW lots into the VIC
+    answer (VIC 2,738 -> 5,533 cards) passed every bar before this one."""
+    failures = []
+    for state in SEARCHED_STATES:
+        cell = (groups.get(state) or {}).get("precision")
+        if not cell:
+            continue
+        for kind, text in (("wrong_state", "in another state than %s" % state),
+                           ("gone", "whose own row says it has gone"),
+                           ("retired", "whose row is superseded"),
+                           ("missing", "the database does not hold")):
+            ids = cell.get(kind) or []
+            if ids:
+                failures.append({"bar": "precision", "group": state, "reason": kind,
+                                 "ids": ids[:NAME_FIRST],
+                                 "text": "%s shown card(s) %s: ids %s%s" % (
+                                     _n(len(ids)), text,
+                                     ", ".join(str(i) for i in ids[:NAME_FIRST]),
+                                     " ..." if len(ids) > NAME_FIRST else "")})
+    return failures
 
 
 def _label(name):
@@ -1274,7 +1574,7 @@ def duplicates_bar(groups):
     return failures, cells, notes
 
 
-def over_served_bar(groups):
+def over_served_bar(groups, acks=None):
     """([failure], {state: cell}, [note]) for the NOT OVER-SERVED bar."""
     failures, cells, notes = [], {}, []
     for state in SEARCHED_STATES:
@@ -1284,16 +1584,32 @@ def over_served_bar(groups):
             continue
         cells[state] = served
         if served.get("unjudged"):
-            notes.append("%s: %s shown lot(s) sit on a list whose latest read stopped short "
+            notes.append("%s: %s shortlisted lot(s) sit on a list whose latest read stopped short "
                          "(a Proxima project at its render cap or under its own counter, or a "
                          "list that read more than 15%% fewer lots than the night before) -- "
                          "not judged as over-served" % (state, _n(served["unjudged"])))
         unread = served.get("unread") or 0
+        # AN ACKNOWLEDGED LIST IS TAKEN OUT OF THE SHARE BY NAME (repair round 2).
+        known = [_norm(d) for e in _acked(acks, state, bar="unread") for d in e.get("docs") or ()]
+        if unread and known:
+            taken = {d: n for d, n in (served.get("unread_docs") or {}).items()
+                     if any(_norm(d).startswith(k) for k in known if k)}
+            if taken:
+                unread -= sum(taken.values())
+                entry = _acked(acks, state, bar="unread")[0]
+                notes.append("%s: %s shortlisted lot(s) on %d list(s) not read for %d nights are "
+                             "acknowledged until %s (%s): %s" % (
+                                 state, _n(sum(taken.values())), len(taken), RECENT_NIGHTS,
+                                 entry.get("until"), _plain(entry.get("why") or "")[:120],
+                                 "; ".join("%s (%d)" % kv for kv in list(taken.items())[:6])))
+                served = dict(served, unread_docs={d: n for d, n in
+                                                   (served.get("unread_docs") or {}).items()
+                                                   if d not in taken})
         if unread:
             docs = "; ".join("%s (%d)" % (d, n)
                              for d, n in list((served.get("unread_docs") or {}).items())[:6])
-            text = ("%s of %s shown lots (%s) sit on a list not read for %d nights or more -- "
-                    "nobody can say whether it still carries them: %s"
+            text = ("%s of %s shortlisted lots (%s) sit on a list not read for %d nights or "
+                    "more -- nobody can say whether it still carries them: %s"
                     % (_n(unread), _n(served["shown"]), _fmt_pct(unread, served["shown"]),
                        RECENT_NIGHTS, docs))
             if served["shown"] and unread / served["shown"] > UNREAD_MAX:
@@ -1304,8 +1620,9 @@ def over_served_bar(groups):
         if served["shown"] and served["over"] / served["shown"] > OVER_SERVED_MAX:
             docs = "; ".join("%s (%d)" % (d, n) for d, n in list(served["docs"].items())[:5])
             failures.append({"bar": "over-served", "group": state,
-                             "text": "%s of %s shown lots (%s, at most %.0f%%) are lots their "
-                                     "own document was re-read without in the last %d nights:"
+                             "text": "%s of %s shortlisted lots (%s, at most %.0f%%) are lots "
+                                     "their own document was re-read without in the last %d "
+                                     "nights:"
                                      " ids %s; documents: %s"
                                      % (_n(served["over"]), _n(served["shown"]),
                                         _fmt_pct(served["over"], served["shown"]),
@@ -1616,9 +1933,12 @@ def table(measured, shown_rows, over_cells, drift_cells, verdict, failures, note
     dup_cells = dup_cells or {}
     lines = ["Source-to-search parity, %s: %s (newest read %s)" % (
                  measured["today"], verdict, measured.get("newest_read") or "?"),
-             "%-6s %-22s %-22s %-18s %-9s %-16s %-11s %-7s %s" % (
+             "%-6s %-22s %-22s %-18s %-9s %-16s %-11s %-7s %-12s %-6s %s" % (
                  "state", "E-Agent lots shown", "all lots shown", "buildings shown",
-                 "excused", "on shortlist", "over-served", "copies", "drift")]
+                 "excused", "on shortlist", "over-served", "copies", "drift",
+                 # Repair round 2: blank on a list stating Available (not counted
+                 # obvious), and fresh rows the guard hid / sent to confirm.
+                 "blank", "guard hid/confirm")]
     for row in shown_rows:
         g = row["group"]
         ea, al = row["lots"]["e-agent"], row["lots"]["all"]
@@ -1626,7 +1946,7 @@ def table(measured, shown_rows, over_cells, drift_cells, verdict, failures, note
         sl = (row.get("shortlisted") or {}).get("all")
         served = over_cells.get(g)
         dup = dup_cells.get(g)
-        lines.append("%-6s %-22s %-22s %-18s %-9s %-16s %-11s %-7s %s" % (
+        lines.append("%-6s %-22s %-22s %-18s %-9s %-16s %-11s %-7s %-12s %-6s %s" % (
             g if g != BLANK else "none",
             "%s/%s %s" % (_n(ea[1]), _n(ea[0]), _fmt_pct(ea[1], ea[0])),
             "%s/%s %s" % (_n(al[1]), _n(al[0]), _fmt_pct(al[1], al[0])),
@@ -1636,7 +1956,10 @@ def table(measured, shown_rows, over_cells, drift_cells, verdict, failures, note
             "%s/%s %s" % (_n(sl[1]), _n(sl[0]), _fmt_pct(sl[1], sl[0])) if sl else "-",
             _fmt_pct(served["over"], served["shown"]) if served else "-",
             _n(dup["surplus"]) if dup else "-",
-            drift_cells.get(g, "-") if g != BLANK else "-"))
+            drift_cells.get(g, "-") if g != BLANK else "-",
+            _n(row.get("blank_on_stating_list")) if g != BLANK else "-",
+            "%s/%s" % (_n(row.get("fresh_guard_hidden")), _n(row.get("fresh_guard_confirm")))
+            if g != BLANK else "-"))
     other = (measured["groups"].get(OTHER) or {}).get("lots", {}).get("all", [0, 0])
     if other[0]:
         lines.append("(ACT/TAS/NT: %s obvious lots, %s shown by a state search -- the form "
@@ -1648,20 +1971,25 @@ def table(measured, shown_rows, over_cells, drift_cells, verdict, failures, note
     return "\n".join(_plain(line) for line in lines)
 
 
-def evaluate(measured, history, manifest, nightly=False):
+def evaluate(measured, history, manifest, nightly=False, acknowledged=None):
     """(verdict, failures, notes, table rows...) -- every bar over one measurement.
-    nightly: the run_daily step, where a missing or stale harvest manifest fails."""
+    nightly: the run_daily step, where a missing or stale harvest manifest fails.
+    acknowledged: the parsed data/parity_acknowledged.json (load_json), or None."""
     groups = measured["groups"]
+    acks, ack_notes = load_acknowledged(None, measured["today"]) if acknowledged is None \
+        else _acks_in_force(acknowledged, measured["today"])
     cover_failures, cover_notes = coverage_bar(measured, groups)
-    shown_failures, shown_rows, shown_notes = shown_bar(groups)
-    over_failures, over_cells, over_notes = over_served_bar(groups)
+    shown_failures, shown_rows, shown_notes = shown_bar(groups, acks)
+    precision_failures = precision_bar(groups)
+    over_failures, over_cells, over_notes = over_served_bar(groups, acks)
     dup_failures, dup_cells, dup_notes = duplicates_bar(groups)
     drift_failures, drift_cells, drift_notes = drift_bar(groups, history, measured["today"])
     read_failures, read_summary, read_notes = read_bar(manifest, history, measured["today"],
                                                        required=nightly)
-    failures = (cover_failures + shown_failures + over_failures + dup_failures
-                + drift_failures + read_failures)
-    notes = cover_notes + shown_notes + over_notes + dup_notes + drift_notes + read_notes
+    failures = (cover_failures + shown_failures + precision_failures + over_failures
+                + dup_failures + drift_failures + read_failures)
+    notes = (cover_notes + shown_notes + over_notes + dup_notes + drift_notes + read_notes
+             + ack_notes)
     verdict = "FAIL" if failures else "PASS"
     return {"verdict": verdict, "failures": failures, "notes": notes,
             "shown_rows": shown_rows, "over_cells": over_cells, "drift_cells": drift_cells,
@@ -1687,6 +2015,10 @@ def report_body(measured, result):
                      "unread": [served.get("unread", 0), served["shown"]] if served else None,
                      "copies": [dup["surplus"], dup["shown"]] if dup else None,
                      "drift": result["drift_cells"].get(g) if g != BLANK else None,
+                     # Repair round 2: what the ratios above leave out.
+                     "blank_on_stating_list": row.get("blank_on_stating_list", 0),
+                     "fresh_guard_hidden": row.get("fresh_guard_hidden", 0),
+                     "fresh_guard_confirm": row.get("fresh_guard_confirm", 0),
                      "pass": row["pass"]})
     searches = {g: {k: r.get(k) for k in ("seconds", "pages", "paged", "shortlist_count",
                                           "needs_confirming_count", "page_bytes")}
@@ -1705,7 +2037,8 @@ def report_body(measured, result):
                      "over_served_max": OVER_SERVED_MAX, "drift_drop_max": DRIFT_DROP_MAX,
                      "recent_nights": RECENT_NIGHTS, "excused_max": EXCUSED_MAX,
                      "shortlisted_min": SHORTLISTED_MIN, "duplicates_max": DUPLICATES_MAX,
-                     "unread_max": UNREAD_MAX},
+                     "unread_max": UNREAD_MAX, "excused_floor": EXCUSED_FLOOR,
+                     "whole_building_min": WHOLE_BUILDING_MIN},
             "table": table(measured, result["shown_rows"], result["over_cells"],
                            result["drift_cells"], result["verdict"], result["failures"],
                            result["notes"], result.get("dup_cells"))}
@@ -1791,7 +2124,10 @@ def run(args, out=None):
         return 1
     history = load_history(args.history)
     manifest = load_json(args.manifest) if Path(args.manifest).is_file() else None
-    result = evaluate(measured, history, manifest, nightly=args.nightly)
+    acknowledged = (load_json(args.acknowledged)
+                    if args.acknowledged and Path(args.acknowledged).is_file() else {})
+    result = evaluate(measured, history, manifest, nightly=args.nightly,
+                      acknowledged=acknowledged or {})
     body = report_body(measured, result)
     body["seconds"] = round(time.monotonic() - started, 1)
     say(body["table"])
@@ -1834,6 +2170,9 @@ def parser():
     ap.add_argument("--history", default=str(HISTORY))
     ap.add_argument("--report", default=str(REPORT))
     ap.add_argument("--manifest", default=str(MANIFEST))
+    ap.add_argument("--acknowledged", default=str(ACKNOWLEDGED),
+                    help="known data issues reported as notes until a date "
+                         "(data/parity_acknowledged.json)")
     ap.add_argument("--nightly", action="store_true",
                     help="run_daily: append tonight to the history, publish the report "
                          "beside the snapshot, and add a line to the DEGRADED marker on a "

@@ -102,6 +102,10 @@ HIDDEN_BECAUSE = {
     "document_reread_without_row": "document re-read without this row",
     "builder_documents_reread": ("the builder's other documents were re-read and this "
                                  "row's document was not"),
+    # Repair round 2 (7 Oct 2026): a Proxima project read again, whole, without the lot.
+    "project_reread_without_row": ("its Proxima project was read again, whole, without "
+                                   "this lot"),
+    "newer_upload_in_folder": "a newer file in the same shared folder was read after it",
     "newer_list_from_sender": "a newer list from the same sender was read after it",
     "over_confirm_limit": ("older than %d days, the needs-confirming limit"
                            % C.CONFIRM_MAX_DAYS),

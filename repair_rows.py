@@ -915,8 +915,10 @@ def find_source_url_backfill(rows):
 # record_building now finds a row by either column and re-attaches it, so the harvest
 # repairs every trap row it reads. This puts the rest straight once, so the two columns
 # agree on every row:
-#   * a LIVE or WITHDRAWN trap row is re-attached -- content_hash := dedup_key, the
-#     harvester's own hash -- and anything superseded in its favour is re-pointed with it;
+#   * a LIVE or WITHDRAWN trap row last read on or before the migration is re-attached --
+#     content_hash := dedup_key, the harvester's own hash -- and anything superseded in its
+#     favour is re-pointed with it (one read since the migration is aligned instead: see
+#     IDENTITY_MIGRATION_DAY);
 #   * any other trap row (a superseded duplicate) is aligned -- dedup_key := content_hash
 #     -- and is NOT re-attached, because a hidden twin brought back to its listing would
 #     be updated nightly as if it were the listing.
@@ -924,6 +926,24 @@ def find_source_url_backfill(rows):
 # it was read is skipped), never written where it would collide, and logged row by row in
 # identity_repair_log so `--undo-identity-repair STAMP` puts it back.
 IDENTITY_LOG_TABLE = "identity_repair_log"
+# THE DAY migrate_buildings_identity.py rewrote content_hash (30 Jul 2026). A live or
+# withdrawn trap row the harvest READ AFTER IT was found by its migrated content_hash --
+# record_building looked rows up by content_hash alone until 7 Oct -- so the harvest's own
+# hash for that line is its content_hash, not its stale dedup_key, and re-attaching it would
+# point the row away from its latest evidence: row 2568 (Creation Homes, read 04/08) would
+# have been re-attached and the next read of its line inserted as a duplicate (repair round
+# 2, data verifier). Such a row is aligned instead (dedup_key := content_hash).
+IDENTITY_MIGRATION_DAY = datetime(2026, 7, 30)
+
+
+def _seen_day(value):
+    raw = str(value or "").strip()[:10]
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
 
 
 def find_identity_traps(rows):
@@ -946,7 +966,9 @@ def find_identity_traps(rows):
             continue
         old = {"content_hash": ch, "dedup_key": dk}
         mark = str(r["superseded_by"] or "")
-        if not mark or mark == WITHDRAWN_FROM_SOURCE:
+        seen = _seen_day(r["last_seen"] if "last_seen" in r.keys() else None)
+        read_since = seen is not None and seen > IDENTITY_MIGRATION_DAY
+        if (not mark or mark == WITHDRAWN_FROM_SOURCE) and not read_since:
             holder = by_hash.get(dk)
             if holder not in (None, r["id"]):
                 skipped.append({"id": r["id"], "why": f"row {holder} already holds that "

@@ -642,7 +642,14 @@ class ResearchDatabase:
             # (state, builder_matched, benchmark_*) alone unless this run supplied one.
             upd = {"date_checked": now_date, "last_seen": now_date,
                    "checked_at": now_ts}
-            if stored_hash != h:
+            # NOT A SUPERSEDED TWIN (repair round 2, 7 Oct 2026, data verifier). A dedup_key
+            # hit on a row another capture already replaced is updated in place like any
+            # hit, but keeps its identity: re-attaching it would hand a hidden duplicate the
+            # listing's hash, which repair_rows' identity step deliberately never does (it
+            # aligns such a row instead). Only a live or withdrawn row is re-attached.
+            superseded_twin = bool(was_superseded) and \
+                str(was_superseded) != WITHDRAWN_FROM_SOURCE
+            if stored_hash != h and not superseded_twin:
                 # Re-attach: the row goes back to the hash this harvest computes, and
                 # whatever was superseded in its favour follows it, so no pointer is left
                 # aimed at a hash no row holds.

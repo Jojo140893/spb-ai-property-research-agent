@@ -310,24 +310,44 @@ _FIGURE = re.compile(r"\d+(?:\.\d+)?")
 # Figures besides the price that a line of a price list prints, and lines a list has.
 GUESS_MIN_FIGURES = 3
 GUESS_MIN_ROWS = 2
+# EACH LINE NAMES ITS OWN LOT (repair round 2, 7 Oct 2026, data verifier). A brochure's
+# residence-type table without "from" -- "Residence A 2 Bed 2 Bath 1 Car 85 sqm $650,000",
+# "Level 3 | 2 Bed | 2 Bath | 1 Car | $650,000" -- prints figures enough on each line. A
+# price list's line names the lot or unit it prices: "A-201 1 1 - 60 13 73 $850,000",
+# "Lot 12 ...", "Unit 1203 ...". A type letter ("Residence A") or a level is not one.
+_GUESS_LOT_ANYWHERE = re.compile(
+    r"\b(?:lot|unit|apt|apartment|townhouse|villa|th)\s*[#:.]?\s*([a-z]{0,3}[-.]?\d{1,5}[a-z]?)\b",
+    re.I)
+_GUESS_LOT_FIRST = re.compile(r"^\W*([A-Za-z]{0,3}[-.]?\d{1,5}[A-Za-z]?)(?=[\s|,;:]|$)")
+
+
+def _guessed_lot(line: str) -> str:
+    """The lot or unit a price-list line opens with or names, or ''."""
+    m = _GUESS_LOT_ANYWHERE.search(line) or _GUESS_LOT_FIRST.match(line)
+    return m.group(1).lower() if m else ""
 
 
 def guessed_price_list(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """The rows of a GUESSED file worth storing: [] unless it reads as a price list.
 
-    A row is kept when its line is not a "from" price and prints GUESS_MIN_FIGURES figures
-    or more besides its money amounts; the file is kept only when GUESS_MIN_ROWS rows or
-    more survive. Everything else -- a brochure, a type sheet, a form -- stores nothing and
-    is reported as "no price list" by the caller."""
-    kept = []
+    A row is kept when its line is not a "from" price, prints GUESS_MIN_FIGURES figures
+    or more besides its money amounts, and names a lot or unit of its own; the file is kept
+    only when GUESS_MIN_ROWS rows or more survive, naming GUESS_MIN_ROWS different lots.
+    Everything else -- a brochure, a type sheet, a form -- stores nothing and is reported as
+    "no price list" by the caller."""
+    kept, lots = [], set()
     for r in rows:
         line = str(r.get("source_text") or r.get("lot_address") or "")
         if _FROM_PRICE.search(line):
             continue
         if len(_FIGURE.findall(_MONEY.sub(" ", line))) < GUESS_MIN_FIGURES:
             continue
+        lot = _guessed_lot(line)
+        if not lot:
+            continue
+        lots.add(lot)
         kept.append(r)
-    return kept if len(kept) >= GUESS_MIN_ROWS else []
+    return kept if len(kept) >= GUESS_MIN_ROWS and len(lots) >= GUESS_MIN_ROWS else []
 
 
 def _download_capped(sess: Any, url: str, max_bytes: int):

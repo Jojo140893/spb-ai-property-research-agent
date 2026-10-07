@@ -966,6 +966,20 @@ _DATA_SECRET = re.compile(r"""(\bdata-[\w\-]*(?:%s)[\w\-]*\s*=\s*)("[^"]*"|'[^']
 #     where sites put tokens and signatures.
 _URL_QUERY = re.compile(r"((?:https?:)?//[^\s\"'<>?#`]+|(?<![\w/])/[\w\-./%]*)\?[^\s\"'<>`#]*",
                         re.I)
+# REPAIR ROUND 2 (7 Oct 2026, data verifier) -- two more ways a secret reached the capture:
+#   * a value handed to browser storage or a header call rather than written key: value,
+#     `localStorage.setItem("authToken", "...")`, `headers.set('Authorization', '...')`:
+#     anything put in session or local storage is the page's session state, whatever its
+#     key, and a set/append call whose first argument names a credential carries one;
+_STORAGE_VALUE = re.compile(
+    r"""(\b(?:local|session)Storage\s*\.\s*setItem\s*\(\s*(["'`])[^"'`]*\2\s*,\s*)"""
+    r"""(["'`])[^"'`]*\3""", re.I)
+_CALL_KEYED = re.compile(
+    r"""(\.\s*(?:set|append|setRequestHeader)\s*\(\s*(["'`])[^"'`]*(?:%s)[^"'`]*\2\s*,\s*)"""
+    r"""(["'`])[^"'`]*\3""" % _SECRET_WORDS, re.I)
+#   * and the label a payload is filed under, which is the request that fetched it -- the
+#     path and the parameters of the API's own "next" link, ?access_token= and all.
+_PARAM_KEYED = re.compile(r"(\b[\w\-.]*(?:%s)[\w\-.]*=)[^&\s#]*" % _SECRET_WORDS, re.I)
 
 
 def scrub_links_and_tokens(text: str) -> str:
@@ -997,6 +1011,8 @@ class Capture:
         html = _META_TOKEN.sub(lambda m: m.group(1) + '""', html)
         html = _SCRIPT_SECRET.sub(lambda m: m.group(1) + m.group(2) + m.group(2), html)
         html = _SCRIPT_KEYED.sub(lambda m: m.group(1) + m.group(2) + m.group(2), html)
+        html = _STORAGE_VALUE.sub(lambda m: m.group(1) + m.group(3) + m.group(3), html)
+        html = _CALL_KEYED.sub(lambda m: m.group(1) + m.group(3) + m.group(3), html)
         html = _DATA_SECRET.sub(lambda m: m.group(1) + '""', html)
         html = scrub_links_and_tokens(html)
         html = _EMAIL.sub("[email]", html)
@@ -1025,13 +1041,20 @@ class Capture:
     def page(self, name: str, html: str) -> None:
         self._write(name, self.scrub_html(html))
 
+    def scrub_label(self, label: str) -> str:
+        """A payload's label -- "GET /api/v2/lots p=2&access_token=..." -- with every
+        credential-named parameter's value, link query, token, e-mail and phone taken out."""
+        text = _PARAM_KEYED.sub(lambda m: m.group(1) + "[redacted]", str(label or ""))
+        text = _EMAIL.sub("[email]", scrub_links_and_tokens(text))
+        return self._scrub_text(_PHONE.sub("[phone]", text))
+
     def payload(self, label: str, data: Any) -> None:
         if self.payloads >= CAPTURE_PAYLOADS:
             return
         self.payloads += 1
         self._write("payload_%d.json" % self.payloads,
-                    json.dumps({"from": label, "body": self.scrub_value(data)}, indent=1,
-                               default=str))
+                    json.dumps({"from": self.scrub_label(label),
+                                "body": self.scrub_value(data)}, indent=1, default=str))
 
     def _write(self, name: str, text: str) -> None:
         if self.folder is None:

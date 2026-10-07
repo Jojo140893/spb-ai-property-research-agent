@@ -55,6 +55,10 @@ BUILDING_FIELDS = [
     "incentive_amount", "incentive_text", "product_type", "source_channel",
     "attribution_scope", "date_checked", "listing_url", "floorplan_url",
     "source_project_id",
+    # A Proxima project's own "N available" counter on the night the row was read (7 Oct
+    # 2026, repair round 2): the search asks whether a project's newest read was whole
+    # before it calls a lot that read left out gone (api/_candidates.fresh_row_guard).
+    "project_available",
     # stocklist_file and source_url are NOT exported. Both are capability URLs -- a
     # Dropbox rlkey grants read access to whoever holds the link, with no sign-in -- and
     # this deployment is public. stocklist_file is the worst of them: 2,753 rows carried
@@ -1085,6 +1089,13 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
             continue                    # a better rule already has this row at search time
         _fallback = last_resort_suburb(b, _last_resort)
         if not _fallback:
+            continue
+        # NOT AGAINST THE ROW'S OWN WRITTEN ADDRESS (7 Oct 2026, repair round 2). Nine lots
+        # of one list wrote "Mt Duneed,Victoria,3217" or "Bonniebrook,Victoria,3335" and
+        # were handed their builder's commonest suburb, Tarneit, here -- and shortlisted
+        # in a Tarneit search. A row that names its own place keeps no guess at all.
+        if not suburb_quality.written_address_agrees(
+                {**b, "source_text": _texts.get(id(b), "")}, _fallback, b.get("state")):
             continue
         b["suburb"] = _fallback
         b["suburb_source"] = suburb_quality.INFERRED_FROM_SIBLINGS

@@ -857,6 +857,8 @@ class ProximaSource(PropertySource):
         def replay(b):
             """Tiles for one body, or None when the POST failed."""
             if self._topup["replays"] >= _MAX_REPLAYS:
+                # Out of budget is not the end of the project (repair round 2): say so.
+                self._topup["exhausted"] = True
                 return None
             self._topup["replays"] += 1
             try:
@@ -903,19 +905,49 @@ class ProximaSource(PropertySource):
         # lots at $600,000: 155 of 240 read, called whole). The cheapest 80 hold every lot
         # below their dearest, the dearest 80 every lot above their cheapest; only when the
         # second is strictly below the first is every price covered.
+        # THE SORT MUST HAVE BEEN HONOURED (repair round 2, 7 Oct 2026, data verifier). A
+        # server that ignores the sort but honours the ceiling answers both "sorts" with the
+        # cheapest 80; the band walk then started from the cheapest price, got one lot back
+        # below it, and called 80 of 300 lots whole. The dearest read must come back dearest
+        # first and reach at least as high as the cheapest read; when it does not, nothing
+        # past the cap can be reached by price, and the read is named short. Judged on what
+        # came back, not on the order of the tiles: two full reads holding the SAME lots
+        # with nothing dearer in the "dearest" one cannot both be ends of a project that
+        # overflows the cap.
+        honoured = True
+        if (asc is not None and desc is not None and len(asc) >= _RENDER_CAP
+                and len(desc) >= _RENDER_CAP):
+            asc_prices = [p for p in (_rop(d) for d in asc) if p]
+            desc_prices = [p for p in (_rop(d) for d in desc) if p]
+            same_lots = {key(d) for d in asc} == {key(d) for d in desc}
+            dearer = (bool(asc_prices) and bool(desc_prices)
+                      and max(desc_prices) > max(asc_prices))
+            # A project of exactly 80 lots gives both reads the same lots; only the order
+            # the tiles came back in can then show the sort was asked and answered.
+            ordered = (len(set(desc_prices)) > 1
+                       and desc_prices == sorted(desc_prices, reverse=True)
+                       and asc_prices == sorted(asc_prices))
+            honoured = not same_lots or dearer or ordered
+            if not honoured:
+                self._topup["unsorted"] = True
+                logger.warning("     project %s: the portal ignored the price sort (the dearest "
+                               "read is not dearest first), so lots past the %d-lot cap cannot "
+                               "be reached by price", pid, _RENDER_CAP)
+                self._bump("capped project, sort not honoured")
         if asc is not None and desc is not None:
             union = len({key(d) for d in asc} | {key(d) for d in desc})
             top_of_asc = max((p for p in (_rop(d) for d in asc) if p), default=None)
             low_of_desc = min((p for p in (_rop(d) for d in desc) if p), default=None)
             crossed = (top_of_asc is not None and low_of_desc is not None
                        and low_of_desc < top_of_asc)
-            self._topup["complete"] = (len(asc) < _RENDER_CAP or len(desc) < _RENDER_CAP
-                                       or (not disjoint and union > _RENDER_CAP and crossed))
+            self._topup["complete"] = honoured and (
+                len(asc) < _RENDER_CAP or len(desc) < _RENDER_CAP
+                or (not disjoint and union > _RENDER_CAP and crossed))
         # Bands when the two ends did not meet (a middle exists that neither reached), or
         # the read is still below the counter. Disjoint decides even with a counter: the
         # stored one can be weeks old and lower than the project is tonight. And when they
         # met only at one shared price, which the walk must try to split.
-        needs_bands = desc is not None and len(desc) >= _RENDER_CAP and (
+        needs_bands = honoured and desc is not None and len(desc) >= _RENDER_CAP and (
             disjoint or bool(stated_available and len(props) < stated_available)
             or not self._topup["complete"])
         if needs_bands:
@@ -996,17 +1028,29 @@ class ProximaSource(PropertySource):
         # ...unless the top-up just proved the read whole: a project can hold 83 lots.
         signature = read in _CAP_SIGNATURES and not self._topup.get("complete")
         # A band walk that met 80 or more lots at one price could not read past them,
-        # whatever the count (repair round 1, 7 Oct 2026).
-        stuck = self._topup.get("stuck") is not None and not self._topup.get("complete")
+        # whatever the count (repair round 1, 7 Oct 2026) -- nor one whose portal ignored the
+        # sort, or that ran out of its _MAX_REPLAYS posts before the ends met (round 2).
+        stuck = ((self._topup.get("stuck") is not None or self._topup.get("unsorted")
+                  or self._topup.get("exhausted")) and not self._topup.get("complete"))
         if not (below or signature or stuck):
             return
         self.short_projects.append({"pid": pid, "name": name, "read": read,
                                     "stated": stated})
         if stuck and not below and not signature:
-            logger.warning("Proxima: project %s '%s' read %d lot(s), but %d or more of its lots "
-                           "share the price $%s and the portal shows at most %d of them -- "
-                           "some may be missing from tonight's harvest.", pid, name, read,
-                           _RENDER_CAP, f"{self._topup['stuck']:,.0f}", _RENDER_CAP)
+            if self._topup.get("stuck") is not None:
+                logger.warning("Proxima: project %s '%s' read %d lot(s), but %d or more of its "
+                               "lots share the price $%s and the portal shows at most %d of "
+                               "them -- some may be missing from tonight's harvest.", pid, name,
+                               read, _RENDER_CAP, f"{self._topup['stuck']:,.0f}", _RENDER_CAP)
+            elif self._topup.get("unsorted"):
+                logger.warning("Proxima: project %s '%s' read %d lot(s), but the portal ignored "
+                               "the price sort, so lots past its %d-lot cap could not be "
+                               "reached -- some may be missing from tonight's harvest.", pid,
+                               name, read, _RENDER_CAP)
+            else:
+                logger.warning("Proxima: project %s '%s' read %d lot(s) and used all %d of its "
+                               "replays before the price bands met -- some may be missing "
+                               "from tonight's harvest.", pid, name, read, _MAX_REPLAYS)
             return
         if below:
             logger.warning("Proxima: project %s '%s' read %d lot(s) against the %d its "

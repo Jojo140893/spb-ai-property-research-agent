@@ -67,6 +67,12 @@ SNAPSHOT_FIELDS = [
     "incentive_amount", "incentive_text", "product_type", "source_channel",
     "attribution_scope", "date_checked", "listing_url", "floorplan_url",
     "brochure_url", "source_project_id",
+    # A PROXIMA PROJECT'S OWN "N AVAILABLE" COUNTER, as its header stated it on the night the
+    # row was read (7 Oct 2026, repair round 2). fresh_row_guard asks whether a project's
+    # newest read was whole -- it carried at least that many available lots and did not stop
+    # at a render cap -- before it calls a lot that read left out gone. Null on every other
+    # channel, and on a project that states no counter.
+    "project_available",
     # The link is PRECOMPUTED at build time and shipped, so the snapshot no longer has to
     # carry stocklist_file / source_url -- both are capability URLs and this deployment
     # is public. The SQLite reader still has the raw columns and recomputes.
@@ -132,7 +138,10 @@ SNAPSHOT_FIELDS = [
 # SQLite reader gives them their "not known" value instead of failing the read. A snapshot
 # built before link_check.py existed has no lot_page_gone, which means no page was found
 # gone -- exactly how the search behaved before the check.
-_OPTIONAL_SNAPSHOT_FIELDS = {"lot_page_gone": "", "lot_page_status": ""}
+_OPTIONAL_SNAPSHOT_FIELDS = {"lot_page_gone": "", "lot_page_status": "",
+                             # A snapshot built before 7 Oct 2026 has no counter: no
+                             # project read can then be called whole (fresh_row_guard).
+                             "project_available": None}
 
 # Build-time cells a purpose-built snapshot DATABASE may predate. The SQLite reader
 # computes them from the columns they derive from, exactly as build_web does, instead of
@@ -1146,14 +1155,26 @@ def lot_key_for(rows):
 def fresher_capture(package):
     """Which of two captures of one lot DedupeEngine keeps (its `prefer`): a verified one,
     then the one read most recently, then the one whose list states the lot available, then
-    the one naming a design, then the one with a link -- the first on a tie. Before 7 Oct
-    2026 it kept whichever came first, and on the 6 Oct database that was sometimes an
-    August capture a guard then hid, with the lot read that night merged into it."""
+    the one whose suburb is located rather than inferred, then the one whose title names its
+    lot, then the one whose estate names a place rather than a release heading, then the one
+    naming a design, then the one with a link -- the first on a tie. Before 7 Oct 2026 it
+    kept whichever came first, and on the 6 Oct database that was sometimes an August
+    capture a guard then hid, with the lot read that night merged into it.
+
+    The located suburb, the lot in the title and the named estate (repair round 2, 7 Oct
+    2026, callers verifier): of Hattan's Ceduna lots 3753-3755, read the same night as
+    "Lot 3755, Ceduna" in Clyde North and "Lot 3755, Q3 Single" in Clyde, the second was
+    kept, and Clare could no longer confirm the lot in Clyde North."""
     age = package.get("age_days")
     return (1 if package.get("verified") else 0,
             -age if isinstance(age, int) and not isinstance(age, bool) else -10 ** 6,
             0 if (package.get("availability_by_the_sheet")
                   or package.get("availability_by_exception_list")) else 1,
+            1 if suburb_quality.is_located(str(package.get("suburb_source") or "")) else 0,
+            1 if _LOT_ON_CARD.match(str(package.get("lot_address") or "")) else 0,
+            0 if _estate_says_nothing(package.get("estate_context"),
+                                      package.get("builder_name"),
+                                      (package.get("suburb"),)) else 1,
             1 if package.get("house_design") else 0,
             1 if str(package.get("source_url_or_ref") or "").startswith("http") else 0)
 
@@ -1239,10 +1260,18 @@ _ESTATE_HEADING_WORDS = frozenset((
     "townhouses", "stock", "list", "available", "price", "prices", "new", "the", "and"))
 
 
-def _estate_says_nothing(estate, builder):
+def _estate_says_nothing(estate, builder, places=()):
+    """True when an estate column names no estate: blank, only release-heading words, only
+    the builder's own name -- or (repair round 2, 7 Oct 2026) only heading words and the
+    words of a suburb either capture is in. Hattan's E-Agent sheet files its Springvale
+    South townhouses under "Springvale Double", a place and a product: lot 58 there and lot
+    58 "Roselle" in the emailed list, $984,950 and 160 m2 on both, stayed two cards."""
     words = [w for w in _norm(estate).split() if not w.isdigit()]
-    return (not words or all(w in _ESTATE_HEADING_WORDS for w in words)
-            or (builder and set(words) <= set(_norm(builder).split())))
+    place_words = set()
+    for place in places or ():
+        place_words.update(_norm(place).split())
+    return (not words or all(w in _ESTATE_HEADING_WORDS or w in place_words for w in words)
+            or bool(builder and set(words) <= set(_norm(builder).split())))
 
 
 def _same_split(a, b):
@@ -1267,8 +1296,11 @@ def _same_lot_evidence(a, b, ra, rb):
     ea, eb = (ra or {}).get("estate_name") or a.get("estate_context"), \
         (rb or {}).get("estate_name") or b.get("estate_context")
     builder = (ra or {}).get("builder_name") or ""
-    if (_norm(ea) != _norm(eb) and not _estate_says_nothing(ea, builder)
-            and not _estate_says_nothing(eb, builder)):
+    # A suburb either card is in names no estate (repair round 2: "Springvale Double").
+    places = (a.get("suburb"), b.get("suburb"), (ra or {}).get("suburb"),
+              (rb or {}).get("suburb"))
+    if (_norm(ea) != _norm(eb) and not _estate_says_nothing(ea, builder, places)
+            and not _estate_says_nothing(eb, builder, places)):
         return False
     la, lb = _num(a.get("land_size_sqm")) or 0.0, _num(b.get("land_size_sqm")) or 0.0
     if la > 0 and lb > 0 and abs(la - lb) <= _SAME_FACT_SQM:
@@ -1310,6 +1342,42 @@ def _same_lot_keys(package, row):
     if builder and ident and state:
         out.append(("lot", ("lot", builder, ident, state, price)))
     return out
+
+
+def _take_twins_evidence(kept, twins):
+    """What the dropped captures of one lot know that the kept card does not, put on it IN
+    PLACE (the caller's packages keep their identity) -- repair round 2, 7 Oct 2026.
+
+    Clare (vapi-kommo-hook stock-match.js) pins a lot only by a "Lot N" in the card's title
+    or a lot_number that is not just the title's street number, and places it by its suburb.
+    collapse_same_lot kept Hermitage's E-Agent card "918 Sheffield St, Heritage Place ,
+    Morwell 3840" (lot_number 918, the street number too) over the portal's "LOT 918
+    SHEFFIELD ST, MORWELL 3840" read the same night, and kept "729 Active Walk, Society" --
+    its suburb Wyndham Vale guessed from the list's other lots -- over the portal's "LOT 729
+    ACTIVE WALK, FRASER RISE". Nine Hermitage lots on 6 Oct's list lost their confirmation.
+      * a title that names no lot takes a twin's title that names THIS lot ("Lot 918 ...");
+      * a suburb that is not located (inferred) takes a twin's located suburb, in the same
+        state.
+    Nothing else moves: the price, the availability and the facts are the kept capture's."""
+    if not twins:
+        return
+    ident = lot_identity(kept)
+    if ident and not _LOT_ON_CARD.match(str(kept.get("lot_address") or "")):
+        for twin in twins:
+            title = str(twin.get("lot_address") or "")
+            m = _LOT_ON_CARD.match(title)
+            if m and "lot:" + _token(m.group(1)) == ident and len(title) <= 90:
+                kept["lot_address"] = title
+                break
+    if not suburb_quality.is_located(str(kept.get("suburb_source") or "")):
+        state = str(kept.get("state") or "").strip().upper()
+        for twin in twins:
+            why = str(twin.get("suburb_source") or "")
+            if (suburb_quality.is_located(why) and str(twin.get("suburb") or "").strip()
+                    and str(twin.get("state") or "").strip().upper() == state):
+                kept["suburb"] = twin["suburb"]
+                kept["suburb_source"] = why
+                break
 
 
 def collapse_same_lot(packages, lot_key, merged_into=None):
@@ -1362,15 +1430,20 @@ def collapse_same_lot(packages, lot_key, merged_into=None):
             else:
                 reps.append(index)
     best = {}
+    members_of = {}
     for index, package in enumerate(packages):
         root = find(index)
+        members_of.setdefault(root, []).append(index)
         if root not in best or fresher_capture(package) > fresher_capture(packages[best[root]]):
             best[root] = index
     out = []
     for index, package in enumerate(packages):
         root = find(index)
         if root == index:
-            out.append(packages[best[root]])
+            kept = packages[best[root]]
+            _take_twins_evidence(kept, [packages[i] for i in members_of[root]
+                                        if i != best[root]])
+            out.append(kept)
         if merged_into is not None and best[root] != index:
             kept = str(packages[best[root]].get("content_hash") or "")
             mine = str(package.get("content_hash") or "")
@@ -1666,7 +1739,10 @@ class PreparedRows:
                  # The fresh-row guards' (fresh_row_guard, 7 Oct 2026): the newest read of
                  # each document in a shared folder, every live Proxima capture of a unit
                  # address, and the share of each document its newest read dropped.
-                 "folder_reads", "unit_reads", "doc_night_drop")
+                 "folder_reads", "unit_reads", "doc_night_drop",
+                 # And each Proxima project's reads by night with its stated counter
+                 # (repair round 2): whether its newest read was whole.
+                 "project_reads")
 
     def __init__(self, **fields):
         for name in self.__slots__:
@@ -1880,12 +1956,14 @@ def _guard_indexes(rows):
     captures = {}          # capture_key -> [(day, availability, price, line_key, suburb)]
     doc_lines = {}         # (source_doc, line_key) -> [(day, availability, price)]
     reads = {}             # source_doc -> {day: rows}
-    builder_reads = {}     # (relisting channel, builder) -> newest day
+    builder_reads = {}     # (relisting channel, builder) -> newest day, any state
+    #                        (relisting channel, builder, state) -> newest day in that state
     email_lists = {}       # email_list -> {source_doc: newest day}
     doc_statements = {}    # source_doc -> [live rows stated available, rows marked gone]
     folder_reads = {}      # source_folder -> {source_doc: newest day}
     unit_reads = {}        # (state, Proxima unit address) -> [(day, availability, project)]
     live_reads = {}        # source_doc -> {day: LIVE rows last read that day}
+    project_reads = {}     # Proxima project -> {day: [rows, rows not gone, largest counter]}
     for row in rows:
         avail = str(row.get("availability_status") or "").strip().lower()
         doc = str(row.get(_DOC_KEY) or "").strip()
@@ -1924,10 +2002,30 @@ def _guard_indexes(rows):
         if unit is not None and not row.get("superseded_by"):
             unit_reads.setdefault(unit, []).append(
                 (seen, avail, str(row.get("source_project_id") or "")))
+        if channel.startswith("proxima"):
+            pid = str(row.get("source_project_id") or "").strip()
+            if pid:
+                # [rows read, not gone, largest counter, LIVE rows last read] that night
+                night = project_reads.setdefault(pid, {}).setdefault(seen, [0, 0, 0, 0])
+                night[0] += 1
+                if avail not in NOT_AVAILABLE:
+                    night[1] += 1
+                counter = _num(row.get("project_available"))
+                if counter and counter > night[2]:
+                    night[2] = int(counter)
+                if not row.get("superseded_by"):
+                    night[3] += 1
         if _is_relisting(channel):
             builder = _norm(row.get("builder_name"))
             if builder and seen > builder_reads.get((channel, builder), datetime.min):
                 builder_reads[(channel, builder)] = seen
+            # THE BUILDER'S LISTS IN THIS STATE (repair round 2, 7 Oct 2026): E-Agent
+            # files a builder's lists by state, one page a state, so a QLD list read
+            # tonight says nothing about whether the same builder's NSW list is still up.
+            state = str(row.get("state") or "").strip().upper()
+            if builder and state and seen > builder_reads.get((channel, builder, state),
+                                                             datetime.min):
+                builder_reads[(channel, builder, state)] = seen
         elif channel == EMAIL_CHANNEL and doc:
             listed = str(row.get("email_list") or "").strip()
             if listed:
@@ -1938,7 +2036,18 @@ def _guard_indexes(rows):
     return {"captures": captures, "doc_reads": doc_reads, "builder_reads": builder_reads,
             "email_lists": email_lists, "doc_statements": doc_statements,
             "doc_lines": doc_lines, "folder_reads": folder_reads, "unit_reads": unit_reads,
-            "doc_night_drop": {doc: night_drop_share(days) for doc, days in live_reads.items()}}
+            "doc_night_drop": {doc: night_drop_share(days) for doc, days in live_reads.items()},
+            "project_reads": project_reads}
+
+
+def builder_read_since(prepared, channel, builder, state):
+    """The newest day this builder's lists on `channel` were read IN THE ROW'S STATE, or
+    any state when the row states none (repair round 2, 7 Oct 2026). None when never."""
+    if not builder:
+        return None
+    if state:
+        return prepared.builder_reads.get((channel, builder, state))
+    return prepared.builder_reads.get((channel, builder))
 
 
 def night_drop_share(live_days):
@@ -2163,7 +2272,10 @@ def confirm_verdict(row, prepared, today=None):
                                    this row's price is out of date
       document_reread_without_row  relisting channel; the row's document was read after
                                    the row, within REREAD_WITHIN_DAYS, and that read was
-                                   a full one (latest_read_is_full)
+                                   a full one (latest_read_is_full) -- never Proxima, whose
+                                   rows all share the portal's index page as a document
+      project_reread_without_row   Proxima; the row's own project was read again, whole,
+                                   after it (_project_reread; repair round 2)
       builder_documents_reread     relisting channel, named builder; the builder's other
                                    documents in the channel were read within
                                    REREAD_WITHIN_DAYS and this row's were not
@@ -2189,7 +2301,15 @@ def confirm_verdict(row, prepared, today=None):
         return newer, notes
     channel = _channel(row)
     doc = str(row.get(_DOC_KEY) or "").strip()
-    if _is_relisting(channel):
+    if channel.startswith("proxima"):
+        # A PROXIMA ROW'S DOCUMENT IS ITS PROJECT, NOT THE PORTAL'S INDEX PAGE (repair round
+        # 2, 7 Oct 2026). Every Proxima row carries the index page as its source, so a lot of
+        # a project nobody re-read was hidden as "re-read without" whenever ANY project was
+        # read in the last three days -- off the needs-confirming list, unseen. Only its own
+        # project read again, whole, says that (_project_reread).
+        if _project_reread(row, prepared, seen) == "project_reread_without_row":
+            return "project_reread_without_row", notes
+    elif _is_relisting(channel):
         read = prepared.doc_reads.get(doc) if doc else None
         doc_recent = bool(read and (today - read[0]).days <= REREAD_WITHIN_DAYS)
         if doc_recent and read[0] > seen:
@@ -2198,7 +2318,9 @@ def confirm_verdict(row, prepared, today=None):
             notes.append("document_partially_read")
         builder = _norm(row.get("builder_name"))
         if builder and not doc_recent:
-            newest = prepared.builder_reads.get((channel, builder))
+            # In the row's own state (builder_read_since, repair round 2).
+            newest = builder_read_since(prepared, channel, builder,
+                                        str(row.get("state") or "").strip().upper())
             if newest is not None and (today - newest).days <= REREAD_WITHIN_DAYS:
                 return "builder_documents_reread", notes
     elif channel == EMAIL_CHANNEL:
@@ -2261,8 +2383,9 @@ def confirm_guard(row, prepared, today=None):
 # document per package and was read 200 cards at a time; an emailed list is never re-sent.
 # None of those can say "this list was re-read without the lot".
 #
-# A row that trips one of these is no longer verified and stays out of "Needs confirming"
-# too (the reason is its confirm_guard), exactly as a stale row with the same evidence.
+# A row that trips one of these is no longer verified. Round 1 kept every one of them out
+# of "Needs confirming" too (the reason was its confirm_guard); round 2 decides that per
+# reason -- see FRESH_GUARD_ACTIONS below.
 #
 #   conflicting_capture   Proxima: another live project of the portal lists the same unit
 #         address and, read the same day or later, says it is Not Available ("Lot 259 Unit
@@ -2274,10 +2397,70 @@ def confirm_guard(row, prepared, today=None):
 # 5%, Kew 5% -- sold lots coming off -- and Verv Projects 19%, the sheet whose reads are
 # known to disagree (plan rank 19: 22 lots one way, 53 the other), which is left shown.
 FRESH_REREAD_DROP_MAX = 0.15
-FRESH_GUARD_HIDES = ("newer_capture_exists", "newer_capture_repriced",
-                     "document_reread_without_row", "builder_documents_reread",
-                     "newer_upload_in_folder")
-FRESH_GUARD_CONFIRMS = ("conflicting_capture",)
+#
+# REPAIR ROUND 2 (7 Oct 2026, callers and parity verifiers).
+#
+#   project_reread_without_row   Proxima: the row's own project was read again on a later
+#         day, and that read was WHOLE -- it carried at least the "N available" its header
+#         stated and did not stop at a render cap (PROXIMA_RENDER_CAPS) -- without this lot.
+#         Ascenta Living Coliving (project 785) read 5 lots against a counter of 5 on 06/10;
+#         three 25/09 lots it no longer carried were shortlisted as verified.
+#   project_reread_uncounted     Proxima: the same, for a project that states no counter, so
+#         nothing proves the newer read whole -- and only when that read dropped at most
+#         FRESH_REREAD_DROP_MAX of the project night over night, the E-Agent rule (The CARLING
+#         Carlingford: 72 lots read on 06/10, 5 more of 05/10 not among them). Shown to
+#         CONFIRM, never recommended or hidden.
+#   A project whose newest read stopped at 80, 83 or 160 lots is not judged at all.
+#
+# WHAT EACH REASON DOES is FRESH_GUARD_ACTIONS: "hide" (the row's confirm_guard, out of
+# both lists, as a stale row with that evidence), "confirm" (shown under Needs confirming
+# with the reason, never on the shortlist Clare and Agent 2 read) or "off" (the rule is not
+# asked). The two rules that judge a document by what ELSE was read -- the builder's other
+# lists, a newer file in the folder -- CONFIRM rather than hide: on 6 Oct they took 868
+# fresh rows out of every list with no flag, and if E-Agent still carries one of those
+# lists, hiding it is the very "E-Agent shows more" Coleen rang about. The rules that see
+# the lot's own list or the lot itself read again hide, as before.
+#
+# SPB_FRESH_GUARD overrides any of them without a code change, comma-separated rule=action
+# pairs: SPB_FRESH_GUARD="builder_documents_reread=off,newer_upload_in_folder=hide".
+# Unknown rules and actions are ignored. Read on every request, so a redeploy with the
+# variable set (or cleared) is the whole change.
+FRESH_GUARD_ACTIONS = {
+    "newer_capture_exists": "hide",
+    "newer_capture_repriced": "hide",
+    "document_reread_without_row": "hide",
+    "project_reread_without_row": "hide",
+    "builder_documents_reread": "confirm",
+    "newer_upload_in_folder": "confirm",
+    "project_reread_uncounted": "confirm",
+    "conflicting_capture": "confirm",
+}
+FRESH_GUARD_ENV = "SPB_FRESH_GUARD"
+_FRESH_GUARD_ACTION_WORDS = ("hide", "confirm", "off")
+# The defaults, for readers that only need to know the shape (parity_check, tests).
+FRESH_GUARD_HIDES = tuple(r for r, a in FRESH_GUARD_ACTIONS.items() if a == "hide")
+FRESH_GUARD_CONFIRMS = tuple(r for r, a in FRESH_GUARD_ACTIONS.items() if a == "confirm")
+# Where Proxima's accordion stops rendering (memory: proxima-render-cap). A project read
+# that ends at exactly one of these was cut, not read to its end (parity_check agrees).
+PROXIMA_RENDER_CAPS = (80, 83, 160)
+_FRESH_GUARD_PARSED = {}
+
+
+def fresh_guard_actions():
+    """{reason: 'hide' | 'confirm' | 'off'}: FRESH_GUARD_ACTIONS with SPB_FRESH_GUARD laid
+    over it. Cached per value of the variable, so a test that sets it sees it at once."""
+    raw = os.environ.get(FRESH_GUARD_ENV, "")
+    hit = _FRESH_GUARD_PARSED.get(raw)
+    if hit is None:
+        hit = dict(FRESH_GUARD_ACTIONS)
+        for part in raw.split(","):
+            rule, _sep, action = part.partition("=")
+            rule, action = rule.strip().lower(), action.strip().lower()
+            if rule in hit and action in _FRESH_GUARD_ACTION_WORDS:
+                hit[rule] = action
+        _FRESH_GUARD_PARSED.clear()
+        _FRESH_GUARD_PARSED[raw] = hit
+    return hit
 # A Proxima card's address names its unit: "Lot 259 Unit B-1702, 30 Ellen Street, ...".
 _UNIT_ADDRESS = re.compile(r"^\s*(?:lot|unit)\s*[a-z0-9-]+.*\d", re.I)
 
@@ -2314,16 +2497,47 @@ def _same_place_capture(row, prepared, seen):
     return "newer_capture_repriced" if repriced else None
 
 
+def _project_reread(row, prepared, seen):
+    """'project_reread_without_row' / 'project_reread_uncounted' / None for a Proxima row:
+    whether its own project's newest read, on a later day, left it out (see the section
+    comment). Rows read on the newest day are what that read carried."""
+    pid = str(row.get("source_project_id") or "").strip()
+    nights = prepared.project_reads.get(pid) if pid else None
+    if not nights:
+        return None
+    newest = max(nights)
+    if newest <= seen:
+        return None
+    read, not_gone, counter, _live = nights[newest]
+    if read in PROXIMA_RENDER_CAPS:
+        return None                      # stopped at the cap: nothing past it was seen
+    if counter:
+        return "project_reread_without_row" if not_gone >= counter else None
+    # NO COUNTER: only a read that kept what the night before it held, as an E-Agent list's
+    # must (night_drop_share, FRESH_REREAD_DROP_MAX). On 6 Oct "Second Avenue" (project 53)
+    # read 5 lots against 312 the week before: a read cut short -- a narrowed session, a
+    # page that did not load -- not 307 apartments sold.
+    if night_drop_share({day: cell[3] for day, cell in nights.items()}) > FRESH_REREAD_DROP_MAX:
+        return None
+    return "project_reread_uncounted"
+
+
 def fresh_row_guard(row, prepared, today=None):
-    """None, or why a row read inside FRESH_DAYS is still not a verified result -- one of
-    FRESH_GUARD_HIDES (hidden, as confirm_guard hides a stale row) or FRESH_GUARD_CONFIRMS
-    (shown to confirm). See the section comment. A gone status on a later capture is
-    _newer_capture's 'newer_capture_disagrees', which _gate asks first."""
+    """None, or why a row read inside FRESH_DAYS is still not a verified result -- a reason
+    fresh_guard_actions() says to hide or to show to confirm. A rule whose action is 'off'
+    is not asked, so the next one can still answer. See the section comment. A gone status
+    on a later capture is _newer_capture's 'newer_capture_disagrees', which _gate asks
+    first."""
     today = today or _now_aest()
     seen = _parse_day(row.get("date_checked"))
     if seen is None:
         return None
-    same = _same_place_capture(row, prepared, seen)
+    actions = fresh_guard_actions()
+
+    def on(reason):
+        return reason if reason and actions.get(reason, "off") != "off" else None
+
+    same = on(_same_place_capture(row, prepared, seen))
     if same:
         return same
     channel = _channel(row)
@@ -2332,20 +2546,27 @@ def fresh_row_guard(row, prepared, today=None):
         read = prepared.doc_reads.get(doc) if doc else None
         if read is not None:
             if (read[0] > seen and read[1]
-                    and prepared.doc_night_drop.get(doc, 0.0) <= FRESH_REREAD_DROP_MAX):
+                    and prepared.doc_night_drop.get(doc, 0.0) <= FRESH_REREAD_DROP_MAX
+                    and on("document_reread_without_row")):
                 return "document_reread_without_row"
             if (today - read[0]).days > REREAD_WITHIN_DAYS:
-                builder = _norm(row.get("builder_name"))
-                newest = prepared.builder_reads.get((channel, builder)) if builder else None
-                if newest is not None and (today - newest).days <= REREAD_WITHIN_DAYS:
+                # The builder's lists IN THIS ROW'S STATE (builder_read_since).
+                newest = builder_read_since(prepared, channel, _norm(row.get("builder_name")),
+                                            str(row.get("state") or "").strip().upper())
+                if (newest is not None and (today - newest).days <= REREAD_WITHIN_DAYS
+                        and on("builder_documents_reread")):
                     return "builder_documents_reread"
                 folder = str(row.get("source_folder") or "").strip()
                 if folder and any(day > read[0] for other, day in
                                   (prepared.folder_reads.get(folder) or {}).items()
-                                  if other != doc):
+                                  if other != doc) and on("newer_upload_in_folder"):
                     return "newer_upload_in_folder"
+    elif channel.startswith("proxima"):
+        dropped = on(_project_reread(row, prepared, seen))
+        if dropped:
+            return dropped
     unit = _proxima_unit(row)
-    if unit is not None:
+    if unit is not None and on("conflicting_capture"):
         project = str(row.get("source_project_id") or "")
         for when, avail, other_project in prepared.unit_reads.get(unit, ()):
             if when >= seen and avail in NOT_AVAILABLE and other_project != project:
@@ -2930,7 +3151,9 @@ def _gate(ctx, row, prepared, today):
                                  (prepared.page_suburb, _DOC_KEY)):
             borrowed = group_map.get(
                 (str(row.get(field) or "").strip().lower(), state_key))
-            if borrowed:
+            # Never against the place the row writes out itself (repair round 2,
+            # suburb_quality.written_address_agrees): its list-mates' suburb is not its own.
+            if borrowed and suburb_quality.written_address_agrees(row, borrowed, state_key):
                 row = {**row, "suburb": borrowed}
                 suburb, suburb_why = suburb_quality.resolve(row)
                 if suburb_quality.is_located(suburb_why):
@@ -3068,13 +3291,13 @@ def _gate(ctx, row, prepared, today):
         # see not_a_home and fresh_row_guard. Hidden the way a stale row with the same
         # evidence is hidden -- the reason becomes its confirm_guard -- except a Proxima
         # unit two projects disagree about, which is shown to confirm.
-        fresh = (not_a_home(row, allow_commercial="commercial" in (ctx.want_product or ()))
-                 or fresh_row_guard(row, prepared, today))
+        home = not_a_home(row, allow_commercial="commercial" in (ctx.want_product or ()))
+        fresh = home or fresh_row_guard(row, prepared, today)
         if fresh:
             verified = False
             tags.append("fresh_guard_demoted")
             detail["fresh_guard"] = fresh
-            if fresh in FRESH_GUARD_CONFIRMS:
+            if not home and fresh_guard_actions().get(fresh) == "confirm":
                 confirm.append(fresh)         # the card says why (index.html CONFIRM_WHY)
             else:
                 confirm.append("fresh_guard")
