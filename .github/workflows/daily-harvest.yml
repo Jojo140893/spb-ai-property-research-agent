@@ -134,6 +134,13 @@ jobs:
       PORTAL_PARAMOUNT_LIVING_PASSWORD: ${{ secrets.PORTAL_PARAMOUNT_LIVING_PASSWORD }}
       PORTAL_PROXIMA_USERNAME: ${{ secrets.PORTAL_PROXIMA_USERNAME }}
       PORTAL_PROXIMA_PASSWORD: ${{ secrets.PORTAL_PROXIMA_PASSWORD }}
+      # E-Agent's Stocklist search, eagent.mekooflow.com (7 Oct 2026). A COMPANY name and a
+      # password from E-Agent's BDM, read as get_credentials("eagent_stocklist"). OPTIONAL
+      # and deliberately not in the "Fail early" list below: unset, they arrive empty, the
+      # harvest logs one line and skips the source, and the Settings tab says where the
+      # login comes from. Set with gh secret set (runbook: sources/eagent_stocklist.py).
+      EAGENT_STOCKLIST_USERNAME: ${{ secrets.EAGENT_STOCKLIST_USERNAME }}
+      EAGENT_STOCKLIST_PASSWORD: ${{ secrets.EAGENT_STOCKLIST_PASSWORD }}
 
       # digital@ inbox. NOTE: this was failing IMAP auth on 12 Aug against
       # imap.hostinger.com, mid Outlook->Gmail migration. Fix the mailbox before trusting
@@ -422,5 +429,24 @@ jobs:
         with:
           name: e-agent-login-failure
           path: logs/e_agent_login_failure.*
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # WHAT THE EAGENT STOCKLIST SHOWED once signed in (sources/eagent_stocklist.py). Nobody
+      # has seen that site signed in, so its reader discovers the JSON API and maps fields by
+      # key name, and writes down what it found: README.txt, the endpoints and what each
+      # answered, the first three JSON answers cut to 50 records, the key->field mapping and
+      # why, and the pages with every form value blanked. Never cookies, headers or the
+      # login; contact details inside records are masked. The repo is private, so the
+      # artifact is too. On a night with no Stocklist login it holds only the status file,
+      # which says "skipped".
+      - name: Keep the EAgent Stocklist capture
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eagent-stocklist-capture
+          path: |
+            logs/eagent_stocklist_capture/
+            logs/eagent_stocklist_status.json
           if-no-files-found: ignore
           retention-days: 14

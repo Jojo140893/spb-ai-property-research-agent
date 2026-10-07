@@ -62,6 +62,7 @@ import sys
 from datetime import datetime
 
 import config
+from sources.eagent_stocklist import is_stocklist_url
 
 logger = logging.getLogger(__name__)
 
@@ -473,6 +474,11 @@ def verify(rows, fetch=None, extract=None, limit=0, on_document=None, previous=N
         # verified by the harvest that walks the accordions, not here.
         if not url.startswith("http") or "proxima" in url.lower():
             continue
+        # E-Agent's Stocklist search (7 Oct 2026) is a JSON API behind a company login.
+        # Opened anonymously it answers 401, which says nothing about any lot; the harvest
+        # re-reads the whole list each night and repair_rows retires what it drops.
+        if is_stocklist_url(url):
+            continue
         wanted[url].append(r)
 
     order = sorted(wanted.items(), key=lambda kv: -len(kv[1]))
@@ -720,6 +726,9 @@ def main(args):
         if "proxima" in url.lower():
             missed["Proxima - a portal, not a sheet; checked by the nightly harvest "
                    "and repair_rows per project"] += 1
+        elif is_stocklist_url(url):
+            missed["E-Agent Stocklist - an API behind a login; re-read whole by the "
+                   "nightly harvest and repair_rows"] += 1
         elif not url.startswith("http"):
             missed["no document to open (emailed or hand-entered)"] += 1
         else:

@@ -267,6 +267,15 @@ def check_logins(write: bool = True):
             if why:
                 entry["blocked_by"] = why
         out.append(entry)
+    # E-AGENT'S STOCKLIST SEARCH (7 Oct 2026) has no browser session to open: the harvest
+    # signs in with requests and records how that went, and this reports it. With no login
+    # stored the row says where one comes from -- the client's E-Agent BDM -- which is the
+    # one thing that unblocks it. Never fatal, like every other row here.
+    try:
+        from sources.eagent_stocklist import login_row
+        out.append(login_row())
+    except Exception as e:                                            # noqa: BLE001
+        print(f"[warn] could not report the EAgent Stocklist login: {e}")
     if write:
         try:
             SESSION_DIR.mkdir(exist_ok=True)
