@@ -92,8 +92,25 @@ def _pin(monkeypatch, mode):
     about: "confirm" is the shipped behaviour and what the goldens were saved from,
     "available" is the 20/09/2026 promotion, built and shipped OFF. Neither behaviour is
     then left to whatever default the environment running the suite happens to carry.
+
+    AND THE POOL THE GOLDENS WERE SAVED UNDER (7 Oct 2026). Two pool rules changed on
+    purpose that day: MAX_CANDIDATES was 600 when every golden here was written and is now
+    an emergency valve, off by default; and the same-listing collapse keyed on the card
+    alone, where it now also asks whether two rows are the same LOT (same_lot_key). These
+    goldens pin that _gate and the pool behave as they did, so they are compared under the
+    rules they were saved with. The new rules are asserted by
+    tests/test_every_candidate_is_scored.py and tests/test_one_price_list_two_lots.py,
+    which also proves on this subset that the lot rule only ever keeps apart rows the old
+    rule merged.
     """
     monkeypatch.setattr(C, "EXCEPTIONS_LIST_MODE", mode)
+    monkeypatch.setattr(C, "MAX_CANDIDATES", 600)
+    monkeypatch.setattr(C, "same_lot_key", lambda package, row: None)
+    # And repair round 1's (7 Oct 2026): a fresh row its own list no longer carries, or that
+    # is not a home at all, is no longer verified. Asserted by
+    # tests/test_fresh_rows_and_copies_7oct.py; pinned off here for the same reason.
+    monkeypatch.setattr(C, "fresh_row_guard", lambda *a, **k: None)
+    monkeypatch.setattr(C, "not_a_home", lambda *a, **k: None)
 
 
 # 20/09/2026 added one more always-present package field, availability_by_exception_list

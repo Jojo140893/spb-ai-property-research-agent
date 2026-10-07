@@ -14,9 +14,18 @@ any search.
 """
 import sys
 
+import pytest
+
 sys.path.insert(0, "api")
 
 import _candidates as C
+
+
+@pytest.fixture(autouse=True)
+def _the_valve_is_set(monkeypatch):
+    """7 Oct 2026: the cap is an emergency valve, off by default (every candidate is scored).
+    What these tests pin is how it spends its slots WHEN it is set, so they set the 600."""
+    monkeypatch.setattr(C, "MAX_CANDIDATES", 600)
 
 
 def _rows(n, beds=4, first=400000, step=1000, state="VIC", suburb="Tarneit", tag="a"):

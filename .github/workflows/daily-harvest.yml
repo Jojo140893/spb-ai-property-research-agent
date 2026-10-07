@@ -134,6 +134,13 @@ jobs:
       PORTAL_PARAMOUNT_LIVING_PASSWORD: ${{ secrets.PORTAL_PARAMOUNT_LIVING_PASSWORD }}
       PORTAL_PROXIMA_USERNAME: ${{ secrets.PORTAL_PROXIMA_USERNAME }}
       PORTAL_PROXIMA_PASSWORD: ${{ secrets.PORTAL_PROXIMA_PASSWORD }}
+      # E-Agent's Stocklist search, eagent.mekooflow.com (7 Oct 2026). A COMPANY name and a
+      # password from E-Agent's BDM, read as get_credentials("eagent_stocklist"). OPTIONAL
+      # and deliberately not in the "Fail early" list below: unset, they arrive empty, the
+      # harvest logs one line and skips the source, and the Settings tab says where the
+      # login comes from. Set with gh secret set (runbook: sources/eagent_stocklist.py).
+      EAGENT_STOCKLIST_USERNAME: ${{ secrets.EAGENT_STOCKLIST_USERNAME }}
+      EAGENT_STOCKLIST_PASSWORD: ${{ secrets.EAGENT_STOCKLIST_PASSWORD }}
 
       # digital@ inbox. NOTE: this was failing IMAP auth on 12 Aug against
       # imap.hostinger.com, mid Outlook->Gmail migration. Fix the mailbox before trusting
@@ -245,6 +252,22 @@ jobs:
       - name: Link the Supabase project
         run: supabase link --project-ref ${{ secrets.SUPABASE_PROJECT_REF }}
 
+      # THE PARITY CHECK'S MEMORY (7 Oct 2026). parity_check.py compares tonight's obvious
+      # lots per state with the median of the previous 7 nights, read from
+      # data/parity_history.json, and fails a night that drops more than 15%. This runner is
+      # thrown away every morning and state_sync carries only the database, the sessions and
+      # the builder list -- so without this the history would be empty on every run and the
+      # drift bar would say "no earlier night" forever: a check that cannot fail, reading as
+      # a pass. The newest saved copy is restored here and tonight's saved after the harvest.
+      - name: Restore the parity history
+        # A cache hiccup must never fail the job: Publish to Vercel runs only on success().
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: data/parity_history.json
+          key: parity-history-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: parity-history-
+
       - name: Harvest
         # --no-deploy: publishing is its own step below, so a data failure can never push a
         # partial snapshot over a good one. That rule predates this workflow and is kept.
@@ -263,6 +286,17 @@ jobs:
         run: |
           set -o pipefail
           python -u run_daily.py --state-sync --no-deploy --email-days 7 2>&1 | tee _daily.log
+
+      # Saved whatever the harvest's outcome: a night that failed after parity_check ran has
+      # still been counted. Skipped only when the step never wrote the file.
+      - name: Keep the parity history for tomorrow
+        if: always() && hashFiles('data/parity_history.json') != ''
+        # A cache hiccup must never fail the job: Publish to Vercel runs only on success().
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: data/parity_history.json
+          key: parity-history-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Publish to Vercel
         # Only when the harvest succeeded — same guarantee run_daily.cmd gives on Windows.
@@ -422,5 +456,25 @@ jobs:
         with:
           name: e-agent-login-failure
           path: logs/e_agent_login_failure.*
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # WHAT THE EAGENT STOCKLIST SHOWED once signed in (sources/eagent_stocklist.py). Nobody
+      # has seen that site signed in, so its reader discovers the JSON API and maps fields by
+      # key name, and writes down what it found: README.txt, the endpoints and what each
+      # answered, the first three JSON answers cut to 50 records, the key->field mapping and
+      # why, and the pages with every form value blanked. Never cookies, headers or the
+      # login; contact details inside records are masked. The repo is private, so the
+      # artifact is too. On a night with no Stocklist login the harvest skips the source
+      # before it reads anything, nothing is written, and there is no artifact at all
+      # (if-no-files-found: ignore) -- the Settings tab's login row says why.
+      - name: Keep the EAgent Stocklist capture
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eagent-stocklist-capture
+          path: |
+            logs/eagent_stocklist_capture/
+            logs/eagent_stocklist_status.json
           if-no-files-found: ignore
           retention-days: 14

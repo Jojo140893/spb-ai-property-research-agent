@@ -51,9 +51,11 @@ FORM = {
 }
 
 # The response W12 shipped, on both returns. Nothing may be added to it without the flag.
+# 7 Oct 2026: less "reports" -- per-property markdown nothing read (not index.html, not the
+# hook) and 43% of an uncapped state-wide response.
 W12_KEYS = {
     "status", "research_record_id", "shortlist_count", "rejected_count", "in_state_rows",
-    "brief_used", "brief_adjustments", "rejected_log", "shortlist", "reports",
+    "brief_used", "brief_adjustments", "rejected_log", "shortlist",
     "search_area", "region_expansion", "location_resolution", "builder_coverage",
     "client_report_html", "comparisons", "client_report_path", "qa_passed", "qa_failures",
     "kommo_payload",
@@ -349,8 +351,13 @@ def test_colins_search_prices_both_budget_steps(explained):
                                                      "preferred_spending_cap": 800000}
     assert rel["budget_plus_10pct"]["brief_patch"] == {"budget_max": 825000,
                                                        "preferred_spending_cap": 825000}
+    # 12 and 10 before repair round 1 (7 Oct 2026). Two of the lots up to $825,000 sit on a
+    # price list their builder has since replaced -- FRD Homes' Lot 162 Rosewood Green on a
+    # list read once, on 03/09, and Strike Development's "coming soon New Road" on one read
+    # on 09/09, while both builders' newer lists were read on 16/09 -- and are no longer
+    # verified results (_candidates.fresh_row_guard, builder_documents_reread).
     assert (rel["budget_plus_10pct"]["shortlist_count"], rel["budget_plus_10pct"]["adds"]) \
-        == (12, 10)
+        == (10, 8)
     assert rel["budget_plus_10pct"]["label"] == "Budget up to $825,000 (+10%)"
     assert rel["budget_plus_10pct"]["capped"] is False
 
@@ -491,7 +498,8 @@ def test_a_broken_needs_confirming_pass_costs_nothing_else(research, plain, monk
     assert out["needs_confirming"] == [] and out["needs_confirming_count"] is None
     rel = {r["id"]: r for r in _relaxations(out)}
     assert rel["include_needs_confirming"]["count_status"] == "not_computed"
-    assert rel["budget_plus_10pct"]["shortlist_count"] == 12
+    # 10 since repair round 1 (see test_colins_search_prices_both_budget_steps).
+    assert rel["budget_plus_10pct"]["shortlist_count"] == 10
 
 
 def test_an_explanation_that_raises_still_returns_the_search(research, plain, monkeypatch):

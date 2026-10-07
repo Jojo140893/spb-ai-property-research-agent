@@ -465,7 +465,10 @@ class ResearchDatabase:
 
     # ---------- Building stock ----------
     def record_building(self, b: Dict[str, Any]) -> str:
-        """Upsert a harvested building. Returns "new" | "updated" | "unchanged".
+        """Upsert a harvested building. Returns "new" | "updated" | "unchanged" | "rejected".
+
+        "rejected" means a constraint refused the row and it was NOT stored; the error is
+        logged. The harvest counts it per source (see harvest_manifest).
 
         Identity is `content_hash` over the listing's stable fields, so a re-harvest
         of the same lot UPDATES its price/availability in place rather than adding a
@@ -594,9 +597,20 @@ class ResearchDatabase:
         }
 
         with self._get_connection() as conn:
+            # BY EITHER IDENTITY COLUMN (7 Oct 2026). dedup_key is UNIQUE and holds the
+            # hash this method computed when it inserted the row. On 30 Jul
+            # migrate_buildings_identity.py rewrote content_hash for the 29 Jul rows from
+            # columns enrichment had since filled, and left dedup_key alone -- so every
+            # night the lookup by content_hash missed, the INSERT below hit the old row's
+            # dedup_key, and the listing was dropped: 41 lots a night since 28 Sep, 14
+            # Havenwood rows frozen at a 29 Jul price and 27 Fawkner Park West lots retired
+            # as withdrawn while their list still carried them. A dedup_key hit IS this
+            # listing's row: it is re-attached (content_hash := h) and updated in place,
+            # exactly like a content_hash hit. A content_hash hit wins if both exist.
             existing = conn.execute(
-                "SELECT id, price, availability_status, superseded_by "
-                "FROM buildings WHERE content_hash=?", (h,)
+                "SELECT id, price, availability_status, superseded_by, content_hash "
+                "FROM buildings WHERE content_hash=? OR dedup_key=? "
+                "ORDER BY (content_hash=?) DESC, id LIMIT 1", (h, h, h)
             ).fetchone()
 
             if existing is None:
@@ -610,12 +624,15 @@ class ResearchDatabase:
                 except sqlite3.IntegrityError as e:
                     # Never silent: swallowing this is how 160 listings went missing
                     # without a trace. A live listing dropped by a constraint is a bug
-                    # to see, not a row to quietly discard.
-                    logger.warning("buildings: %r rejected by a UNIQUE constraint (%s) — "
-                                   "listing NOT stored.", b.get("lot_address"), e)
-                    return "unchanged"
+                    # to see, not a row to quietly discard. And never "unchanged": that
+                    # told every caller the listing was safely stored, so the harvest
+                    # summary counted 41 dropped lots a night as read and fine.
+                    logger.error("buildings: %r rejected by a UNIQUE constraint (%s) -- "
+                                 "listing NOT stored (identity %s).",
+                                 b.get("lot_address"), e, h)
+                    return "rejected"
 
-            rid, old_price, old_status, was_superseded = existing
+            rid, old_price, old_status, was_superseded, stored_hash = existing
             # Only a value this run actually read counts as a change — an absent field
             # is "not observed", not "moved to blank".
             changed = bool(price and (old_price or 0) != price) or \
@@ -625,6 +642,40 @@ class ResearchDatabase:
             # (state, builder_matched, benchmark_*) alone unless this run supplied one.
             upd = {"date_checked": now_date, "last_seen": now_date,
                    "checked_at": now_ts}
+            # NOT A SUPERSEDED TWIN (repair round 2, 7 Oct 2026, data verifier). A dedup_key
+            # hit on a row another capture already replaced is updated in place like any
+            # hit, but keeps its identity: re-attaching it would hand a hidden duplicate the
+            # listing's hash, which repair_rows' identity step deliberately never does (it
+            # aligns such a row instead). Only a live or withdrawn row is re-attached.
+            superseded_twin = bool(was_superseded) and \
+                str(was_superseded) != WITHDRAWN_FROM_SOURCE
+            if stored_hash != h and not superseded_twin:
+                # Re-attach: the row goes back to the hash this harvest computes, and
+                # whatever was superseded in its favour follows it, so no pointer is left
+                # aimed at a hash no row holds.
+                upd["content_hash"] = h
+                repointed = []
+                if stored_hash:
+                    repointed = [i for (i,) in conn.execute(
+                        "SELECT id FROM buildings WHERE superseded_by=?", (stored_hash,))]
+                    conn.execute("UPDATE buildings SET superseded_by=? WHERE superseded_by=?",
+                                 (h, stored_hash))
+                # LOGGED LIKE repair_rows' identity repair (repair round 1, 7 Oct 2026): on
+                # a real first night the harvest re-attaches the trap rows it reads before
+                # repair_rows runs, and those 41 never reached identity_repair_log, so
+                # `repair_rows.py --undo-identity-repair "harvest dd/mm/yyyy"` could not put
+                # them back. Same table, same columns; never fatal to the harvest.
+                try:
+                    conn.execute("CREATE TABLE IF NOT EXISTS identity_repair_log (stamp TEXT, "
+                                 "row_id INTEGER, col TEXT, old TEXT, new TEXT, "
+                                 "repointed TEXT)")
+                    conn.execute("INSERT INTO identity_repair_log VALUES (?,?,?,?,?,?)",
+                                 ("harvest " + now_date, rid, "content_hash", stored_hash, h,
+                                  json.dumps(repointed)))
+                except sqlite3.Error as e:
+                    logger.warning("buildings: re-attach of row %s not logged (%s)", rid, e)
+                logger.info("buildings: %r re-attached to its identity (content_hash had "
+                            "been rewritten; dedup_key still held it)", b.get("lot_address"))
             # A LOT THE SOURCE IS LISTING AGAIN IS FOR SALE AGAIN. repair_rows retires a
             # listing its own price list stopped carrying, and calls that reversible --
             # "a listing withdrawn in error comes straight back the next time its source

@@ -203,11 +203,36 @@ def _fetch_google(url: str, label: str, sess: Any) -> List[Fetched]:
             logger.debug("google: %s failed: %s", target, e)
             continue
         if r.status_code == 200 and "csv" in (r.headers.get("Content-Type") or ""):
+            # WHICH ENDPOINT, AND HOW MANY ROWS (7 Oct 2026). On 6 Oct the harvest read 22
+            # listings from the Havenwood tab and the sheet check read 53 from the same
+            # link the same night; every stored row from that workbook came through gviz,
+            # and nothing recorded which endpoint served which read, so the difference
+            # could not be traced. Said for every piece, by both readers.
+            # Rows as a CSV reader counts them (a quoted cell can hold a line break), and
+            # never the link itself: the sheet check passes the URL as its label, and a
+            # sheet link opens the sheet to anyone who has it.
+            endpoint = "gviz" if "/gviz/" in target else "export"
+            rows = _csv_rows(r.content)
+            who = (piece if not label.lower().startswith("http")
+                   else f"sheet {sheet_id[:6]}... (tab {tab_name or gid or 'first'})")
+            logger.info("google %s: served by %s, %d CSV row(s)", who, endpoint, rows)
             return [Fetched(label=piece, kind=KIND_FILE, data=r.content, url=target,
-                            meta={"tab": tab_name, "gid": gid})]
+                            meta={"tab": tab_name, "gid": gid, "endpoint": endpoint,
+                                  "csv_rows": rows})]
     return [Fetched(label=piece, url=url, problem=(
         "every CSV endpoint refused (export and gviz) — the sheet's sharing was probably "
         "tightened. Ask the builder to keep it link-viewable."))]
+
+
+def _csv_rows(body: bytes) -> int:
+    """Non-blank rows in a CSV body. Diagnostic only: never raises."""
+    import csv
+    import io
+    try:
+        text = (body or b"").decode("utf-8", "replace")
+        return sum(1 for row in csv.reader(io.StringIO(text)) if any(c.strip() for c in row))
+    except Exception:                                                  # noqa: BLE001
+        return -1
 
 
 # --------------------------------------------------------- SharePoint / OneDrive
@@ -243,10 +268,118 @@ _DBX_FILEISH = re.compile(r"^.+\.[A-Za-z0-9]{1,5}$")
 # ~1 request per folder instead of walking the whole tree.
 _DBX_PRICE_FOLDER = re.compile(r"price|pricing|stock|availab|sales?[ _-]?list|^stage[ _-]?\d", re.I)
 # What is worth downloading out of a folder full of flyers, renders and videos.
+#
+# "stock" ONLY AS A WORD OF ITS OWN (7 Oct 2026). The bare substring matched "Stockland":
+# six "Stockland - EOI Request Form.pdf" / VOI forms were downloaded and parsed as price
+# lists on 6 Oct, while a real one beside them was skipped for its name. "Stock List",
+# "Stocklist", "VIC Stock.pdf" and "Current Stock" still match.
 _DBX_STOCK_FILE = re.compile(
-    r"(price|pricing|stock|availab|sales?[ _-]?list|inventory|packages?)"
+    r"(price|pricing|stock(?:[ _-]?(?:list|update|sheet|report)|s?(?![a-z]))|availab|"
+    r"sales?[ _-]?list|inventory|packages?)"
     r".*\.(xlsx|xlsm|xls|csv|pdf)$", re.I)
 _DBX_ANY_SHEET = re.compile(r"\.(xlsx|xlsm|xls|csv)$", re.I)
+# A subfolder that SAYS it holds prices: whatever document is inside is taken, whatever
+# it is called. "Price List/report_murcia-residences_2026-8-22.pdf" is a price list by
+# where it sits. Stage folders order the walk (above) but say nothing about content.
+_DBX_PRICE_NAMED = re.compile(r"price|pricing|stock(?!land)|availab|sales?[ _-]?list", re.I)
+_DBX_DOCUMENT = re.compile(r"\.(pdf|xlsx|xlsm|xls|csv)$", re.I)
+# NOT A PRICE LIST, BY ITS NAME: what the 6 Oct "no price list" folders actually held --
+# brochures, floor plans, renders, site photos, inclusions, contracts, EOI/VOI forms, maps,
+# school lists. Used only for the fallback below, never to refuse a keyword match.
+_DBX_NOT_PRICES = re.compile(
+    r"brochure|floor[ _-]?plans?|floorplans?|\bplans?\b|render|photo|image|gallery|"
+    r"inclusion|finishes|specification|contract|\beoi\b|\bvoi\b|expression[ _-]?of[ _-]?"
+    r"interest|request[ _-]?form|application|flyer|\bmap\b|aerial|school|amenit|drawing|"
+    r"presentation|video|finance|inspection|terms", re.I)
+# A guess is only worth a download when it is small: price lists here are tens of KB to a
+# few hundred, while the brochures this would otherwise pull run to 10-40 MB.
+_DBX_GUESS_MAX_BYTES = 2 * 1024 * 1024
+
+
+# A GUESSED FILE MUST READ AS A PRICE LIST (repair round 1, 7 Oct 2026). The fallback above
+# trusted the extractor to return nothing for a brochure; it does not. A project brochure
+# gave 4 rows ("One bedroom residences from $450,000"), a residence-types sheet 4 ("Type A
+# 1 Bed ... from $455,000"), an EOI form 1 ("Lot 1234 Altrove Estate $350,000"). A price
+# list's lines each print their own figures -- unit or lot, rooms, areas -- beside the
+# price; a brochure's lines print an indicative "from" price and little else.
+_FROM_PRICE = re.compile(r"\b(?:from|starting(?:\s+at)?|priced?\s+from)\s*(?:only\s*)?"
+                         r"(?:AUD\s*)?\$", re.I)
+_MONEY = re.compile(r"[A-Za-z]?\$\s?\d[\d,]*(?:\.\d+)?(?:\s?[kKmM]\b)?|\b\d{1,3}(?:,\d{3})+"
+                    r"(?:\.\d+)?\b")
+_FIGURE = re.compile(r"\d+(?:\.\d+)?")
+# Figures besides the price that a line of a price list prints, and lines a list has.
+GUESS_MIN_FIGURES = 3
+GUESS_MIN_ROWS = 2
+# EACH LINE NAMES ITS OWN LOT (repair round 2, 7 Oct 2026, data verifier). A brochure's
+# residence-type table without "from" -- "Residence A 2 Bed 2 Bath 1 Car 85 sqm $650,000",
+# "Level 3 | 2 Bed | 2 Bath | 1 Car | $650,000" -- prints figures enough on each line. A
+# price list's line names the lot or unit it prices: "A-201 1 1 - 60 13 73 $850,000",
+# "Lot 12 ...", "Unit 1203 ...". A type letter ("Residence A") or a level is not one.
+_GUESS_LOT_ANYWHERE = re.compile(
+    r"\b(?:lot|unit|apt|apartment|townhouse|villa|th)\s*[#:.]?\s*([a-z]{0,3}[-.]?\d{1,5}[a-z]?)\b",
+    re.I)
+_GUESS_LOT_FIRST = re.compile(r"^\W*([A-Za-z]{0,3}[-.]?\d{1,5}[A-Za-z]?)(?=[\s|,;:]|$)")
+
+
+def _guessed_lot(line: str) -> str:
+    """The lot or unit a price-list line opens with or names, or ''."""
+    m = _GUESS_LOT_ANYWHERE.search(line) or _GUESS_LOT_FIRST.match(line)
+    return m.group(1).lower() if m else ""
+
+
+def guessed_price_list(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The rows of a GUESSED file worth storing: [] unless it reads as a price list.
+
+    A row is kept when its line is not a "from" price, prints GUESS_MIN_FIGURES figures
+    or more besides its money amounts, and names a lot or unit of its own; the file is kept
+    only when GUESS_MIN_ROWS rows or more survive, naming GUESS_MIN_ROWS different lots.
+    Everything else -- a brochure, a type sheet, a form -- stores nothing and is reported as
+    "no price list" by the caller."""
+    kept, lots = [], set()
+    for r in rows:
+        line = str(r.get("source_text") or r.get("lot_address") or "")
+        if _FROM_PRICE.search(line):
+            continue
+        if len(_FIGURE.findall(_MONEY.sub(" ", line))) < GUESS_MIN_FIGURES:
+            continue
+        lot = _guessed_lot(line)
+        if not lot:
+            continue
+        lots.add(lot)
+        kept.append(r)
+    return kept if len(kept) >= GUESS_MIN_ROWS and len(lots) >= GUESS_MIN_ROWS else []
+
+
+def _download_capped(sess: Any, url: str, max_bytes: int):
+    """(response, bytes or None, why) -- None when the file is larger than max_bytes."""
+    r = sess.get(url, timeout=180, stream=True)
+    try:
+        size = int((getattr(r, "headers", {}) or {}).get("Content-Length") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    if size > max_bytes:
+        _close(r)
+        return r, None, f"{size:,} bytes, over the {max_bytes:,}-byte limit for a guess"
+    chunks = getattr(r, "iter_content", None)
+    if chunks is None:                           # a response that is not streamed
+        data = r.content
+    else:
+        data, got = [], 0
+        for chunk in chunks(65536):
+            got += len(chunk)
+            if got > max_bytes:
+                _close(r)
+                return r, None, f"over the {max_bytes:,}-byte limit for a guess"
+            data.append(chunk)
+        data = b"".join(data)
+    return r, data, ""
+
+
+def _close(r: Any) -> None:
+    try:
+        r.close()
+    except Exception:                                                  # noqa: BLE001
+        pass
 
 
 def _dropbox_entries(sess: Any, url: str) -> List[Tuple[str, bool, str]]:
@@ -344,6 +477,9 @@ def _fetch_dropbox(url: str, label: str, sess: Any) -> List[Fetched]:
             seen_urls.add(u)
 
     folders.sort(key=lambda f: 0 if _DBX_PRICE_FOLDER.search(f[0]) else 1)
+    # Documents no name rule accepted, kept in case nothing else in the folder is a price
+    # list: (name shown, url).
+    leftovers = [(n, u) for n, u in files if u not in seen_urls and _DBX_DOCUMENT.search(n)]
     for name, sub in folders[:_DBX_MAX_FOLDERS]:
         try:
             children = [(n, u) for n, d, u in _dropbox_entries(sess, sub) if not d]
@@ -351,15 +487,41 @@ def _fetch_dropbox(url: str, label: str, sess: Any) -> List[Fetched]:
             logger.warning("dropbox %s: subfolder %r could not be listed (%s) — its "
                            "price list is NOT in this harvest", label, name, e)
             continue
+        price_named = bool(_DBX_PRICE_NAMED.search(name))
         for n, u in children:
-            if u not in seen_urls and (_DBX_STOCK_FILE.search(n) or _DBX_ANY_SHEET.search(n)):
+            if u in seen_urls:
+                continue
+            if (_DBX_STOCK_FILE.search(n) or _DBX_ANY_SHEET.search(n)
+                    or (price_named and _DBX_DOCUMENT.search(n)
+                        and not _DBX_NOT_PRICES.search(n))):
                 picks.append((f"{name}/{n}", u))
                 seen_urls.add(u)
+            elif _DBX_DOCUMENT.search(n) and not _DBX_NOT_PRICES.search(name):
+                leftovers.append((f"{name}/{n}", u))
     if len(folders) > _DBX_MAX_FOLDERS:
         logger.warning("dropbox %s: %d subfolder(s), only the first %d walked — the rest "
                        "are NOT in this harvest: %s", label, len(folders),
                        _DBX_MAX_FOLDERS,
                        ", ".join(n for n, _u in folders[_DBX_MAX_FOLDERS:][:6]))
+
+    # NO FILE IS NAMED LIKE A PRICE LIST: TRY THE ONES THAT COULD BE ONE (7 Oct 2026).
+    # Murcia's folder now holds "report_murcia-residences_2026-8-22_134434 (1)-2.pdf" -- a
+    # price export, like the report_ files read for Fawkner Park West and The Brightly --
+    # and the name filter skipped it: 25 lots unread since 22 Sep. Eight VIC townhouse
+    # folders ("Fraser Rise Hattan.pdf", "Phoenix Cranbourne New.pdf", "Edison Park
+    # VB.pdf") have never produced a row. So every small document whose name is not a
+    # brochure, plan, render, form or the like is handed to the extractor, which already
+    # returns nothing for a brochure. Marked as a guess, so a guess that yields nothing is
+    # reported as "no price list" rather than as an unreadable price list.
+    guessed = False
+    if not picks:
+        guesses = [(n, u) for n, u in leftovers if not _DBX_NOT_PRICES.search(n)]
+        if guesses:
+            guessed = True
+            picks = guesses
+            logger.info("dropbox %s: no file named as a price list; trying %d document(s) "
+                        "that could be one: %s", label, len(guesses),
+                        ", ".join(n for n, _u in guesses[:6]))
 
     if not picks:
         return [Fetched(label=label, url=url, problem=(
@@ -375,17 +537,28 @@ def _fetch_dropbox(url: str, label: str, sess: Any) -> List[Fetched]:
     out: List[Fetched] = []
     for name, entry_url in picks[:_DBX_MAX_FILES]:
         target = re.sub(r"([?&])dl=0", r"\1dl=1", entry_url)
+        meta = {"guessed": True} if guessed else {}
         try:
-            r = sess.get(target, timeout=180)
+            if guessed:
+                r, data, too_big = _download_capped(sess, target, _DBX_GUESS_MAX_BYTES)
+                if data is None:
+                    logger.info("dropbox %s / %s: not downloaded -- %s", label, name, too_big)
+                    out.append(Fetched(label=f"{label} / {name}", url=target, meta=meta,
+                                       problem=f"no price list: not one by its name, and "
+                                               f"{too_big}"))
+                    continue
+            else:
+                r = sess.get(target, timeout=180)
+                data = r.content
         except Exception as e:
-            out.append(Fetched(label=f"{label} / {name}", url=target,
+            out.append(Fetched(label=f"{label} / {name}", url=target, meta=meta,
                                problem=f"download failed: {e}"))
             continue
-        if r.status_code == 200 and _looks_like_a_file(r.content):
+        if r.status_code == 200 and _looks_like_a_file(data):
             out.append(Fetched(label=f"{label} / {name}", kind=KIND_FILE,
-                               data=r.content, url=target))
+                               data=data, url=target, meta=meta))
         else:
-            out.append(Fetched(label=f"{label} / {name}", url=target,
+            out.append(Fetched(label=f"{label} / {name}", url=target, meta=meta,
                                problem=f"HTTP {r.status_code} and no file body"))
     return out
 

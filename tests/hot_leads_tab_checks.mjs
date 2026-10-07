@@ -767,8 +767,10 @@ console.log("\n--- All / Hot / Warm / Nurture ---");
   let posted = null;
   s.respond(async (url, opts) => { posted = JSON.parse(opts.body); return reply(200, { status: "success", shortlist: [] }); });
   await s.api.rerunHotLead(Number(idx));
+  // 7 Oct 2026: with a page of 500 full cards -- the endpoint scores every candidate now.
   check("re-run from a filtered list sends that caller's brief",
-    posted && JSON.stringify(posted) === JSON.stringify({ client_brief: warmBrief }), JSON.stringify(posted));
+    posted && JSON.stringify(posted) === JSON.stringify({ client_brief: warmBrief, offset: 0, limit: 500 }),
+    JSON.stringify(posted));
 
   // A grade with nobody in it says so.
   s.respond(async () => reply(200, { status: "success", count: 1, leads: [who("Only Hot", { grade: "hot" })] }));
@@ -1170,8 +1172,11 @@ console.log("\n--- Re-run with today's stock ---");
   });
   await s.api.rerunHotLead(0);
   check("POSTs /api/research", seen && seen.url === "/api/research" && seen.opts.method === "POST");
-  check("body is exactly {client_brief: lead.brief}",
-    seen && JSON.stringify(JSON.parse(seen.opts.body)) === JSON.stringify({ client_brief: lead.brief }));
+  // 7 Oct 2026: and the first page of 500 full cards. Every candidate is scored now, so a
+  // lead's state-wide brief shortlists thousands; unpaged, cards past the 600th come compact.
+  check("body is exactly {client_brief: lead.brief, offset: 0, limit: 500}",
+    seen && JSON.stringify(JSON.parse(seen.opts.body))
+      === JSON.stringify({ client_brief: lead.brief, offset: 0, limit: 500 }));
   // Part C W14: explain:true makes the research add search_help and needs_confirming, which
   // are for the Research tab only. A re-run here must never ask for them.
   check("re-run never asks for explain",
@@ -1363,6 +1368,27 @@ console.log("\n--- a re-run shows the whole shortlist, 25 at a time ---");
     && !/class="cmp-box"/.test(box.innerHTML));
   s.api.hlShowMore(5);
   check("Show more on a card with no live results does nothing", cards() === 60);
+}
+
+console.log("\n--- a re-run that found more than one server page says which ones it holds ---");
+{
+  // Repair round 1, 7 Oct 2026: a state-wide re-run found 3,244 lots and holds the best 500
+  // (one server page). The note said "Showing 25 of 3244" while Show more ran out at 500
+  // ("475 remaining of 500"): two counts that disagree, and no word that the rest exist.
+  const s = sandbox();
+  s.el("hotLeadsContent"); s.el("hotLeadsBadge"); s.el("hotLeadsRefresh");
+  s.respond(async () => reply(200, { status: "success", leads: [clean()] }));
+  await s.api.loadHotLeads();
+  const box = s.el("hlRecs-0"); s.el("hlRerun-0"); s.el("hlMsg-0");
+  const page = Array.from({ length: 500 }, (_, k) => liveProp({ content_hash: "v2:q" + k, lot_address: "Card " + k }));
+  s.respond(async () => reply(200, { status: "success", shortlist: page, shortlist_count: 3244 }));
+  await s.api.rerunHotLead(0);
+  check("the note names the best 500 of everything found",
+    box.innerHTML.includes("Showing 25 of the best 500 of 3,244"), box.innerHTML.slice(0, 600));
+  check("... Show more counts against the 500 it holds, and says so",
+    box.innerHTML.includes("Show 25 more (475 remaining of the best 500)"));
+  check("... and points to the Research tab for the rest",
+    box.innerHTML.includes("Research tab"));
 }
 
 console.log("\n--- each lead keeps its own picks, and none reach the Research tab's selection ---");

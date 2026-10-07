@@ -359,7 +359,11 @@ def parse_fields(text: str) -> Dict[str, Any]:
 # Runs in the page context via Playwright page.evaluate().
 FIND_CARDS_JS = r"""
 () => {
-  const CARD_CAP = 200, FALLBACK_CAP = 60;
+  // CARD_CAP was 200 until 7 Oct 2026. Hermitage's /allpackages renders 240-263 priced
+  // cards a night and the last 40-63 were never read ("263 priced card(s) on this page,
+  // only 200 read" on 6 Oct). Each card is still held to 1,200 characters below, and a page
+  // beyond this cap is still announced by the caller.
+  const CARD_CAP = 2000, FALLBACK_CAP = 60;
   const priceRe = /\$\s?(\d{1,3}(,\d{3})+|\d{5,7})\b/;
   const sig = el => el.tagName + ':' + (el.className || '').toString().split(/\s+/).slice(0,3).join('.');
   // all elements whose OWN text (not just descendants) mentions a price
@@ -454,8 +458,15 @@ FIND_CARDS_JS = r"""
 """
 
 
+# Priced cards found vs read on the page extract_listings last read. Kept for the harvest
+# manifest (data/harvest_manifest.json), so a portal read short of its page is a number in
+# a file and not only a line in a 2,500-line log.
+LAST_PAGE: Dict[str, int] = {"found": 0, "read": 0}
+
+
 def extract_listings(page, builder_hint: str = "", state_hint: str = "") -> List[Dict[str, Any]]:
     """Return listings found on the currently-loaded page. Empty list if none."""
+    LAST_PAGE.update(found=0, read=0)
     try:
         found = page.evaluate(FIND_CARDS_JS)
     except Exception:
@@ -467,6 +478,7 @@ def extract_listings(page, builder_hint: str = "", state_hint: str = "") -> List
     if isinstance(found, dict):
         raw_cards = found.get("cards") or []
         seen_count = int(found.get("found") or 0)
+        LAST_PAGE.update(found=max(seen_count, len(raw_cards)), read=len(raw_cards))
         if found.get("oversize"):
             logger.warning("adaptive: %d priced block(s) on this page have more than 12 "
                            "child elements and were excluded as too big to be one card — "

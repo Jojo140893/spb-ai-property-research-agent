@@ -72,6 +72,22 @@ def _today_aest() -> str:
     return datetime.now(_AEST).strftime("%d/%m/%Y")
 
 
+def shortlist_rank(candidate):
+    """The key score_candidates sorts on, descending: the Total Score, and AT EQUAL SCORES
+    THE FRESHER READ FIRST (7 Oct 2026).
+
+    Ties used to keep the input order, which for stored stock is cheapest first, so once
+    every candidate was scored AVIA lot 28's 27/09 package ($876,800) ranked ahead of the
+    same lot's 06/10 package ($896,200) at 86.0 each, and Clare told a caller the lot was
+    available "as at 27 September" -- the date of the first package she read. age_days is
+    set on stored stock only (None when the row has no readable date, ranked last among
+    equals); a live crawl's are all None, so its order is exactly as before. A module
+    function so a golden saved before it can pin the order it was saved under."""
+    age = getattr(candidate, 'age_days', None)
+    fresh = -age if isinstance(age, int) and not isinstance(age, bool) else -10 ** 6
+    return (candidate.scoring.total_score if candidate.scoring else 0, fresh)
+
+
 class KommoPropertyResearchAgent:
     def __init__(self, csv_filepath: Optional[str] = None):
         self.builder_registry = BuilderRegistry(csv_filepath or str(config.BUILDER_CSV_PATH))
@@ -85,9 +101,17 @@ class KommoPropertyResearchAgent:
         self.portal_source = BuilderPortalSource()
         self.drive_source = DrivePdfSource()
 
-    def run_property_research(self, raw_brief_dict: Dict[str, Any], candidate_packages: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    def run_property_research(self, raw_brief_dict: Dict[str, Any], candidate_packages: Optional[List[Dict[str, Any]]] = None,
+                              with_reports: bool = True) -> Dict[str, Any]:
         """
         Executes the full 15-step SOP property research workflow.
+
+        with_reports=False skips Step 12's per-property markdown summaries ('reports' comes
+        back []). api/research.py passes it (7 Oct 2026): nothing that calls the deployed
+        endpoint reads them -- not index.html, not the vapi-kommo-hook -- and once every
+        candidate is scored a state-wide search shortlists thousands, so they were 43% of
+        an uncapped VIC response (6.4 MB) and a markdown render per lot. server.py and
+        run_agent.py keep them.
         """
         # Step 1 & 2: Structure Client Brief & Research Record
         brief: ClientBrief = ClientBriefParser.parse_dict(raw_brief_dict)
@@ -162,7 +186,13 @@ class KommoPropertyResearchAgent:
         # The env var is a safety valve, not a default: unset means no cap.
         _cap = int(os.environ.get("SPB_SHORTLIST_MAX", "0") or 0)
         shortlist = final_pool[:_cap] if _cap > 0 else list(final_pool)
-        pending_awaiting = [c for c in processed_candidates if c not in final_pool]
+        # BY IDENTITY, NOT BY VALUE. `c not in final_pool` compared every candidate with
+        # every member of the pool through the dataclass's field-by-field __eq__: 7.4
+        # million comparisons, 2.64 s, on a VIC search once every candidate is scored (search
+        # funnel audit, 7 Oct 2026). final_pool is a filter of processed_candidates, so the
+        # same objects are in both and identity answers the same question exactly.
+        _in_final = {id(c) for c in final_pool}
+        pending_awaiting = [c for c in processed_candidates if id(c) not in _in_final]
         for c in pending_awaiting:
             rejected_candidates.append({
                 'property_id': c.property_id,
@@ -179,7 +209,7 @@ class KommoPropertyResearchAgent:
 
         # Step 12: Generate Reports
         reports = []
-        for prop in shortlist:
+        for prop in (shortlist if with_reports else ()):
             summary_md = ReportGenerator.generate_property_summary_markdown(brief, prop)
             reports.append({
                 'property_id': prop.property_id,
@@ -494,14 +524,22 @@ class KommoPropertyResearchAgent:
             else:
                 processed_candidates.append(cand)
 
-        # Rank candidates by Total Score descending
-        processed_candidates.sort(key=lambda x: x.scoring.total_score if x.scoring else 0, reverse=True)
+        # Rank candidates by Total Score descending -- and at equal scores the fresher read
+        # first (shortlist_rank, 7 Oct 2026).
+        processed_candidates.sort(key=shortlist_rank, reverse=True)
         return processed_candidates, rejected_candidates
 
     def _build_kommo_update_payload(self, brief: ClientBrief, record_id: str, shortlist: List[CandidateProperty], rejected: List[Dict[str, str]]) -> Dict[str, Any]:
         shortlist_summary = []
-        for idx, p in enumerate(shortlist, 1):
+        # THE TOP N, SAID TO BE THE TOP N. The note listed every shortlisted lot, which was
+        # at most a few hundred while the candidate cap held; scored uncapped, a state-wide
+        # search shortlists thousands and the note alone was 286 KB of a VIC response
+        # (7 Oct 2026). A CRM note is read by a person: the leading options, and how many more.
+        _top = int(os.environ.get("SPB_KOMMO_NOTE_TOP", "10") or 10)
+        for idx, p in enumerate(shortlist[:max(1, _top)], 1):
             shortlist_summary.append(f"{idx}. {p.lot_address}, {p.suburb} - ${p.price_breakdown.realistic_total_price:,.0f} (Score: {p.scoring.total_score}/100 - {p.recommendation.value})")
+        if len(shortlist) > len(shortlist_summary):
+            shortlist_summary.append(f"... and {len(shortlist) - len(shortlist_summary):,} more on the shortlist.")
 
         top_match = shortlist[0].lot_address if shortlist else "No qualifying properties found"
         top_price = shortlist[0].price_breakdown.realistic_total_price if shortlist else 0

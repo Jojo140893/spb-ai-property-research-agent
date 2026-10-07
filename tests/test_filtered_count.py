@@ -59,7 +59,14 @@ BRIEFS = {
                             "preferred_spending_cap": NO_CEILING},
     "any_state_400k_600k": {"state": "", "budget_min": 400000, "budget_max": 600000,
                             "preferred_spending_cap": 600000},
+    # 7 Oct 2026: every candidate is scored by default, so 'truncated' is reached only with
+    # the emergency valve set (SPB_MAX_CANDIDATES). The same search, with the valve at the
+    # 600 the cap used to be -- see VALVE.
+    "any_state_no_budget_valve_600": {"state": "", "budget_max": NO_CEILING,
+                                      "preferred_spending_cap": NO_CEILING},
 }
+# Briefs searched with _candidates.MAX_CANDIDATES set, and to what.
+VALVE = {"any_state_no_budget_valve_600": 600}
 
 
 class _Sep16(datetime):
@@ -108,8 +115,13 @@ def measured(research):
     got = {}
     for name, changes in BRIEFS.items():
         buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            out = research.run_research({"client_brief": _brief(**changes)})
+        was = _candidates.MAX_CANDIDATES
+        _candidates.MAX_CANDIDATES = VALVE.get(name, was)
+        try:
+            with contextlib.redirect_stdout(buf):
+                out = research.run_research({"client_brief": _brief(**changes)})
+        finally:
+            _candidates.MAX_CANDIDATES = was
         (line,) = [x for x in buf.getvalue().splitlines()
                    if x.startswith('{"event":"spb_research"')]
         got[name] = (out, json.loads(line)["counts"])

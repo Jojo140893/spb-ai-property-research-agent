@@ -113,7 +113,8 @@ check("the minimum re-run never goes through form.requestSubmit (validation swal
 const EXPORTS = ["runResearchAgent", "budgetEchoText", "paintBudgetEcho", "searchedLineText",
   "adjustmentText", "locationNoteText", "searchNotesHtml", "capturedRow",
   "renderSearchHelp", "relaxationsOf", "applyBriefPatch", "renderNeedsConfirming",
-  "needsConfirmingCard", "confirmDateText"];
+  "needsConfirmingCard", "confirmDateText", "lotsInBuildingsText", "buildingRowText",
+  "researchBody"];
 
 // The State select's options, read from the form's markup: applyBriefPatch refuses a state
 // the select cannot show, so the stub must offer exactly what the page offers.
@@ -596,26 +597,36 @@ console.log("\n--- only a search someone asked for sends explain:true ---");
     /getElementById\('propertyForm'\)\.addEventListener\('submit', function\(e\) \{\s*e\.preventDefault\(\);\s*runResearchAgent\(([^)]*)\);\s*\}\);/);
   check("a form submit asks for explain", !!submit && /^\{\s*explain:\s*true\s*\}$/.test(submit[1]),
     submit ? submit[1] : "the submit listener was not found");
+  // 7 Oct 2026: the page-load search is explained too, so it shows the same totals (and the
+  // needs-confirming count) an Execute does. It is every state with no ceiling, so it never
+  // shortlists fewer than 5 and never prices a relaxation.
   const onLoad = outside.match(/loadBuilderDirectory\(\);\s*runResearchAgent\(([^)]*)\);/);
-  check("the page-load search does not ask for explain", !!onLoad && onLoad[1].trim() === "",
+  check("the page-load search asks for explain", !!onLoad && /^\{\s*explain:\s*true\s*\}$/.test(onLoad[1].trim()),
     onLoad ? onLoad[1] : "the page-load run was not found");
-  check("outside the tab a search starts only there (submit explained, page load not)",
-    starts.length === 2 && starts.filter(a => /explain:\s*true/.test(a)).length === 1 && starts.includes(""),
+  check("outside the tab a search starts only there (submit and page load, both explained)",
+    starts.length === 2 && starts.every(a => /^\{\s*explain:\s*true\s*\}$/.test(a)),
     JSON.stringify(starts));
 }
 {
+  // EVERY SEARCH ASKS FOR A PAGE (7 Oct 2026): the server scores every candidate now, and a
+  // state-wide search shortlists thousands, so the tab asks for the first 100 cards and the
+  // first 50 needs-confirming rows and fetches more as they are shown.
+  const PAGE_KEYS = '"offset","limit","needs_confirming_offset","needs_confirming_limit"';
   const s = sandbox();
   s.respond(async () => reply(200, success()));
   await s.api.runResearchAgent();
   await settle();
   const plain = JSON.parse(s.calls.fetch[0].opts.body);
-  check("a search without explain sends only client_brief",
-    JSON.stringify(Object.keys(plain)) === '["client_brief"]', JSON.stringify(Object.keys(plain)));
+  check("a search without explain sends client_brief and the first page, nothing else",
+    JSON.stringify(Object.keys(plain)) === `["client_brief",${PAGE_KEYS}]`
+    && plain.offset === 0 && plain.limit === 100 && plain.needs_confirming_offset === 0
+    && plain.needs_confirming_limit === 50, JSON.stringify(Object.keys(plain)));
   await s.api.runResearchAgent({ explain: true });
   await settle();
   const asked = JSON.parse(s.calls.fetch[1].opts.body);
-  check("a search asked to explain sends {client_brief, explain:true}",
-    JSON.stringify(Object.keys(asked)) === '["client_brief","explain"]' && asked.explain === true,
+  check("a search asked to explain sends {client_brief, explain:true} and the first page",
+    JSON.stringify(Object.keys(asked)) === `["client_brief","explain",${PAGE_KEYS}]`
+    && asked.explain === true && asked.offset === 0 && asked.limit === 100,
     JSON.stringify(asked).slice(0, 120));
   await s.api.runResearchAgent({ explain: "yes" });
   await settle();
@@ -1556,6 +1567,179 @@ console.log("\n--- the shortlist card, now shared with the Clare's Leads tab ---
     && !/undefined|NaN/.test(drawn), drawn.slice(0, 300));
   check("... and its markup is only the renderer's own", markupProblems(partial.out).length === 0,
     markupProblems(partial.out).slice(0, 3).join(" | "));
+}
+
+// ------------------------------------------------------------------ paged results (7 Oct 2026)
+// Coleen, 7 Oct 2026: "E-Agent always shows more". The server scores every candidate now and
+// sends the shortlist a page at a time; the tab says how many lots in how many buildings,
+// asks for the next page when the cards it has run out, and can group the cards by building.
+console.log("\n--- paged results: totals, the next page, Group by building (7 Oct 2026) ---");
+const BUILDINGS = [
+  { key: "VIC|alpha", name: "Alpha Rise", suburb: "Tarneit", state: "VIC", lots: 150,
+    price_min: 500000, price_max: 650000, first_rank: 1 },
+  { key: "VIC|beta", name: "Beta Gardens", suburb: "Wollert", state: "VIC", lots: 99,
+    price_min: 600000, price_max: 600000, first_rank: 2 },
+  { key: "VIC|doc:abc", name: "Gamma Homes price list", suburb: "", state: "VIC", lots: 1,
+    price_min: 700000, price_max: 700000, first_rank: 250 },
+];
+const ranked = (from, n) => Array.from({ length: n }, (_, i) => {
+  const rank = from + i;
+  const b = rank === 250 ? BUILDINGS[2] : rank % 2 ? BUILDINGS[0] : BUILDINGS[1];
+  return prop({ content_hash: `v2:r${rank}`, lot_address: `Lot ${rank}`, rank,
+                building_key: b.key, building_name: b.name });
+});
+const pageOf = (from, n, over = {}) => explained({
+  shortlist: ranked(from, n), shortlist_count: 250, buildings: BUILDINGS, buildings_count: 3,
+  page: { offset: from - 1, limit: 100, returned: n, total: 250,
+          next_offset: from - 1 + n < 250 ? from - 1 + n : null, building: null },
+  ...over,
+});
+{
+  const s = sandbox();
+  check("the headline reads lots in buildings, by the server's counts",
+    s.api.lotsInBuildingsText({ shortlist_count: 2931, buildings_count: 417 }) === "2,931 lots in 417 buildings"
+    && s.api.lotsInBuildingsText({ shortlist_count: 1, buildings_count: 1 }) === "1 lot in 1 building"
+    && s.api.lotsInBuildingsText({ shortlist_count: 5 }) === "5 lots"
+    && s.api.lotsInBuildingsText({ shortlist_count: 0, buildings_count: 0 }) === "",
+    s.api.lotsInBuildingsText({ shortlist_count: 2931, buildings_count: 417 }));
+  const row = s.api.buildingRowText(BUILDINGS[0]);
+  check("a building row says its name, place, lots and price range",
+    row.name === "Alpha Rise" && row.facts === "Tarneit VIC · 150 lots · $500,000 – $650,000", JSON.stringify(row));
+  check("... and one price once", s.api.buildingRowText(BUILDINGS[1]).facts === "Wollert VIC · 99 lots · $600,000",
+    s.api.buildingRowText(BUILDINGS[1]).facts);
+}
+{
+  const s = sandbox();
+  const bodies = [];
+  s.respond(async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    bodies.push(body);
+    if (bodies.length === 1) return reply(200, pageOf(1, 100));
+    if (body.building) {
+      const b = BUILDINGS.find(x => x.key === body.building);
+      return reply(200, pageOf(1, 0, { shortlist: Array.from({ length: Math.min(b.lots, body.limit) }, (_, i) =>
+        prop({ content_hash: `v2:${b.key}-${i}`, lot_address: `${b.name} lot ${i}`, rank: 300 + i,
+               building_key: b.key, building_name: b.name })),
+        page: { offset: 0, limit: body.limit, returned: b.lots, total: b.lots, next_offset: null, building: b.key } }));
+    }
+    return reply(200, pageOf(body.offset + 1, Math.min(100, 250 - body.offset)));
+  });
+  await s.api.runResearchAgent({ explain: true });
+  await settle();
+  const head = s.el("resultsContent").children.find(c => c.className === "results-head");
+  check("the results say '250 lots in 3 buildings'", !!head && head.innerHTML.includes("250 lots in 3 buildings"),
+    head ? head.innerHTML.slice(0, 200) : "no .results-head");
+  const box = head ? head.querySelector(".group-box") : null;
+  check("Group by building is offered, and off", !!box && !/checked/.test(head.innerHTML), head ? head.innerHTML : "");
+  const more = s.ctx.document.getElementById("shortlistMore");
+  check("'Show more' counts against the server's total",
+    !!more && more.textContent === "Show 25 more (225 remaining of 250)", more ? more.textContent : "no button");
+  for (let i = 0; i < 3; i++) await more.onclick();
+  check("the first three clicks are painted from the page in hand", bodies.length === 1
+    && (dump(s.el("resultsContent")).match(/class="prop-card/g) || []).length === 100, `${bodies.length} POSTs`);
+  await more.onclick();
+  await settle();
+  const second = bodies[1] || {};
+  check("the fourth asks the server for the next page of the same search",
+    bodies.length === 2 && second.offset === 100 && second.limit === 100 && !("explain" in second)
+    && JSON.stringify(second.client_brief) === JSON.stringify(bodies[0].client_brief),
+    JSON.stringify(second).slice(0, 200));
+  const flat = dump(s.el("resultsContent"));
+  check("... and paints its cards, ranked as the server ranked them",
+    (flat.match(/class="prop-card/g) || []).length === 125 && flat.includes("Rank #101: Lot 101")
+    && more.textContent === "Show 25 more (125 remaining of 250)", more.textContent);
+  check("a card's row is at its rank in LAST_SHORTLIST (the benchmark button reads it there)",
+    s.ctx.LAST_SHORTLIST[100] && s.ctx.LAST_SHORTLIST[100].content_hash === "v2:r101");
+  // Group by building: on.
+  box.checked = true;
+  box.onchange();
+  const groupsBox = s.el("resultsContent").children.find(c => c.className === "building-groups");
+  const cardsBox = s.el("resultsContent").children.find(c => c.className === "shortlist-cards");
+  const rows = groupsBox ? groupsBox.children.filter(c => c.className === "bldg") : [];
+  check("grouped: one row per building, best first, and no flat card left on the page",
+    rows.length === 3 && rows[0].innerHTML.includes("Alpha Rise") && rows[2].innerHTML.includes("Gamma Homes price list")
+    && cardsBox && cardsBox.hidden === true && !dump(cardsBox).includes("prop-card"),
+    rows.map(r => r.innerHTML.slice(0, 60)).join(" | "));
+  check("... each row with its lots and price range",
+    rows[0] && rows[0].innerHTML.includes(s.api.esc("Tarneit VIC · 150 lots · $500,000 – $650,000")));
+  // Beta Gardens: 99 lots, and the two pages in hand (ranks 1-200) hold 100 of its even
+  // ranks -- drawn from what is in hand, with no request.
+  const beta = rows[1];
+  beta.open = true;
+  await beta.listeners.toggle[0]();
+  await settle();
+  check("opening a building whose lots are all in hand asks the server nothing",
+    bodies.length === 2 && (dump(beta).match(/class="prop-card/g) || []).length >= 99, `${bodies.length} POSTs`);
+  // Alpha Rise: 150 lots, 100 in hand -- opening it asks for that building.
+  const alpha = rows[0];
+  alpha.open = true;
+  await alpha.listeners.toggle[0]();
+  await settle();
+  const asked = bodies[2] || {};
+  check("opening a building whose lots are not all in hand asks for that building",
+    bodies.length === 3 && asked.building === "VIC|alpha" && asked.offset === 0 && asked.limit === 150
+    && !("explain" in asked), JSON.stringify(asked).slice(0, 160));
+  check("... and draws its lot cards inside the row",
+    (dump(alpha).match(/class="prop-card/g) || []).length === 150 && dump(alpha).includes("Alpha Rise lot 149"));
+  // Off again: the flat list as it was, the same cards shown.
+  box.checked = false;
+  box.onchange();
+  const back = dump(cardsBox);
+  check("grouping off brings back the flat list as it was",
+    cardsBox.hidden === false && (back.match(/class="prop-card/g) || []).length === 125 && !dump(groupsBox).includes("bldg"),
+    `${(back.match(/class="prop-card/g) || []).length} cards`);
+  check("the paged markup is only the renderer's own", markupProblems(dump(s.el("resultsContent"))).length === 0,
+    markupProblems(dump(s.el("resultsContent"))).slice(0, 3).join(" | "));
+}
+{
+  // An answer with no page (an older server, or a stub): drawn exactly as before.
+  const s = sandbox();
+  s.respond(async () => reply(200, success()));
+  await s.api.runResearchAgent();
+  await settle();
+  const head = s.el("resultsContent").children.find(c => c.className === "results-head");
+  check("an answer with no buildings says the lots and offers no grouping",
+    !!head && head.innerHTML.includes("1 lot") && !head.innerHTML.includes("group-box"),
+    head ? head.innerHTML : "no head");
+}
+{
+  // Needs confirming, paged: 2 of 5 sent, one of them read last night -- so the group opens.
+  const s = sandbox();
+  const bodies = [];
+  s.respond(async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    bodies.push(body);
+    if (bodies.length === 1) {
+      return reply(200, explained({ needs_confirming: [dawn(1), dawn(2, { age_days: 0, date_checked: "15/09/2026" })],
+        needs_confirming_count: 5, needs_confirming_page: { offset: 0, limit: 50, returned: 2, total: 5, next_offset: 2 },
+        search_help: searchHelp({ needs_confirming: { count: 5, listed: 2, recent: 1, recent_nights: 3 } }) }));
+    }
+    return reply(200, explained({ shortlist: [], needs_confirming: [dawn(3), dawn(4), dawn(5)], needs_confirming_count: 5,
+      search_help: searchHelp({ needs_confirming: { count: 5, listed: 3, recent: 1 } }) }));
+  });
+  await s.api.runResearchAgent({ explain: true });
+  await settle();
+  const out = dump(s.el("resultsContent"));
+  const groupTag = (out.match(/<details\b[^>]*class="nc-group"[^>]*>/) || [""])[0];
+  check("a group holding a lot read in the last 3 nights opens by itself",
+    groupTag === '<details class="nc-group" open>', groupTag);
+  check("... and says how many of them are that recent", out.includes(s.api.esc("1 of them was read in the last 3 nights.")));
+  const ncBox = child(s, "nc-group");
+  const btn = ncBox ? ncBox.querySelector(".nc-more") : null;
+  check("the rest of the group is a button away",
+    !!btn && out.includes("Show 3 more to confirm (3 remaining of 5)"), out.slice(out.indexOf("nc-more") - 40, out.indexOf("nc-more") + 120));
+  if (btn) await btn.onclick();
+  await settle();
+  const asked = bodies[1] || {};
+  check("... which asks for the next page of the group, explained, with no cards",
+    asked.explain === true && asked.needs_confirming_offset === 2 && asked.needs_confirming_limit === 50
+    && asked.limit === 0, JSON.stringify(asked).slice(0, 200));
+  const after = dump(ncBox);
+  check("... and lists all 5, with no more to ask for",
+    (after.match(/class="nc-card"/g) || []).length === 5 && !after.includes("nc-more") && after.includes("Lot 5, Dawn"),
+    `${(after.match(/class="nc-card"/g) || []).length} cards`);
+  check("needs-confirming rows still stay out of LAST_SHORTLIST",
+    s.ctx.LAST_SHORTLIST.every(p => !p || !String(p.content_hash).startsWith("v2:dawn")));
 }
 
 console.log(fail ? `\n${fail} of ${pass + fail} CHECKS FAILED` : `\nALL ${pass} CHECKS PASSED`);

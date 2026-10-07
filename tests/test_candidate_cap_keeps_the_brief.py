@@ -14,9 +14,18 @@ made it worse, because a higher budget admits more cheap stock.
 """
 import sys
 
+import pytest
+
 sys.path.insert(0, "api")
 
 import _candidates
+
+
+@pytest.fixture(autouse=True)
+def _the_valve_is_set(monkeypatch):
+    """7 Oct 2026: the cap is an emergency valve, off by default (every candidate is scored).
+    What these tests pin is how it chooses WHEN it is set, so they set it to the 600 it was."""
+    monkeypatch.setattr(_candidates, "MAX_CANDIDATES", 600)
 
 
 def _row(suburb, price, i):

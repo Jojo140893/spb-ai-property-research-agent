@@ -83,7 +83,7 @@ import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 APP = Path(__file__).resolve().parent
@@ -104,6 +104,16 @@ OBVIOUS_MAX_DAYS = 45
 COMPONENT_TOLERANCE = 0.02
 # The warm call's limit (critique #13: warm calls took 1.7-2.5 s, explain adds up to 4 s).
 WARM_CALL_LIMIT_S = 8.0
+# PAGED SINCE 7 OCT 2026. The search scores every candidate now (the 600-row cap that hid
+# most of a state from Coleen is gone), so the dashboard asks for a page and the replay does
+# the same: the Research tab's first page, then every further page, until it holds every
+# shortlisted and needs-confirming card -- the obvious-rows check needs them all.
+FIRST_PAGE = {"offset": 0, "limit": 100, "needs_confirming_offset": 0,
+              "needs_confirming_limit": 50}
+REPLAY_PAGE = 500
+# Vercel refuses a response body over 4.5 MB; the owner's bar is 4 MB, for every response,
+# paged or not (the hook's state-wide brief included).
+RESPONSE_LIMIT_BYTES = 4_000_000
 # Two captures of one document within this many seconds are one read of it, not a later
 # read (supersede_duplicates.SAME_READ_WINDOW_S: two lots on one page are stamped apart).
 SAME_READ_S = 600
@@ -136,6 +146,12 @@ ALLOWED_VERDICTS = ("shortlist", "needs_confirming", "collapsed_into_visible",
                     # price (release review: Hattan lot 406 at its 17/08 price).
                     "newer_capture_repriced",
                     "document_reread_without_row", "builder_documents_reread",
+                    # A vendor's re-upload replaced the row's file in the same shared folder
+                    # (_candidates.fresh_row_guard, 7 Oct 2026: Victoria & Albert).
+                    "newer_upload_in_folder",
+                    # Its Proxima project was read again, whole, without it (repair round
+                    # 2). Every guard reason here is held to its evidence: guard_evidence.
+                    "project_reread_without_row",
                     # W11's email guard (critique #9), the same kind of sold-stock evidence
                     # as builder_documents_reread for a list sent by email.
                     "newer_list_from_sender",
@@ -147,7 +163,10 @@ ALLOWED_VERDICTS = ("shortlist", "needs_confirming", "collapsed_into_visible",
 WARN_VERDICTS = ("no_suburb", "suburb_not_a_locality", "incomplete_facts",
                  # An office or a shop filed as a dwelling (release review: "Building A
                  # Ground Level Office", an Apartment row) -- the filing is the problem.
-                 "commercial")
+                 "commercial",
+                 # A fee, commission or deposit stored as a price, and a line that is only a
+                 # price (_candidates.not_a_home, 7 Oct 2026) -- the extraction is.
+                 "price_not_a_home", "fragment")
 EXPLAIN_KEYS = ("search_help", "needs_confirming", "needs_confirming_count",
                 "needs_confirming_hidden")
 # What every brief in data/colin_searches.json must say it searched (load_spec).
@@ -310,9 +329,14 @@ def client_brief_for(spec, brief):
 
 
 def body_for(spec, brief):
+    """The body as its caller posts it: a dashboard brief with the Research tab's first page
+    (index.html researchBody, 7 Oct 2026), a hook-shaped one exactly as the hook sends it --
+    no paging, so the endpoint's unpaged answer is the one checked for it."""
     body = {"client_brief": client_brief_for(spec, brief)}
     if brief.get("explain", True):
         body["explain"] = True
+    if not brief.get("hook_shaped"):
+        body.update(FIRST_PAGE)
     return body
 
 
@@ -449,6 +473,229 @@ def gone_sibling(catalogue, h):
     return None
 
 
+# ------------------------------------------------------- does the catalogue back the excuse?
+#
+# 7 Oct 2026, repair round 2 (parity verifier). An obvious row hidden -- or sent to "Needs
+# confirming" -- for a sold-stock reason passed every check as soon as the reason was in
+# ALLOWED_VERDICTS, whether or not anything in the catalogue says so: a search made to call
+# 35 Fawkner Park West lots "builder_documents_reread", read that very night on a list read
+# that very night, passed this check and parity_check alike. So the reason is now held to
+# its own evidence, stated here and not imported (the harness does not borrow the rule it
+# is checking):
+#   document_reread_without_row, project_reread_*   its own list (a Proxima project, else
+#        the snapshot's source_doc) was read on a LATER day than the row
+#   builder_documents_reread   its builder's lists on its channel, in its state, were read
+#        on a later day than the newest read of its own list
+#   newer_upload_in_folder     another file in its shared folder was read on a later day
+#        than the newest read of its own list
+#   newer_capture_*            another capture of the same lot (builder or list, estate,
+#        lot number) was read on a later day
+#   conflicting_capture        another Proxima project lists the same unit address Not
+#        Available, read that day or later
+# Any other reason (the row's own text, its own page, its own price) is the row's own word
+# and is not second-guessed here.
+GUARD_EVIDENCE_REASONS = ("document_reread_without_row", "project_reread_without_row",
+                          "project_reread_uncounted", "builder_documents_reread",
+                          "newer_upload_in_folder", "newer_capture_exists",
+                          "newer_capture_repriced", "newer_capture_disagrees",
+                          "conflicting_capture")
+_UNIT_CARD = re.compile(r"^\s*(?:lot|unit)\s*[a-z0-9-]+.*\d", re.I)
+
+
+def _lot_who(row):
+    lot = _norm(row.get("lot_number"))
+    if not lot:
+        return None
+    builder = _norm(row.get("builder_name"))
+    who = ("builder:" + builder) if builder else (
+        "doc:" + str(row.get("source_doc") or "").strip())
+    if who == "doc:":
+        return None
+    return (who, _norm(row.get("estate_name")), lot)
+
+
+def _own_doc(row):
+    channel = str(row.get("source_channel") or "").strip().lower()
+    pid = str(row.get("source_project_id") or "").strip()
+    if channel.startswith("proxima") and pid:
+        return "proxima:" + pid
+    doc = str(row.get("source_doc") or "").strip()
+    return ("doc:" + doc) if doc else ""
+
+
+class _Evidence:
+    """The catalogue's reads, indexed once: what a guard reason may rest on."""
+
+    def __init__(self, catalogue):
+        self.doc_last = {}        # own document -> newest day read
+        self.builder_last = {}    # (channel, builder, state or "") -> newest day read
+        self.folder_docs = {}     # source_folder -> {own document: newest day}
+        self.lot_days = {}        # _lot_who -> [day read]
+        self.units = {}           # (state, unit address) -> [(day, gone, project)]
+        for row in catalogue.rows:
+            seen = _day(row.get("date_checked"))
+            if seen is None:
+                continue
+            doc = _own_doc(row)
+            if doc and seen > self.doc_last.get(doc, date.min):
+                self.doc_last[doc] = seen
+            channel = str(row.get("source_channel") or "").strip().lower()
+            builder = _norm(row.get("builder_name"))
+            if builder:
+                state = str(row.get("state") or "").strip().upper()
+                for key in ((channel, builder, state), (channel, builder, "")):
+                    if seen > self.builder_last.get(key, date.min):
+                        self.builder_last[key] = seen
+            folder = str(row.get("source_folder") or "").strip()
+            if folder and doc:
+                docs = self.folder_docs.setdefault(folder, {})
+                if seen > docs.get(doc, date.min):
+                    docs[doc] = seen
+            who = _lot_who(row)
+            if who is not None:
+                self.lot_days.setdefault(who, []).append(seen)
+            if (channel.startswith("proxima") and not row.get("superseded_by")
+                    and _UNIT_CARD.match(str(row.get("lot_address") or ""))):
+                self.units.setdefault(
+                    (str(row.get("state") or "").strip().upper(), _norm(row.get("lot_address"))),
+                    []).append((seen, str(row.get("availability_status") or "").strip().lower()
+                                in NOT_AVAILABLE, str(row.get("source_project_id") or "")))
+
+    def unsupported(self, row, reason):
+        """None when the catalogue backs `reason` for this row, else what it lacks."""
+        seen = _day(row.get("date_checked"))
+        if reason not in GUARD_EVIDENCE_REASONS or seen is None:
+            return None
+        doc = _own_doc(row)
+        doc_last = self.doc_last.get(doc) if doc else None
+        if reason in ("document_reread_without_row", "project_reread_without_row",
+                      "project_reread_uncounted"):
+            if doc_last is None or doc_last <= seen:
+                return "its own list was not read after %s" % seen.strftime("%d/%m/%Y")
+            return None
+        if reason == "builder_documents_reread":
+            channel = str(row.get("source_channel") or "").strip().lower()
+            state = str(row.get("state") or "").strip().upper()
+            newest = self.builder_last.get((channel, _norm(row.get("builder_name")), state))
+            mine = doc_last or seen
+            if newest is None or newest <= mine:
+                return ("its builder's lists were not read after its own list (%s)"
+                        % mine.strftime("%d/%m/%Y"))
+            return None
+        if reason == "newer_upload_in_folder":
+            mine = doc_last or seen
+            folder = str(row.get("source_folder") or "").strip()
+            if not any(day > mine for other, day in (self.folder_docs.get(folder) or {}).items()
+                       if other != doc):
+                return "no other file in its folder was read after %s" % mine.strftime(
+                    "%d/%m/%Y")
+            return None
+        if reason == "conflicting_capture":
+            key = (str(row.get("state") or "").strip().upper(), _norm(row.get("lot_address")))
+            project = str(row.get("source_project_id") or "")
+            if not any(day >= seen and gone and other != project
+                       for day, gone, other in self.units.get(key, ())):
+                return "no other project lists the unit as gone"
+            return None
+        who = _lot_who(row)
+        if who is None or not any(day > seen for day in self.lot_days.get(who, ())):
+            return "no capture of the same lot was read after %s" % seen.strftime("%d/%m/%Y")
+        return None
+
+
+def guard_evidence(catalogue):
+    """The catalogue's _Evidence, built once per catalogue."""
+    got = getattr(catalogue, "_guard_evidence", None)
+    if got is None:
+        got = _Evidence(catalogue)
+        catalogue._guard_evidence = got
+    return got
+
+
+# ------------------------------------------------- where the row itself says it is
+#
+# 7 Oct 2026, repair round 2 (parity verifier): nine VIC cards whose row writes "Mt
+# Duneed,Victoria,3217", "ClydeNorth,Victoria,3978" or "Bonniebrook,Victoria,3335" were
+# carded Tarneit -- their builder's commonest suburb -- and a Tarneit search shortlisted
+# them. A card's suburb must not contradict the place its own row writes out with the state
+# in full and a postcode. Compared by sound, the way a place is said ("MtDuneed" is Mount
+# Duneed, "StLeonards" St Leonards), allowing one letter ("Tarniet" is Tarneit); stated here
+# rather than imported from suburb_quality, which is what is being checked.
+_WRITTEN_PLACE = re.compile(
+    r"([A-Za-z][A-Za-z.'\-]*(?:\s+[A-Za-z][A-Za-z.'\-]*){0,3})\s*[,\uff0c]\s*"
+    r"(new\s*south\s*wales|victoria|queensland|south\s*australia|western\s*australia|"
+    r"tasmania|northern\s*territory|australian\s*capital\s*territory)\s*[,\uff0c]?\s*"
+    r"(\d{4})\b", re.I)
+_WRITTEN_STATE = {"newsouthwales": "NSW", "victoria": "VIC", "queensland": "QLD",
+                  "southaustralia": "SA", "westernaustralia": "WA", "tasmania": "TAS",
+                  "northernterritory": "NT", "australiancapitalterritory": "ACT"}
+# The first digit of a postcode, by state (Australia Post's ranges, coarse on purpose).
+_POSTCODE_FIRST = {"NSW": "12", "ACT": "02", "VIC": "38", "QLD": "49", "SA": "5", "WA": "6",
+                   "TAS": "7", "NT": "0"}
+
+
+def _said(name):
+    folded = re.sub(r"\bsaint\b", "st", re.sub(r"\bmount\b", "mt", str(name or "").lower()))
+    return re.sub(r"[^a-z]", "", folded)
+
+
+def _one_letter_apart(a, b):
+    if a == b:
+        return True
+    if abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        diffs = [i for i in range(len(a)) if a[i] != b[i]]
+        return len(diffs) == 1 or (len(diffs) == 2 and diffs[1] == diffs[0] + 1
+                                   and a[diffs[0]] == b[diffs[1]] and a[diffs[1]] == b[diffs[0]])
+    short, long_ = (a, b) if len(a) < len(b) else (b, a)
+    return any(long_[:i] + long_[i + 1:] == short for i in range(len(long_)))
+
+
+def written_place_contradicts(rec, suburb, state):
+    """The place a row writes out ('Mt Duneed, VIC') when the card's `suburb` is not it,
+    else ''. '' when the row writes no such address, or writes it in another state than the
+    card's (that is the state check's business)."""
+    want = _said(suburb)
+    state = str(state or "").strip().upper()
+    if not rec or not want:
+        return ""
+    written = []
+    for field in ("lot_address", "estate_name", "title_status", "source_text"):
+        for m in _WRITTEN_PLACE.finditer(str((rec or {}).get(field) or "")[:700]):
+            st = _WRITTEN_STATE.get(re.sub(r"\s+", "", m.group(2).lower()))
+            if not st or (state and st != state):
+                continue
+            if m.group(3)[0] not in _POSTCODE_FIRST.get(st, ""):
+                continue
+            words = [w for w in m.group(1).split()
+                     if w.upper() not in ("NSW", "VIC", "QLD", "SA", "WA", "TAS", "NT", "ACT")]
+            if any(_one_letter_apart(_said(" ".join(words[-k:])), want)
+                   for k in range(1, min(3, len(words)) + 1)):
+                return ""
+            if words:
+                written.append("%s, %s" % (" ".join(words[-2:]), st))
+    return written[0] if written else ""
+
+
+# A title that names its lot ("Lot 12", "Unit 2302", "TH17") or a street ("12 Hollins
+# Street", "1386 Peter Thomson Circuit"), money taken out first.
+_TITLE_LOT = re.compile(r"\b(?:lot|unit|apt|apartment|townhouse|villa|th)\s*[#:.]?\s*[a-z]?\d",
+                        re.I)
+_TITLE_STREET = re.compile(r"\b\d+[a-z]?(?:\s*/\s*\d+[a-z]?)?\s+[A-Za-z][A-Za-z'\-]{2,}", re.I)
+_TITLE_MONEY = re.compile(r"[A-Za-z]?\$\s?\d[\d,]*(?:\.\d+)?|\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b")
+
+
+def no_lot_and_no_street(entry):
+    """True when a card's title names no lot (lot_number or "Lot N" / "Unit N") and no
+    street number and name -- 'GOLF $3,497,500', 'PARK RIDGE', '... Click here Click here'
+    (repair round 2: the row labels are Stage B's work; this says how many reach a list)."""
+    if _norm(entry.get("lot_number")):
+        return False
+    title = _TITLE_MONEY.sub(" ", str(entry.get("lot_address") or ""))
+    return not (_TITLE_LOT.search(title) or _TITLE_STREET.search(title))
+
+
 # ---------------------------------------------------------------------------- the Dawn lots
 
 def dawn_expectation(spec, lots, catalogue, today):
@@ -550,10 +797,67 @@ class Run:
         status, payload, seconds = self.post(body)
         if not isinstance(payload, dict):
             payload = {"status": "error", "message": "not a JSON object"}
+        # EVERY RESPONSE UNDER THE LIMIT, measured as the endpoint writes it (no spaces
+        # after separators). A shortlist of thousands once every candidate is scored made an
+        # unpaged VIC answer 14.9 MB, over Vercel's 4.5 MB (search-funnel audit, 7 Oct 2026).
+        size = len(json.dumps(payload, default=str, separators=(",", ":")).encode("utf-8"))
+        if size > RESPONSE_LIMIT_BYTES:
+            self.report.fail(where_of(brief), "a response is %s bytes, over the %s-byte limit"
+                             % (format(size, ","), format(RESPONSE_LIMIT_BYTES, ",")))
         return status, payload, seconds
 
+    def _every_page(self, brief, body, payload):
+        """The payload with every shortlist and needs-confirming page in it: the further pages
+        are posted as the Research tab posts them (same brief, the next offset) and appended.
+        Fails when the pages do not add up to the counts the first one gave."""
+        where = where_of(brief)
+        page = payload.get("page")
+        if isinstance(page, dict):
+            shortlist = list(payload.get("shortlist") or [])
+            nxt = page.get("next_offset")
+            # Further shortlist pages are not explained, as the tab's are not.
+            plain = {k: v for k, v in body.items() if k != "explain"}
+            while nxt is not None:
+                status, more, _s = self._post(brief, dict(plain, offset=nxt, limit=REPLAY_PAGE))
+                got = more.get("shortlist") or []
+                if status != 200 or more.get("status") != "success" or not got:
+                    self.report.fail(where, "the shortlist page at offset %s did not come: "
+                                            "HTTP %s" % (nxt, status))
+                    break
+                shortlist += got
+                nxt = (more.get("page") or {}).get("next_offset")
+            payload["shortlist"] = shortlist
+            if len(shortlist) != (payload.get("shortlist_count") or 0):
+                self.report.fail(where, "the pages hold %d shortlisted cards, shortlist_count "
+                                        "says %s" % (len(shortlist), payload.get("shortlist_count")))
+            hashes = [_hash(e) for e in shortlist]
+            if len(set(hashes)) != len(hashes):
+                self.report.fail(where, "a card is on two pages of the shortlist")
+        nc_page = payload.get("needs_confirming_page")
+        if isinstance(nc_page, dict):
+            listed = list(payload.get("needs_confirming") or [])
+            nxt = nc_page.get("next_offset")
+            while nxt is not None:
+                status, more, _s = self._post(brief, dict(
+                    body, offset=0, limit=0, needs_confirming_offset=nxt,
+                    needs_confirming_limit=REPLAY_PAGE))
+                got = more.get("needs_confirming") or []
+                if status != 200 or more.get("status") != "success" or not got:
+                    self.report.fail(where, "the needs-confirming page at offset %s did not "
+                                            "come: HTTP %s" % (nxt, status))
+                    break
+                listed += got
+                nxt = (more.get("needs_confirming_page") or {}).get("next_offset")
+            payload["needs_confirming"] = listed
+            if len(listed) != (payload.get("needs_confirming_count") or 0):
+                self.report.fail(where, "the pages hold %d needs-confirming cards, "
+                                        "needs_confirming_count says %s"
+                                 % (len(listed), payload.get("needs_confirming_count")))
+        return payload
+
     def response(self, brief_id):
-        """(body, status, payload, seconds) for a brief, posted on first use."""
+        """(body, status, payload, seconds) for a brief, posted on first use, with every
+        page of a paged answer gathered into it."""
         if brief_id not in self.responses:
             brief = self.briefs[brief_id]
             body = body_for(self.spec, brief)
@@ -571,6 +875,8 @@ class Run:
                     else:
                         self.report.warn(where, say + "; timed on this machine, not Vercel")
                 seconds = warm
+            if status == 200 and payload.get("status") == "success":
+                payload = self._every_page(brief, body, payload)
             self.responses[brief_id] = (body, status, payload, seconds)
         return self.responses[brief_id]
 
@@ -604,6 +910,7 @@ class Run:
         used = resp.get("brief_used") or {}
 
         self.explain_answered(where, body, resp)
+        self.everything_was_searched(where, brief, resp)
         self.card_invariants(where, used, shortlist, confirming)
         self.kommo(where, resp, shortlist, confirming)
         if expect.get("never"):
@@ -690,6 +997,37 @@ class Run:
                 self.report.fail(where, "relaxation %s failed to price: %s"
                                  % (offer.get("id"), offer.get("error") or "error"))
 
+    def everything_was_searched(self, where, brief, resp):
+        """No candidate went unscored, and a hook-shaped answer lists every shortlisted lot.
+
+        THE CAP THAT HID MOST OF A STATE (7 Oct 2026). Until then the search scored only the
+        600 cheapest candidates in a state, and nothing here noticed: the obvious-rows check
+        fails a 'truncated' row, but only ran where the cap never bound. Now any search the
+        emergency valve (SPB_MAX_CANDIDATES) cut fails, named, whatever its expect says.
+        And Clare's hook matches a caller's lot against the WHOLE unpaged shortlist, so an
+        unpaged answer that had to leave cards out to stay under the size limit fails too."""
+        help_ = resp.get("search_help") if isinstance(resp.get("search_help"), dict) else {}
+        funnel = help_.get("funnel") if isinstance(help_.get("funnel"), dict) else {}
+        cap = resp.get("candidate_cap") or help_.get("candidate_cap")
+        if cap or funnel.get("capped"):
+            # A server from before 7 Oct 2026 says it only in the funnel's pool gates.
+            cut = (cap or {}).get("cut") or next(
+                (g.get("count") for g in funnel.get("gates") or ()
+                 if isinstance(g, dict) and g.get("code") == "truncated"), None)
+            self.report.fail(where, "the candidate cap cut the search: %s candidate(s) were "
+                                    "never scored (SPB_MAX_CANDIDATES=%s)"
+                             % (cut if cut is not None else "some",
+                                (cap or {}).get("limit", "unstated")))
+        detail = resp.get("shortlist_detail")
+        if isinstance(detail, dict) and detail.get("cut"):
+            self.report.fail(where, "the unpaged answer left %s shortlisted lot(s) out to stay "
+                                    "under the size limit" % detail.get("cut"))
+        if brief.get("hook_shaped"):
+            listed = len(resp.get("shortlist") or [])
+            if listed != (resp.get("shortlist_count") or 0):
+                self.report.fail(where, "the hook's answer lists %d of %s shortlisted lots"
+                                 % (listed, resp.get("shortlist_count")))
+
     def kommo(self, where, resp, shortlist, confirming):
         """What the search hands Kommo names shortlisted cards only: the lead's top property
         is one of them (or none when there are none), and no needs-confirming card that is
@@ -728,9 +1066,16 @@ class Run:
             address = str(entry.get("lot_address") or "").strip()
             if not address or (address, price(entry)) in listed:
                 continue
+            # THE LINE'S OWN HEAD when the card states its suburb (repair round 1, 7 Oct
+            # 2026): kommo_agent writes "N. <lot_address>, <suburb> - $<total>", and a card
+            # carded only "Lot 17" is a prefix of every "Lot 17, <estate>" on the note --
+            # nsw_any went red on "Lot 17, The Rise, Wyee NSW" once that lot ranked top ten.
+            suburb = str(entry.get("suburb") or "").strip()
+            head = "%s, %s - " % (address, suburb) if suburb else None
             for line in lines:
-                if (address + ",") not in line or (address in addresses
-                                                   and _money(price(entry)) not in line):
+                body = line.split(". ", 1)[1] if re.match(r"^\s*\d+\.\s", line) else line
+                named = body.startswith(head) if head else (address + ",") in line
+                if not named or (address in addresses and _money(price(entry)) not in line):
                     continue
                 self.report.fail(where, "needs confirming %s (%s, %s) is written into the "
                                         "Kommo note as if shortlisted"
@@ -742,6 +1087,10 @@ class Run:
         low = _num(used.get("budget_min")) or 0.0
         high = _num(used.get("budget_max"))
         cat = self.catalogue
+        # Cards that name no lot and no street (repair round 2): one line a brief, not one
+        # a card -- on 6 Oct a VIC answer held about a thousand ("Melbourne VIC"), which is
+        # the row labels' work, not something this replay can fail on.
+        unlabelled = []
         for kind, entries in (("shortlisted", shortlist), ("needs confirming", confirming)):
             for entry in entries:
                 h = _hash(entry)
@@ -770,8 +1119,18 @@ class Run:
                         self.report.fail(where, "%s %s is shown, but its row says %r"
                                          % (kind, name, said))
                 self.lot_number_postcode(where, kind, name, h, row)
+                # NOT SOMEWHERE ITS OWN ROW SAYS IT IS NOT (repair round 2): "Mt Duneed,
+                # Victoria,3217" shortlisted as a Tarneit lot.
+                written = written_place_contradicts(cat.db_row(h) or row,
+                                                    entry.get("suburb"), entry.get("state"))
+                if written:
+                    self.report.fail(where, "%s %s is shown in %s, but its own row writes its "
+                                            "address as %r" % (kind, name,
+                                                               entry.get("suburb"), written))
                 if kind != "shortlisted":
                     continue
+                if no_lot_and_no_street(entry):
+                    unlabelled.append(name)
                 age = _age(card_date, self.today)
                 if age is None or age > FRESH_DAYS:
                     self.report.fail(where, "shortlisted %s was checked %r, more than %d days "
@@ -815,6 +1174,9 @@ class Run:
                                                 "%s (%s)" % (name, row.get("state"),
                                                              row.get("state_source"), hit[0],
                                                              hit[1]))
+        if unlabelled:
+            self.report.note(where, "labels: %d shortlisted card(s) name no lot and no street, "
+                                    "e.g. %s" % (len(unlabelled), ", ".join(unlabelled[:5])))
 
     def lot_number_postcode(self, where, kind, name, h, row):
         """WARN when a card's state was read off its own lot number as a postcode.
@@ -1043,25 +1405,56 @@ def obvious_candidates(catalogue, state, low, high, today, build_cells):
                       if d is not None]
             if firsts and (today - min(firsts)).days > OBVIOUS_MAX_DAYS:
                 continue
-        cells = build_cells(dict(rec))
-        if str(cells.get("price_kind") or "").lower() in ("build_only", "land_only"):
-            continue
-        # The row's own columns saying the price is only the land or only the house
-        # ("Wollert Land Price $143,389": land_price is the price, no build price).
-        land, build = _num(rec.get("land_price")), _num(rec.get("build_price"))
-        if bool(land) != bool(build) and abs((land or build) - price) <= 1.0:
-            continue
-        # A line of a price list that does not print the price it is stored at (an email
-        # sentence stored at $553,284) is not an obvious listing.
-        if (cells.get("price_in_text") is False
-                and str(rec.get("source_channel") or "").strip().lower() in (EMAIL_CHANNEL,
-                                                                             "e-agent")):
-            continue
-        printed = _num(cells.get("text_price_max"))
-        if printed is not None and printed > price * (1 + COMPONENT_TOLERANCE):
+        if not priced_as_a_home(rec, build_cells(dict(rec))):
             continue
         out.append(rec)
     return out
+
+
+def priced_as_a_home(rec, cells):
+    """Whether a database row's stored price is a whole home-and-land price its own line
+    prints, by the row's columns and its price evidence (cells: the bundle's
+    snapshot_build_cells of the row). Split out of obvious_candidates on 7 Oct 2026 so
+    parity_check.py picks its obvious lots by the same price rule, word for word."""
+    price = _num(rec.get("price"))
+    if not price or price <= 0:
+        return False
+    if str(cells.get("price_kind") or "").lower() in ("build_only", "land_only"):
+        return False
+    # FILED COMMERCIAL BY ITS OWN LIST, AND NO BEDROOMS: a warehouse or a shop, not a home
+    # (repair round 2, 7 Oct 2026; the search's _candidates.price_covers, word for word).
+    # 191 Leakes Rd's and Rockwater's units, with no state on their lists, failed parity
+    # every night as "no state search reaches them" -- no home search should.
+    if (str(rec.get("product_type") or "").strip().lower() == "commercial"
+            and not _num(rec.get("bedrooms"))):
+        return False
+    # The row's own columns saying the price is only the land or only the house
+    # ("Wollert Land Price $143,389": land_price is the price, no build price).
+    land, build = _num(rec.get("land_price")), _num(rec.get("build_price"))
+    if bool(land) != bool(build) and abs((land or build) - price) <= 1.0:
+        return False
+    # A line of a price list that does not print the price it is stored at (an email
+    # sentence stored at $553,284) is not an obvious listing.
+    if (cells.get("price_in_text") is False
+            and str(rec.get("source_channel") or "").strip().lower() in (EMAIL_CHANNEL,
+                                                                         "e-agent")):
+        return False
+    printed = _num(cells.get("text_price_max"))
+    if printed is not None and printed > price * (1 + COMPONENT_TOLERANCE):
+        return False
+    # A LINE THAT IS ONLY A PRICE ("$803,100" off Hermitage's portal page, "$667,418" off a
+    # Hattan email) names no lot, so it is not an obvious listing (7 Oct 2026; the search's
+    # _candidates.is_fragment, word for word).
+    if (not _norm(rec.get("lot_number")) and not _num(rec.get("bedrooms"))
+            and str(rec.get("lot_address") or "").strip()
+            and not re.search(r"[A-Za-z0-9]", _FRAGMENT_MONEY.sub(" ", str(rec.get(
+                "lot_address") or "")))):
+        return False
+    return True
+
+
+_FRAGMENT_MONEY = re.compile(
+    r"[A-Za-z]?\$\s?\d[\d,]*(?:\.\d+)?|\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b")
 
 
 def obvious_rows_check(C, research, bootstrap, catalogue, snapshot_path):
@@ -1099,24 +1492,66 @@ def obvious_rows_check(C, research, bootstrap, catalogue, snapshot_path):
         tally = {}
         listed_short = ((resp.get("needs_confirming_count") or 0)
                         > len(resp.get("needs_confirming") or []))
+        shown_copy = shown_copy_finder(research, resp, catalogue)
+        evidence = guard_evidence(catalogue)
+        replayed = {}
+
+        def merged_twins(brief_dict):
+            """{hash dropped: hash kept} by the bundle's own dedupe, replayed once a brief
+            and only when a row needs it (parity_check's _dedupe_twins, same idea)."""
+            if "map" not in replayed:
+                merged = {}
+                dedupe = getattr(C, "dedupe_packages", None)
+                if dedupe is not None:
+                    packages, _counts = C.build_packages(
+                        brief_dict, catalogue.rows,
+                        prepared=C.prepared_for_snapshot(catalogue.rows, snapshot_path))
+                    try:
+                        dedupe(list(packages), catalogue.rows, merged_into=merged)
+                    except TypeError:                     # a bundle from before 7 Oct 2026
+                        merged = {}
+                replayed["map"] = merged
+            return replayed["map"]
+        demoted_for = {_hash(e): [c for c in (e.get("confirm") or ())
+                                  if c in GUARD_EVIDENCE_REASONS]
+                       for e in resp.get("needs_confirming") or []}
         for rec in rows_:
             h = _hash(rec)
             name = catalogue.name(h)
             if h in shown:
                 outcome = shown[h]
+                # SENT TO "NEEDS CONFIRMING" BY A GUARD (repair round 2): only on evidence.
+                for reason in demoted_for.get(h) or ():
+                    lacking = evidence.unsupported(catalogue.row(h) or rec, reason)
+                    if lacking:
+                        run.report.fail(where, "obvious row %s was sent to needs confirming as "
+                                               "%s, but %s" % (name, reason, lacking))
             elif catalogue.row(h) is None:
                 run.report.fail(where, "obvious row %s is in the database but not in the "
                                        "snapshot" % name)
                 continue
             else:
                 outcome, detail = _obvious_outcome(verdicts.get(h), visible, research,
-                                                   bootstrap, used, listed_short)
+                                                   bootstrap, used, listed_short, shown_copy)
+                if outcome == "scored_not_shown" and merged_twins(brief_dict).get(h) in shown:
+                    # MERGED BY THE PIPELINE'S OWN DEDUPE INTO A CARD THAT IS SHOWN (repair
+                    # round 2): Hermitage's E-Agent "283 Recreation Circuit" folded into the
+                    # portal's "LOT 283 RECREATION CIRCUIT, CLYDE 3978", the same lot at the
+                    # same price -- a spelling no card key and no lot number can pair.
+                    outcome, detail = "collapsed_into_visible", ""
                 if outcome in WARN_VERDICTS:
                     run.report.warn(where, "obvious row %s is hidden as %s (data quality)"
                                     % (name, outcome))
                 elif outcome == "needs_confirming_unlisted":
-                    run.report.warn(where, "obvious row %s needs confirming beyond the "
-                                           "listed cap" % name)
+                    # A FAIL since 7 Oct 2026: every page of the group is fetched now, so a
+                    # row past the listed ones is a row the consultant cannot reach.
+                    run.report.fail(where, "obvious row %s needs confirming but is past every "
+                                           "page of the listed group" % name)
+                elif outcome == "truncated":
+                    # Said by name: this is the failure Coleen phoned about on 7 Oct 2026.
+                    run.report.fail(where, "obvious row %s -- %s, %s -- was cut by the "
+                                           "candidate cap before it was scored" % (
+                                               name, rec.get("state"), _money(rec.get("price"))))
                 elif outcome not in ALLOWED_VERDICTS:
                     run.report.fail(where, "obvious row %s -- %s, %s, stated %r, checked %s -- "
                                            "is hidden as %s%s" % (
@@ -1124,6 +1559,12 @@ def obvious_rows_check(C, research, bootstrap, catalogue, snapshot_path):
                                                rec.get("availability_status"),
                                                rec.get("date_checked"), outcome,
                                                (": " + detail) if detail else ""))
+                elif outcome in GUARD_EVIDENCE_REASONS:
+                    # An allowed reason is allowed only on its evidence (repair round 2).
+                    lacking = evidence.unsupported(catalogue.row(h), outcome)
+                    if lacking:
+                        run.report.fail(where, "obvious row %s is hidden as %s, but %s"
+                                        % (name, outcome, lacking))
             tally[outcome] = tally.get(outcome, 0) + 1
         run.report.note(where, "obvious rows: %d (%s)" % (
             len(rows_), ", ".join("%s %d" % kv for kv in sorted(tally.items())) or "none"))
@@ -1131,28 +1572,82 @@ def obvious_rows_check(C, research, bootstrap, catalogue, snapshot_path):
     return hook
 
 
-def _obvious_outcome(verdict, visible, research, bootstrap, used, listed_short=False):
+def _as_candidate(card):
+    """A shortlist card, needs-confirming card or package, shaped as the scored candidate
+    research._card_identity reads."""
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        state=card.get("state"), suburb=card.get("suburb"), lot_number=card.get("lot_number"),
+        bedrooms=card.get("bedrooms"), land_size_sqm=card.get("land_size_sqm"),
+        house_size_sqm=card.get("house_size_sqm"), lot_address=card.get("lot_address") or "",
+        content_hash=card.get("content_hash"),
+        price_breakdown=SimpleNamespace(
+            advertised_package_price=card.get("advertised_package_price")))
+
+
+def shown_copy_finder(research, resp, catalogue):
+    """package -> True when the search itself reads the package as a copy of a card it
+    shows: the bundle's own research._same_listing (the same lot number, or street, at the
+    same price) -- the rule by which the needs-confirming pass leaves such a row out. A copy
+    shown under another address spelling ("10 Rind Crescent, Donnybrook" / "10 Rind
+    Crescent, Tarneit"; "CC-0127, Bairnsdale Brookfield Lakes" / "CC-0127, Bairnsdale")
+    is a lot Coleen can see, not one she lost (7 Oct 2026). Never True against a bundle
+    without the rule."""
+    ident_of = getattr(research, "_card_identity", None)
+    same = getattr(research, "_same_listing", None)
+    if ident_of is None or same is None:
+        return lambda package: False
+    by_price = {}
+    for card in list(resp.get("shortlist") or []) + list(resp.get("needs_confirming") or []):
+        try:
+            y = ident_of(_as_candidate(card), catalogue.row(_hash(card)))
+        except Exception:                                             # noqa: BLE001
+            continue
+        if y.get("price"):
+            by_price.setdefault(int(y["price"] // 1), []).append(y)
+
+    def find(package):
+        try:
+            x = ident_of(_as_candidate(package), catalogue.row(_hash(package)))
+        except Exception:                                             # noqa: BLE001
+            return False
+        if not x.get("price"):
+            return False
+        at = int(x["price"] // 1)
+        return any(same(x, y) for k in (at - 1, at, at + 1) for y in by_price.get(k, ()))
+    return find
+
+
+def _obvious_outcome(verdict, visible, research, bootstrap, used, listed_short=False,
+                     shown_copy=None):
     """(outcome, detail) for an obvious row the response does not show.
 
     A stale row no guard hides and no twin stands in for belongs in needs_confirming: when
     the list was cut at its cap it may simply be past the cap; otherwise it was lost, and
-    the scorer is asked why."""
+    the scorer is asked why. shown_copy (shown_copy_finder) recognises a row the search
+    reads as a copy of a card it shows under another address spelling."""
     if verdict is None:
         return "not_explained", ""
     gate = verdict.get("gate")
     package = verdict.get("package") or {}
     twin = (str(package.get("lot_address") or "").strip().lower(),
             round(_num(package.get("advertised_package_price")) or 0))
+    copied = shown_copy or (lambda _package: False)
     if gate == "same_listing_collapsed":
-        if twin in visible:
+        if twin in visible or copied(package):
             return "collapsed_into_visible", ""
+        # Merged into a capture that is itself hidden -- and its own guard would hide it
+        # unmerged too (9048: a later capture of the lot at its price exists), so that is
+        # its verdict, named, not a lost lot.
+        if package.get("confirm_guard"):
+            return package["confirm_guard"], ""
         return gate, "merged into a twin that is not shown"
     if gate != "scored":
         return gate, ""
     guard = package.get("confirm_guard")
     if guard:
         return guard, ""
-    if twin in visible:
+    if twin in visible or copied(package):
         return "collapsed_into_visible", ""
     if package.get("confirm") and listed_short:
         return "needs_confirming_unlisted", ""

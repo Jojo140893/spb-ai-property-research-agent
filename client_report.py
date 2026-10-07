@@ -18,6 +18,35 @@ def _money(v) -> str:
     return f"${v:,.0f}" if v is not None else "TBC"
 
 
+# api/research.py's "no ceiling" (JavaScript's largest safe integer): what a brief with no
+# Max budget carries. Anything this large is not a budget anyone set.
+_NO_CEILING_FROM = 1e15
+
+
+def _budget_text(budget_max) -> str:
+    """'Budget up to $750,000', or 'No budget limit' for a search with no ceiling -- not
+    'Budget up to $9,007,199,254,740,991' (7 Oct 2026)."""
+    try:
+        if budget_max is None or float(budget_max) <= 0 or float(budget_max) >= _NO_CEILING_FROM:
+            return "No budget limit"
+    except (TypeError, ValueError):
+        return "No budget limit"
+    return "Budget up to " + _money(budget_max)
+
+
+# A price list's small print for agents, which a flattened line carries into a lot's title:
+# "Single Car Space & OB Storage Agent commission=6%plus, South Yarra VIC" (7 Oct 2026, repair
+# round 2). The comma-separated parts that say it are dropped from what the buyer reads; the
+# rest of the address is kept as read. index.html's clientAddress does the same.
+_INTERNAL_TEXT = re.compile(r"commission|\bagent|purchaser|eligib|highlight|\bfirb\b|"
+                            r"guaranteed\s+income", re.I)
+
+
+def _client_address(value) -> str:
+    return ", ".join(part.strip() for part in str(value or "").split(",")
+                     if part.strip() and not _INTERNAL_TEXT.search(part))
+
+
 def _fillable(value, unit: str) -> str:
     """A spec the consultant can correct in the report, blank where the source was silent.
 
@@ -317,13 +346,16 @@ class ClientReportGenerator:
             # gap is visible and clickable. The editing affordance is screen-only; see the
             # print rules in the stylesheet, which also hide any blank left unfilled so a
             # client never receives a dotted placeholder.
+            # NO BUILDER (7 Oct 2026, repair round 2). Colin, 17 Aug: "when we give them,
+            # we don't give them that information" -- the dashboard's own report dropped the
+            # builder column then, and this one, the document the search attaches to every
+            # answer, still printed "149 m2 house - APLACE by Glenville" to the buyer.
             spec = " &middot; ".join(bit for bit in (
                 _fillable(p.bedrooms, "bed"),
                 _fillable(p.bathrooms, "bath"),
                 _fillable(p.car_spaces, "car"),
                 f"{p.land_size_sqm:,.0f} m&sup2; land" if p.land_size_sqm else "",
                 f"{p.house_size_sqm:,.0f} m&sup2; house" if p.house_size_sqm else "",
-                _esc(p.builder_name),
             ) if bit)
 
             # THE BUYER'S VERSION, never the scorer's. See _client_reason.
@@ -333,7 +365,7 @@ class ClientReportGenerator:
             cards.append(f"""
     <div class="card">
       <div class="rank">Option {rank}</div>
-      <h2>{_esc(p.lot_address)}, {_esc(p.suburb)}{_suburb_caveat(p)} {_esc(p.state)}</h2>
+      <h2>{_esc(_client_address(p.lot_address) or p.suburb)}, {_esc(p.suburb)}{_suburb_caveat(p)} {_esc(p.state)}</h2>
       <p class="sub">{spec}{dist_line}</p>
       <div class="row"><span class="label">Your price</span><span>{value_line}</span></div>
       {rent_row}
@@ -399,7 +431,7 @@ class ClientReportGenerator:
   {_logo_html()}
   <div class="titles">
     <h1>Property Recommendations</h1>
-    <p class="meta">Prepared for <strong>{_esc(brief.client_name)}</strong> &middot; {date_str} &middot; Budget up to {_money(brief.budget_max)} &middot; {_esc(_state_label(brief.state))}</p>
+    <p class="meta">Prepared for <strong>{_esc(brief.client_name)}</strong> &middot; {date_str} &middot; {_budget_text(brief.budget_max)} &middot; {_esc(_state_label(brief.state))}</p>
   </div>
 </header>
 <p class="editnote">Any figure with a dashed underline can be clicked and corrected before you print &mdash; the source portals leave the bed / bath / car configuration blank more often than anything else. A blank you leave unfilled is hidden when the report prints.</p>

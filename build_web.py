@@ -55,6 +55,10 @@ BUILDING_FIELDS = [
     "incentive_amount", "incentive_text", "product_type", "source_channel",
     "attribution_scope", "date_checked", "listing_url", "floorplan_url",
     "source_project_id",
+    # A Proxima project's own "N available" counter on the night the row was read (7 Oct
+    # 2026, repair round 2): the search asks whether a project's newest read was whole
+    # before it calls a lot that read left out gone (api/_candidates.fresh_row_guard).
+    "project_available",
     # stocklist_file and source_url are NOT exported. Both are capability URLs -- a
     # Dropbox rlkey grants read access to whoever holds the link, with no sign-in -- and
     # this deployment is public. stocklist_file is the worst of them: 2,753 rows carried
@@ -148,7 +152,15 @@ BUILDING_DERIVED_FIELDS += EMAIL_LIST_FIELDS
 # when the later line differs (another design on the lot); and it does not recommend a
 # row whose own document's same line, read on a later day, says the lot has gone (Howard
 # lot 21: Available 15/09, On Hold 16/09). The line is not published.
-LINE_KEY_FIELDS = ["line_key"]
+# line_says_gone (7 Oct 2026): whether that WHOLE line says the lot has gone -- True, False,
+# or null with no text. The search reads it instead of refusing every blank row whose
+# 110-character lot_address might hide a status word past the cut (promotion_refusal's
+# line_truncated: 58 Silkwood / Gallery lots on 6 Oct, none of them gone). One word, not
+# the line, is published.
+# source_folder (7 Oct 2026): a hash of the Dropbox shared folder the row's list sits in,
+# "" otherwise, so the search can tell a vendor's old upload from the file that replaced it
+# in the same folder (api/_candidates.fresh_row_guard). The folder id is never published.
+LINE_KEY_FIELDS = ["line_key", "line_says_gone", "source_folder"]
 BUILDING_DERIVED_FIELDS += LINE_KEY_FIELDS
 
 # benchmarks.json -- market comparables from realestate.com.au, which are NOT stock.
@@ -541,7 +553,7 @@ def _assert_no_contact_details(path: Path) -> None:
 # the first build that published it (release review). source_doc and email_list are
 # digests of the same kind.
 _NOT_FREE_TEXT = {"content_hash", "sha256", "dedup_key", "row_key", "superseded_by",
-                  "line_key", "source_doc", "email_list"}
+                  "line_key", "source_doc", "email_list", "source_folder"}
 
 
 def _walk_strings(node, field=""):
@@ -1078,6 +1090,13 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         _fallback = last_resort_suburb(b, _last_resort)
         if not _fallback:
             continue
+        # NOT AGAINST THE ROW'S OWN WRITTEN ADDRESS (7 Oct 2026, repair round 2). Nine lots
+        # of one list wrote "Mt Duneed,Victoria,3217" or "Bonniebrook,Victoria,3335" and
+        # were handed their builder's commonest suburb, Tarneit, here -- and shortlisted
+        # in a Tarneit search. A row that names its own place keeps no guess at all.
+        if not suburb_quality.written_address_agrees(
+                {**b, "source_text": _texts.get(id(b), "")}, _fallback, b.get("state")):
+            continue
         b["suburb"] = _fallback
         b["suburb_source"] = suburb_quality.INFERRED_FROM_SIBLINGS
         _suburb_reasons[suburb_quality.INFERRED_FROM_SIBLINGS] = _suburb_reasons.get(
@@ -1307,6 +1326,8 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     # exports further down: those run after the connection is closed.
     meta["channel_health"] = _export_channel_health(out_dir, conn)
     conn.close()
+    # The last source-to-search parity table, for the same tab (see _publish_parity_report).
+    meta["parity_report"] = _publish_parity_report(out_dir)
 
     # the app's own frontend, unmodified
     # Stamp the copy as the static build.
@@ -1373,7 +1394,8 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
             *[{"source": "/%s" % name,
                "headers": [{"key": "Cache-Control", "value": "private, no-cache"}]}
               for name in ("stock.json", "channels.json", "builders.json",
-                           "benchmarks.json", "vendor-assets.json", "suburbs.json")],
+                           "benchmarks.json", "vendor-assets.json", "suburbs.json",
+                           "parity_report.json")],
         ],
     }
     if fn:
@@ -1941,6 +1963,32 @@ def _sheet_check():
     }
 
 
+def _publish_parity_report(out_dir: Path) -> bool:
+    """Put the last source-to-search parity report beside stock.json, for the Settings tab.
+
+    7 Oct 2026. parity_check.py runs AFTER this build (it searches the bundle this writes)
+    and drops tonight's report into the build itself. This copy is for every other build --
+    deploy.ps1 rebuilds before it publishes -- so a rebuild carries the latest report rather
+    than quietly losing the panel. The report says which night it describes, so an old one
+    reads as old. Absent or unreadable: an EMPTY report is published (no rows), which the
+    panel reads as "no panel" -- never no file at all (repair round 1, 7 Oct 2026: with no
+    file Vercel answered the Settings tab's fetch with a 404, which the browser logs as a
+    console error on every visit to the tab).
+    """
+    path = Path(__file__).resolve().parent / "data" / "parity_report.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:                                  # pragma: no cover - absent is fine
+        payload = None
+    if not isinstance(payload, dict) or not isinstance(payload.get("rows"), list):
+        (out_dir / "parity_report.json").write_text(
+            json.dumps({"version": 1, "rows": [], "failures": [], "notes": [],
+                        "verdict": "", "night": ""}), encoding="utf-8")
+        return False
+    (out_dir / "parity_report.json").write_text(json.dumps(payload), encoding="utf-8")
+    return True
+
+
 def _norm_source(name) -> str:
     """'Bathla Development' and 'Bathla' collapse to the same key."""
     return re.sub(r"[^a-z0-9]", "", str(name or "").lower())
@@ -2045,6 +2093,12 @@ def _login_for(name, logins):
     hit = logins.get(key)
     if hit is None:
         for k, row in logins.items():
+            # A row that names its channel (E-Agent's Stocklist search, 7 Oct 2026) belongs
+            # to that channel alone. "eagent" is a prefix of "eagentstocklist", so on a night
+            # with no E-Agent session row the E-Agent line took the Stocklist's and told the
+            # owner E-Agent needed "the EAgent Stocklist company login from your E-Agent BDM".
+            if row.get("channel") and _norm_source(row["channel"]) != key:
+                continue
             if k and (key.startswith(k) or k.startswith(key)):
                 hit = row
                 break
@@ -2196,6 +2250,20 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
         # test (CHANNEL_PUSH_SOURCES).
         c["login"] = ({"state": "not_applicable"} if c["channel"] in CHANNEL_PUSH_SOURCES
                       else _login_for(c["channel"], logins))
+    # A SOURCE WITH A LOGIN AND NO STOCK YET (7 Oct 2026). The table above is built from the
+    # stock, so a source that has never delivered a row has no line in it -- and E-Agent's
+    # Stocklist search cannot deliver one until the client gets its company login from her
+    # E-Agent BDM. The row that says so is the one thing that unblocks it, so a login row
+    # naming a channel (portal_login.py --check) gets a line of its own until stock arrives.
+    named = {_norm_source(c["channel"]) for c in channels}
+    for login in logins.values():
+        name = str(login.get("channel") or "").strip()
+        if name and _norm_source(name) not in named:
+            named.add(_norm_source(name))
+            channels.append({"channel": name, "live": 0, "last_stock": "",
+                             "days_ago": None, "hours_ago": None, "refreshed": 0,
+                             "refreshed_pct": 0, "state": "unknown",
+                             "login": _login_for(name, logins)})
 
     # THE DIRECT PORTALS, BY NAME. They all share one source_channel, so Bathla,
     # Hermitage and Torsion appeared as a single row called "Direct Builder Portal
@@ -2504,7 +2572,7 @@ if __name__ == "__main__":
     # unreadable-stocklists panel had existed. A guard that checks one of five files
     # reads, from its passing, as though it checked all five.
     for _published in ("stock.json", "channels.json", "builders.json",
-                       "vendor-assets.json", "benchmarks.json"):
+                       "vendor-assets.json", "benchmarks.json", "parity_report.json"):
         _assert_no_folder_capability_urls(where / _published)
     _assert_a_benchmark_names_its_place(where / "stock.json")
     _assert_every_benchmark_listing_opens_somewhere(where / "benchmarks.json")

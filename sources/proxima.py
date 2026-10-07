@@ -306,9 +306,71 @@ _HEALTHY_AVAIL = 9
 # nothing new — they re-rank the same capped slice rather than re-selecting it.
 #
 # Above 160 lots this is still short. Price BANDS work there (splitting
-# property_range_filter[rop] into ranges returned 49 + 80 = the same 129), but no live
-# project needs them yet, so the shortfall is logged loudly rather than guessed at.
+# property_range_filter[rop] into ranges returned 49 + 80 = the same 129). Since 7 Oct 2026
+# _top_up_capped walks them: see _CEILING_FIELD.
 _RENDER_CAP = 80
+
+_SORT_FIELD = "sort[sort_attributes]"
+# THE MIDDLE OF A BIG PROJECT IS REACHED BY WALKING THE PRICE CEILING DOWN (7 Oct 2026).
+# The page's own body carries this field (26,000,000 on every captured body: the slider's
+# top). Replayed price-desc under a ceiling, the server returns the dearest 80 lots AT OR
+# BELOW it; the next ceiling is the cheapest of those, inclusive, so lots sharing a price
+# straddle no gap. Each step that comes back with exactly 80 is the cap talking again, so
+# the walk goes on until a band comes back short or meets the cheapest 80 already read.
+_CEILING_FIELD = "property_range_filter[rop][range_two]"
+# Extra POSTs one capped project may cost, so a huge project cannot keep the shared signed-
+# in session busy for long. 24 reaches about 1,900 lots.
+_MAX_REPLAYS = 24
+# What a capped read looks like when nothing says how big the project is: the cap, the
+# cap plus the 3 lots the old donor-body bug added (6 Oct: "83 in hand" thirteen times),
+# and both price sorts full.
+_CAP_SIGNATURES = (_RENDER_CAP, _RENDER_CAP + 3, 2 * _RENDER_CAP)
+
+
+def stored_project_counters(db_path=None) -> Dict[str, int]:
+    """{project id: the available count its header last stated}, from the database.
+
+    Only the INDEX states a project's (available/total) counter; a project that has
+    rotated off the index states none, and on 6 Oct that left _top_up_capped with no
+    number to be short of -- Live Caringbah stated 140 on 26 Sep and was read at 80 every
+    night after, with no warning. record_building refreshes project_available in place
+    whenever a header states it, so the newest stated value per project is the last one
+    the portal published. Never raises: no database means no counters, not no harvest.
+    """
+    import sqlite3
+    from pathlib import Path
+    try:
+        if db_path is None:
+            import config
+            db_path = config.DATABASE_PATH
+        path = Path(db_path)
+        if not path.exists():
+            return {}
+        conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+        try:
+            out: Dict[str, int] = {}
+            for pid, avail in conn.execute(
+                    "SELECT source_project_id, project_available FROM buildings "
+                    "WHERE source_channel='Proxima' AND project_available IS NOT NULL "
+                    "AND COALESCE(source_project_id,'') <> '' "
+                    "ORDER BY (checked_at IS NULL), checked_at DESC"):
+                out.setdefault(str(pid), int(avail))
+            return out
+        finally:
+            conn.close()
+    except Exception as e:                                            # noqa: BLE001
+        logger.warning("Proxima: could not read the stored project counters (%s) -- "
+                       "off-index projects will have no count to be short of.", e)
+        return {}
+
+
+def _has_field(body: str, key: str) -> bool:
+    return any(urllib.parse.unquote_plus(kv.partition("=")[0]) == key
+               for kv in (body or "").split("&"))
+
+
+def _rop(d: Dict[str, str]) -> Optional[float]:
+    return _num(d.get("rop"))
 
 # Replays the page's own accordion POST with one field changed, and returns the lot tiles
 # shaped exactly like _COLLECT_JS's, so _row cannot tell which path a lot arrived by.
@@ -536,7 +598,7 @@ class ProximaSource(PropertySource):
 
     SESSION = "portal_proxima"
 
-    def __init__(self, registry=None):
+    def __init__(self, registry=None, stored_counters: Optional[Dict[str, int]] = None):
         self.registry = registry
         self.stats: Dict[str, int] = {}
         self.projects_seen = 0
@@ -545,6 +607,14 @@ class ProximaSource(PropertySource):
         self.via_api = 0
         self.topped_up = 0
         self.off_index = 0
+        # {pid: available count its header last stated}; read from the database when the
+        # harvest starts if not handed in. See stored_project_counters.
+        self.stored_counters = stored_counters
+        # Projects whose read ends short of their counter or on a cap signature, by name.
+        self.short_projects: List[Dict[str, Any]] = []
+        # One entry per project read, for data/harvest_manifest.json.
+        self.project_log: List[Dict[str, Any]] = []
+        self._topup: Dict[str, Any] = {}
         # What the projects page had filtered on when this run opened it, if anything.
         # Kept so the run summary can say the harvest walked into a filtered page rather
         # than leaving that to be inferred from a low count. See _clear_filters.
@@ -756,13 +826,22 @@ class ProximaSource(PropertySource):
 
     def _top_up_capped(self, scraper, pid: str, body: str,
                        props: List[Dict[str, str]],
-                       stated_available: Optional[int]) -> List[Dict[str, str]]:
-        """Read the lots the 80-tile render cap hid, by asking for the other end.
+                       stated_available: Optional[int],
+                       name: str = "") -> List[Dict[str, str]]:
+        """Read the lots the 80-tile render cap hid: both price sorts, then price bands.
 
         Only runs for a project that came back sitting ON the cap and has no availability
         view to read instead. See _RENDER_CAP for why the sort flip is the lever and why
-        raising data-propertylimit is not.
+        raising data-propertylimit is not, and _CEILING_FIELD for the bands.
+
+        `body` MUST be this project's own body. Until 7 Oct 2026 an off-index project was
+        topped up with the DONOR body search() lends it -- every replay re-read project
+        761 (180 George Parramatta, 3 lots), "83 in hand" thirteen times on 6 Oct, three
+        foreign lots filed under Lindfield House, and no capped project ever got past 80.
+
+        A replay that fails keeps every lot already in hand; it never shrinks a read.
         """
+        self._topup = {"replays": 0, "bands": 0, "complete": False}
         if not body:
             logger.warning("     project %s is capped at %d lot(s) but no POST body was "
                            "captured, so the rest cannot be reached", pid, len(props))
@@ -773,33 +852,214 @@ class ProximaSource(PropertySource):
             return f"{(d.get('lot') or '').strip()}|{(d.get('name') or '').strip()}"
 
         have = {key(d) for d in props}
-        for srt in ("price-desc",):
+        start = len(props)
+
+        def replay(b):
+            """Tiles for one body, or None when the POST failed."""
+            if self._topup["replays"] >= _MAX_REPLAYS:
+                # Out of budget is not the end of the project (repair round 2): say so.
+                self._topup["exhausted"] = True
+                return None
+            self._topup["replays"] += 1
             try:
-                extra = scraper.page.evaluate(
-                    _REPLAY_ACCORDION_JS, [_with_field(body, "sort[sort_attributes]", srt)])
-            except Exception as e:
-                logger.warning("     project %s: %s replay failed: %s", pid, srt, e)
+                return scraper.page.evaluate(_REPLAY_ACCORDION_JS, [b]) or []
+            except Exception as e:                                    # noqa: BLE001
+                logger.warning("     project %s: replay failed (%s) -- keeping the %d "
+                               "lot(s) in hand", pid, e, len(props))
                 self._bump("capped project, replay failed")
-                return props
-            for d in (extra or []):
+                return None
+
+        def take(tiles) -> int:
+            added = 0
+            for d in tiles:
                 k = key(d)
                 if k not in have:
                     have.add(k)
                     props.append(d)
+                    added += 1
+            return added
+
+        if not _has_field(body, _SORT_FIELD):
+            logger.warning("     project %s: its POST body carries no %s, so the two price "
+                           "sorts are the same read", pid, _SORT_FIELD)
+
+        # BOTH ENDS, EXPLICITLY. The expand that produced `props` sorts however the page
+        # happened to be sorted; asking for each end by name does not depend on that.
+        sorted_reads: Dict[str, List[Dict[str, str]]] = {}
+        for srt in ("price-asc", "price-desc"):
+            got = replay(_with_field(body, _SORT_FIELD, srt))
+            if got is None:
+                break
+            sorted_reads[srt] = got
+            take(got)
+
+        asc, desc = sorted_reads.get("price-asc"), sorted_reads.get("price-desc")
+        both_full = (asc is not None and desc is not None
+                     and len(asc) >= _RENDER_CAP and len(desc) >= _RENDER_CAP)
+        disjoint = both_full and not ({key(d) for d in asc} & {key(d) for d in desc})
+        # PROVEN WHOLE when the two ends met: one came back short, or they overlap and
+        # between them hold more than one page. Two identical full pages prove nothing --
+        # that is also what a server ignoring the sort returns.
+        # MET BY PRICE, NOT ONLY BY KEY (repair round 1, 7 Oct 2026): both ends cut at the
+        # SAME price share their boundary lots and still miss the rest at that price (90
+        # lots at $600,000: 155 of 240 read, called whole). The cheapest 80 hold every lot
+        # below their dearest, the dearest 80 every lot above their cheapest; only when the
+        # second is strictly below the first is every price covered.
+        # THE SORT MUST HAVE BEEN HONOURED (repair round 2, 7 Oct 2026, data verifier). A
+        # server that ignores the sort but honours the ceiling answers both "sorts" with the
+        # cheapest 80; the band walk then started from the cheapest price, got one lot back
+        # below it, and called 80 of 300 lots whole. The dearest read must come back dearest
+        # first and reach at least as high as the cheapest read; when it does not, nothing
+        # past the cap can be reached by price, and the read is named short. Judged on what
+        # came back, not on the order of the tiles: two full reads holding the SAME lots
+        # with nothing dearer in the "dearest" one cannot both be ends of a project that
+        # overflows the cap.
+        honoured = True
+        if (asc is not None and desc is not None and len(asc) >= _RENDER_CAP
+                and len(desc) >= _RENDER_CAP):
+            asc_prices = [p for p in (_rop(d) for d in asc) if p]
+            desc_prices = [p for p in (_rop(d) for d in desc) if p]
+            same_lots = {key(d) for d in asc} == {key(d) for d in desc}
+            dearer = (bool(asc_prices) and bool(desc_prices)
+                      and max(desc_prices) > max(asc_prices))
+            # A project of exactly 80 lots gives both reads the same lots; only the order
+            # the tiles came back in can then show the sort was asked and answered.
+            ordered = (len(set(desc_prices)) > 1
+                       and desc_prices == sorted(desc_prices, reverse=True)
+                       and asc_prices == sorted(asc_prices))
+            honoured = not same_lots or dearer or ordered
+            if not honoured:
+                self._topup["unsorted"] = True
+                logger.warning("     project %s: the portal ignored the price sort (the dearest "
+                               "read is not dearest first), so lots past the %d-lot cap cannot "
+                               "be reached by price", pid, _RENDER_CAP)
+                self._bump("capped project, sort not honoured")
+        if asc is not None and desc is not None:
+            union = len({key(d) for d in asc} | {key(d) for d in desc})
+            top_of_asc = max((p for p in (_rop(d) for d in asc) if p), default=None)
+            low_of_desc = min((p for p in (_rop(d) for d in desc) if p), default=None)
+            crossed = (top_of_asc is not None and low_of_desc is not None
+                       and low_of_desc < top_of_asc)
+            self._topup["complete"] = honoured and (
+                len(asc) < _RENDER_CAP or len(desc) < _RENDER_CAP
+                or (not disjoint and union > _RENDER_CAP and crossed))
+        # Bands when the two ends did not meet (a middle exists that neither reached), or
+        # the read is still below the counter. Disjoint decides even with a counter: the
+        # stored one can be weeks old and lower than the project is tonight. And when they
+        # met only at one shared price, which the walk must try to split.
+        needs_bands = honoured and desc is not None and len(desc) >= _RENDER_CAP and (
+            disjoint or bool(stated_available and len(props) < stated_available)
+            or not self._topup["complete"])
+        if needs_bands:
+            if not _has_field(body, _CEILING_FIELD):
+                logger.warning("     project %s: over 2 x %d lots but its POST body has no "
+                               "%s, so its middle cannot be read in price bands",
+                               pid, _RENDER_CAP, _CEILING_FIELD)
+            else:
+                self._walk_bands(pid, body, asc, desc, replay, take)
 
         self.topped_up += 1
-        logger.info("     project %s: render cap reached, sort flip recovered %d more "
-                    "lot(s) — %d in hand", pid, len(props) - _RENDER_CAP, len(props))
-        # An honest shortfall beats a silent one. Above 160 lots the two price sorts
-        # cannot cover the middle of the list; price bands would, and _RENDER_CAP says so.
+        logger.info("     project %s (%s): render cap reached -- price-asc and price-desc "
+                    "replayed, %d price band(s), %d POST(s): %d -> %d lot(s) in hand",
+                    pid, (name or "?")[:40], self._topup["bands"], self._topup["replays"],
+                    start, len(props))
         if stated_available and len(props) < stated_available:
-            logger.warning(
-                "     project %s STILL SHORT: %d lot(s) read against the %d the project "
-                "header states are available. The two price sorts reach 2 x %d; this "
-                "project needs price-band slicing.", pid, len(props), stated_available,
-                _RENDER_CAP)
             self._bump("capped project still short after the sort flip")
         return props
+
+    def _walk_bands(self, pid, body, asc, desc, replay, take) -> None:
+        """Walk the price ceiling down from the dearest 80 until it meets the cheapest 80.
+
+        REPAIR ROUND 1 (7 Oct 2026, data verifier), three changes:
+          * the ceiling SENT is a dollar above the one meant, so the lots AT the boundary
+            price come back whether the portal's ceiling includes its own value or not
+            (unverified on the live portal; an exclusive one lost 8 of 300 lots priced in
+            blocks of six, and the read was called complete);
+          * a full band that cannot get below its own ceiling (80 or more lots at one
+            price) is asked FIRST, and is never a whole read: before, "the band met the
+            cheapest 80" was tested first, and 240 lots with 90 at $600,000 read 155 and
+            were called complete;
+          * the walk has met the cheapest 80 only when the band reaches STRICTLY below the
+            dearest of them: at one shared price either read may have been cut."""
+        floor = max((p for p in (_rop(d) for d in (asc or [])) if p), default=None)
+        prices = [p for p in (_rop(d) for d in desc) if p]
+        if not prices:
+            return
+        ceiling = min(prices)
+        by_desc = _with_field(body, _SORT_FIELD, "price-desc")
+        while True:
+            sent = ceiling + 1
+            label = f"{sent:.0f}" if float(sent).is_integer() else f"{sent}"
+            band = replay(_with_field(by_desc, _CEILING_FIELD, label))
+            if band is None:
+                break
+            self._topup["bands"] += 1
+            added = take(band)
+            if len(band) < _RENDER_CAP:
+                self._topup["complete"] = True
+                break                          # the band came back short: nothing below
+            low = min((p for p in (_rop(d) for d in band) if p), default=None)
+            if low is None:
+                break
+            if low >= ceiling:
+                self._topup["stuck"] = ceiling
+                logger.warning("     project %s: %d or more lots at $%s -- the price band "
+                               "cannot split them further, so the read is NOT whole",
+                               pid, _RENDER_CAP, f"{ceiling:,.0f}")
+                self._bump("capped project, one price holds the cap")
+                break
+            if floor is not None and low < floor:
+                self._topup["complete"] = True
+                break                          # met the cheapest 80 read by price-asc
+            if not added:
+                break
+            ceiling = low
+
+    def _warn_if_short(self, pid: str, name: str, read: int,
+                       stated: Optional[int]) -> None:
+        """Say BY NAME when a project's read looks capped or falls below its counter.
+
+        Two signals, either enough. Below the counter it last stated (the header tonight,
+        or the database for a project off the index). Or ending on a cap signature --
+        exactly 80, 83 or 160 -- which needs no counter at all: on 6 Oct 13 projects ended
+        on 83 and nothing said so, because none of them stated a count.
+        """
+        below = bool(stated) and read < stated
+        # ...unless the top-up just proved the read whole: a project can hold 83 lots.
+        signature = read in _CAP_SIGNATURES and not self._topup.get("complete")
+        # A band walk that met 80 or more lots at one price could not read past them,
+        # whatever the count (repair round 1, 7 Oct 2026) -- nor one whose portal ignored the
+        # sort, or that ran out of its _MAX_REPLAYS posts before the ends met (round 2).
+        stuck = ((self._topup.get("stuck") is not None or self._topup.get("unsorted")
+                  or self._topup.get("exhausted")) and not self._topup.get("complete"))
+        if not (below or signature or stuck):
+            return
+        self.short_projects.append({"pid": pid, "name": name, "read": read,
+                                    "stated": stated})
+        if stuck and not below and not signature:
+            if self._topup.get("stuck") is not None:
+                logger.warning("Proxima: project %s '%s' read %d lot(s), but %d or more of its "
+                               "lots share the price $%s and the portal shows at most %d of "
+                               "them -- some may be missing from tonight's harvest.", pid, name,
+                               read, _RENDER_CAP, f"{self._topup['stuck']:,.0f}", _RENDER_CAP)
+            elif self._topup.get("unsorted"):
+                logger.warning("Proxima: project %s '%s' read %d lot(s), but the portal ignored "
+                               "the price sort, so lots past its %d-lot cap could not be "
+                               "reached -- some may be missing from tonight's harvest.", pid,
+                               name, read, _RENDER_CAP)
+            else:
+                logger.warning("Proxima: project %s '%s' read %d lot(s) and used all %d of its "
+                               "replays before the price bands met -- some may be missing "
+                               "from tonight's harvest.", pid, name, read, _MAX_REPLAYS)
+            return
+        if below:
+            logger.warning("Proxima: project %s '%s' read %d lot(s) against the %d its "
+                           "counter last stated -- %d may be missing from tonight's "
+                           "harvest.", pid, name, read, stated, stated - read)
+        else:
+            logger.warning("Proxima: project %s '%s' ends at exactly %d lot(s), what the "
+                           "%d-lot render cap leaves -- lots past it are probably NOT in "
+                           "tonight's harvest.", pid, name, read, _RENDER_CAP)
 
     def _read_off_index(self, scraper, pid: str, name: str, body: str):
         """One project that the index never renders, read by id through the same POST.
@@ -813,17 +1073,31 @@ class ProximaSource(PropertySource):
         """
         if not body:
             return None
+        own = _with_field(body, "projectId", pid)
         try:
-            tiles = scraper.page.evaluate(
-                _REPLAY_ACCORDION_JS, [_with_field(body, "projectId", pid)])
+            tiles = scraper.page.evaluate(_REPLAY_ACCORDION_JS, [own])
         except Exception as e:
             logger.warning("     off-index project %s (%s) failed: %s", pid, name[:30], e)
             return None
         if not tiles:
             return None
+        # `_body` is THIS project's body. It used to be the donor's, unchanged, and the
+        # top-up replayed that -- see _top_up_capped.
         return {"header": {"project": name, "status": "", "location": "",
                            "developer": "", "sunset": "", "deposit": ""},
-                "props": tiles, "_body": body}
+                "props": tiles, "_body": own}
+
+    def _log_project(self, pid: str, name: str, on_index: bool, via_api: bool,
+                     header_counter, stated: Optional[int], read: int) -> None:
+        """One line of data/harvest_manifest.json for this project (see harvest_manifest)."""
+        avail, total = header_counter
+        self.project_log.append({
+            "pid": str(pid), "name": name, "on_index": on_index,
+            "via": "availability view" if via_api else "accordion",
+            "header_counter": [avail, total] if avail is not None else None,
+            "stated": stated, "printed": read,
+            "replays": self._topup.get("replays", 0), "bands": self._topup.get("bands", 0),
+            "short": any(s["pid"] == str(pid) for s in self.short_projects)})
 
     def _read_via_api(self, scraper, pid: str) -> Optional[List[Dict[str, str]]]:
         """A project's FULL inventory, via the availability view's own REST call.
@@ -1070,6 +1344,8 @@ class ProximaSource(PropertySource):
             return []
 
         results: List[Dict[str, Any]] = []
+        if self.stored_counters is None:
+            self.stored_counters = stored_project_counters()
         try:
             with scraper.session():
                 scraper.goto(PROJECTS_URL)
@@ -1168,12 +1444,20 @@ class ProximaSource(PropertySource):
                         # Sitting exactly on the render cap means the page stopped
                         # early, not that the project holds 80 lots. Projects read via
                         # the availability view are already whole and are left alone.
+                        pname, stated_avail, stated_total = parse_project_title(
+                            data["header"].get("project"))
+                        stated = (stated_avail if stated_avail is not None
+                                  else self.stored_counters.get(pid))
+                        self._topup = {}
                         if not used_api and len(data.get("props") or []) >= _RENDER_CAP:
-                            _, stated_avail, _ = parse_project_title(
-                                data["header"].get("project"))
                             data["props"] = self._top_up_capped(
                                 scraper, pid, data.get("_body", ""),
-                                data["props"], stated_avail)
+                                data["props"], stated, name=pname)
+                        if not used_api:
+                            self._warn_if_short(pid, pname, len(data["props"]), stated)
+                        self._log_project(pid, pname, True, used_api,
+                                          (stated_avail, stated_total), stated,
+                                          len(data["props"]))
                         if not data["props"]:
                             self._bump("project published no lots")
                             logger.info("  [%2d/%d] project %s (%s): no lots published",
@@ -1225,9 +1509,18 @@ class ProximaSource(PropertySource):
                                 self._bump("off-index project published no lots")
                                 continue
                             props = data["props"]
+                            # Its OWN body (data["_body"]), never off_body: replaying the
+                            # donor is how 13 projects read "83 in hand" on 6 Oct. The
+                            # header states no counter off the index, so the stored one
+                            # is what a shortfall is measured against.
+                            stated = self.stored_counters.get(pid)
+                            self._topup = {}
                             if len(props) >= _RENDER_CAP:
-                                props = self._top_up_capped(scraper, pid, off_body,
-                                                            props, None)
+                                props = self._top_up_capped(scraper, pid, data["_body"],
+                                                            props, stated, name=name)
+                            self._warn_if_short(pid, name, len(props), stated)
+                            self._log_project(pid, name, False, False, (None, None),
+                                              stated, len(props))
                             rows = [r for r in (self._row(d, data["header"], pid)
                                                 for d in props) if r]
                             if rows:

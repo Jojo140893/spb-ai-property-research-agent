@@ -117,11 +117,16 @@ FROM_VERIFIED = ("checked by hand against the development's published address; t
 FROM_SIBLING_CONFIRMED = ("read from the row's own text and confirmed by located "
                           "listings on the same source document")
 BLANK_OVERSEAS = "the listing is not in Australia"
+# THE ROW WRITES ITS OWN ADDRESS OUT IN FULL -- "Clyde North,Victoria,3978",
+# "MtDuneed,Victoria,3217" -- and the place is a locality of that state (7 Oct 2026, repair
+# round 2). See written_address.
+FROM_WRITTEN_ADDRESS = ("read from the address the row's own text writes out: place, "
+                        "state and postcode")
 
 # Reasons whose suburb may be used AS A LOCATION.
 _LOCATED = (STATED, FROM_COMPOSITE, FROM_POSTCODE, FROM_ADDRESS,
             FROM_ADDRESS_TAIL, FROM_DOCUMENT, FROM_TYPO, FROM_VERIFIED,
-            FROM_SIBLING_CONFIRMED)
+            FROM_SIBLING_CONFIRMED, FROM_WRITTEN_ADDRESS)
 
 # INFERRED, and deliberately not LOCATED.
 #
@@ -288,6 +293,134 @@ def resolve(row: Dict[str, Any], index=None) -> Tuple[str, str]:
     if not index.loaded:                       # no locality data in this environment
         return raw, STATED if raw else BLANK_ABSENT
 
+    sub, why = _resolve_from_evidence(row, index, raw, state)
+    return _unless_the_row_writes_its_address(row, index, state, sub, why)
+
+
+# ---------------------------------------------------------------------------------
+# THE ADDRESS A ROW WRITES OUT IN FULL (7 Oct 2026, repair round 2 of the parity release).
+#
+# One E-Agent price list ("1 Part & Under Construction", its Merbein and Tarneit lots) prints
+# each lot's place as "Clyde North,Victoria,3978", "MtDuneed,Victoria,3217",
+# "Bonniebrook,Victoria,3335" -- glued, abbreviated, never matching the gazetteer's spelling
+# exactly. Every rule below missed it: the suburb column held a neighbouring cell
+# ("Merbein", 400 km from Clyde North) or nothing, and the build's last resort then gave
+# nine of them their builder's commonest suburb, Tarneit. A Tarneit search shortlisted
+# "Mt Duneed,Victoria,3217" as a verified Tarneit lot.
+#
+# A place, the state written out in full, and a postcode of that state is the row's own
+# address saying where it is. The place is read by the gazetteer's spoken key (spaces,
+# Mt/Mount, St/Saint folded) and only when it names exactly one locality of that state. It
+# decides only where the rules below said something else -- or nothing; where they agree,
+# their answer and its grade stand untouched.
+_WRITTEN_STATES = {"newsouthwales": "NSW", "victoria": "VIC", "queensland": "QLD",
+                   "southaustralia": "SA", "westernaustralia": "WA", "tasmania": "TAS",
+                   "northernterritory": "NT", "australiancapitalterritory": "ACT"}
+_WRITTEN_ADDRESS = re.compile(
+    r"([A-Za-z][A-Za-z.'\-]*(?:\s+[A-Za-z][A-Za-z.'\-]*){0,3})\s*[,\uff0c]\s*"
+    r"(new\s*south\s*wales|victoria|queensland|south\s*australia|western\s*australia|"
+    r"tasmania|northern\s*territory|australian\s*capital\s*territory)\s*[,\uff0c]?\s*"
+    r"(\d{4})\b", re.I)
+_WRITTEN_FIELDS = ("lot_address", "estate_name", "title_status", "source_text")
+_STATE_CODES = frozenset(("NSW", "VIC", "QLD", "SA", "WA", "TAS", "NT", "ACT"))
+
+
+def _spoken(name: str) -> str:
+    """geo.spoken_key without importing geo: 'Mount Duneed', 'MtDuneed' -> 'mtduneed'."""
+    folded = re.sub(r"\bsaint\b", "st", re.sub(r"\bmount\b", "mt", str(name or "").lower()))
+    return re.sub(r"[^a-z]", "", folded)
+
+
+def written_address(row: Dict[str, Any], index=None) -> Optional[Tuple[str, str]]:
+    """(locality, state) the row's own text writes out as '<Place>,<State>,<postcode>', or
+    None -- None too when it writes two different places, or a place no locality of that
+    state answers to ('Tarniet', 'Soutbank')."""
+    index = index or _index()
+    if not getattr(index, "loaded", False):
+        return None
+    found = set()
+    for field in _WRITTEN_FIELDS:
+        text = str(row.get(field) or "")[:_MAX_TEXT]
+        if "," not in text and "\uff0c" not in text:
+            continue
+        for m in _WRITTEN_ADDRESS.finditer(text):
+            state = _WRITTEN_STATES.get(re.sub(r"\s+", "", m.group(2).lower()))
+            if not state or state_from_postcode(m.group(3)) != state:
+                continue
+            words = m.group(1).split()
+            while words and words[-1].upper() in _STATE_CODES:   # "Tarneit VIC,Victoria"
+                words.pop()
+            for k in range(min(3, len(words)), 0, -1):
+                said = " ".join(words[-k:])
+                got = index.canonical_suburb(said, state, spoken=True)
+                if not (got and index.locate(got, state)):
+                    # One letter out, as _typo_correction reads a stated suburb:
+                    # "Tarniet,Victoria,3029" is Tarneit, the only locality that close.
+                    got = _typo_correction(said, state, index)
+                if got and index.locate(got, state):
+                    found.add((index.canonical_suburb(got, state) or got, state))
+                    break
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def _within_one_edit(a: str, b: str) -> bool:
+    """Equal, or one letter added, dropped, changed, or two neighbours swapped."""
+    if a == b:
+        return True
+    if abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        diffs = [i for i in range(len(a)) if a[i] != b[i]]
+        return len(diffs) == 1 or (len(diffs) == 2 and diffs[1] == diffs[0] + 1
+                                   and a[diffs[0]] == b[diffs[1]]
+                                   and a[diffs[1]] == b[diffs[0]])
+    short, long_ = (a, b) if len(a) < len(b) else (b, a)
+    return any(long_[:i] + long_[i + 1:] == short for i in range(len(long_)))
+
+
+def written_address_agrees(row: Dict[str, Any], name: str, state: str = "") -> bool:
+    """Whether a suburb we would GUESS for this row -- its builder's or its document's, or
+    its estate's -- agrees with the address the row writes out itself. True when the row
+    writes none. A place written in another state, or one not within a letter of `name`
+    ('Tarniet' is Tarneit misspelt; 'Mt Duneed' is not Tarneit), is a disagreement, so the
+    guess is refused even where the written place is not one the gazetteer knows."""
+    want = _spoken(name)
+    state = str(state or "").strip().upper()
+    wrote = False
+    for field in _WRITTEN_FIELDS:
+        text = str(row.get(field) or "")[:_MAX_TEXT]
+        if "," not in text and "\uff0c" not in text:
+            continue
+        for m in _WRITTEN_ADDRESS.finditer(text):
+            written_state = _WRITTEN_STATES.get(re.sub(r"\s+", "", m.group(2).lower()))
+            if not written_state or state_from_postcode(m.group(3)) != written_state:
+                continue
+            wrote = True
+            if state and written_state != state:
+                continue
+            words = m.group(1).split()
+            while words and words[-1].upper() in _STATE_CODES:
+                words.pop()
+            if want and any(_within_one_edit(_spoken(" ".join(words[-k:])), want)
+                            for k in range(1, min(3, len(words)) + 1)):
+                return True
+    return not wrote
+
+
+def _unless_the_row_writes_its_address(row, index, state, sub, why):
+    """(sub, why), or the place written_address reads when the row's own state is that
+    place's and the answer above names somewhere else or nowhere."""
+    if not state or why in (FROM_VERIFIED, BLANK_OVERSEAS):
+        return sub, why
+    written = written_address(row, index)
+    if written and written[1] == state and _spoken(written[0]) != _spoken(sub):
+        return written[0], FROM_WRITTEN_ADDRESS
+    return sub, why
+
+
+def _resolve_from_evidence(row, index, raw, state):
+    """resolve()'s rules for a row that carries no grade of its own: every return of the
+    function before 7 Oct 2026, unchanged."""
     # A HAND-CHECKED RULE THAT CONTRADICTS THE ROW'S STATE. The only path here that
     # overrides stored data, used where the state itself is the error -- see
     # document_suburb.override_for_row for the evidence each one carries.

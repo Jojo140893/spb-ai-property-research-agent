@@ -263,6 +263,21 @@
     .nc-group .nc-why{font-size:0.8rem;color:var(--text-muted)}
     .nc-group .nc-warn{margin-top:0.35rem;font-size:0.8rem;font-weight:700;color:#92400e}
     .nc-group .nc-hidden{padding:0 1rem 0.75rem;font-size:0.8rem;color:var(--text-muted)}
+    .nc-group .nc-more{display:block;margin:0.4rem 0.8rem 0.8rem}
+    /* "N LOTS IN M BUILDINGS" and the Group by building switch over the results (Coleen,
+       7 Oct 2026: she compares the app with E-Agent building by building). Display only. */
+    .results-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;
+                  gap:0.5rem;margin:0 0 0.75rem;font-size:0.92rem;color:var(--text-heading)}
+    .results-head .results-count{font-weight:700}
+    .results-head .group-toggle{font-size:0.84rem;color:var(--text-body);cursor:pointer;
+                  display:inline-flex;align-items:center;gap:0.35rem}
+    .bldg{border:1px solid var(--border-soft,#e3e8ef);border-radius:8px;margin:0.5rem 0;
+          background:var(--panel-bg,#fff)}
+    .bldg > summary{cursor:pointer;padding:0.65rem 0.9rem;font-size:0.88rem;line-height:1.45}
+    .bldg .bldg-name{font-weight:700;color:var(--text-heading)}
+    .bldg .bldg-facts{color:var(--text-muted)}
+    .bldg .bldg-body{padding:0 0.6rem 0.4rem}
+    .bldg .bldg-note{padding:0.3rem 0.4rem;font-size:0.8rem;color:var(--text-muted)}
 
     /* The rejection log, folded. Thirty red cards below five results made a working
            page look like a failed one; the reasoning is still one click away. */
@@ -1383,6 +1398,89 @@
         return CHANNELS;
     }
 
+    /* PARITY-PANEL-BEGIN
+     * DOES THE APP SHOW WHAT THE SOURCES LIST? (7 Oct 2026)
+     *
+     * Coleen phoned on 7 Oct: the same search in E-Agent and in the Research tab, and E-Agent
+     * always showed more. It was right -- a state-wide search scored only the 600 cheapest
+     * lots in the state -- and nothing here said so. parity_check.py now searches every state
+     * nightly the way she does (whole state, no budget) and compares what comes back with
+     * every lot the builders' lists carried in the last three nights. This shows its table.
+     *
+     * parity_report.json is written AFTER the build (beside stock.json), so a build the check
+     * has not run against has none: the panel is then simply absent, never "all clear".
+     */
+    let PARITY = null;
+
+    async function loadParity() {
+        if (PARITY) return PARITY;
+        try {
+            const res = await fetch('parity_report.json', { cache: 'no-store' });
+            if (res.status === 401) { sessionExpired(); return null; }
+            if (!res.ok) return null;
+            PARITY = await res.json();
+        } catch (e) {
+            console.error('parity report:', e);
+            PARITY = null;
+        }
+        return PARITY;
+    }
+
+    function parityPanel(p) {
+        if (!p || !Array.isArray(p.rows) || !p.rows.length) return '';
+        const share = pair => (Array.isArray(pair) && pair[0])
+            ? `${Number(pair[1]).toLocaleString()} of ${Number(pair[0]).toLocaleString()}
+               <span style="color:var(--text-muted); white-space:nowrap;">(${(100 * pair[1] / pair[0]).toFixed(1)}%)</span>`
+            : '&mdash;';
+        const fails = Array.isArray(p.failures) ? p.failures : [];
+        const ok = p.verdict === 'PASS';
+        const td = 'padding:0.4rem 0.5rem;';
+        return `
+          <div id="parityPanel" style="margin-top:1rem; padding:0.9rem 1.1rem; border:1px solid var(--border-light);
+                      border-radius:8px; background:var(--bg-page);">
+            <strong style="color:var(--text-heading);">Does the app show what the sources
+              list?${p.night ? ` &mdash; ${esc(p.night)}` : ''}</strong>
+            <span class="pill ${ok ? 'pill-recommend' : 'pill-reject'}" style="margin-left:0.4rem;">${
+              ok ? 'everything shown' : `${fails.length} to fix`}</span>
+            <p style="margin:0.5rem 0 0.6rem; font-size:0.85rem; color:var(--text-body);">
+              Every night each state is searched the way you search it &mdash; the whole
+              state, no budget &mdash; and compared with every lot the builders&rsquo; lists
+              and portals carried in the last ${Number((p.bars || {}).recent_nights || 3)} nights.
+              A lot counts as shown when it is in the results or under &ldquo;Needs confirming&rdquo;;
+              &ldquo;On the shortlist&rdquo; is the part Clare and Agent 2 read, and a lot hidden
+              for a reason (sold elsewhere, its page gone, not a home's price) is counted apart.
+            </p>
+            <div class="table-scroll" style="overflow-x:auto; max-width:100%;">
+            <table style="width:100%; border-collapse:collapse; font-size:0.82rem;">
+              <thead><tr style="text-align:left; color:var(--text-muted);">
+                <th style="${td}">State</th><th style="${td}">E-Agent lots</th>
+                <th style="${td}">All lots</th><th style="${td}">On the shortlist</th>
+                <th style="${td}">Buildings</th><th style="${td}">Hidden for a reason</th>
+              </tr></thead>
+              <tbody>${p.rows.map(r => `
+                <tr style="border-top:1px solid var(--border-light);">
+                  <td style="${td}"><strong>${esc(r.state)}</strong>${r.pass === false
+                    ? ' <span style="color:var(--rose-red);">&#10007;</span>' : ''}</td>
+                  <td style="${td}">${share(r.e_agent_lots)}</td>
+                  <td style="${td}">${share(r.lots)}</td>
+                  <td style="${td}">${share(r.shortlisted)}</td>
+                  <td style="${td}">${share(r.buildings)}</td>
+                  <td style="${td}">${Number.isFinite(Number(r.obvious_lots)) && Number(r.obvious_lots) > 0
+                    ? `${Number(r.excused_lots || 0).toLocaleString()} of ${Number(r.obvious_lots).toLocaleString()}`
+                    : '&mdash;'}</td>
+                </tr>`).join('')}</tbody>
+            </table>
+            </div>
+            ${fails.length ? `
+            <div style="margin-top:0.6rem; font-size:0.78rem; color:var(--text-body);
+                        max-height:11rem; overflow:auto; line-height:1.6;">
+              ${fails.slice(0, 15).map(f => `<div>&#10007; ${esc(f.group)}: ${esc(f.text)}</div>`).join('')}
+              ${fails.length > 15 ? `<div style="color:var(--text-muted);">and ${fails.length - 15} more in the nightly log</div>` : ''}
+            </div>` : ''}
+          </div>`;
+    }
+    /* PARITY-PANEL-END */
+
     // MODULE SCOPE, NOT INSIDE paintChannelBanner. These were first declared after
     // that function's early return, so they existed only within it — and the
     // channels table, which is rendered elsewhere, threw ReferenceError: agoText is
@@ -1556,6 +1654,7 @@
         const el = document.getElementById('settingsContent');
         const badge = document.getElementById('channelsBadge');
         await loadChannelHealth();
+        await loadParity();
         paintChannelBanner();
         if (!CHANNELS) {
             el.innerHTML = '<p style="color:var(--text-muted);">Could not read the source status.</p>';
@@ -1633,7 +1732,11 @@
             return '<span class="pill pill-muted">not checked</span>'
                 + (l.note ? `<div style="font-size:0.72rem; color:var(--text-muted); margin-top:0.15rem;">${esc(l.note)}</div>` : '');
         };
+        // WRAPPED TO SCROLL SIDEWAYS (7 Oct 2026): six columns of pills and dates are wider
+        // than a phone, and the table pushed the whole Settings tab 191 px past a 375 px
+        // screen. The page stays put; the table scrolls inside its own box.
         const table = (rows, firstCol) => `
+          <div class="table-scroll" style="overflow-x:auto; max-width:100%;">
           <table style="width:100%; border-collapse:collapse;">
             <thead><tr style="text-align:left; color:var(--text-muted); font-size:0.8rem;">
               <th style="padding:0.45rem 0.5rem;">${firstCol}</th>
@@ -1656,7 +1759,8 @@
                              ? 'color:var(--rose-red); font-weight:600;' : ''}">
                   ${c.refreshed_pct}%</td>
               </tr>`).join('')}</tbody>
-          </table>`;
+          </table>
+          </div>`;
         const portals = CHANNELS.portals || [];
         el.innerHTML = `
           ${table(chans, 'Source')}
@@ -1732,6 +1836,7 @@
               nothing, because not recognising a property is not the same as it being sold.
             </p>
           </div>` : ''}
+          ${parityPanel(PARITY)}
           ${(CHANNELS.unreadable_stocklists && CHANNELS.unreadable_stocklists.count) ? `
           <div style="margin-top:1rem; padding:0.9rem 1.1rem; border:1px solid var(--border-light);
                       border-radius:8px; background:var(--bg-page);">
@@ -3125,6 +3230,8 @@ python state_sync.py push</pre>
     // no benchmark button), painted 25 at a time for the same reason the Research tab pages:
     // a search can return hundreds. opts: { n: the card's index, lead: its callId, shown }.
     const HL_LIVE_PAGE = 25;
+    // The most cards a re-run asks for: one server page (api/research.py PAGE_LIMIT_MAX).
+    const HL_LIVE_LIMIT = 500;
     function hlLiveBlock(data, opts) {
         const d = (data && typeof data === 'object') ? data : {};
         const o = (opts && typeof opts === 'object') ? opts : {};
@@ -3135,9 +3242,16 @@ python state_sync.py push</pre>
         const lead = typeof o.lead === 'string' ? o.lead : '';
         const shown = Math.min(shortlist.length,
             (Number.isInteger(o.shown) && o.shown > 0) ? o.shown : HL_LIVE_PAGE);
+        // MORE FOUND THAN ONE PAGE HOLDS (repair round 1, 7 Oct 2026). A state-wide re-run
+        // found 3,244 lots and holds the best 500; "Showing 25 of 3244" beside "475 remaining
+        // of 500" were two counts that disagreed. Both now say which 500 they are.
+        const partial = found > shortlist.length;
+        const held = partial ? `the best ${shortlist.length.toLocaleString('en-AU')} of `
+                             + `${found.toLocaleString('en-AU')}` : esc(found);
         const head = `<div class="hl-recs-note"><span class="pill pill-conditions">Live results &mdash; not saved</span>
-                ${shown ? `Showing ${shown} of ${esc(found)} from today's stock, best first. Tick
+                ${shown ? `Showing ${shown} of ${held} from today's stock, best first. Tick
                 &ldquo;compare&rdquo; on any of them for this client's report.` : ''}
+                ${shown && partial ? 'Run the same brief on the Research tab to page through all of them.' : ''}
                 Press Refresh above to go back to the saved recommendations.</div>`;
         if (!shown) {
             return head + hlRecsBlock([], {
@@ -3153,7 +3267,8 @@ python state_sync.py push</pre>
                }).join('') + '</div>'
              + (left > 0
                  ? `<button type="button" class="btn-ghost btn-more" id="hlMore-${n}" onclick="hlShowMore(${n})">`
-                   + `Show ${Math.min(left, HL_LIVE_PAGE)} more (${left} remaining of ${shortlist.length})</button>`
+                   + `Show ${Math.min(left, HL_LIVE_PAGE)} more (${left} remaining of `
+                   + `${partial ? 'the best ' : ''}${shortlist.length})</button>`
                  : '');
     }
 
@@ -4037,10 +4152,14 @@ python state_sync.py push</pre>
         say("Running the research against today's stock. This can take up to a minute.", false);
         let failure = '';
         try {
+            // A PAGE OF FULL CARDS (7 Oct 2026). Every candidate is scored now, so a lead's
+            // state-wide brief can shortlist thousands; unpaged, the endpoint would send all of
+            // them with only the first 600 as full cards. 500 full cards, best first, is more
+            // than this tab pages through, and the count above them stays the whole count.
             const res = await fetch('/api/research', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ client_brief: lead.brief })
+                body: JSON.stringify({ client_brief: lead.brief, offset: 0, limit: HL_LIVE_LIMIT })
             });
             if (res.status === 401) {
                 say('Your sign-in has expired. Opening the sign-in page…', false);
@@ -5013,7 +5132,9 @@ python state_sync.py push</pre>
         const hash = el.dataset.hash || '';
         if (!hash) return;                       // no identity: cannot be carried, see render
         if (el.checked) {
-            const prop = (LAST_SHORTLIST || []).find(p => p.content_hash === hash);
+            // `p &&`: LAST_SHORTLIST is indexed by rank since results come in pages
+            // (7 Oct 2026), so a building opened out of order leaves gaps in it.
+            const prop = (LAST_SHORTLIST || []).find(p => p && p.content_hash === hash);
             // Re-ticking something already held keeps the stored copy rather than
             // dropping it: the record is only in LAST_SHORTLIST while its own search is
             // on screen.
@@ -6129,15 +6250,25 @@ python state_sync.py push</pre>
         stale: "not checked at the source in the last 14 days",
         newer_capture: 'a newer capture of this lot exists',
         document_partially_read: 'its list was only partly read the last time',
+        conflicting_capture: 'another project on the portal lists this unit as Not Available',
+        // 7 Oct 2026, repair round 2: shown to confirm rather than hidden
+        // (_candidates.FRESH_GUARD_ACTIONS).
+        builder_documents_reread: "the builder's newer lists were read since and this list was not",
+        newer_upload_in_folder: 'a newer price list was uploaded beside this one',
+        project_reread_uncounted: 'the portal project was read again since without this lot',
     };
     const HIDDEN_WHY = {
         newer_capture_disagrees: 'a newer capture of the same lot says otherwise',
         newer_capture_exists: 'a newer capture of the same lot exists',
         newer_capture_repriced: 'a newer capture of the same lot asks a different price',
         document_reread_without_row: 'their list was read again without them',
+        project_reread_without_row: 'their portal project was read again in full without them',
         newer_list_from_sender: 'the builder has sent a newer list',
         over_confirm_limit: 'they are more than 45 days old',
         builder_documents_reread: "the builder's other lists were read again without them",
+        newer_upload_in_folder: 'a newer price list was uploaded in their place',
+        price_not_a_home: 'their price is a fee, a deposit or a commission, not a home',
+        fragment: 'their line is only a price, with no lot',
         no_capture_date: 'they have no capture date',
         untraceable: "they could not be traced back to their listing",
         no_document: "their list could not be identified",
@@ -6149,7 +6280,7 @@ python state_sync.py push</pre>
         larger_total_in_text: 'their list prints a larger total than their price',
         build_only: 'their price is for the build only',
         land_only: 'their price is for the land only',
-        commercial: 'they are commercial listings (an office, shop or warehouse)',
+        commercial: 'they are commercial listings (an office, shop, warehouse or storage unit)',
     };
 
     /* One needs-confirming listing. NOT renderShortlistCard, on purpose: no compare tick (a
@@ -6194,9 +6325,16 @@ python state_sync.py push</pre>
         return [...because].map(([why, n]) => `${n} because ${why}`);
     }
 
-    /* The amber group, CLOSED, below the shortlist. These rows are never put into
-       LAST_SHORTLIST, SELECTED or COMPARISONS, so nothing here can reach a comparison, a
-       client report, Kommo or Clare. '' when the server sent none. */
+    /* The amber group below the shortlist. These rows are never put into LAST_SHORTLIST,
+       SELECTED or COMPARISONS, so nothing here can reach a comparison, a client report,
+       Kommo or Clare. '' when the server sent none.
+
+       CLOSED, UNLESS IT HOLDS A LOT READ IN THE LAST 3 NIGHTS (7 Oct 2026). A lot read last
+       night is as fresh as the shortlist beside it -- only its list's status is in doubt --
+       and a closed box hid 50 QLD lots of exactly that kind on 6 Oct. The server counts
+       them over the whole group (search_help.needs_confirming.recent), not just this page.
+       And the rest of the group is a button away ("Show N more", ncMoreLabel), where it used
+       to stop at the 50 best. */
     function renderNeedsConfirming(data) {
         const d = (data && typeof data === 'object') ? data : {};
         const list = needsConfirmingEntries(d);
@@ -6206,15 +6344,37 @@ python state_sync.py push</pre>
         const head = `${confirmCountShort(d) ? 'At least ' : ''}${inThousands(total)} more listing`
             + `${one ? ' matches' : 's match'} but need${one ? 's' : ''} confirming before you send ${one ? 'it' : 'them'}`;
         const hidden = hiddenReasons(d);
-        return `<details class="nc-group"><summary class="nc-summary">${esc(head)}</summary>
+        const recent = recentToConfirm(d);
+        const more = ncMoreLabel(d);
+        return `<details class="nc-group"${recent ? ' open' : ''}><summary class="nc-summary">${esc(head)}</summary>
             <div class="nc-intro">Not in the shortlist: each was last seen more than 14 days ago, or
                 its list doesn't say whether it's available. They can't be compared or put in a
                 client report until the builder confirms them.</div>
+            ${recent ? `<div class="nc-intro">${esc(`${inThousands(recent)} of them ${recent === 1 ? 'was' : 'were'} read in the last 3 nights.`)}</div>` : ''}
             ${total > list.length ? `<div class="nc-intro">${esc(`Showing the ${list.length} best matches of ${total}.`)}</div>` : ''}
             ${list.map(needsConfirmingCard).join('')}
+            ${more ? `<button type="button" class="btn-ghost nc-more">${esc(more)}</button>` : ''}
             ${hidden.length ? `<div class="nc-hidden">${esc(`Also left out: ${hidden.join('; ')}.`)}</div>` : ''}
         </details>`;
     }
+
+    // How many of the group were read in the last 3 nights, by the server's count. 0 when it
+    // sent none (an older server, or nothing recent).
+    const recentToConfirm = d => {
+        const help = d && d.search_help;
+        const nc = help && typeof help === 'object' ? help.needs_confirming : null;
+        return (nc && typeof nc === 'object' ? wholeCount(nc.recent) : null) ?? 0;
+    };
+
+    // "Show 50 more (60 remaining of 110)" when the server has more of the group to send, by
+    // its own count; '' when every one is listed.
+    const ncMoreLabel = d => {
+        const total = wholeCount(d && d.needs_confirming_count);
+        const listed = needsConfirmingEntries(d).length;
+        if (total === null || total <= listed) return '';
+        const left = total - listed;
+        return `Show ${inThousands(Math.min(left, NC_PAGE))} more to confirm (${inThousands(left)} remaining of ${inThousands(total)})`;
+    };
 
     /* True when the server says its needs-confirming count may be short: the search's own
        pool was cut at the candidate cap, so stale matches past the cut were never scored or
@@ -6283,11 +6443,73 @@ python state_sync.py push</pre>
        error, at each await. */
     let RESEARCH_RUN = 0;
 
+    /* PAGED RESULTS (Coleen, 7 Oct 2026: "E-Agent always shows more"). The search used to
+       score only the 600 cheapest lots in a state; it scores every one now, so a state-wide
+       search shortlists thousands, and the server sends them a page at a time
+       (api/research.py: offset/limit, needs_confirming_offset/limit). This tab asks for
+       RESEARCH_PAGE cards, paints them SHORTLIST_PAGE at a time as before, and asks for the
+       next page when those have been shown. Every page is the same ranking, so card #101 is
+       #101 whichever page brought it. */
+    const RESEARCH_PAGE = 100;
+    const NC_PAGE = 50;
+    // Group by building: display only, OFF until the consultant turns it on, and it stays as
+    // she left it for the rest of the visit.
+    let GROUP_BY_BUILDING = false;
+
+    // The body of a research request: the brief, the page, and explain only when asked.
+    const researchBody = (brief, explain, page) => Object.assign(
+        { client_brief: brief },
+        explain ? { explain: true } : {},
+        { offset: 0, limit: RESEARCH_PAGE, needs_confirming_offset: 0,
+          needs_confirming_limit: NC_PAGE },
+        page || {});
+
+    // "2,931 lots in 417 buildings": what the search found, by the server's own counts.
+    // '' when it found nothing; lots alone when the server sent no building count.
+    function lotsInBuildingsText(d) {
+        const lots = wholeCount(d && d.shortlist_count);
+        if (!lots) return '';
+        const blds = wholeCount(d && d.buildings_count);
+        const l = `${inThousands(lots)} lot${lots === 1 ? '' : 's'}`;
+        return blds === null ? l : `${l} in ${inThousands(blds)} building${blds === 1 ? '' : 's'}`;
+    }
+
+    // One building's row: its name, suburb and state, how many of its lots matched and their
+    // price range. Text only; the caller escapes nothing more.
+    function buildingRowText(b) {
+        const x = (b && typeof b === 'object') ? b : {};
+        const lots = wholeCount(x.lots) ?? 0;
+        const where = [String(x.suburb ?? '').trim(), String(x.state ?? '').trim()]
+            .filter(Boolean).join(' ');
+        const lo = Number(x.price_min), hi = Number(x.price_max);
+        const price = lo > 0 && hi > 0 ? (lo === hi ? echoMoney(lo) : `${echoMoney(lo)} – ${echoMoney(hi)}`) : '';
+        return {
+            name: String(x.name ?? '').trim() || 'Building not named in the source',
+            facts: [where, `${inThousands(lots)} lot${lots === 1 ? '' : 's'}`, price]
+                .filter(Boolean).join(' · '),
+        };
+    }
+
+    // POST one more page of the same search. Throws on anything but a research result.
+    async function fetchResearchPage(body) {
+        const res = await fetch('/api/research', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!res.ok) throw new Error(`the server answered ${res.status}`);
+        const d = await res.json();
+        if (!d || d.status !== 'success' || !Array.isArray(d.shortlist)) {
+            throw new Error((d && d.message) ? String(d.message) : 'not a research result');
+        }
+        return d;
+    }
+
     async function runResearchAgent(options) {
-        // explain:true asks the server for search_help and needs_confirming. Only a search
+        // explain:true asks the server for search_help and needs_confirming. A search
         // someone asked for sends it -- a form submit, a relaxation click, "search without
-        // this minimum" -- never the page-load run: the explanation re-runs the search for
-        // every relaxation, which is seconds nobody is waiting on when the page opens.
+        // this minimum" -- and since 7 Oct 2026 the page-load run too, so it shows the same
+        // totals and needs-confirming count an Execute does (relaxations are priced only for
+        // a search that found fewer than 5, which every-state-no-ceiling never is).
         const explain = !!(options && options.explain === true);
         // focusResults: the click that started this search (a relaxation, "search without
         // this minimum") was a button inside the results, which the repaint destroys, and
@@ -6330,8 +6552,7 @@ python state_sync.py push</pre>
                     res = await fetch('/api/research', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(explain ? { client_brief: brief, explain: true }
-                                                     : { client_brief: brief })
+                        body: JSON.stringify(researchBody(brief, explain))
                     });
                     if (res.ok && (res.headers.get('Content-Type') || '').includes('json')) break;
                     // 401 IS NOT WORTH RETRYING, and telling somebody to press the button
@@ -6441,8 +6662,43 @@ python state_sync.py push</pre>
                     if (target && typeof target.focus === 'function') target.focus();
                 }
 
-                LAST_SHORTLIST = data.shortlist || [];
+                /* The cards this search has brought back so far, in rank order. A paged
+                   answer carries RESEARCH_PAGE of them, each with its rank, and says how many
+                   there are in all (shortlist_count); one with no page (an older server) is
+                   the whole shortlist and is drawn exactly as before. */
+                const loaded = (Array.isArray(data.shortlist) ? data.shortlist : []).slice();
+                const total = Math.max(wholeCount(data.shortlist_count) ?? 0, loaded.length);
+                let nextOffset = (data.page && typeof data.page === 'object')
+                    ? wholeCount(data.page.next_offset) : null;
+                const rankIdx = (prop, fallback) => {
+                    const r = wholeCount(prop && prop.rank);
+                    return r ? r - 1 : fallback;
+                };
+                // By rank, so a card's benchmark button (checkBenchmark reads LAST_SHORTLIST[idx])
+                // finds its own row whichever page or building brought it.
+                LAST_SHORTLIST = [];
+                const place = entries => entries.forEach(e => {
+                    LAST_SHORTLIST[rankIdx(e, LAST_SHORTLIST.length)] = e;
+                });
+                place(loaded);
                 BENCH_CACHE = null;      // a fresh search re-reads the market, not a stale copy
+
+                // "2,931 lots in 417 buildings", and the switch that groups them (display only).
+                const buildings = (Array.isArray(data.buildings) ? data.buildings : [])
+                    .filter(b => b && typeof b === 'object' && typeof b.key === 'string');
+                const headText = lotsInBuildingsText(data);
+                if (headText) {
+                    const head = document.createElement('div');
+                    head.className = 'results-head';
+                    head.innerHTML = `<span class="results-count">${esc(headText)}</span>`
+                        + (buildings.length ? `<label class="group-toggle"><input type="checkbox" class="group-box"${GROUP_BY_BUILDING ? ' checked' : ''}> Group by building</label>` : '');
+                    resultsDiv.appendChild(head);
+                    const groupBox = head.querySelector('.group-box');
+                    if (groupBox) groupBox.onchange = () => {
+                        GROUP_BY_BUILDING = !!groupBox.checked;
+                        paintCards();
+                    };
+                }
 
                 /* PAINTED IN BATCHES, because the shortlist is no longer capped at 5.
                    Ahsan's Wyndham Vale brief scores 475 qualifying properties, and each
@@ -6455,30 +6711,15 @@ python state_sync.py push</pre>
                 let shortlistShown = 0;
                 // The cards get a box of their own, so a later "Show more" page lands with
                 // the others -- not below the needs-confirming group and the rejection log,
-                // which are painted after the first page.
+                // which are painted after the first page. The building groups get another.
                 const cardsBox = document.createElement('div');
                 cardsBox.className = 'shortlist-cards';
                 resultsDiv.appendChild(cardsBox);
-                const paintShortlist = () => {
-                    const slice = data.shortlist.slice(shortlistShown,
-                                                       shortlistShown + SHORTLIST_PAGE);
-                    slice.forEach((prop, i) => renderShortlistCard(prop, shortlistShown + i));
-                    shortlistShown += slice.length;
-                    const more = document.getElementById('shortlistMore');
-                    if (more) {
-                        const left = data.shortlist.length - shortlistShown;
-                        if (left > 0) {
-                            more.textContent = `Show ${Math.min(left, SHORTLIST_PAGE)} more `
-                                             + `(${left} remaining of ${data.shortlist.length})`;
-                            // Cards were just appended after it, so put it back at the end.
-                            cardsBox.appendChild(more);
-                        } else {
-                            more.remove();
-                        }
-                    }
-                };
+                const groupsBox = document.createElement('div');
+                groupsBox.className = 'building-groups';
+                resultsDiv.appendChild(groupsBox);
 
-                const renderShortlistCard = (prop, idx) => {
+                const renderShortlistCard = (prop, idx, into) => {
                     const isRank1 = idx === 0;
                     const card = document.createElement('div');
                     card.className = `prop-card ${isRank1 ? 'rank-1' : ''}`;
@@ -6487,34 +6728,208 @@ python state_sync.py push</pre>
                     // benchmark button, byte for byte as before.
                     card.innerHTML = shortlistCardHtml(prop, idx);
 
-                    cardsBox.appendChild(card);
+                    (into || cardsBox).appendChild(card);
+                };
+
+                // "Show N more (R remaining of T)" counts against the server's total, not
+                // what has been brought back so far.
+                let more = null, fetching = false;
+                const labelMore = () => {
+                    if (!more) return;
+                    const left = total - shortlistShown;
+                    if (left > 0) {
+                        more.textContent = `Show ${Math.min(left, SHORTLIST_PAGE)} more `
+                                         + `(${left} remaining of ${total})`;
+                        // Cards were just appended after it, so put it back at the end.
+                        cardsBox.appendChild(more);
+                    } else {
+                        more.remove();
+                    }
+                };
+                const paintShortlist = async () => {
+                    if (fetching) return;
+                    // The next 25 are past what the server has sent: ask for its next page
+                    // of the SAME search (the brief as posted, not the form as it is now).
+                    if (shortlistShown + SHORTLIST_PAGE > loaded.length && nextOffset !== null
+                            && loaded.length < total) {
+                        fetching = true;
+                        if (more) more.textContent = 'Loading more…';
+                        try {
+                            const d2 = await fetchResearchPage(researchBody(brief, false,
+                                                                            { offset: nextOffset }));
+                            if (overtaken()) return;
+                            loaded.push(...d2.shortlist);
+                            place(d2.shortlist);
+                            nextOffset = (d2.page && typeof d2.page === 'object')
+                                ? wholeCount(d2.page.next_offset) : null;
+                            if (!d2.shortlist.length) nextOffset = null;
+                        } catch (err) {
+                            if (overtaken()) return;
+                            if (more) more.textContent = `Could not load more (${(err && err.message) || 'the request failed'}) — press to try again`;
+                            return;
+                        } finally {
+                            fetching = false;
+                        }
+                    }
+                    const slice = loaded.slice(shortlistShown, shortlistShown + SHORTLIST_PAGE);
+                    slice.forEach((prop, i) => renderShortlistCard(prop, rankIdx(prop, shortlistShown + i)));
+                    shortlistShown += slice.length;
+                    if (!slice.length && more) {
+                        more.remove();
+                        return;
+                    }
+                    labelMore();
                 };
 
                 // The button is created FIRST so the single paint below can label it and
                 // move it to the end. Creating it after meant calling paintShortlist()
                 // twice just to set the text — which painted a second batch as a side
                 // effect and quietly showed 50.
-                if (data.shortlist.length > SHORTLIST_PAGE) {
-                    const more = document.createElement('button');
+                if (total > SHORTLIST_PAGE) {
+                    more = document.createElement('button');
                     more.id = 'shortlistMore';
                     more.type = 'button';
                     more.className = 'btn-ghost';
                     more.style.cssText = 'display:block; width:100%; margin:0.75rem 0 1rem; '
                                        + 'padding:0.6rem; font-weight:600; cursor:pointer;';
-                    more.onclick = () => paintShortlist();
+                    more.onclick = () => paintShortlist().catch(err => {
+                        if (more) more.textContent = `These cards could not be drawn (${(err && err.message) || 'unexpected error'})`;
+                    });
                     cardsBox.appendChild(more);
                 }
-                paintShortlist();
 
-                // Needs confirming: amber, closed, below the confirmed cards and never among
-                // them -- see renderNeedsConfirming. Its rows stay out of LAST_SHORTLIST.
-                const ncHtml = renderNeedsConfirming(data);
-                if (ncHtml) {
-                    const ncBox = document.createElement('div');
-                    ncBox.innerHTML = ncHtml;
-                    resultsDiv.appendChild(ncBox);
+                /* GROUP BY BUILDING (Coleen, 7 Oct 2026: she compares with E-Agent building by
+                   building). One row per building the search found, best first, with how many
+                   of its lots matched and their price range; open it for its lot cards. The
+                   ranking is untouched: each card keeps its rank. A building's lots not yet
+                   brought back are asked for by its key, the same search narrowed to it. */
+                const GROUP_PAGE = 50;
+                let groupsShown = 0;
+                const buildingRow = b => {
+                    const det = document.createElement('details');
+                    det.className = 'bldg';
+                    const t = buildingRowText(b);
+                    det.innerHTML = `<summary><span class="bldg-name">${esc(t.name)}</span> `
+                        + `<span class="bldg-facts">${esc(t.facts)}</span></summary>`;
+                    const body = document.createElement('div');
+                    body.className = 'bldg-body';
+                    det.appendChild(body);
+                    let filled = false;
+                    det.addEventListener('toggle', async () => {
+                        if (!det.open || filled) return;
+                        filled = true;
+                        const want = wholeCount(b.lots) ?? 0;
+                        let cards = loaded.filter(p => p && p.building_key === b.key);
+                        if (cards.length < want) {
+                            body.innerHTML = '<div class="bldg-note">Loading this building’s lots…</div>';
+                            try {
+                                const d3 = await fetchResearchPage(researchBody(brief, false,
+                                    { offset: 0, limit: Math.min(want, 500), building: b.key }));
+                                if (overtaken()) return;
+                                cards = d3.shortlist;
+                                place(cards);
+                            } catch (err) {
+                                if (overtaken()) return;
+                                filled = false;
+                                body.innerHTML = `<div class="bldg-note">${esc(`Could not load this building’s lots (${(err && err.message) || 'the request failed'}). Close and open it to try again.`)}</div>`;
+                                return;
+                            }
+                        }
+                        body.innerHTML = '';
+                        cards.forEach(p => renderShortlistCard(p, rankIdx(p, 0), body));
+                        if (want > cards.length) {
+                            const note = document.createElement('div');
+                            note.className = 'bldg-note';
+                            note.textContent = `Showing ${inThousands(cards.length)} of ${inThousands(want)} lots.`;
+                            body.appendChild(note);
+                        }
+                    });
+                    return det;
+                };
+                let groupsMore = null;
+                const paintGroups = () => {
+                    const slice = buildings.slice(groupsShown, groupsShown + GROUP_PAGE);
+                    slice.forEach(b => groupsBox.appendChild(buildingRow(b)));
+                    groupsShown += slice.length;
+                    const left = buildings.length - groupsShown;
+                    if (left > 0) {
+                        if (!groupsMore) {
+                            groupsMore = document.createElement('button');
+                            groupsMore.type = 'button';
+                            groupsMore.className = 'btn-ghost';
+                            groupsMore.style.cssText = 'display:block; width:100%; margin:0.75rem 0 1rem; '
+                                                     + 'padding:0.6rem; font-weight:600; cursor:pointer;';
+                            groupsMore.onclick = () => paintGroups();
+                        }
+                        groupsMore.textContent = `Show ${Math.min(left, GROUP_PAGE)} more buildings `
+                                               + `(${left} remaining of ${buildings.length})`;
+                        groupsBox.appendChild(groupsMore);
+                    } else if (groupsMore) {
+                        groupsMore.remove();
+                    }
+                };
+                // One view at a time, so no card is on the page twice (a card's benchmark
+                // output is found by id).
+                const paintCards = () => {
+                    if (GROUP_BY_BUILDING && buildings.length) {
+                        cardsBox.innerHTML = '';
+                        cardsBox.hidden = true;
+                        groupsBox.hidden = false;
+                        groupsBox.innerHTML = '';
+                        groupsShown = 0;
+                        paintGroups();
+                        return;
+                    }
+                    groupsBox.innerHTML = '';
+                    groupsBox.hidden = true;
+                    cardsBox.hidden = false;
+                    cardsBox.innerHTML = '';
+                    const upTo = Math.max(SHORTLIST_PAGE, shortlistShown);
+                    shortlistShown = 0;
+                    loaded.slice(0, upTo).forEach((prop, i) => renderShortlistCard(prop, rankIdx(prop, i)));
+                    shortlistShown = Math.min(upTo, loaded.length);
+                    labelMore();
+                };
+                // Awaited, so a card that cannot be drawn lands in this search's own catch
+                // ("The results could not be displayed") rather than nowhere.
+                if (GROUP_BY_BUILDING && buildings.length) paintCards();
+                else await paintShortlist();
+
+                // Needs confirming: amber, below the confirmed cards and never among them --
+                // see renderNeedsConfirming. Its rows stay out of LAST_SHORTLIST. "Show more"
+                // brings the next page of the group (the same search, explained).
+                let ncList = needsConfirmingEntries(data);
+                const ncBox = document.createElement('div');
+                const paintNc = open => {
+                    ncBox.innerHTML = renderNeedsConfirming({ ...data, needs_confirming: ncList });
                     ncGroup = ncBox.querySelector('.nc-group');
                     ncSummary = ncBox.querySelector('.nc-summary');
+                    // Kept open after "Show more" brought the next page into it.
+                    if (open && ncGroup) ncGroup.open = !!open;
+                    const ncMore = ncBox.querySelector('.nc-more');
+                    if (ncMore) ncMore.onclick = async () => {
+                        ncMore.disabled = true;
+                        ncMore.textContent = 'Loading more…';
+                        try {
+                            const d4 = await fetchResearchPage(researchBody(brief, true, {
+                                limit: 0, needs_confirming_offset: ncList.length }));
+                            if (overtaken()) return;
+                            const seen = new Set(ncList.map(x => x.content_hash));
+                            const add = needsConfirmingEntries(d4).filter(x => !seen.has(x.content_hash));
+                            ncList = ncList.concat(add);
+                            // Nothing new: stop offering more than the server will send.
+                            if (!add.length) data.needs_confirming_count = ncList.length;
+                            paintNc(true);
+                        } catch (err) {
+                            if (overtaken()) return;
+                            ncMore.disabled = false;
+                            ncMore.textContent = `Could not load more (${(err && err.message) || 'the request failed'}) — press to try again`;
+                        }
+                    };
+                };
+                if (ncList.length) {
+                    resultsDiv.appendChild(ncBox);
+                    paintNc(false);
                 }
 
                 // Client report + search coverage summary bar
@@ -6945,6 +7360,33 @@ python state_sync.py push</pre>
      * would turn every link sent so far into a blank page. They are adapters now, so an
      * old link renders the new document.
      */
+    /* AN ESTATE COLUMN THAT IS THE LIST'S OWN HEADING IS NOT A PLACE A CLIENT READS (7 Oct
+       2026, repair round 2). A builder's price list puts its banner where its estate column
+       is read from, and the report headlined it: "SPB PREFERRED OPTION: OPTION 1 - STOCK
+       HIGHLIGHTED IN ORANGE BELOW IS ELIGIBLE FOR THE 100% COMMISSION OFFER., COLAC". The
+       owner's rule is that a client document never shows an internal field, and an agent's
+       commission is the most internal of all. Dropped: commission / agent / eligibility /
+       FIRB / guaranteed-income wording, a "stock list" or "price list" title, "28 items" and
+       "Page 1 of 2" counters, contract and completion small print, a table's header row (three
+       or more column words), and anything over 70 characters. The label then reads the
+       suburb alone. Inside the app the card still shows the column as read. */
+    const LIST_HEADING = /commission|eligib|highlight|\bfirb\b|guaranteed|\bagent|purchaser|stock\s*list|price\s*list|pricelist|\b\d+\s+(?:stock\s+)?items?\b|\bpage\s+\d+\s+of\b|contract|completion|timeframe|scheduled|outgoings|\bbudget\b|\bbelow\b/i;
+    const TABLE_HEADER_WORD = /\b(?:lot|unit|level|bed|beds|bath|car|price|total|type|status|size|aspect|int|ext|m2|sqm|frontage|rent|yield|config|configuration|notes|store|ground|mezzanine|balcony|stock|id)\b/gi;
+    function clientEstate(v) {
+        const s = String(v ?? '').trim();
+        if (!s || s.length > 70 || LIST_HEADING.test(s)) return '';
+        return (s.match(TABLE_HEADER_WORD) || []).length >= 3 ? '' : s;
+    }
+    /* And the card's own title, which on a flattened price-list line can carry the same
+       small print: "Agent commission=6%plus, South Yarra VIC" was a shortlisted title on
+       6 Oct. The comma-separated parts that speak to an agent are dropped; the rest of the
+       address stays exactly as read. client_report.py does the same for its document. */
+    const INTERNAL_TEXT = /commission|\bagent|purchaser|eligib|highlight|\bfirb\b|guaranteed\s+income/i;
+    function clientAddress(v) {
+        return String(v ?? '').split(',').map(s => s.trim())
+            .filter(s => s && !INTERNAL_TEXT.test(s)).join(', ');
+    }
+
     function packageReportDocument(props, shareUrl, opts) {
         const o = opts || {};
         const dash = '<span class="na">&mdash;</span>';
@@ -6972,8 +7414,9 @@ python state_sync.py push</pre>
         // The street address if the source gave one, otherwise the estate and suburb.
         // Never blank: this is the only thing in the row that names the property.
         const addr = p => {
-            if (raw(p.lot_address)) return esc(p.lot_address);
-            const l = [raw(p.estate_context), raw(p.suburb)].filter(Boolean).join(', ');
+            const own = clientAddress(p.lot_address);
+            if (own) return esc(own);
+            const l = [clientEstate(p.estate_context), raw(p.suburb)].filter(Boolean).join(', ');
             return l ? esc(l) : dash;
         };
         /* ESCAPED, and uppercased BEFORE escaping. This feeds an <h3> and the preferred-
@@ -6981,8 +7424,8 @@ python state_sync.py push</pre>
            puts `"><img src=x onerror=...>` in exactly that field. Uppercasing after
            escaping would also turn `&amp;` into `&AMP;`, which browsers still parse but
            which has no business being in a document a client receives. */
-        const labelRaw = p => [raw(p.estate_context), raw(p.suburb)].filter(Boolean).join(', ')
-                              || raw(p.lot_address);
+        const labelRaw = p => [clientEstate(p.estate_context), raw(p.suburb)].filter(Boolean).join(', ')
+                              || clientAddress(p.lot_address);
         const label = p => labelRaw(p) ? esc(labelRaw(p)) : dash;
         const labelUpper = p => labelRaw(p) ? esc(labelRaw(p).toUpperCase()) : dash;
 
@@ -7006,7 +7449,7 @@ python state_sync.py push</pre>
             const bbc = [p.bedrooms, p.bathrooms, p.car_spaces];
             const bbcText = bbc.some(v => raw(v))
                 ? bbc.map(v => raw(v) ? esc(v) : '&ndash;').join(' / ') : '';
-            const street = raw(p.lot_address) ? esc(p.lot_address) : '';
+            const street = clientAddress(p.lot_address) ? esc(clientAddress(p.lot_address)) : '';
             const cells = [
                 `<strong>${i + 1}</strong>`,
                 (place(p) ? esc(place(p)) : dash)
@@ -7555,9 +7998,12 @@ ${SPB_BRAND()}
     });
 
     loadBuilderDirectory();
-    // The page-load search is NOT explained: nobody asked for it, and explaining re-runs the
-    // search once per relaxation. Press Execute to see why a search found what it found.
-    runResearchAgent();
+    // The page-load search IS explained since 7 Oct 2026, so it shows the same totals an
+    // Execute does -- "N lots in M buildings" and how many more need confirming (the audit
+    // found 245 such lots the page-load search never sent). Explaining re-prices relaxations
+    // only for a search that shortlisted fewer than 5, and this one (every state, no
+    // ceiling) shortlists thousands, so it costs one needs-confirming pass, not a re-run each.
+    runResearchAgent({ explain: true });
 
     // On load, on whatever tab happens to be open. The whole point is that a source
     // going quiet is invisible — waiting for someone to open Settings would reproduce

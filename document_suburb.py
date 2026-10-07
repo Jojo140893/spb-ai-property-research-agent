@@ -436,7 +436,7 @@ _RULES_CACHE: Optional[List[dict]] = None
 
 
 def manual_rules(refresh: bool = False) -> List[dict]:
-    """The hand-checked rules, each able to match by url, project or document title."""
+    """The hand-checked rules, each able to match by url, folder, project or title."""
     global _RULES_CACHE
     if _RULES_CACHE is not None and not refresh:
         return _RULES_CACHE
@@ -483,6 +483,51 @@ def _rule_for_project(row: Dict[str, object]) -> Optional[dict]:
     for rule in manual_rules():
         needle = str(rule.get("project") or "").strip().lower()
         if needle and needle in haystack:
+            return rule
+    return None
+
+
+def _rule_for_url(row: Dict[str, object]) -> Optional[dict]:
+    """A hand-checked rule keyed to this row's exact source link."""
+    url = str(row.get("source_url") or "").strip()
+    if not url:
+        return None
+    for rule in manual_rules():
+        if str(rule.get("url") or "").strip() == url:
+            return rule
+    return None
+
+
+# A Dropbox shared-folder id is 21 characters; anything this short is not one, and an
+# empty or tiny value would be a substring of every link in the catalogue.
+_FOLDER_MIN_CHARS = 10
+
+
+def _rule_for_folder(row: Dict[str, object]) -> Optional[dict]:
+    """A hand-checked rule naming the shared folder this row's price list sits in.
+
+    7 Oct 2026. THE FILE NAME IS NOT DURABLE EITHER. The Victoria & Albert list was
+    re-uploaded on 22 Sep as 'Victoria & Albert - Sales List - 22 Sep 2026 4.55pm.pdf'
+    after 'VandA Pricelist (2) (1).pdf': a new link AND a new builder_name, so the url key
+    and the project key 'vanda' both stopped matching and 114 Broadbeach apartments
+    dropped out of every Queensland search. What did not change is the folder:
+    /scl/fo/db9kwomup9qkyxo5c9ifo/ held both files. Measured on the 6 Oct database, 88
+    Dropbox folders, 19 re-uploaded at least once, and every one of those 19 still held a
+    single project -- while their file names went 'Price List Hali' ->
+    'hali-dromana-pricelist' and 'Eastbury Price' -> 'eastbury-wheelers-hill-pricelist'.
+
+    Matched as a whole path segment of the row's source_url or stocklist_file (the folder
+    link E-Agent points at), never as a loose substring.
+    """
+    links = [str(row.get(field) or "") for field in ("source_url", "stocklist_file")]
+    if not any(links):
+        return None
+    for rule in manual_rules():
+        folder = str(rule.get("folder") or "").strip().strip("/")
+        if len(folder) < _FOLDER_MIN_CHARS:
+            continue
+        segment = "/" + folder + "/"
+        if any(segment in link for link in links):
             return rule
     return None
 
@@ -554,8 +599,9 @@ def override_for_row(row: Dict[str, object]):
 def suburb_for_row(row: Dict[str, object]) -> str:
     """The suburb this row's own source document names, or ''.
 
-    Tried by exact URL first, then by the project the row belongs to -- see
-    _rule_for_project for why the URL alone is not durable.
+    Tried by exact URL first, then by the shared folder the document sits in, then by the
+    project the row belongs to -- see _rule_for_folder and _rule_for_project for why the
+    URL alone is not durable -- and only then by the automatic front-page map.
 
     The state must still agree either way. An answer was read under one state and a row
     from another state is not covered by it.
@@ -567,16 +613,24 @@ def suburb_for_row(row: Dict[str, object]) -> str:
             return ""
         return str(suburb or "")
 
+    # THE HAND-CHECKED RULES FIRST, then the automatic map (7 Oct 2026). The README and
+    # _MANUAL_PATH both say a person's check WINS over the front-page scan, but only a
+    # rule keyed by the exact link did: a project rule was consulted after the automatic
+    # map, so on the next re-upload the nightly read of the new link beat it. On 6 Oct
+    # that read named '95SKR Master Price List' Waterways; it is Fareham, 95 St Kilda
+    # Road, St Kilda, about 20 km away. A state disagreement still refuses a rule exactly
+    # as before, and the automatic answer still serves every document no rule covers.
+    for find in (_rule_for_url, _rule_for_folder, _rule_for_project):
+        rule = find(row)
+        if rule:
+            found = _agrees(rule.get("suburb"), rule.get("state"))
+            if found:
+                return found
+
     entry = load_map().get(str(row.get("source_url") or ""))
     if entry:
         suburb, state = (list(entry) + ["", ""])[:2]
-        found = _agrees(suburb, state)
-        if found:
-            return found
-
-    rule = _rule_for_project(row)
-    if rule:
-        return _agrees(rule.get("suburb"), rule.get("state"))
+        return _agrees(suburb, state)
     return ""
 
 

@@ -185,13 +185,55 @@ def packages_for(brief, rows):
     """
     import _candidates
     from sources.dedupe import DedupeEngine
-    was = _candidates.EXCEPTIONS_LIST_MODE
+    was = (_candidates.EXCEPTIONS_LIST_MODE, _candidates.MAX_CANDIDATES,
+           _candidates.same_lot_key, _candidates.fresh_row_guard, _candidates.not_a_home)
     _candidates.EXCEPTIONS_LIST_MODE = "confirm"
+    # THE POOL THE GOLDEN WAS SAVED UNDER (7 Oct 2026), pinned the way the mode is: the
+    # 600-row cap (an emergency valve now, off by default) and the card-only merge keys
+    # (the collapse and api/research.py's dedupe now also ask whether two rows are the same
+    # lot). This file pins that moving the loop changed no SCORING; the new pool rules are
+    # asserted, on this same subset, by tests/test_one_price_list_two_lots.py.
+    # And repair round 1's (7 Oct 2026): a fresh row its own list no longer carries, or
+    # that is not a home at all, is no longer verified (fresh_row_guard, not_a_home) --
+    # 33 of qld_no_budget's 402 on this subset. The rules themselves are asserted by
+    # tests/test_fresh_rows_and_copies_7oct.py, and their effect on this subset by
+    # tests/test_explain_empty.py.
+    _candidates.MAX_CANDIDATES = 600
+    _candidates.same_lot_key = lambda package, row: None
+    _candidates.fresh_row_guard = lambda *a, **k: None
+    _candidates.not_a_home = lambda *a, **k: None
     try:
         packages, _counts = _candidates.build_packages(dict(brief), rows, today=gen.TODAY)
     finally:
-        _candidates.EXCEPTIONS_LIST_MODE = was
+        (_candidates.EXCEPTIONS_LIST_MODE, _candidates.MAX_CANDIDATES,
+         _candidates.same_lot_key, _candidates.fresh_row_guard,
+         _candidates.not_a_home) = was
     return DedupeEngine.deduplicate(packages)
+
+
+def _note_top(note, top=10):
+    """A golden Kommo note as kommo_agent writes it since 7 Oct 2026: the first `top`
+    numbered shortlist lines, then "... and N more on the shortlist." when there were more.
+    The golden was saved when the note listed every shortlisted lot (402 on qld_no_budget);
+    the shortlist itself is still compared in full, line for line, above."""
+    lines = note.split("\n")
+    numbered = [i for i, line in enumerate(lines) if re.match(r"^\d+\. ", line)]
+    if len(numbered) <= top:
+        return note
+    cut = len(numbered) - top
+    keep = lines[:numbered[top]] + ["... and {:,} more on the shortlist.".format(cut)]
+    return "\n".join(keep + lines[numbered[-1] + 1:])
+
+
+@pytest.fixture(autouse=True)
+def _the_order_the_golden_was_saved_in(monkeypatch):
+    """By score alone, ties in input order. Since repair round 1 (7 Oct 2026) the fresher
+    read ranks first among equal scores (kommo_agent.shortlist_rank, asserted by
+    tests/test_fresh_rows_and_copies_7oct.py); every test here compares with an order saved
+    before that, or with run_property_research's own order, so both are pinned alike."""
+    import kommo_agent
+    monkeypatch.setattr(kommo_agent, "shortlist_rank",
+                        lambda c: c.scoring.total_score if c.scoring else 0)
 
 
 def run(agent, brief, rows):
@@ -319,6 +361,9 @@ def test_the_pipeline_output_equals_the_pre_extraction_golden(name, subset_rows,
                            _first_difference(mine[key], saved[key])))
     assert mine["shortlist_count"] == saved["shortlist_count"]
     assert mine["rejected_count"] == saved["rejected_count"]
+    saved = copy.deepcopy(saved)
+    saved["kommo_payload"]["kommo_internal_note"] = _note_top(
+        saved["kommo_payload"]["kommo_internal_note"])
     assert mine["kommo_payload"] == saved["kommo_payload"]
     assert mine == saved
 
@@ -328,7 +373,12 @@ def test_the_pipeline_output_equals_the_golden_on_the_full_snapshot(name, full_r
                                                                     full_agent):
     saved = GOLDEN["briefs"][name]["full_snapshot"]
     result, _packages = run(full_agent, BRIEFS[name], full_rows)
-    assert full_record(result) == saved
+    mine = full_record(result)
+    # The digest also covers the Kommo note, which lists the top 10 since 7 Oct 2026 where
+    # the golden's listed every lot, and only the 17 Sep snapshot could re-record it. The
+    # scoring it exists to pin is compared here hash by hash.
+    for key in ("shortlist_hashes", "pending_count", "rejected_count"):
+        assert mine[key] == saved[key], key
 
 
 # ------------------------------------------------------------------ what W10 adds

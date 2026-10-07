@@ -20,8 +20,16 @@ from typing import List, Dict, Any
 from sources.base import PropertySource
 from sources.scraper_base import PlaywrightScraper, parse_price, parse_int, PLAYWRIGHT_AVAILABLE, SESSION_DIR
 from sources.portal_config import config_for_url
+from sources import adaptive_extract
 from sources.adaptive_extract import extract_listings
 from secrets_store import get_credentials
+# NOT A HARD IMPORT (7 Oct 2026): this module is shipped inside the research function and
+# harvest_manifest.py is not -- see the same note in sources/e_agent.py.
+try:
+    import harvest_manifest
+except ImportError:                                                     # pragma: no cover
+    from types import SimpleNamespace as _Stub
+    harvest_manifest = _Stub(entry=lambda *a, **k: {}, tag=lambda *a, **k: None)
 from builder_registry import BuilderRegistry
 
 logger = logging.getLogger("spb.scraper.portals")
@@ -45,6 +53,20 @@ _EXPAND_PAGE_LENGTH_JS = r"""
   return best;
 }
 """
+
+
+def _stamp_page(rows, url: str):
+    """Every row names the page it was read from when its card has no link of its own.
+
+    A row with no source_url has no document for the search to group it with, and is
+    refused as "no_document" (api/_candidates admission_refusal). On 6 Oct 32 live portal
+    rows had none -- Torsion 17, Bathla 14, Hermitage 1 (7 Oct 2026). A card's own link,
+    where it has one, still wins: it is the better pointer.
+    """
+    for r in rows or ():
+        if not str(r.get("source_url_or_ref") or "").strip():
+            r["source_url_or_ref"] = url
+    return rows
 
 
 _SCROLL_ROUNDS = 40
@@ -183,9 +205,29 @@ class BuilderPortalSource(PropertySource):
         return True
 
     def _scrape_builder(self, builder: Dict[str, Any], filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """One portal's stock, with its line in data/harvest_manifest.json."""
         cfg = config_for_url(builder["portal_url"])
         if not cfg:
             return []
+        from urllib.parse import urlparse
+        entry = harvest_manifest.entry(
+            cfg.source_channel or self.channel_name, "portal", builder["builder_name"],
+            name=builder["builder_name"], host=urlparse(cfg.listings_url or "").netloc)
+        self._outcome = ""
+        self._page_stats = {"found": 0, "read": 0}
+        rows = self._scrape_builder_pages(builder, filters, cfg)
+        page = self._page_stats
+        harvest_manifest.tag(rows, entry)
+        # A builder licensed in two states is scraped twice; one good read is a read.
+        outcome = self._outcome or ("read" if rows else "zero-yield")
+        entry.update(outcome="read" if entry.get("outcome") == "read" else outcome,
+                     printed=max(int(entry.get("printed") or 0), len(rows)),
+                     cards_found=max(int(entry.get("cards_found") or 0), page["found"]),
+                     cards_read=max(int(entry.get("cards_read") or 0), page["read"]))
+        return rows
+
+    def _scrape_builder_pages(self, builder: Dict[str, Any], filters: Dict[str, Any],
+                              cfg) -> List[Dict[str, Any]]:
         if not cfg.verified:
             logger.warning("[%s] portal selectors are UNVERIFIED — confirm against live DOM in portal_config.py.", cfg.name)
         # Per-portal channel where one is configured (Proxima), else the generic one.
@@ -207,7 +249,9 @@ class BuilderPortalSource(PropertySource):
                 # may still be valid. Only authenticate if nothing is readable.
                 scraper.goto(cfg.listings_url)
                 st0 = builder["states"][0] if builder.get("states") else filters.get("state", "")
-                probe = extract_listings(scraper.page, builder_hint=builder["builder_name"], state_hint=st0)
+                probe = _stamp_page(extract_listings(
+                    scraper.page, builder_hint=builder["builder_name"], state_hint=st0),
+                    cfg.listings_url)
 
                 # A SIGNED-OUT PORTAL THAT STILL RENDERS A FEW CARDS READ AS A SUCCESS.
                 #
@@ -269,8 +313,10 @@ class BuilderPortalSource(PropertySource):
                         logger.warning("[%s] stock list not readable and no credentials stored. "
                                        "Sign in once: python portal_login.py \"%s\"",
                                        cfg.name, builder["builder_name"])
+                        self._outcome = "no credentials"
                         return []
                     if not self._login(scraper, cfg, email, password):
+                        self._outcome = "login failed"
                         if probe and not signed_in:
                             logger.error("[%s] could not sign in; refusing the %d public "
                                          "listing(s) rather than storing a teaser as the "
@@ -293,7 +339,11 @@ class BuilderPortalSource(PropertySource):
                 # whichever path actually yields listings. A loose generic selector
                 # like 'tr' can "match" rows that hold no readable fields, so match
                 # count alone must never decide.
-                adaptive = extract_listings(scraper.page, builder_hint=builder["builder_name"], state_hint=st0) or probe
+                adaptive = _stamp_page(extract_listings(
+                    scraper.page, builder_hint=builder["builder_name"], state_hint=st0),
+                    cfg.listings_url) or probe
+                # the main grid's found/read, before an extra page overwrites LAST_PAGE
+                self._page_stats = dict(adaptive_extract.LAST_PAGE)
                 cards = scraper.page.query_selector_all(cfg.listing_card_selector)
                 fs = cfg.field_selectors
                 for card in cards:
@@ -329,7 +379,9 @@ class BuilderPortalSource(PropertySource):
                 for extra_url in (cfg.extra_listings_urls or ()):
                     try:
                         scraper.goto(extra_url)
-                        more = extract_listings(scraper.page, builder_hint=builder["builder_name"], state_hint=st0)
+                        more = _stamp_page(extract_listings(
+                            scraper.page, builder_hint=builder["builder_name"],
+                            state_hint=st0), extra_url)
                         if more:
                             logger.info("[%s] +%d listing(s) from %s", cfg.name, len(more), extra_url)
                             adaptive = (adaptive or []) + more
@@ -356,6 +408,7 @@ class BuilderPortalSource(PropertySource):
                 logger.warning("[%s] no readable listings on %s.", cfg.name, cfg.listings_url)
         except Exception as e:
             logger.exception("[%s] scraper crashed: %s", cfg.name, e)
+            self._outcome = "crashed"
             return []
         return results
 

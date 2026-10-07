@@ -118,6 +118,21 @@ def test_the_client_report_header_says_any_state():
     assert "QLD" not in meta, meta
 
 
+def test_a_search_with_no_ceiling_prints_no_budget_figure():
+    """A brief with no Max budget reaches the report as api/research's NO_CEILING
+    (9,007,199,254,740,991, JavaScript's largest safe integer). The server's client report
+    printed "Budget up to $9,007,199,254,740,991" (callers verification, 7 Oct 2026)."""
+    from client_report import ClientReportGenerator
+    brief = ClientBriefParser.parse_dict({"client_name": "Test Buyer", "state": "VIC",
+                                          "budget_max": 9007199254740991})
+    meta = _meta_line(ClientReportGenerator.generate_html(brief, list(_pair())))
+    assert "9,007,199" not in meta, meta
+    assert "No budget limit" in meta, meta
+    # A real ceiling still prints.
+    meta = _meta_line(ClientReportGenerator.generate_html(_brief("VIC"), list(_pair())))
+    assert "Budget up to $750,000" in meta, meta
+
+
 def test_the_comparison_report_header_says_any_state():
     from comparison_report import ComparisonReportGenerator
     meta = _meta_line(ComparisonReportGenerator.generate_html(_brief(""), list(_pair())))

@@ -78,3 +78,9 @@ _harvest_partial
 data/sheet_check.json
 # E-Agent login failure captures (sources/e_agent.py); uploaded as a run artifact, never committed
 logs/
+# The source-to-search parity check's output (parity_check.py, 7 Oct 2026): tonight's table
+# (copied beside stock.json for the Settings tab) and the 14 nights the drift bar compares
+# with. Runtime data, rewritten every night; the runner keeps the history in the Actions
+# cache, so a commit would only freeze one night's numbers into the repo.
+data/parity_report.json
+data/parity_history.json

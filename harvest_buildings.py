@@ -4,6 +4,8 @@ Harvest ALL building stock from the credentialed sources into the DB.
 Unlike the client-research pipeline (which filters stock by a single client's
 budget/suburb), this pulls the full current stock list from:
   - E-Agent (one login, ~14 builders)
+  - E-Agent's Stocklist search (eagent.mekooflow.com; skipped until its company login,
+    from E-Agent's BDM, is stored -- see sources/eagent_stocklist.py)
   - the direct builder portals (Paramount, FRD, Torsion, Hermitage, Bathla, Proxima)
 
   - the digital@ inbox, where the nine builders with no portal send their stock
@@ -42,8 +44,11 @@ import logging
 logger = logging.getLogger(__name__)
 
 import benchmarks
+import harvest_manifest
 from builder_registry import BuilderRegistry
 from sources.e_agent import EAgentSource
+from sources.eagent_stocklist import (EAgentStocklistSource, CHANNEL as STOCKLIST_CHANNEL,
+                                      MISSING_TEXT as STOCKLIST_MISSING)
 from sources.builder_portals import BuilderPortalSource
 from sources.email_inbox import EmailStocklistSource
 from sources.proxima import ProximaSource
@@ -91,8 +96,12 @@ def _require_readers():
 
 
 def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
-            email_days=90):
+            email_days=90, eagent_stocklist=None):
     logging.basicConfig(level=logging.INFO, format='    %(levelname)s %(message)s')
+    # The Stocklist is E-Agent's own stock, so it runs whenever E-Agent does unless asked
+    # for separately (--eagent-stocklist-only).
+    if eagent_stocklist is None:
+        eagent_stocklist = eagent
     if not _require_readers():
         return 1
     registry = BuilderRegistry()
@@ -102,6 +111,11 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
     # so the moment the first row lands, "the newest last_seen" is this run and what the
     # channel returned last time is no longer recoverable. See _collapsed_channels.
     baseline = db.building_reads_by_channel()
+    harvest_manifest.reset()
+    # Lots a constraint refused, per channel. record_building now says "rejected" instead
+    # of "unchanged" (7 Oct 2026): 41 lots a night were dropped by the dedup_key trap and
+    # every summary line counted them as stored.
+    rejected: Dict[str, int] = {}
 
     print("=" * 70)
     print("  HARVEST ALL BUILDING STOCK (E-Agent + direct portals)")
@@ -126,11 +140,59 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
             # record_building returns "new" | "updated" | "unchanged" — all truthy,
             # so count by value, never by truthiness.
             outcomes = [db.record_building({**L, "source_channel": "E-Agent"}) for L in listings]
+            harvest_manifest.count_outcomes(listings, outcomes)
             new = outcomes.count("new")
             updated = outcomes.count("updated")
             total_new += new
             read["E-Agent"] = len(listings)
+            rejected["E-Agent"] = outcomes.count("rejected")
             print(f"    E-Agent: {len(listings)} listing(s) scraped, {new} new, {updated} updated.")
+
+    if eagent_stocklist:
+        # E-AGENT'S POOLED HOUSE-AND-LAND SEARCH (7 Oct 2026). On 24 Sep E-Agent moved its
+        # pooled H&L lists off the members' pages to "EAgent Stocklist" at
+        # eagent.mekooflow.com, behind a company login issued by its BDM, and from that
+        # night the log read "0 pooled listing(s)". Coleen compares the app against that
+        # search, which is why "E-Agent always shows more". Its own channel, so its rows
+        # never share an identity with the price-list rows the E-Agent pages give for the
+        # same lots (supersede_duplicates joins the two). No login -> one line and a skip,
+        # never a failed run: the login is the client's to obtain.
+        sl = EAgentStocklistSource()
+        if not sl.configured:
+            print(f"[i] E-Agent Stocklist: no company login stored -- skipped. "
+                  f"{STOCKLIST_MISSING}, then: python setup_credentials.py eagent_stocklist")
+            skipped[STOCKLIST_CHANNEL] = f"no company login ({STOCKLIST_MISSING})"
+        else:
+            print("[+] E-Agent Stocklist: signing in and reading the H&L search...")
+            listings = sl.search(ALL_STOCK_FILTERS)
+            # Counted whenever a login is stored, so a refused sign-in on a channel that
+            # holds stock is a dead channel like any other (_dead_channels).
+            read[STOCKLIST_CHANNEL] = len(listings)
+            # One manifest line for the search, and its refused lots counted like every
+            # other channel's (7 Oct 2026). This block predates record_building's
+            # "rejected", so a lot a constraint refused vanished with no line anywhere --
+            # and the parity check's READ bar could not see the source at all.
+            sl_state = str(getattr(sl, "state", "") or "")
+            sl_entry = harvest_manifest.entry(
+                STOCKLIST_CHANNEL, "search", "stocklist", name=STOCKLIST_CHANNEL,
+                state=sl_state, printed=len(listings),
+                short=bool(getattr(sl, "truncated", False)),
+                outcome=("read" if listings else
+                         "login failed" if sl_state == "refused" else
+                         "fetch failed" if sl_state in ("unreachable", "error") else
+                         "zero-yield"))
+            harvest_manifest.tag(listings, sl_entry)
+            outcomes = [db.record_building(L) for L in listings]
+            harvest_manifest.count_outcomes(listings, outcomes)
+            rejected[STOCKLIST_CHANNEL] = outcomes.count("rejected")
+            new, updated = outcomes.count("new"), outcomes.count("updated")
+            total_new += new
+            print(f"    E-Agent Stocklist: {len(listings)} listing(s), {new} new, "
+                  f"{updated} updated -- {getattr(sl, 'state', '?')}: "
+                  f"{getattr(sl, 'why', '')}")
+            if getattr(sl, "truncated", False):
+                print("    E-Agent Stocklist: the read STOPPED AT ITS CAP -- the list is "
+                      "longer than what was stored tonight.")
 
     if portals:
         bp = BuilderPortalSource(registry)
@@ -144,8 +206,14 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
                 if tag in seen_portals:
                     continue
                 seen_portals.add(tag)
-                if db.record_building({**L, "source_channel": L.get("source_channel", "Direct Portal")}) == "new":
+                outcome = db.record_building(
+                    {**L, "source_channel": L.get("source_channel", "Direct Portal")})
+                harvest_manifest.count_outcomes([L], [outcome])
+                if outcome == "new":
                     total_new += 1
+                elif outcome == "rejected":
+                    ch = L.get("source_channel", "Direct Portal")
+                    rejected[ch] = rejected.get(ch, 0) + 1
         read["Direct Builder Portal (live)"] = len(seen_portals)
         print(f"    Direct portals: {len(seen_portals)} unique listing(s) seen.")
 
@@ -228,7 +296,19 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
             print("    Proxima: nothing read. If this says the sign-in expired, run: "
                   "python portal_login.py portal_proxima --profile")
         else:
+            # One manifest line per project, and each lot counted under its project.
+            by_pid = {}
+            for proj in getattr(px, "project_log", []) or []:
+                by_pid[proj["pid"]] = harvest_manifest.entry(
+                    "Proxima", "project", proj["pid"],
+                    outcome="read" if proj.get("printed") else "zero-yield", **proj)
+            for L in listings:
+                e = by_pid.get(str(L.get("source_project_id") or ""))
+                if e is not None:
+                    harvest_manifest.tag([L], e)
             outcomes = [db.record_building(L) for L in listings]
+            harvest_manifest.count_outcomes(listings, outcomes)
+            rejected["Proxima"] = outcomes.count("rejected")
             new, updated = outcomes.count("new"), outcomes.count("updated")
             total_new += new
             print(f"    Proxima: {len(listings)} lot(s) from {px.projects_with_stock}"
@@ -260,6 +340,7 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
             read["digital email"] = len(listings)
             outcomes = [db.record_building({**L, "source_channel": em.channel_name})
                         for L in listings]
+            rejected["digital email"] = outcomes.count("rejected")
             new, updated = outcomes.count("new"), outcomes.count("updated")
             total_new += new
             print(f"    digital email: {len(listings)} listing(s) read, {new} new, "
@@ -281,6 +362,13 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
     collapsed = _collapsed_channels(read, stored_live, previous=baseline)
 
     print("\n" + "=" * 70)
+    refused = {c: n for c, n in sorted(rejected.items()) if n}
+    if refused:
+        # Loud, and named by channel. Not a failed run on its own -- the rows that did
+        # store are good -- but every one of these is a lot missing from tonight's stock.
+        print("[!] listings REJECTED by a database constraint and NOT stored: "
+              + ", ".join(f"{c} {n}" for c, n in refused.items())
+              + " -- see the ERROR lines above for which.")
     if dead:
         print("[FAILED] a channel that has stock returned nothing this run:")
         for channel, held in dead:
@@ -311,6 +399,11 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
         got = "" if n_read is None else f"   (read {n_read} this run)"
         print(f"    - {row['source_channel']}: {row['n']}{got}")
     print("=" * 70)
+    # EVERY NIGHT, NOT ONLY A FAILED ONE. This sat below the `return 0`, so a good night
+    # never wrote the unreadable list and the Settings tab kept showing whatever a failed
+    # night had last left there (27 Aug's 57 files on 6 Oct).
+    _record_unreadable_stocklists()
+    _write_manifest()
     if not (dead or collapsed):
         return 0
     # 2 = PARTIAL: something failed, but other channels read normally this run.
@@ -325,7 +418,6 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
     #
     # The guard that matters is unchanged: a run where nothing was read still aborts, and
     # a partial run is reported loudly rather than passed off as success.
-    _record_unreadable_stocklists()
     any_read = any(v for v in read.values())
     return 2 if any_read else 1
 
@@ -355,6 +447,18 @@ def _record_unreadable_stocklists() -> None:
                            "their projects are missing from the catalogue.", len(UNREADABLE))
     except Exception as exc:                                          # noqa: BLE001
         logger.info("could not record unreadable stocklists: %s", exc)
+
+
+def _write_manifest() -> None:
+    """data/harvest_manifest.json: one line per source link, project and portal. Never
+    fatal -- a manifest that cannot be written must not cost the night's stock."""
+    try:
+        path = harvest_manifest.write()
+        snap = harvest_manifest.snapshot()["totals"]["by_outcome"]
+        print(f"    manifest: {len(harvest_manifest.ENTRIES)} source(s) -> {path.name} "
+              f"({', '.join(f'{k} {v}' for k, v in sorted(snap.items()))})")
+    except Exception as exc:                                          # noqa: BLE001
+        logger.warning("could not write the harvest manifest: %s", exc)
 
 
 def _report_benchmark_health(configured: bool, read) -> None:
@@ -483,7 +587,10 @@ def _collapsed_channels(read: Dict[str, int], stored: Dict[str, int],
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--eagent-only", action="store_true")
+    ap.add_argument("--eagent-only", action="store_true",
+                    help="E-Agent's pages and its Stocklist search")
+    ap.add_argument("--eagent-stocklist-only", action="store_true",
+                    help="only E-Agent's Stocklist search (eagent.mekooflow.com)")
     ap.add_argument("--portals-only", action="store_true")
     ap.add_argument("--email-only", action="store_true")
     ap.add_argument("--proxima-only", action="store_true")
@@ -493,7 +600,7 @@ if __name__ == "__main__":
                     help="how far back to sweep the inbox (default 90)")
     args = ap.parse_args()
     only = (args.eagent_only or args.portals_only or args.email_only
-            or args.proxima_only or args.rea_only)
+            or args.proxima_only or args.rea_only or args.eagent_stocklist_only)
     # Non-zero when a channel that holds stock read nothing, OR read so much less than
     # usual that the run is a partial, so run_daily stops and the operator is told,
     # instead of publishing a stale snapshot as if it were fresh.
@@ -507,4 +614,6 @@ if __name__ == "__main__":
                      email=args.email_only or not only,
                      proxima=args.proxima_only or not only,
                      rea=args.rea_only or not only,
-                     email_days=args.email_days))
+                     email_days=args.email_days,
+                     eagent_stocklist=(args.eagent_stocklist_only or args.eagent_only
+                                       or not only)))
