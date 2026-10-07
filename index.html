@@ -998,10 +998,13 @@
                             <!-- 8 Oct 2026: the territories and Tasmania. 207 lots read in ACT
                                  (Proxima: The Grande, Canberra; Ahlei and Cento, Braddon) were
                                  reachable only by an Any-state search: no state search could
-                                 ask for them by name. -->
-                            <option value="ACT">ACT (Australian Capital Territory)</option>
+                                 ask for them by name. Short names (repair round): the closed
+                                 select is about as wide as "NSW (New South Wales)", and
+                                 "ACT (Australian Capital Territory)" showed as "ACT (Australian
+                                 Capit". -->
+                            <option value="ACT">ACT (Canberra)</option>
                             <option value="TAS">TAS (Tasmania)</option>
-                            <option value="NT">NT (Northern Territory)</option>
+                            <option value="NT">NT (Northern Terr.)</option>
                         </select>
                     </div>
                 </div>
@@ -6122,8 +6125,14 @@ python state_sync.py push</pre>
         const after = allGates.filter(g => AFTER_THE_CHECKS.has(String(g.stage ?? '').trim()))
             .map(g => ({ code: g.code.trim(), n: wholeCount(g.count) }))
             .filter(g => g.n !== null && g.n > 0);
+        // A STATE THAT HOLDS NOTHING AT ALL (8 Oct 2026, repair round): a TAS search read
+        // "In TAS, 0 listings are priced at or under $600,000", as though TAS stock sat above
+        // the budget. The server's in_state_rows (every row in the state, at any price) is 0.
+        const held = wholeCount(funnel.in_state_rows ?? d.in_state_rows);
+        const holdsNothing = held === 0 && !!state && !/^any state$/i.test(state) && !(total > 0);
         if (total !== null || gates.length) {
-            const headline = total === null ? `${where}, ${range ? `priced ${range}` : 'at any price'}:`
+            const headline = holdsNothing ? `${where}, no listings are held at any price.`
+                : total === null ? `${where}, ${range ? `priced ${range}` : 'at any price'}:`
                 : range ? `${where}, ${inThousands(total)} listing${total === 1 ? ' is' : 's are'} priced ${range}.`
                 : `${where}, ${inThousands(total)} listing${total === 1 ? ' has' : 's have'} a price.`;
             parts.push(`<div class="sh-line">${esc(headline)}</div>`);

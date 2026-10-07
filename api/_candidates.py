@@ -3826,6 +3826,87 @@ def build_packages(brief_dict, rows, today=None, prepared=None, admit=(),
     return packages, counts
 
 
+# The package key holding each REQUIRED_FACTS value, exactly as _gate checked it.
+_PACKAGE_FACT = {"bedrooms": "bedrooms", "bathrooms": "bathrooms",
+                 "car_spaces": "car_spaces", "house_sqm": "house_size_sqm"}
+
+
+def pool_covers(wide_brief, brief_dict, admit=()):
+    """True when WidePool(wide_brief) can give `brief_dict` exactly the packages
+    build_packages(brief_dict) gives: the two read the same state, product types, incentive,
+    price floor and storeys; the brief's ceiling is no higher (a missing one is the highest)
+    and its binding facts include the wide brief's; nothing is admitted; and the emergency
+    cap is off (its ordering reads the suburbs, radius and minimum values). See WidePool."""
+    if admit or MAX_CANDIDATES > 0:
+        return False
+    wide, ctx = _BriefContext(wide_brief), _BriefContext(brief_dict)
+    if (ctx.state, ctx.want_product, ctx.want_incentive, ctx.floor, ctx.storeys_max) != (
+            wide.state, wide.want_product, wide.want_incentive, wide.floor, wide.storeys_max):
+        return False
+    if wide.ceiling is not None and (ctx.ceiling is None or ctx.ceiling > wide.ceiling):
+        return False
+    return ctx.binding_facts >= wide.binding_facts
+
+
+class WidePool:
+    """ONE gate pass under the loosest of a search's relaxations, from which each relaxation
+    it covers gets exactly the packages build_packages would give it (8 Oct 2026, repair
+    round of the parity follow-ups).
+
+    WHY. Every "Budget up to ..." and "Any <minimum>" hint was a whole gate pass over the
+    snapshot, and an Any-state search with five minimums priced eight of them: 0.3-0.5 s
+    each on this laptop, twice that on Vercel, so the explanation alone took 6-12 s there
+    and some thin searches passed the ~20 s a consultant should wait (callers verifier,
+    adv3_any_suburbs_5min). Those relaxations only RAISE the ceiling or DROP a binding
+    fact, and in _gate those two decide a row at exactly two places -- the ceiling at
+    over_budget, a binding fact at incomplete_facts -- and nowhere else (budget_max is read
+    once more, for the just_over detail of a row already stopped); every other gate reads
+    the same brief values in both. So a row that fails the loosest brief fails every
+    brief it covers, and a row that passes it passes a covered brief unless its price is
+    over that brief's ceiling or a fact that brief binds is unstated -- with the same
+    package, because nothing after those gates reads the ceiling or the binding facts.
+
+    packages_for(brief) applies those two tests to the rows the wide pass passed, in row
+    order, and then does what _pass does after its loop: the same-listing collapse
+    (_collapse_kept) over exactly those entries and the price sort. It returns COPIES, so
+    the dedupe after it (which writes into the packages it keeps) never touches the pool.
+    test_parity_followups_8oct pins it against build_packages brief by brief."""
+
+    __slots__ = ("brief", "today", "entries")
+
+    def __init__(self, wide_brief, rows, prepared=None, today=None, gate_cache=None):
+        self.brief = dict(wide_brief)
+        self.today = today or _now_aest()
+        _packages, _counts, _outcome, results = _pass(
+            self.brief, rows, today=self.today, prepared=prepared, keep_results=True,
+            gate_cache=gate_cache)
+        self.entries = [(row, result.seen_at, result.package) for row, result in results
+                        if result.code == PASSED]
+
+    def serves(self, brief_dict, admit=()):
+        """pool_covers(this pool's brief, brief_dict), on the day the pool was built."""
+        return (_now_aest().date() == self.today.date()
+                and pool_covers(self.brief, brief_dict, admit))
+
+    def packages_for(self, brief_dict):
+        """The packages build_packages(brief_dict, rows) returns, for a brief this pool
+        serves (the caller asks serves() first)."""
+        ctx, wide = _BriefContext(brief_dict), _BriefContext(self.brief)
+        ceiling = ctx.ceiling
+        facts = [_PACKAGE_FACT[f] for f in sorted(ctx.binding_facts - wide.binding_facts)]
+        entries, entry_rows = [], []
+        for row, seen_at, package in self.entries:
+            if ceiling is not None and package["advertised_package_price"] > ceiling:
+                continue
+            if any(package[f] is None for f in facts):
+                continue
+            entries.append((seen_at, dict(package)))
+            entry_rows.append(row)
+        packages = [entries[i][1] for i in _collapse_kept(entries, entry_rows)]
+        packages.sort(key=lambda p: p["advertised_package_price"])
+        return packages
+
+
 def _row_in(row, rows):
     """The object in `rows` that IS this row: itself, or its unique content_hash twin
     (a row carried through a join is a copy)."""

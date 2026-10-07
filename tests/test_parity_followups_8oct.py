@@ -7,9 +7,11 @@ that fails on origin/main (1bbed94) and passes now:
   A. RELAXATION HINTS NOT COMPUTED ON LIVE. #12 Werribee and #13 Redbank Plains priced no
      relaxation: the 4 s budget was counted from the start of the explanation, and the
      needs-confirming passes before it cost 4-5 s once every candidate was scored. The
-     budget now starts with the relaxations, a whole-request deadline (22 s) bounds them,
-     every pass of a request shares a GateCache, and a relaxation that leaves the pool
-     alone re-scores the search's own pool -- with the same counts as before.
+     budget now starts with the relaxations, a whole-request deadline bounds them, every
+     pass of a request shares a GateCache, and a relaxation that leaves the pool alone
+     re-scores the search's own pool -- with the same counts as before. Repair round: the
+     budget and minimum steps are cut from one WidePool pass, every step is estimated by
+     its size before it starts (scoring in chunks), and the deadline is 18 s, not 22.
   B. ACT, TAS AND NT WERE NOT SEARCHABLE BY STATE. 207 obvious ACT lots, none reachable by
      a state search; the form, the parity table and the replay briefs now cover them.
   C. ONE LOT WRONGLY MERGED. Docklands townhomes T20 (id 3578) and T21 (id 3579), both read
@@ -19,7 +21,8 @@ that fails on origin/main (1bbed94) and passes now:
      lots cross-listed under a second project and stored once; 7 "not read to the end"
      were projects read WHOLE against counters from 9 Sep - 1 Oct; 2 were SMDC's
      Philippine towers. The manifest now says each of those things, and the bar still
-     fails a real short read.
+     fails a real short read -- repair round: including a whole read far below an old
+     counter (harvest_manifest.old_counter_gap_ok bounds what an old counter excuses).
 """
 import contextlib
 import io
@@ -249,6 +252,198 @@ def test_a_whole_state_and_radius_are_priced_and_re_post_to_their_counts(researc
     assert rel["whole_state"]["shortlist_count"] > out["shortlist_count"]
 
 
+# --- A, repair round (8 Oct 2026): one wide pass for the budget and minimum steps, and every
+# step of a relaxation estimated by its size before it starts (callers verifier: an Any-state
+# search with five minimums took 20-25 s on the 2x-Vercel model, and "No minimums at all"
+# started inside the 22 s deadline and ended 2.3 s past it).
+
+MANY_MINIMUMS = dict(primary_suburbs=["Walloon"], bedrooms_min=4, bathrooms_min=2,
+                     car_spaces_min=1, house_size_min_sqm=150)
+
+
+def _offers(research, brief, rows, prepared):
+    _packages, counts = C.build_packages(brief, rows, prepared=prepared)
+    return research._relaxation_offers(brief, counts, 0)
+
+
+@pytest.mark.parametrize("more", [
+    MANY_MINIMUMS, dict(MANY_MINIMUMS, state="", budget_max=650000),
+    dict(bedrooms_min=3, bathrooms_min=2, budget_max=9007199254740991,
+         preferred_spending_cap=9007199254740991),
+    dict(state="ACT", bedrooms_min=2, bathrooms_min=1, budget_max=600000),
+    dict(MANY_MINIMUMS, budget_min=400000, product_type=["House & Land"]),
+], ids=["qld_walloon", "any_state", "no_budget", "act", "floor_and_product"])
+def test_a_the_wide_pool_gives_each_covered_brief_build_packages_own_packages(research,
+                                                                              more):
+    """WidePool(loosest).packages_for(brief) IS build_packages(brief)'s packages -- the same
+    dicts in the same order -- for every budget and minimum step it covers, and the dedupe
+    after it keeps the same ones. The steps it does not cover are left to the full path."""
+    rows, prepared = _snapshot(research)
+    base = research._normalised_brief(_brief(**more))[0]
+    offers = _offers(research, base, rows, prepared)
+    wide_brief = research._wide_brief(base, offers)
+    wide = C.WidePool(wide_brief, rows, prepared=prepared,
+                      gate_cache=C.GateCache(rows, prepared))
+    covered = 0
+    for offer in offers:
+        if offer["kind"] != "rerun":
+            continue
+        brief = dict(base, **offer["brief_patch"])
+        if not wide.serves(brief):
+            assert offer["id"] in ("drop_product_type", "drop_incentive",
+                                   "drop_price_floor"), offer["id"]
+            continue
+        covered += 1
+        want, _counts = C.build_packages(brief, rows, prepared=prepared)
+        got = wide.packages_for(brief)
+        assert got == want, offer["id"]
+        assert C.dedupe_packages(got, rows) == C.dedupe_packages(want, rows), offer["id"]
+    assert covered >= 3, "premise: the budget and minimum steps are covered"
+
+
+def test_a_the_wide_pool_covers_only_a_higher_ceiling_and_fewer_binding_facts(research,
+                                                                               monkeypatch):
+    base = _brief(bedrooms_min=4, bathrooms_min=2)
+    wide = dict(base, budget_max=825000, bedrooms_min=0)
+    assert C.pool_covers(wide, base)
+    assert C.pool_covers(wide, dict(base, budget_max=800000))
+    assert C.pool_covers(wide, dict(base, bedrooms_min=0))
+    for differs in (dict(base, budget_max=900000), dict(base, bathrooms_min=0),
+                    dict(base, state="NSW"), dict(base, product_type=["Townhouse"]),
+                    dict(base, requires_incentive=True), dict(base, budget_min=1),
+                    dict(base, storeys_max=1), dict(base, budget_max=0)):
+        assert not C.pool_covers(wide, differs), differs
+    assert not C.pool_covers(wide, base, admit=C.ADMITTABLE_GATES)
+    monkeypatch.setattr(C, "MAX_CANDIDATES", 50)
+    assert not C.pool_covers(wide, base)
+
+
+@pytest.mark.parametrize("chunk", [500, 3])
+def test_a_every_relaxation_count_re_posts_to_itself(research, monkeypatch, chunk):
+    """The counts an explained search prices -- cut from the wide pool, scored in chunks --
+    are what posting each patch back over the form returns (the self-check the live
+    replay makes), for a five-minimum search in QLD and in every state."""
+    monkeypatch.setattr(research, "SCORE_CHUNK", chunk, raising=False)
+    for more in (MANY_MINIMUMS, dict(MANY_MINIMUMS, state="", budget_max=650000)):
+        brief = _brief(**more)
+        out = _run(research, brief, explain=True)
+        priced = [r for r in out["search_help"]["relaxations"] if r["kind"] == "rerun"]
+        assert len(priced) >= 6 and all(r["count_status"] == "exact" for r in priced), priced
+        for r in priced:
+            again = _run(research, dict(brief, **r["brief_patch"]))
+            assert again["shortlist_count"] == r["shortlist_count"], r["id"]
+
+
+class _Clock:
+    """research's clock, moved only by what a test says a step costs."""
+
+    def __init__(self):
+        self.t = 1000.0
+
+    def monotonic(self):
+        return self.t
+
+
+def _minimum(brief, name):
+    return (brief.get(name) if isinstance(brief, dict) else getattr(brief, name, 0)) or 0
+
+
+@pytest.fixture
+def clock(research, monkeypatch):
+    import types
+    import _bootstrap
+    c = _Clock()
+    monkeypatch.setattr(research, "time", types.SimpleNamespace(monotonic=c.monotonic))
+    agent = _bootstrap.get_agent()
+    real = agent.score_candidates
+    # Scoring costs 10 ms a package -- and 400 ms for the brief with no minimums at all, the
+    # widest pool and the last relaxation priced, as on the live Any-state search.
+    c.per_package = lambda brief: (0.4 if not (_minimum(brief, "bedrooms_min")
+                                               or _minimum(brief, "bathrooms_min"))
+                                   else 0.01)
+
+    def costly(brief, packages, search_area=None):
+        c.t += c.per_package(brief) * len(packages)
+        return real(brief, packages, search_area=search_area)
+
+    monkeypatch.setattr(agent, "score_candidates", costly)
+    monkeypatch.setattr(research, "_RATE_SAMPLE", 1, raising=False)
+    monkeypatch.setattr(research, "SCORE_CHUNK", 5, raising=False)
+    monkeypatch.setattr(research, "EXPLAIN_BUDGET_MS", 10 ** 9)
+    return c
+
+
+def test_a_a_last_relaxation_slower_than_every_earlier_one_stops_at_the_deadline(
+        research, clock, monkeypatch):
+    """THE VERIFIER'S CASE, on a clock only scoring moves. "No minimums at all" is priced
+    last and costs far more than any relaxation before it. With the deadline a third of the
+    way into it, it is stopped by the deadline -- not_computed, `skipped` "deadline" --
+    within one chunk of scoring of the deadline, and every relaxation before it is priced
+    exactly as without a deadline. Before: it started (the slowest relaxation so far was
+    cheap) and ran its whole length past the deadline. An Any-state search with five
+    minimums, as the verifier's adv3_any_suburbs_5min."""
+    brief = _brief(**dict(MANY_MINIMUMS, state="", budget_max=650000))
+    monkeypatch.setattr(research, "REQUEST_DEADLINE_MS", 10 ** 12)
+    start = clock.t
+    free = _run(research, brief, explain=True)
+    rel = free["search_help"]["relaxations"]
+    assert free["shortlist_count"] < 5 and rel[-1]["id"] == "drop_all_minimums", rel
+    assert all(r["count_status"] == "exact" for r in rel), rel
+    last_ms = rel[-1]["ms"]
+    assert last_ms > 5 * max(r.get("ms") or 0 for r in rel[:-1]), \
+        "premise: the last relaxation is much the slowest"
+    last_started_ms = (clock.t - start) * 1000 - last_ms
+
+    deadline_ms = int(last_started_ms + last_ms / 3)
+    monkeypatch.setattr(research, "REQUEST_DEADLINE_MS", deadline_ms)
+    start = clock.t
+    out = _run(research, brief, explain=True)
+    took_ms = (clock.t - start) * 1000
+    got = out["search_help"]["relaxations"]
+    assert [(r["id"], r["count_status"], r.get("shortlist_count")) for r in got[:-1]] == \
+        [(r["id"], r["count_status"], r.get("shortlist_count")) for r in rel[:-1]]
+    assert (got[-1]["count_status"], got[-1].get("skipped")) == ("not_computed", "deadline")
+    one_chunk_ms = 1000 * 0.4 * research.SCORE_CHUNK
+    assert took_ms <= deadline_ms + one_chunk_ms, (took_ms, deadline_ms)
+
+
+def test_a_the_refusal_pass_is_estimated_as_the_gate_pass_it_is(research, clock,
+                                                                 monkeypatch):
+    """The refusal pass (hidden tallies only) is one more gate pass. It no longer starts
+    when twice the search's own pass would end past the deadline -- before, it started
+    whenever the deadline had not yet passed."""
+    real_build = C.build_packages
+    pass_s = 2.0
+
+    def slow_build(*args, **kwargs):
+        clock.t += pass_s
+        return real_build(*args, **kwargs)
+
+    calls = []
+    real_refused = research._refused_matches
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return real_refused(*args, **kwargs)
+
+    monkeypatch.setattr(research._candidates, "build_packages", slow_build)
+    monkeypatch.setattr(research, "_refused_matches", counted)
+    clock.per_package = lambda brief: 0.0
+    brief = _brief()
+    monkeypatch.setattr(research, "REQUEST_DEADLINE_MS", 10 ** 12)
+    free = _run(research, brief, explain=True)
+    assert calls, "premise: this search runs the refusal pass"
+    assert not free["search_help"]["needs_confirming"].get("refusal_pass_skipped")
+    # The search's pass and the admit pass: 2 x 2 s. The refusal pass would start at 4 s.
+    monkeypatch.setattr(research, "REQUEST_DEADLINE_MS", 6000)
+    calls.clear()
+    out = _run(research, brief, explain=True)
+    assert not calls
+    help_nc = out["search_help"]["needs_confirming"]
+    assert help_nc["refusal_pass_skipped"] and help_nc["hidden_may_be_short"] is True
+    assert out["needs_confirming_count"] == free["needs_confirming_count"]
+
+
 # ======================================================================= B. ACT, TAS, NT
 
 def test_b_the_form_offers_act_tas_and_nt():
@@ -256,6 +451,11 @@ def test_b_the_form_offers_act_tas_and_nt():
     select = re.search(r'<select id="stateSelect">(.*?)</select>', html, re.S).group(1)
     values = re.findall(r'<option\b[^>]*\bvalue="([^"]*)"', select)
     assert values == ["", "QLD", "NSW", "VIC", "SA", "WA", "ACT", "TAS", "NT"], values
+    # Repair round (callers verifier): the closed select showed "ACT (Australian Capit". No
+    # new label is longer than the longest the form already showed whole.
+    labels = dict(re.findall(r'<option\b[^>]*\bvalue="([^"]*)"[^>]*>([^<]*)</option>', select))
+    widest = max(len(labels[s]) for s in ("QLD", "NSW", "VIC", "SA", "WA"))
+    assert all(len(labels[s]) <= widest for s in ("ACT", "TAS", "NT")), labels
 
 
 def test_b_an_act_search_finds_the_act_lots(research):
@@ -413,6 +613,31 @@ def test_d_a_project_read_whole_below_an_old_counter_is_not_short():
     assert (entry["whole"], entry["stated_source"], entry["stated_on"],
             entry["stale_counter"], entry["short"]) == (
         "uncapped", "stored", "27/09/2026", True, False), entry
+
+
+def test_d_an_old_counter_excuses_only_the_gaps_lots_leave_a_list_by():
+    """The bound, on the seven whole reads of 8 Oct (all excused) and on reads it must not
+    excuse: a narrowed list, an empty one, a gap past 3 lots and 15%."""
+    import harvest_manifest as HM
+    for read, stated in ((2, 3), (8, 11), (27, 28), (138, 140), (72, 79), (108, 117)):
+        assert HM.old_counter_gap_ok(read, stated), (read, stated)
+    assert HM.old_counter_gap_ok(68, 79)                 # 11 = int(15% of 79)
+    for read, stated in ((2, 79), (0, 40), (0, 3), (67, 79), (99, 117), (5, 10)):
+        assert not HM.old_counter_gap_ok(read, stated), (read, stated)
+    assert not HM.old_counter_gap_ok(None, 3) and not HM.old_counter_gap_ok(3, None)
+
+
+def test_d_a_whole_read_far_below_an_old_counter_is_still_short():
+    """MUTATION (repair round): The CARLING's 79 from 27 Sep, and tonight a list of 2 that
+    ends under the render cap -- "whole" by the cap alone. Before the repair it was a stale
+    counter; it is a short read, named, as it was before 8 Oct."""
+    server = R._Server({"761": R._inventory("761", 3), "762": R._inventory("762", 2)})
+    page = R._Page(server, index=["761"], dropdown=[("762", "The CARLING Carlingford")])
+    src, _rows = _harvest(page, stored={"762": 79}, dates={"762": "27/09/2026"})
+    assert any(s["pid"] == "762" for s in src.short_projects), src.short_projects
+    entry = _log(src, "762")
+    assert (entry["whole"], entry["stale_counter"], entry["short"]) == (
+        "uncapped", False, True), entry
 
 
 def test_d_a_stored_counter_carries_the_night_it_was_stated(tmp_path):
@@ -605,6 +830,13 @@ def _without(entries, pid, *keys, **more):
     # A cap signature not proven whole.
     ("726", ("whole",), {"printed": 80, "stated": None, "stated_source": None},
      "ends at exactly 80"),
+    # REPAIR ROUND (correctness verifier): read whole under the cap, off the index, but far
+    # below the old counter -- a narrowed list ends under the cap too. Each passed before.
+    ("762", (), {"printed": 2}, "read 2 of its 79 available (read whole, but more"),
+    ("762", (), {"printed": 0}, "read 0 of its 79 available"),
+    ("197", (), {"printed": 0}, "read 0 of its 3 available (nothing read"),
+    ("529", (), {"printed": 99}, "read 99 of its 117 available"),
+    ("762", (), {"printed": 67}, "read 67 of its 79 available"),
 ])
 def test_d_the_bar_still_fails_a_real_short_read(pid, keys, more, why):
     """MUTATIONS: take away the one fact that excuses each 8 Oct alarm and it fails again."""

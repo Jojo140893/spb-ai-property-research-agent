@@ -756,6 +756,30 @@ console.log("\n--- 'Why only N matched': the counts, and a button per change tha
     out.indexOf("search-help") >= 0 && out.indexOf("prop-card") > out.indexOf("search-help"));
 }
 {
+  // 8 Oct 2026, repair round (callers verifier): a TAS search, and the catalogue holds no
+  // TAS row at all. It read "In TAS, 0 listings are priced at or under $600,000", as though
+  // TAS stock sat above the budget.
+  const empty = searchHelp({
+    brief_as_searched: { state: "TAS", budget_min: 0, budget_max: 600000 },
+    funnel: { snapshot_rows: 19800, out_of_scope: { other_state: 19800 }, gates: [],
+              in_price_range: {}, in_price_range_total: 0, in_state_rows: 0, scored: 0,
+              shortlisted: 0, capped: false },
+    relaxations: [] });
+  const tas = await renderExplained(explained({ shortlist: [], shortlist_count: 0,
+    rejected_count: 0, in_state_rows: 0, needs_confirming: [], needs_confirming_count: 0,
+    needs_confirming_hidden: {}, search_help: empty,
+    brief_used: { state: "TAS", budget_min: 0, budget_max: 600000, primary_suburbs: ["Hobart"] } }));
+  check("a state that holds no listing says so, not '0 listings are priced at or under'",
+    tas.out.includes(tas.api.esc("In TAS, no listings are held at any price."))
+    && !tas.out.includes("listings are priced at or under"), tas.out.slice(0, 600));
+  // ...and one that holds stock, none of it in range, still says what is in range.
+  const some = await renderExplained(explained({ shortlist: [], shortlist_count: 0,
+    search_help: searchHelp({ funnel: { ...searchHelp().funnel, in_price_range_total: 0 } }) }));
+  check("... while a state with stock, none in range, still counts the range",
+    some.out.includes(some.api.esc("In QLD, 0 listings are priced at or under $750,000.")),
+    some.out.slice(0, 600));
+}
+{
   const nothing = await renderExplained(explained({ shortlist: [], shortlist_count: 0,
     search_help: searchHelp({ relaxations: [RELAX.reveal, { ...RELAX.plus10pct, shortlist_count: 12, adds: 12 }] }) }));
   check("with no results it reads 'Why nothing matched'",

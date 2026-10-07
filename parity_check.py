@@ -53,8 +53,10 @@ THE BARS. Any miss exits 1.
               8 Oct 2026, from the first live night's 13 false alarms: a Proxima lot printed
               under a second project and stored once under the first (cross_listed_into a
               project read tonight) counts as stored; a project read WHOLE (`whole`) below an
-              old counter -- the database's, from the last night it was on the index -- is
-              noted, not failed (tonight's own header still fails); and an overseas project
+              old counter -- the database's, from the last night it was on the index -- by
+              no more than harvest_manifest.old_counter_gap_ok allows (3 lots or 15%, and at
+              least one lot read) is noted, not failed (tonight's own header, or a bigger
+              gap, still fails); and an overseas project
               (Proxima lists SMDC's Philippine towers) is named, not judged.
 
 HOW IT RUNS. As search_regressions --snapshot does: the database is copied through a
@@ -97,6 +99,9 @@ from pathlib import Path
 # search_regressions imports the standard library only, so nothing of the app's pipeline
 # can shadow a module of the bundle being checked.
 import search_regressions as SR
+# The manifest's schema module (standard library only, like SR): the READ bar's bound on an
+# old Proxima counter is the harvest's own (old_counter_gap_ok), so the two never differ.
+import harvest_manifest as HM
 
 APP = Path(__file__).resolve().parent
 DEFAULT_SNAPSHOT = APP / "vercel_site" / "stock.json"
@@ -1904,13 +1909,23 @@ def read_bar(manifest, history, night, required=False):
         # A project that ends exactly where the accordion stops rendering was cut there --
         # unless its own counter says it has exactly that many available, or the read was
         # proven whole.
+        # ...and an old counter excuses only a small gap (repair round, 8 Oct 2026): "whole"
+        # for a read under the render cap says only that the list ended there, and a
+        # narrowed list ends there too -- 2 against an old 79 is short, as it always was.
+        excused = bool(old_counter and whole and HM.old_counter_gap_ok(count, counter))
         if cut:
             capped.append("%s ends at exactly %d%s" % (
                 _manifest_label(e), int(count),
                 " of its %s available" % _n(counter) if counter else ""))
-        elif below and not (old_counter and whole):
-            capped.append("%s read %s of its %s available" % (_manifest_label(e), _n(count),
-                                                              _n(counter)))
+        elif below and not excused:
+            why = ""
+            if old_counter and whole:
+                why = (" (nothing read, which an old counter never excuses)" if count <= 0
+                       else " (read whole, but more under its old counter than lots leave a "
+                            "list: at most %d or %d%% may)"
+                       % (HM.OLD_COUNTER_GAP_LOTS, round(HM.OLD_COUNTER_GAP_SHARE * 100)))
+            capped.append("%s read %s of its %s available%s" % (
+                _manifest_label(e), _n(count), _n(counter), why))
         elif below:
             # Read whole tonight, against the number the index printed on an earlier night:
             # the difference sold or left the For Sale list since. Said, never failed.

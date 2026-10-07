@@ -1076,9 +1076,18 @@ class ProximaSource(PropertySource):
         a lot the counter's night held and tonight lacks was not on the portal's For Sale
         list tonight. Tonight's own header counter is never discounted, and a read not
         proven whole is short as before.
+
+        AND ONLY A SMALL GAP (8 Oct 2026, repair round, correctness verifier). For a read
+        under the render cap, "whole" only says the list ended there -- and a narrowed list
+        (the session filter trap) ends under the cap as well. So 2 lots against an old 79,
+        or none against 40, is short as it always was; only a gap old_counter_gap_ok allows
+        (harvest_manifest: at most 3 lots or 15% of the counter, a read of at least one)
+        is a stale counter.
         """
+        from harvest_manifest import old_counter_gap_ok
         below = bool(stated) and read < stated
-        if below and stated_source == "stored" and whole:
+        if (below and stated_source == "stored" and whole
+                and old_counter_gap_ok(read, stated)):
             self.stale_counters.append({"pid": str(pid), "name": name, "read": read,
                                         "stated": stated,
                                         "stated_on": self.stored_counter_dates.get(str(pid))
@@ -1683,7 +1692,11 @@ class ProximaSource(PropertySource):
         # check read Ascenta Living Traditional as "stored 76 of 80 printed" -- the 4 were
         # stored once, under Ascenta Living Coliving (785), as were the 2 of Atchison and
         # Kenny Building B, the 3 of Lancelin South Stage C Land Only and the 1 of Park
-        # Avenue II Stage 3: all 10 are live rows read that night.
+        # Avenue II Stage 3: all 10 are live rows read that night. (Repair round: the
+        # harvest kept Lancelin's 3 under Stage C (802), but the database rows they updated,
+        # ids 19965-19967, keep the project and estate of their first capture -- 767, "Land
+        # Only", with the house-and-land price. The count is right; the upsert's choice of
+        # project is older than this and is named as open.)
         log_of = {e["pid"]: e for e in self.project_log}
         for r in rows:
             h = building_content_hash(r)
