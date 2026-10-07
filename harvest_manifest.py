@@ -48,6 +48,17 @@ SCHEMA (version 1)
                  the last one stored), or null,
       replays, bands   POSTs spent past the 80-lot cap, and how many were price bands,
       short      true when the read ended below `stated` or on a cap signature
+    8 Oct 2026 (sources/proxima.py _log_project), so the parity check judges a read on what
+    the harvest knew rather than re-deriving it:
+      stated_source  "header" (tonight's index) or "stored" (the database's, from the last
+                 night the project was on the index); stated_on  that night, dd/mm/YYYY
+      whole      how the read is known complete: "uncapped" (the list ended under the
+                 render cap), "price sorts met", "availability view"; "" when it is not
+      stale_counter  true when a read proven whole is below an old stored counter
+      overseas   true when no lot names an Australian state and every lot is overseas
+      cross_listed, cross_listed_into  lots printed here and stored once under another
+                 project ({pid: n}); duplicates  lots printed twice in this list
+      not_a_listing  tiles that made no lot (no price or no address)
 
   kind "portal" (direct builder portals, one per builder) adds:
       host, cards_found, cards_read   priced cards on the page vs cards read

@@ -268,7 +268,13 @@ crawl. Consequences, all surfaced in the UI rather than hidden:
     shortlisted fewer than `SPB_EXPLAIN_BELOW` (5) the `relaxations`. Each relaxation is
     the real search re-run with its `brief_patch` (count_status `exact`), priced in the
     order include_needs_confirming, +$50,000, +10%, whole state, radius, then the
-    minimums and filters, until `SPB_EXPLAIN_BUDGET_MS` (4000) runs out (`not_computed`).
+    minimums and filters, until `SPB_EXPLAIN_BUDGET_MS` (8000, counted from the first
+    relaxation since 8 Oct 2026) runs out, or the next one would end past
+    `SPB_REQUEST_DEADLINE_MS` (22000, counted from the start of the request) --
+    `not_computed`, with `skipped` "budget" or "deadline". Every pass of one request
+    shares the brief-independent half of the gates (`_candidates.GateCache`), and a
+    relaxation that changes nothing the gates read (whole state, radius) re-scores the
+    search's own pool (`_candidates.pool_key`); the counts are the full re-run's.
     Posting `brief_patch` over the form returns exactly its `shortlist_count`; after a
     swapped min/max a price patch carries the whole range as searched so that stays true.
     `include_needs_confirming` has no patch: it reveals the list below, and its `capped`

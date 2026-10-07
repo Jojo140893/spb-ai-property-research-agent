@@ -117,7 +117,11 @@ def test_a_catalogue_the_search_shows_whole_passes_every_bar(bundle, tmp_path):
     assert "Source-to-search parity, 06/10/2026: PASS" in out, out
     assert body["verdict"] == "PASS" and not body["failures"]
     rows = {r["state"]: r for r in body["rows"]}
-    assert set(rows) == {"VIC", "NSW", "QLD", "SA", "WA"}
+    # ACT, TAS and NT are searched since 8 Oct 2026; this catalogue holds none, so each
+    # is a 0/0 row that passes, and an empty territory is said, never failed.
+    assert set(rows) == {"VIC", "NSW", "QLD", "SA", "WA", "ACT", "TAS", "NT"}
+    assert all(rows[s]["lots"] == [0, 0] and rows[s]["pass"] for s in ("ACT", "TAS", "NT"))
+    assert any(n.startswith("coverage: TAS holds no obvious lot") for n in body["notes"])
     assert rows["VIC"]["lots"] == [80, 80] and rows["VIC"]["e_agent_lots"] == [80, 80]
     assert rows["VIC"]["buildings"] == [10, 10]
     # The bars that had nothing to compare with say so, rather than reading as a pass.
@@ -138,7 +142,8 @@ def test_the_candidate_cap_at_50_fails_naming_the_cut_lots(bundle, tmp_path):
     assert cut[0]["ids"] == list(range(70050, 70070)), cut[0]["ids"]
     assert "hidden as truncated -- cut by the candidate cap" in out
     assert {r["state"]: r["pass"] for r in body["rows"]} == {
-        "VIC": False, "NSW": True, "QLD": True, "SA": True, "WA": True}
+        "VIC": False, "NSW": True, "QLD": True, "SA": True, "WA": True,
+        "ACT": True, "TAS": True, "NT": True}
 
 
 def _defects():

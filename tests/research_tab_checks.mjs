@@ -928,13 +928,21 @@ console.log("\n--- applyBriefPatch writes every field a relaxation can change --
     && s.el("stateSelect").value === "", JSON.stringify(s.el("stateSelect").value));
   s.el("stateSelect").value = "QLD";
   s.el("budgetMax").value = "750000";
+  // "NZ", not "TAS": since 8 Oct 2026 the select offers ACT, TAS and NT.
   check("a state the select cannot show is refused, and nothing is written",
-    s.api.applyBriefPatch({ state: "TAS", budget_max: 825000 }) === false
+    s.api.applyBriefPatch({ state: "NZ", budget_max: 825000 }) === false
     && s.el("stateSelect").value === "QLD" && s.el("budgetMax").value === "750000");
   check("a field the form does not have is refused, and nothing is written",
     s.api.applyBriefPatch({ budget_max: 825000, garage_type: "double" }) === false && s.el("budgetMax").value === "750000");
   check("an empty or missing patch is refused",
     s.api.applyBriefPatch({}) === false && s.api.applyBriefPatch(null) === false && s.api.applyBriefPatch([1]) === false);
+  check("ACT, TAS and NT are offered by the State select (8 Oct 2026)",
+    ["ACT", "TAS", "NT"].every(v => STATE_OPTIONS.some(o => o.value === v)),
+    JSON.stringify(STATE_OPTIONS));
+  check("a patch to ACT is written into the State select",
+    s.api.applyBriefPatch({ state: "ACT", budget_max: 825000 }) === true
+    && s.el("stateSelect").value === "ACT" && s.el("budgetMax").value === "825000",
+    JSON.stringify([s.el("stateSelect").value, s.el("budgetMax").value]));
 }
 {
   // Correction 15: Node has no browser validation, so what a box would refuse is read off its
@@ -1523,15 +1531,25 @@ console.log("\n--- a relaxation's count is for the brief that was searched (W14 
 }
 {
   // A patch whose keys the form has, but whose value a box cannot hold (a state the select
-  // does not offer), is never a button that silently does nothing when clicked.
+  // does not offer), is never a button that silently does nothing when clicked. ("NZ": TAS
+  // is offered since 8 Oct 2026.)
   const { out } = await renderExplained(explained({ search_help: searchHelp({ relaxations: [
-    { id: "whole_state", kind: "rerun", label: "All of TAS, not only Hobart",
-      brief_patch: { state: "TAS", primary_suburbs: [], search_radius_km: 0 },
+    { id: "whole_state", kind: "rerun", label: "All of NZ, not only Auckland",
+      brief_patch: { state: "NZ", primary_suburbs: [], search_radius_km: 0 },
       shortlist_count: 7, adds: 5, count_status: "exact" },
   ] }) }), s => { s.el("stateSelect").value = "QLD"; });
   check("a patch the form cannot hold is offered as text, not as a button that does nothing",
-    !/relax-btn[^>]*>All of TAS/.test(out) && out.includes("Change the brief above to try: All of TAS, not only Hobart → 7 matches (+5)"),
+    !/relax-btn[^>]*>All of NZ/.test(out) && out.includes("Change the brief above to try: All of NZ, not only Auckland → 7 matches (+5)"),
     (out.match(/<button[^>]*relax-btn[\s\S]*?<\/button>|class="sh-grey">[^<]*/g) || []).join(" | "));
+  // And the territories now get their button: "All of ACT" after a Braddon search.
+  const act = await renderExplained(explained({ search_help: searchHelp({ relaxations: [
+    { id: "whole_state", kind: "rerun", label: "All of ACT, not only Braddon",
+      brief_patch: { state: "ACT", primary_suburbs: [], search_radius_km: 0 },
+      shortlist_count: 7, adds: 5, count_status: "exact" },
+  ] }) }), s => { s.el("stateSelect").value = "ACT"; });
+  check("a whole-state patch to ACT is a button (8 Oct 2026)",
+    /relax-btn[^>]*>All of ACT/.test(act.out),
+    (act.out.match(/<button[^>]*relax-btn[\s\S]*?<\/button>|class="sh-grey">[^<]*/g) || []).join(" | "));
 }
 
 // ------------------------------------------------------------------ the card's own date (guard)

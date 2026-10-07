@@ -210,10 +210,14 @@ def test_default_output_equals_the_golden_on_the_full_snapshot(name, full_rows,
 
 
 def test_the_gates_run_in_the_documented_order():
-    """GATE_ORDER is what explain_row reports against; it must be the order _gate asks."""
-    src = inspect.getsource(C._gate)
+    """GATE_ORDER is what explain_row reports against; it must be the order _gate asks.
+
+    8 Oct 2026: _gate's first, brief-independent stage (superseded, state_unknown) lives in
+    _state_stage, which _gate calls before any other gate, so the order is read from both,
+    the stage first; the stage returns its code in a tuple, not a GateResult."""
+    src = inspect.getsource(C._state_stage) + inspect.getsource(C._gate)
     codes = []
-    for code in re.findall(r'return GateResult\("(\w+)"', src):
+    for code in re.findall(r'return (?:GateResult\(|\()"(\w+)"', src):
         if code not in codes:
             codes.append(code)
     assert tuple(codes) == C.GATE_ORDER

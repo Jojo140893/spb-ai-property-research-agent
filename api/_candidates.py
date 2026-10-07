@@ -1082,6 +1082,15 @@ def _token(value):
     return " ".join(_NOT_ALNUM.sub(" ", str(value or "").lower()).split())
 
 
+def _names_a_lot(lot):
+    """False for a lot "number" that is only zeros. 8 Oct 2026: no lot is numbered 0, and
+    "0" is what a reader takes from a LEVEL column -- the Docklands tower list prints its
+    ground-floor townhomes as "0 T20 4 Bed ..." and "0 T21 4 Bed ...", both $3,655,000, both
+    stored lot_number '0'. As 'lot:0' the two were one lot, and the parity check found T21
+    (id 3579) hidden behind T20 (id 3578) on the live VIC search."""
+    return bool(lot) and bool(lot.replace("0", "").strip())
+
+
 def lot_identity(package, row=None):
     """The lot a package names -- its stated lot number, else the "Lot N" / "Unit N" its
     card starts with -- as 'lot:<n>', or '' when it names none.
@@ -1090,13 +1099,16 @@ def lot_identity(package, row=None):
     a street shared by the units of one site would merge two different lines of one
     document, which the rule above forbids. So a row with no lot number is matched by its
     line (same_lot_key), and two lists that both carry "45 Pulchella Crescent" without a lot
-    number stay two cards -- the price of never hiding a different lot behind a twin."""
+    number stay two cards -- the price of never hiding a different lot behind a twin.
+
+    A lot "number" of only zeros ("0", "00", "Lot 0") names no lot (_names_a_lot), so such a
+    row is matched by its line too: two lines of one list are then two lots."""
     row = row or {}
     lot = _LOT_WORD.sub("", _token(package.get("lot_number") or row.get("lot_number")))
-    if lot:
+    if _names_a_lot(lot):
         return "lot:" + lot
     m = _LOT_ON_CARD.match(str(package.get("lot_address") or ""))
-    return ("lot:" + m.group(1).lower()) if m else ""
+    return ("lot:" + m.group(1).lower()) if m and _names_a_lot(m.group(1)) else ""
 
 
 def same_lot_key(package, row):
@@ -2795,6 +2807,22 @@ class _BriefContext:
                              % (sorted(unknown), list(ADMITTABLE_GATES)))
         self.admit = frozenset(admit or ())
 
+    def pool_key(self, brief_dict):
+        """See pool_key."""
+        key = (self.state, tuple(sorted(self.want_product)), self.want_incentive,
+               self.budget_max, self.ceiling, self.floor, self.storeys_max,
+               tuple(sorted(self.binding_facts)), tuple(sorted(self.admit)))
+        if MAX_CANDIDATES > 0:
+            # The emergency cap's ordering reads the suburbs, the radius and the minimums'
+            # values as well (_pass), so with it set they are part of what is read.
+            key += (tuple(sorted(str(s).strip().lower()
+                                 for s in (brief_dict.get("primary_suburbs") or ())
+                                 if str(s).strip())),
+                    _num(brief_dict.get("search_radius_km")) or 0.0,
+                    tuple((f, _num(brief_dict.get(BRIEF_MINIMUM_FOR[f])) or 0.0)
+                          for f in sorted(self.binding_facts)))
+        return key
+
     def in_range(self, price):
         """Priced inside the brief's own range: no headroom, both ends inclusive."""
         if not price or price <= 0:
@@ -2880,26 +2908,91 @@ def state_named_in_text(row):
     return found.pop() if len(found) == 1 else ""
 
 
-def _gate(ctx, row, prepared, today):
-    """Every gate build_packages applies to one row, in the order it has always applied
-    them. Returns GateResult(code, package or None, tags, detail, seen_at):
+def _place_stage(row, prepared):
+    """(row, suburb, suburb_why): where _gate places a row that reached the suburb gate --
+    suburb_quality.resolve, then the estate's and the page's agreed suburb when the row's own
+    does not locate it. BRIEF-INDEPENDENT, so GateCache remembers it per row (8 Oct 2026);
+    the code is the one _gate ran inline, unchanged."""
+    suburb, suburb_why = suburb_quality.resolve(row)
+    if not suburb_quality.is_located(suburb_why):
+        state_key = str(row.get("state") or "").strip().upper()
+        for group_map, field in ((prepared.estate_suburb, "estate_name"),
+                                 (prepared.page_suburb, _DOC_KEY)):
+            borrowed = group_map.get(
+                (str(row.get(field) or "").strip().lower(), state_key))
+            # Never against the place the row writes out itself (repair round 2,
+            # suburb_quality.written_address_agrees): its list-mates' suburb is not its own.
+            if borrowed and suburb_quality.written_address_agrees(row, borrowed, state_key):
+                row = {**row, "suburb": borrowed}
+                suburb, suburb_why = suburb_quality.resolve(row)
+                if suburb_quality.is_located(suburb_why):
+                    break
+    return row, suburb, suburb_why
 
-      code     the first gate that stopped the row (GATE_ORDER), or PASSED;
-      package  the candidate package when code is PASSED, else None;
-      tags     counters the row increments WITHOUT being stopped (state_borrowed,
-               estate_only_place, available_by_the_sheet, storey_unknown_and_binding,
-               stale_unverified, stale_over_limit, newer_capture_demoted), in the order
-               the loop always incremented them;
-      detail   what the deciding gate saw -- the only per-row record of a rejection;
-      seen_at  the parsed capture date, which the same-listing collapse ranks on.
 
-    Under admit=('availability_unstated',) an unstated row goes on through every later
-    gate and is admitted only if admission_refusal allows it; a refused row stops as
-    availability_unstated with detail['not_admitted'] naming why.
+class GateCache:
+    """The brief-independent stages of _gate, remembered per row for ONE request.
 
-    THE ONE PATH. build_packages and explain_row both call this, so the answer to "why
-    was this listing not shown" can never come from a second copy of the rules that has
-    drifted from the first.
+    8 Oct 2026. The live replay of Colin's searches found every relaxation hint
+    "not_computed" on the thin searches (#12 Werribee, #13 Redbank Plains): an explained
+    search ran the whole gate pass three times (the search, the needs-confirming admit pass,
+    the refusal pass) at 2-3 s each before a relaxation was priced, and each relaxation was
+    one more pass. Most of a pass is the same work every time -- which state a row is in
+    (_state_stage) and which suburb (_place_stage) -- because neither reads the brief. So
+    research.run_research builds one GateCache over the snapshot it loaded and hands it to
+    every build_packages of the request: the first pass fills it, every later one reads it.
+
+    ONLY THE SNAPSHOT'S OWN ROW OBJECTS ARE REMEMBERED, by identity, and the cache holds the
+    row list so no id is reused while it lives. A row built during the request (the refusal
+    pass's "as though Available" copies) is not one of them and is simply computed, as
+    without a cache. A prepared other than the one the cache was made with is never served.
+    """
+
+    __slots__ = ("rows", "ids", "prepared", "states", "places")
+
+    def __init__(self, rows, prepared):
+        self.rows = rows
+        self.ids = frozenset(id(r) for r in rows)
+        self.prepared = prepared
+        self.states = {}
+        self.places = {}
+
+    def _mine(self, row, prepared):
+        return prepared is self.prepared and id(row) in self.ids
+
+    def state_stage(self, row, prepared):
+        """_state_stage(row, prepared), remembered; None when this cache cannot serve it."""
+        if not self._mine(row, prepared):
+            return None
+        hit = self.states.get(id(row))
+        if hit is None:
+            code, staged, state, tags, detail = _state_stage(row, prepared)
+            hit = self.states[id(row)] = (code, staged, state, tuple(tags), dict(detail))
+        return hit
+
+    def place_stage(self, original, row, prepared):
+        """_place_stage for `row`, the state stage's output for snapshot row `original`."""
+        if not self._mine(original, prepared):
+            return None
+        hit = self.places.get(id(original))
+        if hit is None:
+            hit = self.places[id(original)] = _place_stage(row, prepared)
+        return hit
+
+
+def _state_stage(row, prepared):
+    """(code, row, row_state, tags, detail): the first, BRIEF-INDEPENDENT stage of _gate.
+
+    8 Oct 2026: moved out of _gate verbatim so it can be remembered per row for one
+    request (GateCache). It reads only the row and the snapshot's prepared maps -- never
+    the brief or the day -- and it was 85% of every build_packages pass: profiled on the
+    live 8 Oct snapshot, a QLD pass spent 4.6 s of 7.6 s in _state_by_estate_containment
+    and 2.1 s in suburb_quality.resolve for the 5,503 rows whose state is borrowed. An
+    explained thin search runs that pass three times before it prices a single
+    relaxation, which is why every relaxation came back not_computed on the live site.
+
+    code is 'superseded' or 'state_unknown' when the row stops here, else None; row is
+    the row as the later gates must see it (a borrowed state is written into a copy).
     """
     tags = []
     detail = {}
@@ -2908,8 +3001,8 @@ def _gate(ctx, row, prepared, today):
     # scoring all 979 of them — so the one place where a stale price actually reaches
     # a client, the shortlist, was the one place that ignored the flag.
     if row.get("superseded_by"):
-        return GateResult("superseded", None, tags,
-                          {"superseded_by": row.get("superseded_by")})
+        return ("superseded", row, "", tags,
+                {"superseded_by": row.get("superseded_by")})
     row_state = str(row.get("state") or "").strip().upper()
     if not row_state:
         # THE ROW'S OWN ADDRESS BEFORE ITS NEIGHBOURS' (7 Oct 2026, repair round 1). A row
@@ -2992,7 +3085,40 @@ def _gate(ctx, row, prepared, today):
                 tags.append("estate_only_place")
                 detail["estate_only_place"] = [_only[0], _only[1]]
     if not row_state:
-        return GateResult("state_unknown", None, tags, detail)
+        return ("state_unknown", row, "", tags, detail)
+    return (None, row, row_state, tags, detail)
+
+
+def _gate(ctx, row, prepared, today, gate_cache=None):
+    """Every gate build_packages applies to one row, in the order it has always applied
+    them. Returns GateResult(code, package or None, tags, detail, seen_at):
+
+      code     the first gate that stopped the row (GATE_ORDER), or PASSED;
+      package  the candidate package when code is PASSED, else None;
+      tags     counters the row increments WITHOUT being stopped (state_borrowed,
+               estate_only_place, available_by_the_sheet, storey_unknown_and_binding,
+               stale_unverified, stale_over_limit, newer_capture_demoted), in the order
+               the loop always incremented them;
+      detail   what the deciding gate saw -- the only per-row record of a rejection;
+      seen_at  the parsed capture date, which the same-listing collapse ranks on.
+
+    Under admit=('availability_unstated',) an unstated row goes on through every later
+    gate and is admitted only if admission_refusal allows it; a refused row stops as
+    availability_unstated with detail['not_admitted'] naming why.
+
+    THE ONE PATH. build_packages and explain_row both call this, so the answer to "why
+    was this listing not shown" can never come from a second copy of the rules that has
+    drifted from the first.
+    """
+    original = row
+    staged = gate_cache.state_stage(row, prepared) if gate_cache is not None else None
+    if staged is None:
+        staged = _state_stage(row, prepared)
+    code, row, row_state, tags, detail = staged
+    # Copies: the later gates append to both, and a remembered stage is shared.
+    tags, detail = list(tags), dict(detail)
+    if code:
+        return GateResult(code, None, tags, detail)
     detail["state"] = row_state
     if ctx.state and row_state != ctx.state:
         return GateResult("other_state", None, tags, detail)
@@ -3144,20 +3270,9 @@ def _gate(ctx, row, prepared, today):
     # offer in offer, QLD" as four of its five results. A listing whose location
     # cannot be confirmed must not reach a client, and cannot be geocoded,
     # distance-filtered or benchmarked either.
-    suburb, suburb_why = suburb_quality.resolve(row)
-    if not suburb_quality.is_located(suburb_why):
-        state_key = str(row.get("state") or "").strip().upper()
-        for group_map, field in ((prepared.estate_suburb, "estate_name"),
-                                 (prepared.page_suburb, _DOC_KEY)):
-            borrowed = group_map.get(
-                (str(row.get(field) or "").strip().lower(), state_key))
-            # Never against the place the row writes out itself (repair round 2,
-            # suburb_quality.written_address_agrees): its list-mates' suburb is not its own.
-            if borrowed and suburb_quality.written_address_agrees(row, borrowed, state_key):
-                row = {**row, "suburb": borrowed}
-                suburb, suburb_why = suburb_quality.resolve(row)
-                if suburb_quality.is_located(suburb_why):
-                    break
+    placed = gate_cache.place_stage(original, row, prepared) if gate_cache is not None \
+        else None
+    row, suburb, suburb_why = placed if placed is not None else _place_stage(row, prepared)
     # SEARCHABLE, not LOCATED. A listing whose suburb we inferred from its own text
     # is real stock at a real price, and dropping it here is exactly what made Coleen
     # report properties as missing that the app had. It comes through, carrying
@@ -3460,7 +3575,7 @@ def _gate(ctx, row, prepared, today):
 
 
 def _pass(brief_dict, rows, today=None, prepared=None, admit=(), only_admitted=False,
-          keep_results=False):
+          keep_results=False, gate_cache=None):
     """The whole of build_packages: (packages, counts, outcome, results).
 
     outcome maps id(row) -> what became of a row that passed every gate
@@ -3520,7 +3635,7 @@ def _pass(brief_dict, rows, today=None, prepared=None, admit=(), only_admitted=F
     # row of the snapshot on every search.
     admitting = bool(ctx.admit)
     for row in rows:
-        result = _gate(ctx, row, prepared, today)
+        result = _gate(ctx, row, prepared, today, gate_cache)
         code, package, tags, detail, seen_at = result
         if keep_results:
             results.append((row, result))
@@ -3665,8 +3780,21 @@ def _pass(brief_dict, rows, today=None, prepared=None, admit=(), only_admitted=F
     return packages, counts, outcome, results
 
 
+def pool_key(brief_dict, admit=()):
+    """Everything build_packages reads from a brief, as one hashable key: two briefs with
+    the same key get the same packages from the same rows, prepared maps and day.
+
+    8 Oct 2026, for pricing relaxations: "All of QLD, not only Redbank Plains" and "Within
+    20 km" change only the suburbs and the radius, which the gates never read (the scorer
+    does), so their pool is the search's own and needs no second pass (research._pool_for).
+    The state, product types, incentive, price range, storeys and the minimums that make a
+    fact binding are read; so are the suburbs, radius and minimum values when the emergency
+    cap SPB_MAX_CANDIDATES is set, because its ordering reads them."""
+    return _BriefContext(brief_dict, admit).pool_key(brief_dict)
+
+
 def build_packages(brief_dict, rows, today=None, prepared=None, admit=(),
-                   only_admitted=False):
+                   only_admitted=False, gate_cache=None):
     """(packages, coverage) — coverage is a plain dict of counts, all reported.
 
     `brief_dict` is the raw brief the browser posted; only budget/state/storeys are
@@ -3683,6 +3811,9 @@ def build_packages(brief_dict, rows, today=None, prepared=None, admit=(),
     only_admitted  return only admitted rows, in a pool (collapse and cap) of their own.
                    Required with admit, and only with admit: a confirmed search and its
                    admitted rows are two passes, never one shared pool.
+    gate_cache     a GateCache(rows, prepared) shared by every pass of one request, so
+                   the brief-independent stages of _gate run once per row (8 Oct 2026).
+                   The packages and counts are the same with or without it.
 
     counts['counts_in_range'] repeats the first-fail tally for in-state rows priced
     inside the brief's own range. Every package carries age_days, email_first_seen and
@@ -3691,7 +3822,7 @@ def build_packages(brief_dict, rows, today=None, prepared=None, admit=(),
     """
     packages, counts, _outcome, _results = _pass(
         brief_dict, rows, today=today, prepared=prepared, admit=admit,
-        only_admitted=only_admitted)
+        only_admitted=only_admitted, gate_cache=gate_cache)
     return packages, counts
 
 
