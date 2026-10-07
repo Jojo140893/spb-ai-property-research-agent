@@ -30,7 +30,7 @@ import sys
 from datetime import datetime
 
 import config
-from database import (HASH_RECIPE_VERSION, ResearchDatabase,
+from database import (HASH_RECIPE_VERSION, WITHDRAWN_FROM_SOURCE, ResearchDatabase,
                       building_content_hash)
 from sources.feature_extract import parse_listing_features
 
@@ -82,6 +82,7 @@ def main(dry_run: bool = False, force: bool = False, dedupe: bool = False):
                              "postcode", "frontage_m", "attribution_scope", "content_hash")}
     hashes = {}
     collisions = []
+    moved = {}                            # {old content_hash: new} for rows re-identified
 
     for r in rows:
         rid = r["id"]
@@ -101,16 +102,40 @@ def main(dry_run: bool = False, force: bool = False, dedupe: bool = False):
                 "state_pooled" if (r["source_channel"] or "").startswith("E-Agent") else "builder")
 
         scope = updates.get("attribution_scope") or r["attribution_scope"]
-        h = building_content_hash({
-            "source_channel": r["source_channel"], "attribution_scope": scope,
-            "builder_name": r["builder_name"], "suburb": r["suburb"],
-            "lot_number": updates.get("lot_number") or r["lot_number"],
-            "house_design": None, "land_size_sqm": r["land_sqm"],
-            "lot_address": text,
-            # present once a row has been re-harvested by the current extractor
-            "source_text": (r["source_text"] if "source_text" in r.keys() else None),
-        })
+        # A ROW THE CURRENT HARVESTER INSERTED ALREADY CARRIES ITS IDENTITY (7 Oct 2026).
+        # record_building writes the insert-time hash into dedup_key, and that hash is the
+        # one the next harvest will compute. Recomputing it here from DATABASE COLUMNS is
+        # what building_content_hash's docstring forbids, and it is exactly what the 30 Jul
+        # re-run did: enrichment had filled suburb 'Mernda' and lot_number '0', the
+        # migration hashed those, and 41 lots a night were then dropped by the UNIQUE
+        # constraint on dedup_key from 28 Sep to 7 Oct. So a current-recipe identity is
+        # kept, and only rows from before it are re-derived -- by the same rule as
+        # repair_rows.find_identity_traps: a live or withdrawn row takes its dedup_key
+        # (what the harvester computes, so its next read finds it), a superseded twin
+        # keeps its content_hash (re-attaching a hidden twin to the harvester's hash
+        # would have the harvest refresh the twin and let the keeper go stale).
+        prefix = f"{HASH_RECIPE_VERSION}:"
+        stored_key = str((r["dedup_key"] if "dedup_key" in r.keys() else "") or "")
+        stored_hash = str((r["content_hash"] if "content_hash" in r.keys() else "") or "")
+        mark = str((r["superseded_by"] if "superseded_by" in r.keys() else "") or "")
+        listed = not mark or mark == WITHDRAWN_FROM_SOURCE
+        if stored_key.startswith(prefix) and (listed or not stored_hash.startswith(prefix)):
+            h = stored_key
+        elif stored_hash.startswith(prefix):
+            h = stored_hash
+        else:
+            h = building_content_hash({
+                "source_channel": r["source_channel"], "attribution_scope": scope,
+                "builder_name": r["builder_name"], "suburb": r["suburb"],
+                "lot_number": updates.get("lot_number") or r["lot_number"],
+                "house_design": None, "land_size_sqm": r["land_sqm"],
+                "lot_address": text,
+                # present once a row has been re-harvested by the current extractor
+                "source_text": (r["source_text"] if "source_text" in r.keys() else None),
+            })
         updates["content_hash"] = h
+        if stored_hash and stored_hash != h:
+            moved[stored_hash] = h
         if not (r["first_seen"] if "first_seen" in r.keys() else None):
             updates["first_seen"] = r["date_checked"]
         updates["last_seen"] = r["date_checked"]
@@ -125,6 +150,17 @@ def main(dry_run: bool = False, force: bool = False, dedupe: bool = False):
             sets = ", ".join(f"{k}=?" for k in updates)
             conn.execute(f"UPDATE buildings SET {sets} WHERE id=?",
                          (*updates.values(), rid))
+
+    # superseded_by holds the KEEPER'S content_hash, so a keeper re-identified above takes
+    # its pointers with it (7 Oct 2026). One pass over the old values, so a hash that is
+    # one row's old value and another's new value is never moved twice.
+    if moved and not dry_run:
+        repoint = [(moved[sup], rid) for rid, sup in conn.execute(
+            "SELECT id, superseded_by FROM buildings WHERE superseded_by IS NOT NULL")
+            if sup in moved]
+        conn.executemany("UPDATE buildings SET superseded_by=? WHERE id=?", repoint)
+        if repoint:
+            print(f"  [+] {len(repoint)} supersede pointer(s) moved with their keeper")
 
     collisions = {h: ids for h, ids in hashes.items() if len(ids) > 1}
 
@@ -198,6 +234,25 @@ def main(dry_run: bool = False, force: bool = False, dedupe: bool = False):
             conn.commit()
             print(f"  [+] removed {removed} exact duplicate row(s), keeping the oldest of each")
         collisions = {h: ids for h, ids in hashes.items() if len(ids) > 1}
+
+    # DEDUP_KEY WITH CONTENT_HASH, ALWAYS (7 Oct 2026). record_building looks a listing up
+    # by either column and inserts with dedup_key = content_hash, and dedup_key is UNIQUE.
+    # Rewriting one column and not the other is what built the trap that dropped 41 lots
+    # a night. Two steps, because a straight per-row rewrite can transiently hand row A the
+    # key row B still holds, and the UNIQUE constraint on dedup_key cannot be dropped the
+    # way the content_hash index is above. Rows still in a collision group keep their key:
+    # two rows cannot share one, and those groups are left to a person (below).
+    if not dry_run:
+        clash = [h for h, ids in collisions.items() if len(ids) > 1]
+        params = clash or [""]
+        where = (f"content_hash IS NOT NULL AND dedup_key IS NOT content_hash "
+                 f"AND content_hash NOT IN ({','.join('?' * len(params))})")
+        conn.execute(f"UPDATE buildings SET dedup_key='migrating:' || id WHERE {where}",
+                     params)
+        aligned = conn.execute("UPDATE buildings SET dedup_key=content_hash "
+                               "WHERE dedup_key LIKE 'migrating:%'").rowcount
+        conn.commit()
+        print(f"  [+] dedup_key aligned with content_hash on {aligned} row(s)")
 
     if collisions:
         print(f"  [!] {len(collisions)} hash collision group(s) — NOT deleting anything.")

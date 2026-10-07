@@ -39,6 +39,98 @@ _AVAILABILITY = (
     (re.compile(r"\bavailable\b", re.I), "Available"),
     (re.compile(r"\bhold\b", re.I), "On Hold"),
 )
+# Where the bare "available" rule sits in the table above: words that say a lot has GONE
+# are tested before it, a misspelt "available" right after it. Found, not hard-coded, so
+# a rule added to the table cannot silently shift the split.
+_AVAILABLE_AT = next(i for i, (rx, label) in enumerate(_AVAILABILITY)
+                     if label == "Available" and rx.pattern == r"\bavailable\b")
+
+# STATUS WORDS THE TABLE ABOVE NEVER KNEW (7 Oct 2026). Coleen's complaint that day was
+# that the app shows fewer lots than E-Agent; part of it is a line that states its status
+# in a word this table did not know, so the row was stored with no status. Measured on the
+# 6 Oct database: "1102 Exchanged Prestige", "$683,450 CONTRACT ISSUED Brochure", "4402
+# DEPOSIT Detached ..." sat blank (so "needs confirming") although the line says the lot
+# is gone. The owner's decision: these three read as Not Available. EOI, RESALE and
+# "Exclusive" are deliberately NOT here -- whether those are for sale is Coleen's call.
+_GONE_WORDS = (
+    (re.compile(r"\bcontracts?\s+issued\b", re.I), "Not Available"),
+    (re.compile(r"\bexchanged\b", re.I), "Not Available"),
+)
+# DEPOSIT IS MOSTLY ABOUT MONEY, NOT STATUS: it is on 310 live rows, and nearly all of them
+# read "- 5% DEPOSIT", "$5k initial deposit and balance of 5%", "5% LAND DEPOSIT REQUIRED"
+# or "Interest on Deposit." Only an upper-case DEPOSIT standing in a status cell -- right
+# after a lot number or a price, as in "4402 DEPOSIT Detached" and "$370,000 DEPOSIT" --
+# says the lot is taken. A percentage, LAND or BUILD before it, or REQUIRED after it, is a
+# payment term. So is a deposit AMOUNT: "$1,000 DEPOSIT to secure" names what to pay, so
+# the figure before the word must be a lot number (no $, no comma) or a whole price
+# (_MIN_STATUS_PRICE or more), never a small sum (review, 7 Oct 2026).
+_LOT_FIGURE = re.compile(r"^\d{1,5}$")
+_MONEY_FIGURE = re.compile(r"^\$?(\d[\d,]*)(?:\.\d+)?$")
+_MIN_STATUS_PRICE = 100_000
+_DEPOSIT_TERMS = frozenset({"REQUIRED", "OF", "AND", "PAID", "TAKEN", "ONLY", "BALANCE",
+                            "PAYABLE", "DUE", "AT", "ON", "IS", "AMOUNT", "TO", "FOR",
+                            "WITH", "PER", "HOLDS", "SECURES", "BOND", "PAYMENT"})
+
+
+def _a_status_cell_figure(prev: str) -> bool:
+    if _LOT_FIGURE.match(prev):
+        return True
+    m = _MONEY_FIGURE.match(prev)
+    if not m or "," not in prev and not prev.startswith("$"):
+        return False
+    try:
+        return float(m.group(1).replace(",", "")) >= _MIN_STATUS_PRICE
+    except ValueError:
+        return False
+
+
+def _deposit_is_a_status(t: str) -> bool:
+    toks = t.split()
+    for i, tok in enumerate(toks):
+        if tok.strip(".,;()[]") != "DEPOSIT":
+            continue
+        prev = toks[i - 1] if i else ""
+        nxt = toks[i + 1].strip(".,;:()[]-").upper() if i + 1 < len(toks) else ""
+        if _a_status_cell_figure(prev) and nxt not in _DEPOSIT_TERMS:
+            return True
+    return False
+
+
+# A one-letter slip in "Available" -- "Avallable" (14 live rows, an OCR'd l for i),
+# "Availlable" (AVIA). Within one edit of the word, the way a person mistypes it; a
+# preceding NOT, or an UN- prefix, still makes it a negation. "availably" is a real word
+# and is not a status.
+_WORD = re.compile(r"[A-Za-z]+")
+
+
+def _one_edit_from(word: str, target: str) -> bool:
+    if word == target or abs(len(word) - len(target)) > 1:
+        return False
+    if len(word) == len(target):
+        diffs = [i for i in range(len(word)) if word[i] != target[i]]
+        if len(diffs) == 1:
+            return True
+        # two adjacent letters swapped ("avaliable") is one slip, not two
+        return (len(diffs) == 2 and diffs[1] == diffs[0] + 1
+                and word[diffs[0]] == target[diffs[1]]
+                and word[diffs[1]] == target[diffs[0]])
+    short, long_ = (word, target) if len(word) < len(target) else (target, word)
+    return any(long_[:i] + long_[i + 1:] == short for i in range(len(long_)))
+
+
+def _misspelt_available(t: str) -> Optional[str]:
+    words = list(_WORD.finditer(t))
+    for i, m in enumerate(words):
+        w = m.group(0).lower()
+        if not 7 <= len(w) <= 12 or w == "availably":
+            continue
+        negated = w.startswith("un") and _one_edit_from(w[2:], "available")
+        if not negated and not _one_edit_from(w, "available"):
+            continue
+        if negated or (i and words[i - 1].group(0).lower() == "not"):
+            return "Not Available"
+        return "Available"
+    return None
 
 # ---------- storey ----------
 _STOREY_EXPLICIT = re.compile(r"\b(single|double|two|triple)[\s-]*(?:storey|story|level)s?\b", re.I)
@@ -413,6 +505,36 @@ def parse_areas(text: str) -> Dict[str, Any]:
 
 
 def parse_availability(text: str) -> Optional[str]:
+    t = _clean(text)
+    for rx, label in _AVAILABILITY[:_AVAILABLE_AT]:
+        if rx.search(t):
+            return label
+    # The gone words rank with SOLD: tested before the bare "available", so a line that
+    # says both is read as gone -- the same order the table above already gives Sold.
+    for rx, label in _GONE_WORDS:
+        if rx.search(t):
+            return label
+    if _deposit_is_a_status(t):
+        return "Not Available"
+    rx, label = _AVAILABILITY[_AVAILABLE_AT]
+    if rx.search(t):
+        return label
+    misspelt = _misspelt_available(t)
+    if misspelt:
+        return misspelt
+    for rx, label in _AVAILABILITY[_AVAILABLE_AT + 1:]:
+        if rx.search(t):
+            return label
+    return None
+
+
+def parse_availability_before_7oct(text: str) -> Optional[str]:
+    """What parse_availability returned before the 7 Oct words were added.
+
+    Kept for repair_rows, which re-reads stored rows with the new words and must change
+    only a row whose stored status is this old answer -- never a status that something
+    else (the sheet check, a retirement, a portal's own field) wrote.
+    """
     t = _clean(text)
     for rx, label in _AVAILABILITY:
         if rx.search(t):
