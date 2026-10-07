@@ -42,6 +42,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 import benchmarks
+import harvest_manifest
 from builder_registry import BuilderRegistry
 from sources.e_agent import EAgentSource
 from sources.builder_portals import BuilderPortalSource
@@ -102,6 +103,11 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
     # so the moment the first row lands, "the newest last_seen" is this run and what the
     # channel returned last time is no longer recoverable. See _collapsed_channels.
     baseline = db.building_reads_by_channel()
+    harvest_manifest.reset()
+    # Lots a constraint refused, per channel. record_building now says "rejected" instead
+    # of "unchanged" (7 Oct 2026): 41 lots a night were dropped by the dedup_key trap and
+    # every summary line counted them as stored.
+    rejected: Dict[str, int] = {}
 
     print("=" * 70)
     print("  HARVEST ALL BUILDING STOCK (E-Agent + direct portals)")
@@ -126,10 +132,12 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
             # record_building returns "new" | "updated" | "unchanged" — all truthy,
             # so count by value, never by truthiness.
             outcomes = [db.record_building({**L, "source_channel": "E-Agent"}) for L in listings]
+            harvest_manifest.count_outcomes(listings, outcomes)
             new = outcomes.count("new")
             updated = outcomes.count("updated")
             total_new += new
             read["E-Agent"] = len(listings)
+            rejected["E-Agent"] = outcomes.count("rejected")
             print(f"    E-Agent: {len(listings)} listing(s) scraped, {new} new, {updated} updated.")
 
     if portals:
@@ -144,8 +152,14 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
                 if tag in seen_portals:
                     continue
                 seen_portals.add(tag)
-                if db.record_building({**L, "source_channel": L.get("source_channel", "Direct Portal")}) == "new":
+                outcome = db.record_building(
+                    {**L, "source_channel": L.get("source_channel", "Direct Portal")})
+                harvest_manifest.count_outcomes([L], [outcome])
+                if outcome == "new":
                     total_new += 1
+                elif outcome == "rejected":
+                    ch = L.get("source_channel", "Direct Portal")
+                    rejected[ch] = rejected.get(ch, 0) + 1
         read["Direct Builder Portal (live)"] = len(seen_portals)
         print(f"    Direct portals: {len(seen_portals)} unique listing(s) seen.")
 
@@ -228,7 +242,19 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
             print("    Proxima: nothing read. If this says the sign-in expired, run: "
                   "python portal_login.py portal_proxima --profile")
         else:
+            # One manifest line per project, and each lot counted under its project.
+            by_pid = {}
+            for proj in getattr(px, "project_log", []) or []:
+                by_pid[proj["pid"]] = harvest_manifest.entry(
+                    "Proxima", "project", proj["pid"],
+                    outcome="read" if proj.get("printed") else "zero-yield", **proj)
+            for L in listings:
+                e = by_pid.get(str(L.get("source_project_id") or ""))
+                if e is not None:
+                    harvest_manifest.tag([L], e)
             outcomes = [db.record_building(L) for L in listings]
+            harvest_manifest.count_outcomes(listings, outcomes)
+            rejected["Proxima"] = outcomes.count("rejected")
             new, updated = outcomes.count("new"), outcomes.count("updated")
             total_new += new
             print(f"    Proxima: {len(listings)} lot(s) from {px.projects_with_stock}"
@@ -260,6 +286,7 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
             read["digital email"] = len(listings)
             outcomes = [db.record_building({**L, "source_channel": em.channel_name})
                         for L in listings]
+            rejected["digital email"] = outcomes.count("rejected")
             new, updated = outcomes.count("new"), outcomes.count("updated")
             total_new += new
             print(f"    digital email: {len(listings)} listing(s) read, {new} new, "
@@ -281,6 +308,13 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
     collapsed = _collapsed_channels(read, stored_live, previous=baseline)
 
     print("\n" + "=" * 70)
+    refused = {c: n for c, n in sorted(rejected.items()) if n}
+    if refused:
+        # Loud, and named by channel. Not a failed run on its own -- the rows that did
+        # store are good -- but every one of these is a lot missing from tonight's stock.
+        print("[!] listings REJECTED by a database constraint and NOT stored: "
+              + ", ".join(f"{c} {n}" for c, n in refused.items())
+              + " -- see the ERROR lines above for which.")
     if dead:
         print("[FAILED] a channel that has stock returned nothing this run:")
         for channel, held in dead:
@@ -311,6 +345,11 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
         got = "" if n_read is None else f"   (read {n_read} this run)"
         print(f"    - {row['source_channel']}: {row['n']}{got}")
     print("=" * 70)
+    # EVERY NIGHT, NOT ONLY A FAILED ONE. This sat below the `return 0`, so a good night
+    # never wrote the unreadable list and the Settings tab kept showing whatever a failed
+    # night had last left there (27 Aug's 57 files on 6 Oct).
+    _record_unreadable_stocklists()
+    _write_manifest()
     if not (dead or collapsed):
         return 0
     # 2 = PARTIAL: something failed, but other channels read normally this run.
@@ -325,7 +364,6 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
     #
     # The guard that matters is unchanged: a run where nothing was read still aborts, and
     # a partial run is reported loudly rather than passed off as success.
-    _record_unreadable_stocklists()
     any_read = any(v for v in read.values())
     return 2 if any_read else 1
 
@@ -355,6 +393,18 @@ def _record_unreadable_stocklists() -> None:
                            "their projects are missing from the catalogue.", len(UNREADABLE))
     except Exception as exc:                                          # noqa: BLE001
         logger.info("could not record unreadable stocklists: %s", exc)
+
+
+def _write_manifest() -> None:
+    """data/harvest_manifest.json: one line per source link, project and portal. Never
+    fatal -- a manifest that cannot be written must not cost the night's stock."""
+    try:
+        path = harvest_manifest.write()
+        snap = harvest_manifest.snapshot()["totals"]["by_outcome"]
+        print(f"    manifest: {len(harvest_manifest.ENTRIES)} source(s) -> {path.name} "
+              f"({', '.join(f'{k} {v}' for k, v in sorted(snap.items()))})")
+    except Exception as exc:                                          # noqa: BLE001
+        logger.warning("could not write the harvest manifest: %s", exc)
 
 
 def _report_benchmark_health(configured: bool, read) -> None:

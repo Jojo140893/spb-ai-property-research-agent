@@ -23,7 +23,19 @@ from sources.scraper_base import PlaywrightScraper, ScraperError, parse_price, p
 from sources.portal_config import EAGENT_CONFIG, CategoryPage
 from sources.adaptive_extract import extract_listings
 from sources.spreadsheet_extract import extract_stocklist
+from sources import spreadsheet_extract as SE
 from sources import remote_stocklist as remote
+# NOT A HARD IMPORT (7 Oct 2026). build_web ships this module inside the research function
+# (kommo_agent imports it) and does not ship harvest_manifest.py, which only the harvest
+# writes; a hard import failed the bundle's import probe. No harvest runs in the function,
+# so there the stub stands in and records nothing.
+try:
+    import harvest_manifest as manifest
+except ImportError:                                                     # pragma: no cover
+    from types import SimpleNamespace as _Stub
+    manifest = _Stub(entry=lambda *a, **k: {}, add_piece=lambda *a, **k: None,
+                     tag=lambda *a, **k: None, stocklist_key=lambda *a, **k: "",
+                     problem_outcome=lambda *a, **k: "fetch failed")
 from secrets_store import get_credentials
 
 logger = logging.getLogger("spb.scraper.eagent")
@@ -170,6 +182,35 @@ def stocklist_file_key(href: str) -> str:
     path = _VIEW_SUFFIX.sub("", u.path.rstrip("/"))     # /edit and /export are one doc
     query = urlencode(sorted(keep))
     return f"{u.scheme.lower()}://{u.netloc.lower()}{path}" + (f"?{query}" if query else "")
+
+
+def _file_name(href: str) -> str:
+    """The last path segment of a link, decoded -- a name, never the link."""
+    from urllib.parse import unquote
+    try:
+        return unquote(urlparse(href or "").path.rstrip("/").rsplit("/", 1)[-1])[:120]
+    except Exception:                                                  # noqa: BLE001
+        return ""
+
+
+# What the Settings tab shows for a link that gave nothing. build_web keeps only the LAST
+# path segment of each entry (the published list must never carry a share link), so a
+# Dropbox folder showed as "dropbox.com" -- nobody could tell which development to chase.
+# A plain sentence with no / ? # % : survives that untouched and names the development.
+_PROBLEM_WORDS = {"no price list": "no price list in the folder",
+                  "private link": "private Dropbox link, needs re-sharing",
+                  "empty folder": "the shared folder came back empty",
+                  "fetch failed": "could not be downloaded"}
+_NOT_IN_A_NAME = re.compile(r"[/?#%:\\]")
+
+
+def _settings_label(entry: Optional[Dict[str, Any]], outcome: str) -> str:
+    entry = entry or {}
+    where = " ".join(x for x in (entry.get("state"), entry.get("product_type")) if x)
+    name = entry.get("heading") or entry.get("label") or "An E-Agent stock link"
+    text = f"{name}{f' ({where})' if where else ''} - {_PROBLEM_WORDS.get(outcome, outcome)}"
+    text = re.sub(r"\s+", " ", _NOT_IN_A_NAME.sub(" ", text)).strip()
+    return text[:79].rstrip(" .") + "."
 
 
 def _builder_from_banner(banner: str) -> str:
@@ -582,14 +623,24 @@ class EAgentSource(PropertySource):
             logger.warning("E-Agent: could not read stocklist links: %s", e)
             return []
         out, seen = [], set()
+        # SET ASIDE, NOT DROPPED SILENTLY (7 Oct 2026). A link whose text is not a stock
+        # label was skipped without a log line, so a price list labelled "Click here"
+        # would simply never exist. Links into a file host are kept here for the manifest;
+        # the page's navigation links are not stock and are not listed.
+        self._set_aside = []
         for l in links or []:
             href = (l.get("href") or "").strip()
             label = l.get("label") or ""
             if not href or href.lower().startswith("mailto:"):
                 continue
             if not (self._STOCK_LABEL.search(label) or self._DIRECT_FILE.search(href)):
+                if self._is_stock_host(href):
+                    self._set_aside.append(
+                        (l, "not a price list" if self._NOT_STOCK_LABEL.search(label)
+                         else "skipped by label filter"))
                 continue
             if self._NOT_STOCK_LABEL.search(label):
+                self._set_aside.append((l, "not a price list"))
                 continue
             # Two estates can share one workbook and differ only by #gid=, so the tab is
             # part of a Google Sheets file's identity — but `pli=1` and `usp=` are not,
@@ -601,6 +652,13 @@ class EAgentSource(PropertySource):
             out.append(l)
         return out
 
+    @staticmethod
+    def _is_stock_host(href: str) -> bool:
+        """A link into a host that serves stock files: Dropbox, Google, SharePoint ..."""
+        return ("/_files/ugd/" in href
+                or (remote.is_offsite(href)
+                    and remote.handler_for(href) is not remote._fetch_direct))
+
     def _scrape_html_stocklist(self, scraper: PlaywrightScraper, url: str,
                                builder_hint: str, state_hint: str) -> List[Dict[str, Any]]:
         """Some builders publish a PAGE rather than a file (Torsion Homes). The adaptive
@@ -611,6 +669,13 @@ class EAgentSource(PropertySource):
             logger.warning("E-Agent: %s unreachable: %s", url, e)
             return []
         rows = extract_listings(scraper.page, builder_hint=builder_hint, state_hint=state_hint)
+        # EVERY ROW NAMES ITS PAGE (7 Oct 2026). A card with no link of its own was stored
+        # with no source_url, so the search had no document to group it with and refused
+        # it as "no_document" -- Torsion's "PARK RIDGE" (id 12437) among them. The page it
+        # was read from is its document; a card's own link, where it has one, still wins.
+        for r in rows:
+            if not str(r.get("source_url_or_ref") or "").strip():
+                r["source_url_or_ref"] = url
         if not rows:
             # An expired capability id still answers 200 with a normal-looking page and
             # no cards, so an empty result here is a failure to report, not "no stock".
@@ -638,31 +703,65 @@ class EAgentSource(PropertySource):
 
     def _fetch_pieces(self, scraper: PlaywrightScraper, href: str, label: str,
                       builder_hint: str, state_hint: str,
-                      allow_banner: bool = False) -> List[Dict[str, Any]]:
-        """Everything parseable behind one stock link, wherever it is hosted."""
+                      allow_banner: bool = False,
+                      entry: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """Everything parseable behind one stock link, wherever it is hosted.
+
+        Every piece is written into `entry` (harvest_manifest), and every piece that could
+        not be fetched -- no price list in a folder, a private Dropbox link, an empty
+        folder -- into the unreadable list the Settings tab shows. Until 7 Oct 2026 those
+        were `continue`d past: 11 links gave nothing on 6 Oct and the tab listed none.
+        """
+        entry = entry if entry is not None else {}
         if not remote.is_offsite(href):
             try:
                 data = scraper.page.context.request.get(
                     href, timeout=config.SCRAPER_NAV_TIMEOUT_MS).body()
             except Exception as e:
                 logger.warning("E-Agent: could not download stocklist %s: %s", label, e)
+                self._note_problem(entry, label, f"download failed: {e}")
                 return []
             got = extract_stocklist(data, source_label=href, builder_hint=builder_hint)
             self._name_from_banner(got, builder_hint, allow_banner)
+            manifest.add_piece(entry, _file_name(href) or label,
+                               "read" if got else "zero-yield", len(got))
             return got
 
         out: List[Dict[str, Any]] = []
+        guessed = guessed_empty = 0
         for piece in remote.fetch_stocklist(href, builder_hint or label, self._http):
             if piece.problem:
+                if piece.meta.get("guessed"):
+                    guessed += 1
+                    guessed_empty += 1
+                    manifest.add_piece(entry, piece.label, "no price list", 0, piece.problem)
+                    continue
+                self._note_problem(entry, piece.label, piece.problem)
                 continue
             if piece.kind == remote.KIND_HTML:
-                out.extend(self._scrape_html_stocklist(scraper, piece.url, builder_hint,
-                                                       state_hint))
+                got = self._scrape_html_stocklist(scraper, piece.url, builder_hint,
+                                                  state_hint)
+                manifest.add_piece(entry, piece.label, "read" if got else "zero-yield",
+                                   len(got))
+                out.extend(got)
                 continue
             # A project folder names its development in the file, not in a page heading.
             derived = "" if builder_hint else _project_from_label(piece.label)
             hint = builder_hint or derived
+            before = len(SE.UNREADABLE)
             got = extract_stocklist(piece.data, source_label=piece.url, builder_hint=hint)
+            if piece.meta.get("guessed"):
+                # A file tried only because nothing in its folder was NAMED a price list.
+                # One that yields nothing was not a price list, and listing it as an
+                # unreadable price list would fill the Settings tab with brochures.
+                guessed += 1
+                if not got:
+                    guessed_empty += 1
+                    del SE.UNREADABLE[before:]
+            manifest.add_piece(
+                entry, piece.label,
+                "read" if got else ("no price list" if piece.meta.get("guessed")
+                                    else "zero-yield"), len(got))
             for g in got:
                 g["stocklist"] = piece.label        # more use than a bare "Access Portal"
                 if derived:
@@ -672,15 +771,31 @@ class EAgentSource(PropertySource):
             # inside the file beats a development name guessed off the file name.
             self._name_from_banner(got, builder_hint, allow_banner)
             out.extend(got)
+        if guessed and guessed_empty == guessed and not out:
+            self._note_problem(entry, label, f"no price list in this folder ({guessed} "
+                                             f"other document(s) tried, none is one)",
+                               piece=False)
         return out
+
+    def _note_problem(self, entry: Dict[str, Any], piece_label: str, problem: str,
+                      piece: bool = True) -> None:
+        """One fetch problem: into the manifest, and into the Settings tab's list."""
+        outcome = manifest.problem_outcome(problem)
+        if piece:
+            manifest.add_piece(entry, piece_label, outcome, 0, problem)
+        else:
+            entry["outcome"] = outcome
+        SE.note_unreadable("remote", _settings_label(entry, outcome), problem)
 
     def _parse_stocklist(self, scraper: PlaywrightScraper, link: Dict[str, str],
                          builder_hint: str, scope: str, state_hint: str = "",
                          product_type: str = "",
-                         allow_banner: bool = False) -> List[Dict[str, Any]]:
+                         allow_banner: bool = False, page: str = "") -> List[Dict[str, Any]]:
         href = link.get("href", "")
+        entry = self._manifest_entry(link, page, state_hint, product_type)
         got = self._fetch_pieces(scraper, href, link.get("label", ""), builder_hint,
-                                 state_hint, allow_banner)
+                                 state_hint, allow_banner, entry=entry)
+        manifest.tag(got, entry)
         for g in got:
             g["source_channel"] = self.channel_name
             g["date_checked"] = datetime.now().strftime("%d/%m/%Y")
@@ -702,6 +817,17 @@ class EAgentSource(PropertySource):
         scraper.throttle()
         return got
 
+    def _manifest_entry(self, link: Dict[str, str], page: str, state: str,
+                        product_type: str, **fields) -> Dict[str, Any]:
+        """This link's line in data/harvest_manifest.json, created on first use."""
+        href = link.get("href", "")
+        heading = (link.get("heading") or "").strip(" -:|")
+        return manifest.entry(
+            self.channel_name, "stock link", stocklist_file_key(href),
+            name=heading or link.get("label", ""), page=page, state=state,
+            product_type=product_type, heading=heading, label=link.get("label", ""),
+            stocklist_key=manifest.stocklist_key(href), **fields)
+
     def _scrape_stocklist_files(self, scraper: PlaywrightScraper) -> List[Dict[str, Any]]:
         """The POOLED state stocklists on /access-projects. Kept because they are the
         proven source of the existing rows, but they name no builder, so they are
@@ -709,7 +835,8 @@ class EAgentSource(PropertySource):
         out: List[Dict[str, Any]] = []
         links = self._stocklist_links(scraper)
         for l in links:
-            out.extend(self._parse_stocklist(scraper, l, "", "state_pooled"))
+            out.extend(self._parse_stocklist(scraper, l, "", "state_pooled",
+                                             page="access-projects"))
         logger.info("E-Agent: %d pooled listing(s) from %d stocklist file(s).", len(out), len(links))
         return out
 
@@ -869,6 +996,10 @@ class EAgentSource(PropertySource):
             except Exception:
                 pass
             links = self._stocklist_links(scraper)
+            page_name = cat.url.rstrip("/").rsplit("/", 1)[-1]
+            for l, why in getattr(self, "_set_aside", []):
+                self._manifest_entry(l, page_name, cat.state, cat.product_type,
+                                     outcome=why)
             fresh = [l for l in links if stocklist_file_key(l["href"]) not in seen_files]
             logger.info("E-Agent: %s (%s) -> %d stocklist file(s), %d new",
                         cat.url.rsplit("/", 1)[-1], cat.state or "-", len(links), len(fresh))
@@ -896,6 +1027,8 @@ class EAgentSource(PropertySource):
                     unattributed += 1
                     logger.debug("E-Agent: no builder heading for %s (saw %r)",
                                  l.get("label"), heading)
+                    self._manifest_entry(l, page_name, cat.state, cat.product_type,
+                                         outcome="no builder heading")
                     continue
                 scope = "builder" if (is_builder and not project_page) else "project"
                 hint = heading if is_builder else ""
@@ -906,7 +1039,7 @@ class EAgentSource(PropertySource):
                 allow_banner = cat.product_type in ("House & Land", "")
                 seen_files.add(stocklist_file_key(l["href"]))
                 got = self._parse_stocklist(scraper, l, hint, scope, cat.state,
-                                            cat.product_type, allow_banner)
+                                            cat.product_type, allow_banner, page=page_name)
                 if got:
                     named = hint or (got[0].get("builder_name") or "").strip() or "(unnamed)"
                     builders[named] = builders.get(named, 0) + len(got)

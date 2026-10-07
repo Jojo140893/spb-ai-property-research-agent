@@ -62,8 +62,9 @@ from datetime import datetime
 import config
 # The marker this repair writes and record_building recognises. Imported rather than
 # retyped: two spellings of it would silently stop a re-listed lot coming back.
-from database import WITHDRAWN_FROM_SOURCE
-from sources.feature_extract import parse_postcode
+from database import HASH_RECIPE_VERSION, WITHDRAWN_FROM_SOURCE
+from sources.feature_extract import (parse_availability, parse_availability_before_7oct,
+                                     parse_postcode)
 from sources.scraper_base import MIN_PLAUSIBLE_PRICE, normalise_money_spacing
 
 # A state that rests on nothing but the postcode cannot survive the postcode being
@@ -826,6 +827,204 @@ def find_sold_word_without_status(rows):
     return out
 
 
+# Channels whose availability is a field the source states, never read off the row's text.
+_STATUS_IS_A_FIELD = frozenset({"Proxima"})
+
+
+def find_status_words_reread(rows):
+    """[(row, old, new)]: live rows whose own line states a status the old parser missed.
+
+    A PARSER CHANGE REACHES STORED ROWS ONLY THROUGH HERE (memory: parser-change-runs-
+    through-repair-rows). On 7 Oct 2026 parse_availability learnt "Avallable"-style typos
+    (Available) and CONTRACT ISSUED, EXCHANGED and a status-cell DEPOSIT (Not Available).
+    Tonight's harvest re-parses every row it reads; a row its list did not carry tonight
+    keeps the blank the old parser left, so it is re-read here from its own stored line.
+
+    Measured on the 6 Oct database: 19 live rows change -- 9 typos to Available (Prince
+    Parade 311/417/419, Ceduna Hattan, AVIA), 10 to Not Available (EXCHANGED, CONTRACT
+    ISSUED, DEPOSIT). No row the old parser called Available is moved to gone.
+
+    COMPARE-AND-SET ON THE OLD PARSER'S ANSWER. A row changes only when its stored status
+    is exactly what the old table produced from that same line. A status anything else
+    wrote -- "Not Available" from the sheet check on six "Avallable" storage lots, a Sold
+    retirement, a portal's own field -- is left as it is.
+    """
+    out = []
+    for r in rows:
+        if r["superseded_by"]:
+            continue
+        if str(r["source_channel"] or "") in _STATUS_IS_A_FIELD:
+            continue
+        text = str(r["source_text"] or "")
+        if not text.strip():
+            continue
+        old, new = parse_availability_before_7oct(text), parse_availability(text)
+        if not new or new == old:
+            continue
+        stored = r["availability_status"]
+        if (stored or None) != old:
+            continue
+        out.append((r, stored, new))
+    return out
+
+
+def apply_status_words_reread(conn, plan):
+    """Write the plan, each row only if its status is still what the plan read."""
+    written = 0
+    for r, old, new in plan:
+        cur = conn.execute(
+            "UPDATE buildings SET availability_status=?, status_previous=? "
+            "WHERE id=? AND availability_status IS ?", (new, old, r["id"], old))
+        written += cur.rowcount
+    return written
+
+
+def find_source_url_backfill(rows):
+    """[(row, url)]: live rows that name no source document although their link is known.
+
+    A row with no source_url has no document for the search to group it with, so it is
+    refused as "no_document" and can never be offered to confirm (api/_candidates
+    admission_refusal). On 6 Oct that was every E-Agent row read off an HTML stock page
+    rather than a file -- Torsion Homes' stocklist, id 12437 "PARK RIDGE" among them --
+    whose cards carry no link of their own. The harvest now stamps the page on every such
+    row (7 Oct 2026); rows its page did not carry tonight get it here, from the link they
+    were read from (stocklist_file), which is the same page.
+    """
+    out = []
+    for r in rows:
+        if r["superseded_by"] or str(r["source_url"] or "").strip():
+            continue
+        page = str(r["stocklist_file"] or "").strip()
+        if page.startswith("http"):
+            out.append((r, page))
+    return out
+
+
+# THE STALE dedup_key TRAP (7 Oct 2026). `dedup_key` is UNIQUE and record_building stores
+# the identity hash in it at insert. On 30 Jul migrate_buildings_identity.py rewrote
+# content_hash for the 29 Jul rows from columns enrichment had since filled, and left
+# dedup_key holding the hash the harvester computes. From then on the harvester's lookup
+# missed and its INSERT hit the stale key: 41 lots dropped every night since 28 Sep (14
+# Havenwood rows frozen at a 29 Jul price; 27 Fawkner Park West / Pricelist.pdf lots
+# retired on 6 Oct as withdrawn although that night's read carried them).
+#
+# record_building now finds a row by either column and re-attaches it, so the harvest
+# repairs every trap row it reads. This puts the rest straight once, so the two columns
+# agree on every row:
+#   * a LIVE or WITHDRAWN trap row is re-attached -- content_hash := dedup_key, the
+#     harvester's own hash -- and anything superseded in its favour is re-pointed with it;
+#   * any other trap row (a superseded duplicate) is aligned -- dedup_key := content_hash
+#     -- and is NOT re-attached, because a hidden twin brought back to its listing would
+#     be updated nightly as if it were the listing.
+# Idempotent (a repaired row is no longer a trap), compare-and-set (a row that moved since
+# it was read is skipped), never written where it would collide, and logged row by row in
+# identity_repair_log so `--undo-identity-repair STAMP` puts it back.
+IDENTITY_LOG_TABLE = "identity_repair_log"
+
+
+def find_identity_traps(rows):
+    """(plan, skipped) for rows whose current-recipe dedup_key differs from content_hash.
+
+    A dedup_key of another shape (the pre-hash builder||lot||suburb||price key) is not a
+    trap: no harvest can compute it, so it can never block an insert.
+    """
+    prefix = f"{HASH_RECIPE_VERSION}:"
+    by_hash, by_key = {}, {}
+    for r in rows:
+        if r["content_hash"]:
+            by_hash[str(r["content_hash"])] = r["id"]
+        if r["dedup_key"]:
+            by_key[str(r["dedup_key"])] = r["id"]
+    plan, skipped = [], []
+    for r in rows:
+        ch, dk = str(r["content_hash"] or ""), str(r["dedup_key"] or "")
+        if not ch or not dk.startswith(prefix) or dk == ch:
+            continue
+        old = {"content_hash": ch, "dedup_key": dk}
+        mark = str(r["superseded_by"] or "")
+        if not mark or mark == WITHDRAWN_FROM_SOURCE:
+            holder = by_hash.get(dk)
+            if holder not in (None, r["id"]):
+                skipped.append({"id": r["id"], "why": f"row {holder} already holds that "
+                                                     f"content_hash"})
+                continue
+            plan.append({"id": r["id"], "old": old, "set": {"content_hash": dk},
+                         "repoint": (ch, dk), "live": not mark})
+        else:
+            holder = by_key.get(ch)
+            if holder not in (None, r["id"]):
+                skipped.append({"id": r["id"], "why": f"row {holder} already holds that "
+                                                     f"dedup_key"})
+                continue
+            plan.append({"id": r["id"], "old": old, "set": {"dedup_key": ch},
+                         "repoint": None, "live": False})
+    return plan, skipped
+
+
+def _ensure_identity_log(conn):
+    conn.execute(f"CREATE TABLE IF NOT EXISTS {IDENTITY_LOG_TABLE} ("
+                 "stamp TEXT, row_id INTEGER, col TEXT, old TEXT, new TEXT, "
+                 "repointed TEXT)")
+
+
+def apply_identity_repair(conn, plan, stamp):
+    """Write the plan compare-and-set; log every row written. Returns the undo record."""
+    import json
+    _ensure_identity_log(conn)
+    done = []
+    for p in plan:
+        (col, new), = p["set"].items()
+        old = p["old"][col]
+        try:
+            cur = conn.execute(
+                f"UPDATE buildings SET {col}=? WHERE id=? AND content_hash=? AND dedup_key=?",
+                (new, p["id"], p["old"]["content_hash"], p["old"]["dedup_key"]))
+        except sqlite3.IntegrityError as exc:
+            print(f"   identity repair: row {p['id']} not written ({exc})")
+            continue
+        if cur.rowcount != 1:
+            continue                       # the row moved since it was read: leave it
+        repointed = []
+        if p["repoint"]:
+            was, now_ = p["repoint"]
+            repointed = [i for (i,) in conn.execute(
+                "SELECT id FROM buildings WHERE superseded_by=?", (was,))]
+            if repointed:
+                conn.execute(
+                    f"UPDATE buildings SET superseded_by=? WHERE superseded_by=? AND id IN "
+                    f"({','.join('?' * len(repointed))})", (now_, was, *repointed))
+        conn.execute(f"INSERT INTO {IDENTITY_LOG_TABLE} VALUES (?,?,?,?,?,?)",
+                     (stamp, p["id"], col, old, new, json.dumps(repointed)))
+        done.append({"id": p["id"], "col": col, "old": old, "new": new,
+                     "repointed": repointed})
+    return {"stamp": stamp, "rows": done}
+
+
+def undo_identity_repair(conn, stamp):
+    """Put back what apply_identity_repair wrote under `stamp`, compare-and-set."""
+    import json
+    _ensure_identity_log(conn)
+    undone = 0
+    for log_id, row_id, col, old, new, repointed in conn.execute(
+            f"SELECT rowid, row_id, col, old, new, repointed FROM {IDENTITY_LOG_TABLE} "
+            f"WHERE stamp=? ORDER BY rowid DESC", (stamp,)).fetchall():
+        try:
+            n = conn.execute(f"UPDATE buildings SET {col}=? WHERE id=? AND {col}=?",
+                             (old, row_id, new)).rowcount
+        except sqlite3.IntegrityError as exc:
+            # A harvest since the repair inserted a row holding the old key: putting it
+            # back would make two rows claim one identity. Said, and kept in the log.
+            print(f"   undo: row {row_id} keeps {col} {new} ({exc})")
+            continue
+        undone += n
+        ids = json.loads(repointed or "[]")
+        if ids and col == "content_hash":
+            conn.execute(f"UPDATE buildings SET superseded_by=? WHERE superseded_by=? AND id IN "
+                         f"({','.join('?' * len(ids))})", (old, new, *ids))
+        conn.execute(f"DELETE FROM {IDENTITY_LOG_TABLE} WHERE rowid=?", (log_id,))
+    return undone
+
+
 def find_tally_estates(rows):
     """Rows whose estate name is a running count, not a place.
 
@@ -1244,6 +1443,23 @@ def find_suburbs_in_own_document(rows, fetch=None, extract=None):
 
 def main(apply_changes):
     conn = sqlite3.connect(str(config.DATABASE_PATH))
+    # 0. IDENTITY FIRST, before anything below reads a content_hash: the duplicate and
+    #    twin passes write a keeper's hash into superseded_by, and a hash this repair is
+    #    about to move would leave that pointer dangling.
+    traps, trap_skipped = find_identity_traps(_rows(conn))
+    reattach = sum(1 for p in traps if "content_hash" in p["set"])
+    print(f"0. identity: rows whose dedup_key is not their content_hash (the UNIQUE trap): "
+          f"{len(traps)} -- {reattach} live/withdrawn to re-attach, "
+          f"{len(traps) - reattach} superseded to align; "
+          f"{len(trap_skipped)} left alone because the write would collide")
+    for s in trap_skipped[:4]:
+        print(f"     row {s['id']}: {s['why']}")
+    if apply_changes and traps:
+        stamp = datetime.now().isoformat(timespec="seconds")
+        done = apply_identity_repair(conn, traps, stamp)
+        conn.commit()
+        print(f"   applied to {len(done['rows'])} row(s); undo with: "
+              f"python repair_rows.py --undo-identity-repair {stamp}")
     rows = _rows(conn)
     live = [r for r in rows if not r["superseded_by"]]
     print(f"{len(rows)} rows stored, {len(live)} live\n")
@@ -1328,6 +1544,15 @@ def main(apply_changes):
     for r, status in sold_words[:5]:
         print(f"     -> {status:14} {str(r['builder_name'] or '?')[:18]:20} "
               f"{str(r['lot_address'] or r['estate_name'] or '')[:44]}")
+    status_words = find_status_words_reread(rows)
+    print(f"\n16. stored lines whose status word the old parser missed "
+          f"(Avallable, CONTRACT ISSUED, EXCHANGED, DEPOSIT): {len(status_words)}")
+    for r, old, new in status_words[:5]:
+        print(f"     {str(old or '(blank)'):10} -> {new:14} "
+              f"{str(r['source_text'] or '')[:56]}")
+    unsourced = find_source_url_backfill(rows)
+    print(f"\n17. rows naming no source document although the page they were read "
+          f"from is known: {len(unsourced)}")
     print(f"\n12. lists that came back missing most of themselves "
           f"(retiring nothing from these): {len(half_read)}")
     for key, missing, total in sorted(half_read, key=lambda x: -x[1])[:6]:
@@ -1431,6 +1656,13 @@ def main(apply_changes):
         # reads this column and "Sold" and "On Hold" are different things to tell a client.
         cur.execute("UPDATE buildings SET availability_status=? WHERE id=?",
                     (status, r["id"]))
+    # AFTER the sold words: both start from a blank status, and this one is compare-and-
+    # set, so a row the line above just gave a status keeps it.
+    status_written = apply_status_words_reread(conn, status_words)
+    for r, url in unsourced:
+        # Only a blank: a row that names a document already is never re-pointed.
+        cur.execute("UPDATE buildings SET source_url=? WHERE id=? "
+                    "AND (source_url IS NULL OR source_url='')", (url, r["id"]))
     for r in stale_pos:
         # The position only. The listing itself is untouched -- it may well still be for
         # sale, just no longer on the line we wrote down.
@@ -1472,6 +1704,8 @@ def main(apply_changes):
           f"{len(tallies)} tally estate name(s) cleared, "
           f"{len(stale_pos)} unconfirmed row number(s) cleared, "
           f"{len(sold_words)} unstated sold/hold status(es) read off the row, "
+          f"{status_written} status word(s) the old parser missed, "
+          f"{len(unsourced)} source document(s) filled from the page read, "
           f"{len(prose)} email sentence(s) withdrawn, "
           f"{len(oversupply)} portal lot(s) the project says are gone marked Sold, "
           f"{len(refuted)} refuted state(s) cleared, "
@@ -1484,4 +1718,14 @@ def main(apply_changes):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--apply", action="store_true", help="write the corrections")
-    sys.exit(main(ap.parse_args().apply))
+    ap.add_argument("--undo-identity-repair", metavar="STAMP", default="",
+                    help="put back what the identity repair wrote at STAMP "
+                         "(printed when it ran; also in the identity_repair_log table)")
+    _args = ap.parse_args()
+    if _args.undo_identity_repair:
+        _conn = sqlite3.connect(str(config.DATABASE_PATH))
+        _n = undo_identity_repair(_conn, _args.undo_identity_repair)
+        _conn.commit()
+        print(f"identity repair {_args.undo_identity_repair}: {_n} row(s) put back")
+        sys.exit(0)
+    sys.exit(main(_args.apply))

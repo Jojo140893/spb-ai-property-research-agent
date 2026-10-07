@@ -14,3 +14,24 @@ import pytest
 @pytest.fixture(autouse=True)
 def _no_groq_key_unless_a_test_sets_one(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
+
+
+# THE HARVEST'S NIGHTLY FILES ARE PUT BACK AFTER EVERY TEST (7 Oct 2026). harvest() now
+# writes data/unreadable_stocklists.json and data/harvest_manifest.json on every run, not
+# only a failed one, so any test that drives harvest() would otherwise leave the committed
+# copy rewritten with test data.
+_HARVEST_FILES = ("unreadable_stocklists.json", "harvest_manifest.json")
+
+
+@pytest.fixture(autouse=True)
+def _harvest_files_are_put_back():
+    from pathlib import Path
+    data = Path(__file__).resolve().parent.parent / "data"
+    saved = {n: ((data / n).read_bytes() if (data / n).exists() else None)
+             for n in _HARVEST_FILES}
+    yield
+    for n, body in saved.items():
+        if body is None:
+            (data / n).unlink(missing_ok=True)
+        elif not (data / n).exists() or (data / n).read_bytes() != body:
+            (data / n).write_bytes(body)
