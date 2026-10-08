@@ -602,7 +602,9 @@ def read_left_it_out(rec, doc, latest_read, reads, cut_short, full):
 
 
 def _visible_key(entry_or_package):
-    return (str(entry_or_package.get("lot_address") or "").strip().lower(),
+    # The title as people are shown it, small print out (SR.card_title, 8 Oct 2026): a
+    # package and the card it was merged into share it.
+    return (SR.card_title(entry_or_package).strip().lower(),
             round(SR._num(entry_or_package.get("advertised_package_price")) or 0))
 
 

@@ -192,3 +192,100 @@ def display_suburb(row: Dict[str, Any]) -> str:
         if candidate.upper() not in _STATE_TOKENS and not re.match(r"^\d+\s", candidate):
             return candidate.title()
     return stored
+
+
+# ------------------------------------------------------------------- agent small print
+
+# A PRICE LIST'S SMALL PRINT FOR AGENTS, never a buyer's (8 Oct 2026; Stage B's F5, ported to
+# main on its own, without the row labels). Since the 600-candidate cap was lifted (PR #27)
+# far more of it reaches the shortlist -- 118 cards carried it on 7 Oct against 4 before --
+# as a card's title ('Single Car Space & OB Storage Agent commission=6%plus, South Yarra
+# VIC'), its estate ('Stock highlighted in orange below is eligible for the 100% commission
+# offer.'), a building's name and an incentive ('$50,000 purchaser rebate/agent bonus'), and
+# from there to the Research tab, Hot Leads, the Kommo note and Clare's options. Whole words,
+# so 'Commissioners Gully' and 'Agentia Park' are not small print; 'Agentcommission' and
+# 'E-AGENT' (glued by a PDF) are. In a title or an estate the purchaser, FIRB and guaranteed-
+# income words come from column headings and notes ('Upfront FIRB Fee payable by', 'PRICE
+# (EX GST) GUARANTEED INCOME P.A.'), never from an address. client_report.py and
+# index.html's clientAddress drop the same parts from a client document with a wider net.
+AGENT_TEXT = re.compile(
+    r"\bcommissions?\b|\bagent(?:s|commission)?\b|\bpurchasers?\b|\beligib\w*|"
+    r"\bhighlighted\b|\bfirb\b|\bguaranteed\s+income\b", re.I)
+# In an INCENTIVE the purchaser and FIRB words are the offer itself -- 'rebate + FIRB fee
+# covered (FIRB buyer) or $65,000' (31 live rows), '$50,000 purchaser rebate' -- which is what
+# the field is for, so only what is the agent's goes: the commission and the agent's bonus.
+AGENT_ONLY_TEXT = re.compile(r"\bcommissions?\b|\bagent(?:s|commission)?\b", re.I)
+
+# Where a line parts: a comma, a '|', or a '/' between two words ('rebate/agent bonus'). NOT
+# a comma inside a number: '$50,000' is one amount -- Stage B split there, and '$50,000
+# purchaser rebate/agent bonus' (37 live rows) came out '$50' -- and '3/45' is a unit address.
+_PART_BREAK = re.compile(
+    r"(\s*(?:(?<!\d),|,(?!\d{3}(?!\d))|\|)\s*|(?<=[^\W\d_])\s*/\s*(?=[^\W\d_]))")
+# A document's own heading in front of what it names: 'Agent Stock List 167 Ingleburn Road'
+# is the development at 167 Ingleburn Road (19 live rows), and the address stays.
+_AGENT_HEADING = re.compile(
+    r"^(?:external\s+)?agents?\s+(?:stock|price)\s*lists?\b[\s:.\-]*", re.I)
+# What a card is titled when its source row gave no address (api/_candidates.py says it too).
+NO_ADDRESS = "(no address in source row)"
+
+
+def _continues(part: str) -> bool:
+    """True for a part that opens in lower case: it goes on with the sentence before it
+    ('Price is approximately for the build + commission inc GST, estimate combined.')."""
+    opening = part.lstrip(" \t\"'([")
+    return bool(opening) and opening[0].islower()
+
+
+def without_agent_text(value: Any, fallback: str = "", words=AGENT_TEXT) -> Any:
+    """`value` with the parts that are agent small print taken out, the rest kept as read
+    with the breaks between them; `fallback` when nothing else is left. The value itself,
+    untouched (None stays None), when no part is small print, so a clean title, estate or
+    incentive is returned exactly as given -- and what comes back never carries small
+    print, so a second pass changes nothing.
+
+    A part is what a comma, a '|' or a '/' between words sets apart (_PART_BREAK). One that
+    opens in lower case continues the sentence before it, and a sentence carrying small
+    print goes from its first part that does -- the whole sentence when it opens in lower
+    case too. So a note's tail goes with the note ('..., estimate combined. Please'), and an
+    address in front of a note keeps its place ('4 SE-Chapel St, Agent commission=6%plus'
+    -> '4 SE-Chapel St'). `words` is AGENT_TEXT, or AGENT_ONLY_TEXT for an incentive."""
+    text = "" if value is None else str(value)
+    if not words.search(text):
+        return value
+    pieces = _PART_BREAK.split(text)
+    parts, breaks = pieces[0::2], [""] + pieces[1::2]
+    for i, part in enumerate(parts):
+        heading = _AGENT_HEADING.match(part.strip())
+        rest = part.strip()[heading.end():].strip() if heading else ""
+        if rest and not words.search(rest):
+            parts[i] = rest
+    keep = [True] * len(parts)
+    start = 0
+    while start < len(parts):
+        end = start + 1
+        while end < len(parts) and _continues(parts[end]):
+            end += 1
+        marked = [k for k in range(start, end) if words.search(parts[k])]
+        if marked:
+            for k in range(start if _continues(parts[start]) else marked[0], end):
+                keep[k] = False
+        start = end
+    kept = ""
+    for k, part in enumerate(parts):
+        if keep[k] and part.strip():
+            kept += (breaks[k] if kept else "") + part.strip()
+    return kept or fallback
+
+
+def card_place(card: Dict[str, Any]) -> str:
+    """'Melbourne VIC': what a card's title falls back to when all of it was small print."""
+    return " ".join(str(card.get(k) or "").strip() for k in ("suburb", "state")
+                    if str(card.get(k) or "").strip())
+
+
+def shown_title(title: Any, card: Dict[str, Any]) -> str:
+    """A card's title as people are shown it (8 Oct 2026): without agent small print, and
+    when all of it was small print, the card's place -- or with no place either, what a
+    card with no address says. kommo_agent titles every candidate with it, and the parity
+    and search-regressions checks key a hidden row's twin on it, so both sides agree."""
+    return without_agent_text(title, card_place(card) or NO_ADDRESS)

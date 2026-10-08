@@ -1499,7 +1499,7 @@ def obvious_rows_check(C, research, bootstrap, catalogue, snapshot_path):
         rows_ = picked(state, low, high, run.today)
         shown = {_hash(e): "shortlist" for e in resp.get("shortlist") or []}
         shown.update({_hash(e): "needs_confirming" for e in resp.get("needs_confirming") or []})
-        visible = {(str(e.get("lot_address") or "").strip().lower(),
+        visible = {(card_title(e).strip().lower(),
                     round(_num(e.get("advertised_package_price")) or 0))
                    for e in (resp.get("shortlist") or []) + (resp.get("needs_confirming") or [])}
         pending = [r for r in rows_ if _hash(r) not in shown]
@@ -1597,6 +1597,23 @@ def obvious_rows_check(C, research, bootstrap, catalogue, snapshot_path):
     return hook
 
 
+def card_title(card):
+    """The title a card, a needs-confirming card or a package is matched to its twin by: the
+    title as people are shown it, agent small print out (address_label.shown_title, 8 Oct
+    2026). /api/research sends a card's title that way, and a package carries it as read, so
+    both sides are keyed on it and a package still meets the card it was merged into.
+
+    Imported here, when called, so it is the BUNDLE's address_label once the child has
+    narrowed sys.path to it; a bundle from before 8 Oct 2026 has no such function, sends its
+    titles as read, and is keyed on them as they are."""
+    title = str(card.get("lot_address") or "")
+    try:
+        from address_label import shown_title
+    except ImportError:
+        return title
+    return str(shown_title(title, card) or "")
+
+
 def _as_candidate(card):
     """A shortlist card, needs-confirming card or package, shaped as the scored candidate
     research._card_identity reads."""
@@ -1655,7 +1672,7 @@ def _obvious_outcome(verdict, visible, research, bootstrap, used, listed_short=F
         return "not_explained", ""
     gate = verdict.get("gate")
     package = verdict.get("package") or {}
-    twin = (str(package.get("lot_address") or "").strip().lower(),
+    twin = (card_title(package).strip().lower(),
             round(_num(package.get("advertised_package_price")) or 0))
     copied = shown_copy or (lambda _package: False)
     if gate == "same_listing_collapsed":

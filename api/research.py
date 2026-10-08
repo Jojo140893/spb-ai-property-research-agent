@@ -42,6 +42,7 @@ if _HERE not in sys.path:
 
 import _bootstrap
 import _candidates
+from address_label import AGENT_ONLY_TEXT, shown_title, without_agent_text
 
 # The rejection log is rendered as one card per entry, so an uncapped log would post
 # hundreds of DOM nodes. The count stays exact; the list is trimmed and says so.
@@ -77,6 +78,11 @@ def _shortlist_entry(p, availability=None):
     # from the same snapshot row, so the row's own statement is the fallback.
     _status = (getattr(p, 'availability_status', None)
                or _known.get('availability_status', ''))
+    # NO AGENT SMALL PRINT LEAVES THE SERVER (8 Oct 2026): kommo_agent already took it out of
+    # every candidate it scores; taken out here too, for every caller at once -- the Research
+    # tab, Hot Leads, the Kommo note and Clare -- whatever built the candidate. A clean text
+    # comes back as it was, so this changes nothing a candidate already says.
+    _card = {'suburb': p.suburb, 'state': p.state}
     return {
         'property_id': p.property_id,
         # NOT property_id — that is "PROP-{n}" assigned per search, so it names a
@@ -88,12 +94,13 @@ def _shortlist_entry(p, availability=None):
         # when the source only described an incentive in words; the text travels with it
         # so the document can say what was offered without inventing a figure.
         'incentive_amount': getattr(p, 'incentive_amount', 0.0) or 0.0,
-        'incentive_text': getattr(p, 'incentive_text', '') or '',
+        'incentive_text': without_agent_text(getattr(p, 'incentive_text', '') or '',
+                                             words=AGENT_ONLY_TEXT),
         # Rows on the comparison Coleen's team sends: Estate, Land Price, Build Price.
-        'estate_context': getattr(p, 'estate_context', '') or '',
+        'estate_context': without_agent_text(getattr(p, 'estate_context', '') or ''),
         'land_price': p.price_breakdown.land_price,
         'build_price': p.price_breakdown.build_price,
-        'lot_address': p.lot_address,
+        'lot_address': shown_title(p.lot_address, _card),
         # The lot as the source stated it, '' when it did not. lot_address above is often
         # only a street address, and Clare's availability check (vapi-kommo-hook) reads
         # this shortlist: it can match a caller's "lot 5532" only against a lot it is given.
@@ -331,36 +338,79 @@ def _wide_estates(rows):
     return {k for k, subs in seen.items() if len(subs) > WIDE_ESTATE_SUBURBS}
 
 
+# 'External Agent', 'Agent', 'Agents' as words of a builder name read off an agent's file name
+# ('The Albertine External Agent.pdf', 'Pricelist New Agent.pdf').
+_AGENT_WORDS = re.compile(r"\b(?:external\s+)?agents?\b|\bagentcommission\b", re.I)
+
+
+def _without_agent_words(name):
+    """`name` without a file name's agent words; exactly as it was when it has none."""
+    if not _AGENT_WORDS.search(name):
+        return name
+    return " ".join(_AGENT_WORDS.sub(" ", name).split()).strip(" ,-/")
+
+
+def _shown_building(name, said, by_builder):
+    """The name a building is shown under (8 Oct 2026, Stage B's F5 ported alone): never
+    agent small print. An estate column of 'Agent commission=6%plus' or 'LISTINGSAVAILABLE
+    FORSALEFORE-AGENT' names no building, and falls back to its price list as a building
+    with no name does. A project named off an agent's file name (`by_builder`: 'The Albertine
+    External Agent', 'Prince Parade Agent') keeps its own name without the file's agent
+    words, and one called only 'Agent' falls back to its price list too. Only the name
+    shown: the grouping key is left as it was."""
+    shown = without_agent_text(name)
+    if shown:
+        return shown
+    bare = _without_agent_words(name) if by_builder else ""
+    if bare and _norm(bare) and without_agent_text(bare) == bare:
+        return bare
+    return "%s price list" % said if said else "Price list (builder not named)"
+
+
+def _as_read(cand, field):
+    """A candidate's lot_address or estate_context as its package read it, agent small print
+    and all (kommo_agent sets it, 8 Oct 2026). Every copy test and building key below reads
+    this, so taking the small print out of what a card says merges, splits and regroups
+    nothing. A candidate built by hand has only the field itself."""
+    read = getattr(cand, field + "_as_read", None)
+    return read if read is not None else getattr(cand, field, "")
+
+
 def _building_of(cand, row, wide):
     """(key, name) of the building a shortlisted candidate belongs to."""
     row = row or {}
     state = (str(row.get("state") or getattr(cand, "state", "") or "").strip().upper())
     channel = str(row.get("source_channel") or "").strip().lower()
     scope = str(row.get("attribution_scope") or "").strip().lower()
-    estate = " ".join(str(row.get("estate_name") or getattr(cand, "estate_context", "")
+    estate = " ".join(str(row.get("estate_name") or _as_read(cand, "estate_context")
                           or "").split())
     builder = " ".join(str(row.get("builder_name") or "").split())
     suburb = " ".join(str(getattr(cand, "suburb", "") or row.get("suburb") or "").split())
     name = ""
+    # Named by the project's builder column, which a file name can fill (8 Oct 2026).
+    by_builder = False
     if channel == "proxima" and (estate or row.get("source_project_id")):
         name = (_building_name(estate, suburb)
                 or "Proxima project %s" % (row.get("source_project_id") or estate))
     elif scope == "project" and builder:
         name = _building_name(builder, suburb)
+        by_builder = bool(name)
     if not name and estate and (state, _norm(estate)) not in wide:
         name = _building_name(estate, suburb)
-    if name and _norm(name):
-        return "%s|%s" % (state, _norm(name)), name
     doc = str(row.get("source_doc") or "").strip()
     who = builder or str(getattr(cand, "builder_name", "") or "").strip()
     if who == NO_BUILDER:
         who = ""
+    # The builder as a name shown says it: without a file name's agent words (8 Oct 2026).
+    said = _without_agent_words(who)
+    if name and _norm(name):
+        return "%s|%s" % (state, _norm(name)), _shown_building(name, said, by_builder)
     if doc:
         return ("%s|doc:%s" % (state, doc),
-                "%s price list" % who if who else "Price list (builder not named)")
+                "%s price list" % said if said else "Price list (builder not named)")
     who = who or NO_BUILDER
     return ("%s|builder:%s|%s" % (state, _norm(who), _norm(suburb)),
-            "%s%s" % (who, (", " + suburb) if suburb else ""))
+            "%s%s" % (said or NO_BUILDER, (", " + suburb) if suburb else ""))
 
 
 def _buildings(shortlist, live, wide):
@@ -1244,14 +1294,18 @@ def _candidate_key(cand, row=None):
     """DedupeEngine's key for a candidate, and with its snapshot row, the lot as well
     (_candidates.same_lot_key): two units of one building on one price list, carded alike
     at one price, are two lots, so a shortlisted one does not hide the other from "Needs
-    confirming" (7 Oct 2026)."""
-    key = _listing_key(cand.lot_address, cand.house_design,
+    confirming" (7 Oct 2026).
+
+    On the title and estate as read (_as_read, 8 Oct 2026), so a card whose small print was
+    taken out is the same copy, or not, as it was before."""
+    title = _as_read(cand, "lot_address")
+    key = _listing_key(title, cand.house_design,
                        cand.price_breakdown.advertised_package_price)
     if not row:
         return key
     return key, _candidates.same_lot_key(
-        {"lot_number": getattr(cand, "lot_number", "") or "", "lot_address": cand.lot_address,
-         "estate_context": getattr(cand, "estate_context", "") or "",
+        {"lot_number": getattr(cand, "lot_number", "") or "", "lot_address": title,
+         "estate_context": _as_read(cand, "estate_context") or "",
          "content_hash": str(getattr(cand, "content_hash", "") or "")}, row)
 
 
@@ -1304,7 +1358,9 @@ def _card_identity(cand, row):
         "bedrooms": getattr(cand, "bedrooms", None) or None,
         "land": _float(getattr(cand, "land_size_sqm", 0)),
         "house": _float(getattr(cand, "house_size_sqm", 0)),
-        "street": _street_of(cand.lot_address),
+        # Off the title as read (8 Oct 2026), as _candidate_key: small print taken out of
+        # what the card says never makes or unmakes a copy.
+        "street": _street_of(_as_read(cand, "lot_address")),
         "doc": str(row.get("source_doc") or "").strip(),
         "email": (str(row.get("source_channel") or "").strip().lower()
                   == _candidates.EMAIL_CHANNEL),
@@ -1392,12 +1448,14 @@ def _needs_confirming_entry(cand, pkg, row):
         channel = "" if carried == "stored stock" else carried
     return {
         "content_hash": str(cand.content_hash or ""),
-        "lot_address": cand.lot_address,
+        # No agent small print, as on the shortlist entry (8 Oct 2026).
+        "lot_address": shown_title(cand.lot_address, {"suburb": cand.suburb,
+                                                      "state": cand.state}),
         "lot_number": getattr(cand, "lot_number", "") or "",
         "suburb": cand.suburb,
         "state": cand.state,
         "builder_name": (cand.builder_name or "").strip() or NO_BUILDER,
-        "estate_context": getattr(cand, "estate_context", "") or "",
+        "estate_context": without_agent_text(getattr(cand, "estate_context", "") or ""),
         "house_design": cand.house_design,
         "advertised_package_price": cand.price_breakdown.advertised_package_price,
         "bedrooms": cand.bedrooms,
