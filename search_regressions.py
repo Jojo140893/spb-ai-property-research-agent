@@ -688,9 +688,36 @@ def no_lot_and_no_street(entry):
     so this count and those cards cannot drift apart. Imported when called, like
     title_as_read: in a replay's child it is the BUNDLE's address_label, the one the answers
     being checked were made with, and nothing of the app is imported before the child has
-    narrowed sys.path to the bundle."""
-    from address_label import names_no_lot_and_no_street
+    narrowed sys.path to the bundle.
+
+    A BUNDLE BUILT BEFORE THE ONE DEFINITION (9 Oct 2026, repair round 1) has an
+    address_label without it, so this checker run against such a bundle (an older
+    vercel_site, a replay of one) raised ImportError and the whole check failed. The rule
+    was moved unchanged, so this checkout's copy of it counts such a bundle's cards exactly
+    as that bundle's own checker did (_checkout_rule)."""
+    try:
+        from address_label import names_no_lot_and_no_street
+    except ImportError:
+        names_no_lot_and_no_street = _checkout_rule()
     return names_no_lot_and_no_street(entry)
+
+
+_CHECKOUT_RULE = []
+
+
+def _checkout_rule():
+    """This checkout's address_label.names_no_lot_and_no_street, read from its own file under
+    a name of its own (9 Oct 2026), so that `import address_label` still finds the bundle's
+    module. address_label imports nothing of the app, so nothing else of this checkout
+    enters a replay's child."""
+    if not _CHECKOUT_RULE:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "_search_regressions_address_label", str(APP / "address_label.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _CHECKOUT_RULE.append(module.names_no_lot_and_no_street)
+    return _CHECKOUT_RULE[0]
 
 
 # ---------------------------------------------------------------------------- the Dawn lots

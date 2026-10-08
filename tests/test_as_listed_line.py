@@ -84,9 +84,10 @@ def test_the_nightly_count_reads_the_definition_the_cards_are_given_by(monkeypat
     ("South Yarra VIC", "", "Agent commission=6%plus", "", SMALL_PRINT),
     # Gallery Group: the design and size tell it apart; amounts and link words alone do not
     # (the card shows its price), nor the title said again.
+    # (Its link words at the end go: repair round 1, 9 Oct 2026, below.)
     ("Click here Click here", "",
      "Traditional KRAUSS 204 $604,000.00 $507,227.00 $0.00 $1,111,227.00 Click here Click here",
-     "Traditional KRAUSS 204 $604,000.00 $507,227.00 $0.00 $1,111,227.00 Click here Click here",
+     "Traditional KRAUSS 204 $604,000.00 $507,227.00 $0.00 $1,111,227.00",
      ""),
     ("Click here Click here", "",
      "$620,000.00 $461,312.00 $0.00 $1,081,312.00 Click here Click here", "",
@@ -106,6 +107,190 @@ def test_the_line_as_listed_and_why_not(title, lot, line, shown, why):
     card = {"lot_address": title, "lot_number": lot, "suburb": "Melbourne", "state": "VIC"}
     assert AL.as_listed_line(line, card) == (shown, why)
     assert AL.as_listed(line, card) == shown
+
+
+# ------------------------------------------------- repair round 1 (9 Oct 2026): the cut
+
+# Stored lines of the 8 Oct database (the snapshot's lot_address), cut at the 110th
+# character by the extractors. The first round showed them as they stand, with no mark, so
+# '$3,500,00' beside a card priced $3,500,000 read as a price.
+CUT_IN_AMOUNT = ("10 1001 3 Bed 3 Bath, 2 Cars 3A.1 NW Storage Cage Single Car Space Single Car "
+                 "Space 176.2 16.9 193.1 $3,500,00")
+CUT_IN_AMOUNT_QLD = ("134.0 Theodore Level 3 3 Bed + MPR / 2 Bath Type F / S3 3.0 2.0 99.0 13.0 "
+                     "112.0 North East Available $1,537,50")
+CUT_AFTER_A_COMMA = ("2 2.04 3 Bed 2 Bath 2 Car B3 North | Slater Street Car Spaces: 1 Car Spaces: "
+                     "1 Storage Space: 1 154 16 170 $2,")
+CUT_IN_A_SECOND_AMOUNT = ("7 701 3 Bed 3 Bath, 2 Cars 3A NW Single Car Space Single Car Space "
+                          "Storage Cage 192.1 126 318.1 $4,250,000 $22")
+CUT_IN_A_WORD = ("North 60405 Cloverton Kalkallo Available Richmond 13 Bright $320,000 $295,430 "
+                 "$615,430 NA $615,430 Settled Wes")
+CUT_AT_A_SPACE = ("Geelong 11921 Warralily Armstrong Creek Available Greenvale 14 Elevate $292,500 "
+                  "$313,720 $606,220 NA $606,220 ")
+CUT_IN_PORTAL_LINK = ("Available 15# House SAMARIUM 19 181.13m\u00b2 300.0 m\u00b2 4 beds / 2 baths "
+                      "/ 2 cars 2-part Contract $968,900 Portal Li")
+CUT_IN_A_LINK = ("Tropea Yamba 190m2 4 2 2 2 $480,000 $1,000,000 Volos Available Owner Occ. / "
+                 "Investor 30.09.2026 https://drive.")
+CUT_AFTER_A_LONE_DOLLAR = ("Available Open List 1101 L11 B1 2 2 1 Yes 3 84 11 95 $1,075,000.00 $ "
+                           "5,562.41 $ 1,930.70 S 392.22 S 90.33 $ 20")
+CUT_AFTER_SMALL_PRINT = ("10 1011A 2B06 North 76 8 84 $1,375,500 $18,099 available (FIRB buyer) or "
+                         "$65,000 rebate for local. Light colou")
+ELLIPSIS = "\u2026"
+# The extractors' cut, as api/_candidates.py reads it.
+CUT = C._TRUNCATED_AT
+
+
+def test_the_cut_is_the_extractors_cut():
+    """address_label marks a line cut where api/_candidates reads one as cut."""
+    assert AL.LINE_CUT_AT == C._TRUNCATED_AT == 110
+    assert AL.CUT_MARK == ELLIPSIS
+    for line in (CUT_IN_AMOUNT, CUT_IN_AMOUNT_QLD, CUT_AFTER_A_COMMA, CUT_IN_A_SECOND_AMOUNT,
+                 CUT_IN_A_WORD, CUT_AT_A_SPACE, CUT_IN_PORTAL_LINK, CUT_IN_A_LINK,
+                 CUT_AFTER_A_LONE_DOLLAR, CUT_AFTER_SMALL_PRINT):
+        assert len(line) == CUT
+
+
+@pytest.mark.parametrize("title, line, shown", [
+    # What the cut left of an amount is no amount: it goes, and the line says it goes on.
+    ("Melbourne VIC", CUT_IN_AMOUNT,
+     "10 1001 3 Bed 3 Bath, 2 Cars 3A.1 NW Storage Cage Single Car Space Single Car Space "
+     "176.2 16.9 193.1" + ELLIPSIS),
+    ("Stafford QLD", CUT_IN_AMOUNT_QLD,
+     "134.0 Theodore Level 3 3 Bed + MPR / 2 Bath Type F / S3 3.0 2.0 99.0 13.0 112.0 North "
+     "East Available" + ELLIPSIS),
+    ("St Kilda Road VIC", CUT_AFTER_A_COMMA,
+     "2 2.04 3 Bed 2 Bath 2 Car B3 North | Slater Street Car Spaces: 1 Car Spaces: 1 Storage "
+     "Space: 1 154 16 170" + ELLIPSIS),
+    ("Melbourne VIC", CUT_IN_A_SECOND_AMOUNT,
+     "7 701 3 Bed 3 Bath, 2 Cars 3A NW Single Car Space Single Car Space Storage Cage 192.1 "
+     "126 318.1 $4,250,000" + ELLIPSIS),
+    # A list read from a PDF writes '$ 209.47': the cut took the amount, and the '$' it
+    # leaves alone goes too (St Kilda).
+    ("1 3 $ $, St Kilda VIC", CUT_AFTER_A_LONE_DOLLAR,
+     "Available Open List 1101 L11 B1 2 2 1 Yes 3 84 11 95 $1,075,000.00 $ 5,562.41 $ 1,930.70 "
+     "S 392.22 S 90.33" + ELLIPSIS),
+    # ... and so is what it left of a word.
+    ("Kalkallo VIC", CUT_IN_A_WORD,
+     "North 60405 Cloverton Kalkallo Available Richmond 13 Bright $320,000 $295,430 $615,430 "
+     "NA $615,430 Settled" + ELLIPSIS),
+    ("with timber flooring., Docklands VIC", CUT_AFTER_SMALL_PRINT,
+     "10 1011A 2B06 North 76 8 84 $1,375,500 $18,099 available or $65,000 rebate for local. "
+     "Light" + ELLIPSIS),
+    # A cut that fell at a space left whole words: they all stay.
+    ("Armstrong Creek VIC", CUT_AT_A_SPACE,
+     "Geelong 11921 Warralily Armstrong Creek Available Greenvale 14 Elevate $292,500 $313,720 "
+     "$606,220 NA $606,220" + ELLIPSIS),
+    # A link cut short goes whole, the 'Portal' of 'Portal Li' with it.
+    ("Burpengary Ferriers Creek, Burpengary QLD", CUT_IN_PORTAL_LINK,
+     "Available 15# House SAMARIUM 19 181.13m\u00b2 300.0 m\u00b2 4 beds / 2 baths / 2 cars "
+     "2-part Contract $968,900" + ELLIPSIS),
+    ("COOLIBAH ESTATE, Lowood QLD", CUT_IN_A_LINK,
+     "Tropea Yamba 190m2 4 2 2 2 $480,000 $1,000,000 Volos Available Owner Occ. / Investor "
+     "30.09.2026" + ELLIPSIS),
+])
+def test_a_cut_line_drops_what_the_cut_left_and_says_it_goes_on(title, line, shown):
+    card = {"lot_address": title, "lot_number": "", "suburb": "Somewhere", "state": "VIC"}
+    assert AL.as_listed_line(line, card) == (shown, "")
+    # Within what the card shows (index.html AS_LISTED_SHOWN), so never cut a second time.
+    assert len(shown) <= CUT
+
+
+@pytest.mark.parametrize("title, line, shown", [
+    # Not on the cut: the last word is the line's own, and there is no mark.
+    ("Burpengary Ferriers Creek, Burpengary QLD",
+     "Available 4# House PEWTER 19 176.42m\u00b2 255.0 m\u00b2 4 beds / 2 baths / 1 car 2-part "
+     "Contract $998,900 Portal Link",
+     "Available 4# House PEWTER 19 176.42m\u00b2 255.0 m\u00b2 4 beds / 2 baths / 1 car 2-part "
+     "Contract $998,900"),
+    ("Traditional Click here Click here",
+     "Traditional JULIAN 177 $595,000.00 $474,186.00 $0.00 $1,069,186.00 Click here Click here",
+     "Traditional JULIAN 177 $595,000.00 $474,186.00 $0.00 $1,069,186.00"),
+    ("COOLIBAH ESTATE, Lowood QLD",
+     "Marbella 210 Fortitude 210m2 4 2 2 1 $488,500 $997,500 Volos Available 30.09.2026 https:",
+     "Marbella 210 Fortitude 210m2 4 2 2 1 $488,500 $997,500 Volos Available 30.09.2026"),
+    ("Melbourne VIC", "45 4504 2 BED $1,567,000 Portal", "45 4504 2 BED $1,567,000 Portal"),
+    ("Melbourne VIC", "45 4504 2 BED $1,567,000 $1,3", "45 4504 2 BED $1,567,000 $1,3"),
+    # A link word in the middle of the line stays as read.
+    ("Melbourne VIC", "45 4504 Click here 2 BED $1,567,000", "45 4504 Click here 2 BED $1,567,000"),
+    # 109 characters: no cut, no mark, the last word kept.
+    ("Melbourne VIC", ATLAS + " " + "x" * (104 - len(ATLAS)) + " Wes",
+     None),
+])
+def test_a_line_not_on_the_cut_keeps_its_last_word_and_has_no_mark(title, line, shown):
+    card = {"lot_address": title, "lot_number": "", "suburb": "Somewhere", "state": "VIC"}
+    if shown is None:
+        assert len(line) == CUT - 1
+        shown = line
+    assert AL.as_listed_line(line, card) == (shown, "")
+    assert ELLIPSIS not in shown
+
+
+def test_a_cut_line_whose_new_number_was_only_a_link_or_the_cut_adds_nothing():
+    """The digits of a link, or of what the cut left of an amount, are no unit's number."""
+    card = {"lot_address": "HEMMANT QLD", "lot_number": "", "suburb": "Hemmant", "state": "QLD"}
+    assert AL.as_listed_line("HEMMANT Available https://drive.google.com/file/d/1mdk", card) == (
+        "", NOTHING_NEW)
+    cut = "HEMMANT Available " + "Lorem " * 15
+    cut = (cut + "x" * CUT)[:CUT - 5] + " 4504"
+    assert len(cut) == CUT
+    assert AL.as_listed_line(cut, card) == ("", NOTHING_NEW)
+
+
+def test_a_line_cut_at_120_is_fitted_to_the_card_at_a_word():
+    """sources/adaptive_extract.py cuts at 120: the line shown loses whole words off its end
+    until it and the mark fit the card's 110 characters, so index.html never cuts it again
+    inside a word."""
+    card = {"lot_address": "Clyde North VIC", "lot_number": "", "suburb": "Clyde North",
+            "state": "VIC"}
+    line = ("Ceduna 3770 Available Brighton 28 Elevate $289,300 $300,000 $589,300 NA $589,300 "
+            "Titled Clyde North Display Village $1,2")
+    assert len(line) == 120
+    shown, why = AL.as_listed_line(line, card)
+    assert why == "" and len(shown) <= CUT
+    assert shown == ("Ceduna 3770 Available Brighton 28 Elevate $289,300 $300,000 $589,300 NA "
+                     "$589,300 Titled Clyde North Display" + ELLIPSIS)
+
+
+def test_a_cut_line_of_one_word_is_cut_at_the_room():
+    card = {"lot_address": "Melbourne VIC", "lot_number": "", "suburb": "Melbourne",
+            "state": "VIC"}
+    word = "4504" + "A" * (CUT - 4)
+    assert AL.as_listed_line(word, card) == (word[:CUT - 1] + ELLIPSIS, "")
+
+
+@pytest.mark.parametrize("cut_at", range(60, 111))
+def test_every_cut_atlas_line_fits_the_card_and_ends_in_the_mark(cut_at):
+    """Atlas's line run on past the cut and cut at every point: what is shown never holds a
+    piece of an amount, always ends in the mark, and fits in the card's 110 characters."""
+    whole = ATLAS + " $1,567,000 $18,053 available North East 86.8 0 86.8 " * 2
+    line = whole[:cut_at] if cut_at < CUT else whole[:CUT]
+    card = {"lot_address": "Melbourne VIC", "lot_number": "", "suburb": "Melbourne",
+            "state": "VIC"}
+    shown, why = AL.as_listed_line(line, card)
+    assert why == ""
+    if len(line) < CUT:
+        assert shown == " ".join(line.split())
+        return
+    assert shown.endswith(ELLIPSIS) and len(shown) <= CUT
+    for amount in __import__("re").findall(r"\$[\d,]+", shown):
+        assert amount in ("$1,567,000", "$18,053"), amount
+
+
+def test_the_checks_count_a_bundle_built_before_the_one_definition(monkeypatch, tmp_path):
+    """search_regressions run against a bundle built before 8 Oct 2026, whose address_label
+    has no names_no_lot_and_no_street: it raised ImportError, and the check failed. It counts
+    with this checkout's rule now (moved unchanged, so the count is the one that bundle's own
+    checker made), and leaves the bundle's address_label the one `import` finds."""
+    import importlib.util
+    old = tmp_path / "address_label.py"
+    old.write_text("NO_ADDRESS = '(no address in source row)'\n", encoding="ascii")
+    spec = importlib.util.spec_from_file_location("address_label", str(old))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setitem(sys.modules, "address_label", module)
+    assert SR.no_lot_and_no_street({"lot_address": "Melbourne VIC", "lot_number": ""}) is True
+    assert SR.no_lot_and_no_street({"lot_address": "Lot 12, Tarneit", "lot_number": ""}) is False
+    assert SR.no_lot_and_no_street({"lot_address": "Melbourne VIC", "lot_number": "7"}) is False
+    assert sys.modules["address_label"] is module
 
 
 # ------------------------------------------------------------------ through the endpoint
