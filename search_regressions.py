@@ -678,22 +678,46 @@ def written_place_contradicts(rec, suburb, state):
     return written[0] if written else ""
 
 
-# A title that names its lot ("Lot 12", "Unit 2302", "TH17") or a street ("12 Hollins
-# Street", "1386 Peter Thomson Circuit"), money taken out first.
-_TITLE_LOT = re.compile(r"\b(?:lot|unit|apt|apartment|townhouse|villa|th)\s*[#:.]?\s*[a-z]?\d",
-                        re.I)
-_TITLE_STREET = re.compile(r"\b\d+[a-z]?(?:\s*/\s*\d+[a-z]?)?\s+[A-Za-z][A-Za-z'\-]{2,}", re.I)
-_TITLE_MONEY = re.compile(r"[A-Za-z]?\$\s?\d[\d,]*(?:\.\d+)?|\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b")
-
-
 def no_lot_and_no_street(entry):
     """True when a card's title names no lot (lot_number or "Lot N" / "Unit N") and no
     street number and name -- 'GOLF $3,497,500', 'PARK RIDGE', '... Click here Click here'
-    (repair round 2: the row labels are Stage B's work; this says how many reach a list)."""
-    if _norm(entry.get("lot_number")):
-        return False
-    title = _TITLE_MONEY.sub(" ", str(entry.get("lot_address") or ""))
-    return not (_TITLE_LOT.search(title) or _TITLE_STREET.search(title))
+    (repair round 2: the row labels are Stage B's work; this says how many reach a list).
+
+    ONE DEFINITION (8 Oct 2026): address_label.names_no_lot_and_no_street, the one
+    api/research.py reads to decide which cards also show their line as listed (as_listed),
+    so this count and those cards cannot drift apart. Imported when called, like
+    title_as_read: in a replay's child it is the BUNDLE's address_label, the one the answers
+    being checked were made with, and nothing of the app is imported before the child has
+    narrowed sys.path to the bundle.
+
+    A BUNDLE BUILT BEFORE THE ONE DEFINITION (9 Oct 2026, repair round 1) has an
+    address_label without it, so this checker run against such a bundle (an older
+    vercel_site, a replay of one) raised ImportError and the whole check failed. The rule
+    was moved unchanged, so this checkout's copy of it counts such a bundle's cards exactly
+    as that bundle's own checker did (_checkout_rule)."""
+    try:
+        from address_label import names_no_lot_and_no_street
+    except ImportError:
+        names_no_lot_and_no_street = _checkout_rule()
+    return names_no_lot_and_no_street(entry)
+
+
+_CHECKOUT_RULE = []
+
+
+def _checkout_rule():
+    """This checkout's address_label.names_no_lot_and_no_street, read from its own file under
+    a name of its own (9 Oct 2026), so that `import address_label` still finds the bundle's
+    module. address_label imports nothing of the app, so nothing else of this checkout
+    enters a replay's child."""
+    if not _CHECKOUT_RULE:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "_search_regressions_address_label", str(APP / "address_label.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _CHECKOUT_RULE.append(module.names_no_lot_and_no_street)
+    return _CHECKOUT_RULE[0]
 
 
 # ---------------------------------------------------------------------------- the Dawn lots

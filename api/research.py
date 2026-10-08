@@ -42,7 +42,7 @@ if _HERE not in sys.path:
 
 import _bootstrap
 import _candidates
-from address_label import shown_incentive, shown_title, without_agent_text
+from address_label import as_listed, shown_incentive, shown_title, without_agent_text
 
 # The rejection log is rendered as one card per entry, so an uncapped log would post
 # hundreds of DOM nodes. The count stays exact; the list is trimmed and says so.
@@ -443,6 +443,23 @@ def _buildings(shortlist, live, wide):
         b["suburb"] = max(subs.items(), key=lambda kv: (kv[1], kv[0]))[0] if subs else ""
         out.append(b)
     return out, keys
+
+
+def _with_as_listed(entry, row):
+    """`entry` (a full shortlist or needs-confirming card, as sent) with as_listed: its
+    snapshot row's own line, when the card's title names no lot and no street and the line
+    says more (address_label.as_listed, 8 Oct 2026). Left as it is otherwise.
+
+    DISPLAY ONLY, AND ONLY ON A PAGED ANSWER. Added after the card is built, so nothing that
+    builds, keys, merges, ranks, counts or pages a card reads it. A paged caller is the
+    dashboard (the Research tab and the Clare's Leads tab's re-run), which shows it under the
+    card's title; an unpaged one is Clare's hook, which never reads it, so an unpaged answer
+    stays byte for byte as it was and its byte budget (_fit_response) cuts no more cards. A
+    compact card never carries it."""
+    text = as_listed(str((row or {}).get("lot_address") or ""), entry)
+    if text:
+        entry["as_listed"] = text
+    return entry
 
 
 def _compact(entry):
@@ -2059,6 +2076,11 @@ def _with_explain(response, brief_dict, rows, prepared, counts, packages, result
                 start, cap = (paging["needs_confirming_offset"],
                               paging["needs_confirming_limit"])
             listed = every[start:start + max(0, cap)]
+            if paging is not None and listed:
+                # The line as listed on the page's cards, as on the shortlist's (8 Oct 2026):
+                # paged only, so an unpaged explanation is as it was (_with_as_listed).
+                live = _live_rows_by_hash(rows)
+                listed = [_with_as_listed(e, live.get(e["content_hash"])) for e in listed]
             extra.update(needs_confirming=listed, needs_confirming_count=total,
                          needs_confirming_hidden=hidden)
             if paging is not None:
@@ -2393,10 +2415,12 @@ def _run_research(payload):
     # every card, the first UNPAGED_FULL_MAX in full.
     served = list(enumerate(shortlist))
     page_total = len(served)
-    building_of = buildings = None
+    building_of = buildings = live = None
     if paging is not None:
-        buildings, building_of = _buildings(shortlist, _live_rows_by_hash(rows),
-                                            _wide_estates(rows))
+        # The live rows by hash, once: the buildings read them, and so does each card's line
+        # as listed below (8 Oct 2026).
+        live = _live_rows_by_hash(rows)
+        buildings, building_of = _buildings(shortlist, live, _wide_estates(rows))
         if paging["building"]:
             served = [(i, c) for i, c in served if building_of[i][0] == paging["building"]]
             page_total = len(served)
@@ -2494,7 +2518,8 @@ def _run_research(payload):
             # so a page can be drawn in place and grouped (index.html, Group by building).
             entry['rank'] = i + 1
             entry['building_key'], entry['building_name'] = building_of[i]
-            entries.append(entry)
+            # The line as listed, under a card titled only by its place (8 Oct 2026).
+            entries.append(_with_as_listed(entry, live.get(entry['content_hash'])))
     else:
         full_n = len(in_full)
         entries = [_shortlist_entry(p, availability) for p in in_full]

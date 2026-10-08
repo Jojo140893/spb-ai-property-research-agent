@@ -468,3 +468,155 @@ def shown_title(title: Any, card: Dict[str, Any]) -> str:
     parity and search-regressions checks recover a card's title as read from it
     (search_regressions.title_as_read, 8 Oct 2026), because lots shown alike can be two."""
     return without_agent_text(title, card_place(card) or NO_ADDRESS)
+
+
+# ------------------------------------------------------- a title that names no lot
+
+# A TITLE THAT NAMES ITS LOT ('Lot 12', 'Unit 2302', 'TH17') OR A STREET ('12 Hollins Street',
+# '1386 Peter Thomson Circuit'), money taken out first. ONE DEFINITION (8 Oct 2026), moved here
+# unchanged from search_regressions: its nightly 'labels: N shortlisted card(s) name no lot and
+# no street' and parity_check's count read it from here, and so does api/research.py when it
+# decides which cards also show their line as listed (as_listed below) -- so the cards that
+# gain the line are exactly the cards those checks count, and a change to one is a change to
+# both.
+_TITLE_LOT = re.compile(r"\b(?:lot|unit|apt|apartment|townhouse|villa|th)\s*[#:.]?\s*[a-z]?\d",
+                        re.I)
+_TITLE_STREET = re.compile(r"\b\d+[a-z]?(?:\s*/\s*\d+[a-z]?)?\s+[A-Za-z][A-Za-z'\-]{2,}", re.I)
+_TITLE_MONEY = re.compile(r"[A-Za-z]?\$\s?\d[\d,]*(?:\.\d+)?|\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b")
+_NOT_ALNUM = re.compile(r"[^a-z0-9]+")
+
+
+def names_no_lot_and_no_street(card: Dict[str, Any]) -> bool:
+    """True when a card's title names no lot (lot_number or "Lot N" / "Unit N") and no
+    street number and name -- 'GOLF $3,497,500', 'PARK RIDGE', '... Click here Click here',
+    'Melbourne VIC' (repair round 2: what the row labels were for). `card` is a shortlist or
+    needs-confirming card: its lot_number and its title (lot_address) as shown."""
+    if " ".join(_NOT_ALNUM.sub(" ", str(card.get("lot_number") or "").lower()).split()):
+        return False
+    title = _TITLE_MONEY.sub(" ", str(card.get("lot_address") or ""))
+    return not (_TITLE_LOT.search(title) or _TITLE_STREET.search(title))
+
+
+# ------------------------------------------------------------- the line as listed
+
+# THE ROW'S OWN LINE, UNDER A CARD WHOSE TITLE CANNOT TELL IT APART (8 Oct 2026). Since the
+# 600-candidate cap was lifted, 1,000 to 1,800 shortlisted cards a state-wide search -- mostly
+# apartments: Atlas, Aria, The Brightly, Gallery Group -- are titled only by their place
+# ('Melbourne VIC', 'Richmond VIC'), because the unit number sits in the builder's line and
+# nowhere else ('45 4504 2 BED + 2 BATH C05.1 North East ...'). Coleen's team could not tell
+# those cards apart, or find E-Agent's unit for one. The row labels that were to fix it (Stage
+# B) are parked: labels that took part in matching merged wrong lots. This is the line itself,
+# as the snapshot stores it (the source's line, cut at 110 characters), DISPLAY ONLY: no key,
+# merge, rank, count or page reads it, nor Clare, the Kommo note or a client document.
+# A number the title does not already say is what tells one unit of a list from the next
+# (its level, unit, area or design number). Money is not: the card shows its price, and a
+# line that is only amounts and link words ('$620,000.00 $461,312.00 $0.00 $1,081,312.00 Click
+# here Click here') or only the title again ('B-701 3 2 - 126 26 152 $2,100,000') adds nothing.
+_NUMBER = re.compile(r"\d+")
+AS_LISTED_WHY_TITLE = "the title names a lot or a street"
+AS_LISTED_WHY_NO_LINE = "the row stores no line"
+AS_LISTED_WHY_SMALL_PRINT = "the line is all agent small print"
+AS_LISTED_WHY_NOTHING_NEW = "the line says no number the title does not (money aside)"
+
+# A LINE THE EXTRACTORS CUT SAYS SO (9 Oct 2026, repair round 1). The snapshot stores a source
+# line as its first 110 characters (sources/spreadsheet_extract.py and sources/email_inbox.py
+# write line[:110], sources/adaptive_extract.py 120), and api/_candidates.py reads a line that
+# long as one that may go on (_TRUNCATED_AT; a test keeps the two equal). The first round
+# showed the cut line as it stood, with no mark: 435 of the 1,963 lines shown on the 8 Oct
+# database were cut, 66 of them inside an amount -- '... 176.2 16.9 193.1 $3,500,00' beside a
+# card priced $3,500,000, 'Available $1,537,50', '$1,3' -- and more inside a word ('Settled
+# Wes', 'Titl'). A cut amount reads as a price. So a line that long loses its last word when
+# the cut may have fallen inside it (the stored line does not end in white space: what the
+# cut left of a word or an amount is neither), and ends in CUT_MARK, the ellipsis the
+# Research tab's asListedRow cuts with -- one character, so the line shown stays within the
+# 110 the card shows and is never cut a second time.
+LINE_CUT_AT = 110
+CUT_MARK = chr(0x2026)  # the ellipsis
+_LAST_WORD = re.compile(r"\s+\S+$")
+# What a cut line keeps at its end once its cut word went: _LEAD_TAIL's breaks and joining
+# words, and a currency sign standing alone -- a list read from a PDF writes '$ 209.47', so
+# the cut word was the amount and the '$' before it is left ('... 90.33 $ 20', St Kilda).
+_CUT_TAIL = re.compile(r"(?:[\s,;:+&/.\-$]|\b(?:plus|and|or|with)\b)+$", re.I)
+# LINK WORDS AT THE END (9 Oct 2026, repair round 1): a price list's link column read as text
+# -- 'Portal Link' (Alete Homes, SA: 34 of the 53 SA lines shown), 'Click here Click here'
+# (Gallery Group, QLD), 'https://drive.' -- is a link no one can follow from a card, and its
+# digits are no unit's number. It goes from the END of the line shown, and so does what the
+# cut left of it ('Portal Li' is 'Portal' once its cut word goes). A word in the middle of the
+# line stays as read.
+_LINK_TAIL = re.compile(
+    r"(?:\s*\b(?:portal\s+link|click\s+here)\b|\s*(?<!\S)(?:https?:|www\.)\S*)+\s*$", re.I)
+_CUT_LINK_TAIL = re.compile(r"(?:\s*\b(?:portal|click)\b)\s*$", re.I)
+
+
+def _numbers(text: Any) -> set:
+    """The numbers `text` says outside its money amounts."""
+    return set(_NUMBER.findall(_TITLE_MONEY.sub(" ", "" if text is None else str(text))))
+
+
+def _without_link_tail(text: str, cut: bool) -> str:
+    """`text` without the link words at its end (_LINK_TAIL) -- with `cut`, the stored line
+    cut at LINE_CUT_AT, also a 'Portal' or 'Click' the cut left -- and the breaks that leaves
+    at its end; `text` itself when it ends in none."""
+    shown = text
+    while True:
+        before = shown
+        shown = _LINK_TAIL.sub("", shown)
+        if cut:
+            shown = _CUT_LINK_TAIL.sub("", shown)
+        if shown == before:
+            break
+    return text if shown == text else _LEAD_TAIL.sub("", shown).strip()
+
+
+def _fitted(text: str) -> str:
+    """A cut line's `text` with room for CUT_MARK within LINE_CUT_AT characters: whole words
+    off its end until it fits (a line cut at 120, sources/adaptive_extract.py, is longer than
+    the card shows, and index.html would cut it again, inside a word), then the breaks and
+    a lone currency sign that leaves at its end (_CUT_TAIL). A line of one word is cut at
+    the room."""
+    room = LINE_CUT_AT - len(CUT_MARK)
+    while len(text) > room:
+        last = _LAST_WORD.search(text)
+        if not last:
+            return text[:room]
+        text = text[:last.start()]
+    return _CUT_TAIL.sub("", text).strip()
+
+
+def as_listed_line(line: Any, card: Dict[str, Any]):
+    """(text, why): the row's own line as listed, for a card whose title names no lot and no
+    street, and why not when it is '' (the AS_LISTED_WHY_* sentences). `line` is the card's
+    snapshot row's stored lot_address; `card` the card as sent (its lot_number and its shown
+    title). The line goes through without_agent_text -- no agent small print on any page --
+    with its runs of white space made one space and the link words at its end taken off
+    (_LINK_TAIL), and is otherwise as read. A line the extractors cut (LINE_CUT_AT) drops
+    what the cut left of its last word and ends in CUT_MARK, within the LINE_CUT_AT
+    characters the card shows (_fitted)."""
+    if not names_no_lot_and_no_street(card):
+        return "", AS_LISTED_WHY_TITLE
+    raw = "" if line is None else str(line)
+    cut = len(raw) >= LINE_CUT_AT
+    if cut and not raw[-1:].isspace():
+        last = _LAST_WORD.search(raw)
+        if last and raw[:last.start()].strip():
+            raw = raw[:last.start()]
+    read = " ".join(raw.split())
+    if not read:
+        return "", AS_LISTED_WHY_NO_LINE
+    text = " ".join(str(without_agent_text(read, "") or "").split())
+    if not text:
+        return "", AS_LISTED_WHY_SMALL_PRINT
+    text = _without_link_tail(text, cut)
+    if cut:
+        text = _fitted(text)
+    if not (_numbers(text) - _numbers(card.get("lot_address"))):
+        return "", AS_LISTED_WHY_NOTHING_NEW
+    if cut:
+        text += CUT_MARK
+    return text, ""
+
+
+def as_listed(line: Any, card: Dict[str, Any]) -> str:
+    """The card's line as listed (as_listed_line), '' when the card does not need it or it
+    would add nothing."""
+    return as_listed_line(line, card)[0]

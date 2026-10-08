@@ -257,6 +257,10 @@
     .nc-group .nc-card{background:var(--surface-white,#fff);border:1px solid #fde68a;
               border-radius:8px;margin:0.5rem 0.8rem 0.7rem;padding:0.7rem 0.9rem;color:var(--text-body)}
     .nc-group .nc-title{font-weight:700;color:var(--text-heading)}
+    /* A card's line as its list printed it, under a title that names no lot and no street
+       (8 Oct 2026, asListedRow): muted, and wrapping inside the card at any width. */
+    .as-listed{font-size:0.78rem;font-weight:400;color:var(--text-muted);margin-top:0.15rem;
+               overflow-wrap:anywhere;word-break:break-word}
     .nc-group .nc-sub,.nc-group .nc-facts{font-size:0.82rem}
     .nc-group .nc-stated{margin-top:0.3rem;font-weight:600;color:#92400e}
     .nc-group .nc-date{font-size:0.8rem;color:var(--amber-yellow);font-weight:600}
@@ -5280,6 +5284,25 @@ python state_sync.py push</pre>
                   display:none;">copied</span></div>`;
     };
 
+    /* AS LISTED (8 Oct 2026). Since every candidate is scored, a state-wide search shortlists
+       a thousand and more apartments titled only by their place ("Melbourne VIC"), because
+       their unit number is only in the builder's line ("45 4504 2 BED + 2 BATH C05.1 ...").
+       api/research.py sends that line as as_listed -- on a paged answer, and only when the
+       title names no lot and no street -- and the card shows it under its title, so Coleen's
+       team can tell the cards apart and find the unit on E-Agent. Display only, on this
+       tab's cards (the shortlist, Group by building, Needs confirming) and the Clare's Leads
+       tab's: never a client document (slim() keeps only SELECT_FIELDS), the Kommo note or an
+       export. Escaped, and cut at AS_LISTED_SHOWN characters with the whole line in the
+       title attribute. '' when the card has none, so such a card is byte for byte as before. */
+    const AS_LISTED_SHOWN = 110;
+    const asListedRow = v => {
+        const full = String(v ?? '').replace(/\s+/g, ' ').trim();
+        if (!full) return '';
+        const shown = full.length > AS_LISTED_SHOWN
+            ? full.slice(0, AS_LISTED_SHOWN - 1).trimEnd() + String.fromCharCode(0x2026) : full;
+        return `<div class="as-listed" title="${esc(full)}">As listed: ${esc(shown)}</div>`;
+    };
+
     // Moved up from below the copy-term listener, unchanged, so the card block holds
     // everything the card is built from.
     const sqm = v => (v === null || v === undefined || v === '' || Number(v) === 0)
@@ -5344,7 +5367,7 @@ python state_sync.py push</pre>
                                            ${prop.content_hash && SELECTED.has(prop.content_hash) ? 'checked' : ''}
                                            ${prop.content_hash ? '' : 'disabled title="This listing has no stable identifier, so it cannot be carried between searches."'}> compare
                                   </label>`}
-                                  Rank #${idx+1}: ${esc(prop.lot_address)}</div>
+                                  Rank #${idx+1}: ${esc(prop.lot_address)}</div>${asListedRow(prop.as_listed)}
                                 <div class="prop-subtitle-text">${esc(prop.suburb)}, ${esc(prop.state)} | Builder: <strong>${esc(prop.builder_name || NOT_STATED)}</strong>${prop.house_design ? ` (${esc(prop.house_design)})` : ''}</div>
                                 ${prop.availability_by_the_sheet === true
                                     ? '<div class="sheet-badge">Confirm availability: this list has no status column</div>'
@@ -6318,7 +6341,7 @@ python state_sync.py push</pre>
         const why = (Array.isArray(x.confirm) ? x.confirm : [])
             .map(c => CONFIRM_WHY[c]).filter(Boolean);
         return `<div class="nc-card">
-            <div class="nc-title">${esc(text(x.lot_address) || NOT_STATED)}</div>
+            <div class="nc-title">${esc(text(x.lot_address) || NOT_STATED)}</div>${asListedRow(x.as_listed)}
             <div class="nc-sub">${esc(place || NOT_STATED)} | Builder: <strong>${esc(text(x.builder_name) || NOT_STATED)}</strong></div>
             <div class="nc-facts">${esc(Number.isFinite(price) && price > 0 ? echoMoney(price) : `Price ${NOT_STATED}`)}
                 &middot; ${esc(spec(x.bedrooms, 'Bed'))} | ${esc(spec(x.bathrooms, 'Bath'))} | ${esc(spec(x.car_spaces, 'Car'))}</div>

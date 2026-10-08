@@ -1223,6 +1223,52 @@ console.log("\n--- Re-run with today's stock ---");
   check("every fetch went to a dashboard endpoint", s.calls.fetch.every(c => ALLOWED_FETCH.has(c.url)));
 }
 
+// ------------------------------------------------------------------ as listed (8 Oct 2026)
+// A lead's live re-run is a paged /api/research answer, so its cards titled only by their
+// place ("Melbourne VIC") carry the builder's own line as as_listed. The lead's card shows it
+// as the Research tab's does; the report and its client link never carry it.
+console.log("\n--- the line as listed: on a lead's live card, never in its report or client link ---");
+{
+  const LINE = "45 4504 2 BED + 2 BATH C05.1 North East 86.8 0 86.8 $1,567,000 $18,053 available";
+  const unit = (n, over = {}) => rec({ content_hash: `v2:atlas${n}`, lot_address: "Melbourne VIC", suburb: "Melbourne",
+    state: "VIC", builder_name: "Atlas", as_listed: LINE.replace("4504", `450${n}`), ...over });
+  check("slim() keeps no line: a selection, a lead's picks and a client link carry none",
+    !("as_listed" in api.slim(unit(1))) && JSON.stringify(api.slim(unit(1))) === JSON.stringify(api.slim(unit(1, { as_listed: undefined }))));
+  const whole = api.comparisonDocument([unit(1), unit(2)], "", { client: "X", pref: "", budget: 0 });
+  check("the client document never prints it, even handed a whole card",
+    whole.includes("Melbourne") && !whole.includes("4501") && !whole.includes("As listed"),
+    (whole.match(/.{0,60}450\d.{0,60}/) || [""])[0]);
+
+  const s = sandbox("", { localStorage: memoryStorage() });
+  s.el("hotLeadsContent"); s.el("hotLeadsBadge"); s.el("hotLeadsRefresh");
+  const lead = clean({ callId: "call-al" });
+  s.respond(async url => url === "/api/narrative" ? reply(200, { drafts: [] })
+    : reply(200, { status: "success", contact: "full", contactUnlock: "password", leads: [lead] }));
+  await s.api.loadHotLeads();
+  s.el("hlRerun-0"); s.el("hlMsg-0");
+  const box = s.el("hlRecs-0");
+  s.respond(async url => url === "/api/narrative" ? reply(200, { drafts: [] })
+    : reply(200, { status: "success", shortlist_count: 3, research_record_id: "x",
+                   shortlist: [unit(1), unit(2), unit(3)],
+                   page: { offset: 0, limit: 500, returned: 3, total: 3, next_offset: null } }));
+  await s.api.rerunHotLead(0);
+  check("a lead's live cards show their lines, so its 'Melbourne VIC' units can be told apart",
+    box.innerHTML.includes('<div class="as-listed" title="45 4501 2 BED') && box.innerHTML.includes("As listed: 45 4502 2 BED")
+    && box.innerHTML.includes("As listed: 45 4503 2 BED"), box.innerHTML.slice(0, 200));
+  auditMarkup("live cards with their lines: markup", box.innerHTML);
+  await s.api.hlOpenReport(0);
+  const doc = s.calls.windows[0] ? s.calls.windows[0].html : "";
+  check("the lead's report (its top 3) prints no line",
+    (doc.match(/<tr/g) || []).length === 4 && !/450[123]/.test(doc) && !doc.includes("As listed"),
+    (doc.match(/.{0,60}450[123].{0,60}/) || [String((doc.match(/<tr/g) || []).length)])[0]);
+  const frag = (doc.match(/id="shareUrl" readonly value="[^"#]*#([^"]+)"/) || [])[1];
+  const packed = frag ? await s.api.unpackShare(frag) : null;
+  check("... and its client link carries none",
+    !!packed && Array.isArray(packed.p) && packed.p.length === 3
+    && packed.p.every(p => !("as_listed" in p)) && !/450[123]/.test(JSON.stringify(packed)),
+    packed ? JSON.stringify(packed).slice(0, 200) : "no link in the report");
+}
+
 // ------------------------------------------------------------------ needs confirming stays out
 console.log("\n--- Needs confirming never reaches a lead card ---");
 {
