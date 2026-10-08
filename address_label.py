@@ -468,3 +468,82 @@ def shown_title(title: Any, card: Dict[str, Any]) -> str:
     parity and search-regressions checks recover a card's title as read from it
     (search_regressions.title_as_read, 8 Oct 2026), because lots shown alike can be two."""
     return without_agent_text(title, card_place(card) or NO_ADDRESS)
+
+
+# ------------------------------------------------------- a title that names no lot
+
+# A TITLE THAT NAMES ITS LOT ('Lot 12', 'Unit 2302', 'TH17') OR A STREET ('12 Hollins Street',
+# '1386 Peter Thomson Circuit'), money taken out first. ONE DEFINITION (8 Oct 2026), moved here
+# unchanged from search_regressions: its nightly 'labels: N shortlisted card(s) name no lot and
+# no street' and parity_check's count read it from here, and so does api/research.py when it
+# decides which cards also show their line as listed (as_listed below) -- so the cards that
+# gain the line are exactly the cards those checks count, and a change to one is a change to
+# both.
+_TITLE_LOT = re.compile(r"\b(?:lot|unit|apt|apartment|townhouse|villa|th)\s*[#:.]?\s*[a-z]?\d",
+                        re.I)
+_TITLE_STREET = re.compile(r"\b\d+[a-z]?(?:\s*/\s*\d+[a-z]?)?\s+[A-Za-z][A-Za-z'\-]{2,}", re.I)
+_TITLE_MONEY = re.compile(r"[A-Za-z]?\$\s?\d[\d,]*(?:\.\d+)?|\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b")
+_NOT_ALNUM = re.compile(r"[^a-z0-9]+")
+
+
+def names_no_lot_and_no_street(card: Dict[str, Any]) -> bool:
+    """True when a card's title names no lot (lot_number or "Lot N" / "Unit N") and no
+    street number and name -- 'GOLF $3,497,500', 'PARK RIDGE', '... Click here Click here',
+    'Melbourne VIC' (repair round 2: what the row labels were for). `card` is a shortlist or
+    needs-confirming card: its lot_number and its title (lot_address) as shown."""
+    if " ".join(_NOT_ALNUM.sub(" ", str(card.get("lot_number") or "").lower()).split()):
+        return False
+    title = _TITLE_MONEY.sub(" ", str(card.get("lot_address") or ""))
+    return not (_TITLE_LOT.search(title) or _TITLE_STREET.search(title))
+
+
+# ------------------------------------------------------------- the line as listed
+
+# THE ROW'S OWN LINE, UNDER A CARD WHOSE TITLE CANNOT TELL IT APART (8 Oct 2026). Since the
+# 600-candidate cap was lifted, 1,000 to 1,800 shortlisted cards a state-wide search -- mostly
+# apartments: Atlas, Aria, The Brightly, Gallery Group -- are titled only by their place
+# ('Melbourne VIC', 'Richmond VIC'), because the unit number sits in the builder's line and
+# nowhere else ('45 4504 2 BED + 2 BATH C05.1 North East ...'). Coleen's team could not tell
+# those cards apart, or find E-Agent's unit for one. The row labels that were to fix it (Stage
+# B) are parked: labels that took part in matching merged wrong lots. This is the line itself,
+# as the snapshot stores it (the source's line, cut at 110 characters), DISPLAY ONLY: no key,
+# merge, rank, count or page reads it, nor Clare, the Kommo note or a client document.
+# A number the title does not already say is what tells one unit of a list from the next
+# (its level, unit, area or design number). Money is not: the card shows its price, and a
+# line that is only amounts and link words ('$620,000.00 $461,312.00 $0.00 $1,081,312.00 Click
+# here Click here') or only the title again ('B-701 3 2 - 126 26 152 $2,100,000') adds nothing.
+_NUMBER = re.compile(r"\d+")
+AS_LISTED_WHY_TITLE = "the title names a lot or a street"
+AS_LISTED_WHY_NO_LINE = "the row stores no line"
+AS_LISTED_WHY_SMALL_PRINT = "the line is all agent small print"
+AS_LISTED_WHY_NOTHING_NEW = "the line says no number the title does not (money aside)"
+
+
+def _numbers(text: Any) -> set:
+    """The numbers `text` says outside its money amounts."""
+    return set(_NUMBER.findall(_TITLE_MONEY.sub(" ", "" if text is None else str(text))))
+
+
+def as_listed_line(line: Any, card: Dict[str, Any]):
+    """(text, why): the row's own line as listed, for a card whose title names no lot and no
+    street, and why not when it is '' (the AS_LISTED_WHY_* sentences). `line` is the card's
+    snapshot row's stored lot_address; `card` the card as sent (its lot_number and its shown
+    title). The line goes through without_agent_text -- no agent small print on any page --
+    with its runs of white space made one space, and is otherwise as read."""
+    if not names_no_lot_and_no_street(card):
+        return "", AS_LISTED_WHY_TITLE
+    read = " ".join(("" if line is None else str(line)).split())
+    if not read:
+        return "", AS_LISTED_WHY_NO_LINE
+    text = " ".join(str(without_agent_text(read, "") or "").split())
+    if not text:
+        return "", AS_LISTED_WHY_SMALL_PRINT
+    if not (_numbers(text) - _numbers(card.get("lot_address"))):
+        return "", AS_LISTED_WHY_NOTHING_NEW
+    return text, ""
+
+
+def as_listed(line: Any, card: Dict[str, Any]) -> str:
+    """The card's line as listed (as_listed_line), '' when the card does not need it or it
+    would add nothing."""
+    return as_listed_line(line, card)[0]

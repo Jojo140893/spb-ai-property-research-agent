@@ -114,7 +114,9 @@ const EXPORTS = ["runResearchAgent", "budgetEchoText", "paintBudgetEcho", "searc
   "adjustmentText", "locationNoteText", "searchNotesHtml", "capturedRow",
   "renderSearchHelp", "relaxationsOf", "applyBriefPatch", "renderNeedsConfirming",
   "needsConfirmingCard", "confirmDateText", "lotsInBuildingsText", "buildingRowText",
-  "researchBody"];
+  "researchBody",
+  // 8 Oct 2026: the card template and its "As listed" line, called directly below.
+  "shortlistCardHtml", "asListedRow"];
 
 // The State select's options, read from the form's markup: applyBriefPatch refuses a state
 // the select cannot show, so the stub must offer exactly what the page offers.
@@ -349,6 +351,8 @@ const CARD_FIELDS = {
   "benchmark.classification (benchmarked)": p => ({ benchmark: { ...prop().benchmark, classification: p } }),
   "benchmark.classification (not benchmarked)": p => ({ benchmark: { benchmarked: false, classification: p } }),
   recommendation_reason: p => ({ recommendation_reason: p }),
+  // The builder's own line, under a title that names no lot and no street (8 Oct 2026).
+  as_listed: p => ({ as_listed: p }),
 };
 for (const [field, over] of Object.entries(CARD_FIELDS)) {
   const key = field.replace(/[^\w]+/g, "_");
@@ -1808,6 +1812,80 @@ const pageOf = (from, n, over = {}) => explained({
     `${(after.match(/class="nc-card"/g) || []).length} cards`);
   check("needs-confirming rows still stay out of LAST_SHORTLIST",
     s.ctx.LAST_SHORTLIST.every(p => !p || !String(p.content_hash).startsWith("v2:dawn")));
+}
+
+// ------------------------------------------------------------------ as listed (8 Oct 2026)
+// A state-wide search shortlists a thousand and more apartments titled only by their place
+// ("Melbourne VIC"): the unit is in the builder's line alone. api/research.py sends that line
+// as as_listed on a paged answer, and every card the tab draws shows it under its title.
+console.log("\n--- a card titled only by its place shows its line as listed (8 Oct 2026) ---");
+{
+  const s = sandbox();
+  const api = s.api;
+  const LINE = "45 4504 2 BED + 2 BATH C05.1 North East 86.8 0 86.8 $1,567,000 $18,053 available";
+  const atlas = (over = {}) => prop({ content_hash: "v2:atlas", lot_address: "Melbourne VIC",
+    suburb: "Melbourne", state: "VIC", builder_name: "Atlas", as_listed: LINE, ...over });
+  const row = `<div class="as-listed" title="${api.esc(LINE)}">As listed: ${api.esc(LINE)}</div>`;
+  check("the card template and its line are found", !!fn(api, "shortlistCardHtml") && !!fn(api, "asListedRow"));
+  if (fn(api, "shortlistCardHtml") && fn(api, "asListedRow")) {
+    const card = api.shortlistCardHtml(atlas(), 0);
+    check("a shortlist card shows 'As listed: <line>' straight under its title",
+      card.includes(`Rank #1: Melbourne VIC</div>${row}\n`) && card.indexOf(row) < card.indexOf("prop-subtitle-text"),
+      card.slice(card.indexOf("Rank #1"), card.indexOf("Rank #1") + 260));
+    const bare = api.shortlistCardHtml(atlas({ as_listed: undefined }), 0);
+    check("a card without one is byte for byte the card it was: the line is the only difference",
+      !bare.includes("as-listed") && card.replace(row, "") === bare);
+    for (const [label, v] of [["''", ""], ["null", null], ["blank", "   "], ["absent", undefined]]) {
+      check(`as_listed ${label}: no line, the same markup`,
+        api.shortlistCardHtml(atlas({ as_listed: v }), 0) === bare);
+    }
+    const long = "12 1205 " + "3 BED + 2 BATH, 2 Cars, Storage Cage North East ".repeat(4).trim();
+    const cut = api.asListedRow(long);
+    const shownText = (cut.match(/>As listed: ([^<]*)<\/div>$/) || [])[1] || "";
+    check("a long line is cut to 110 characters, with the whole line in its title attribute",
+      long.length > 110 && shownText.length === 110 && shownText.endsWith(String.fromCharCode(0x2026))
+      && long.startsWith(shownText.slice(0, -1)) && cut.includes(`title="${api.esc(long)}"`),
+      `${shownText.length}: ${shownText}`);
+    check("runs of white space read as one", api.asListedRow(" 45   4504\t2 BED ")
+      === '<div class="as-listed" title="45 4504 2 BED">As listed: 45 4504 2 BED</div>', api.asListedRow(" 45   4504\t2 BED "));
+    const hostile = api.asListedRow('" onmouseover="x" <img src=x onerror=alert(1)>');
+    check("a hostile line stays text, inside its attribute too",
+      markupProblems(hostile).length === 0 && !/<img/i.test(hostile) && hostile.includes("&quot; onmouseover=&quot;x&quot;"),
+      markupProblems(hostile).join(" | ") || hostile);
+    const nc = api.needsConfirmingCard(dawn(1228, { lot_address: "Melbourne VIC", lot_number: "", as_listed: LINE }));
+    check("a needs-confirming card shows it under its title too",
+      nc.includes(`<div class="nc-title">Melbourne VIC</div>${row}\n`), nc.slice(0, 260));
+    const ncBare = api.needsConfirmingCard(dawn(1228, { lot_address: "Melbourne VIC", lot_number: "" }));
+    check("... and one without it is the card it was", !ncBare.includes("as-listed") && nc.replace(row, "") === ncBare);
+  }
+}
+{
+  // Group by building: a building's lot cards are the same card, line and all.
+  const s = sandbox();
+  const B1 = { key: "VIC|atlas", name: "Atlas price list", suburb: "Melbourne", state: "VIC", lots: 2,
+               price_min: 1567000, price_max: 1576000, first_rank: 1 };
+  const unit = (n, line) => prop({ content_hash: `v2:atlas${n}`, lot_address: "Melbourne VIC", suburb: "Melbourne",
+    state: "VIC", builder_name: "Atlas", rank: n, building_key: B1.key, building_name: B1.name, as_listed: line });
+  s.respond(async () => reply(200, explained({
+    shortlist: [unit(1, "45 4504 2 BED + 2 BATH"), unit(2, "48 4804 2 BED + 2 BATH")], shortlist_count: 2,
+    buildings: [B1], buildings_count: 1,
+    page: { offset: 0, limit: 100, returned: 2, total: 2, next_offset: null, building: null } })));
+  await s.api.runResearchAgent({ explain: true });
+  await settle();
+  const flat = dump(s.el("resultsContent"));
+  check("the flat list tells the two 'Melbourne VIC' cards apart by their lines",
+    flat.includes("As listed: 45 4504 2 BED + 2 BATH") && flat.includes("As listed: 48 4804 2 BED + 2 BATH"));
+  const head = s.el("resultsContent").children.find(c => c.className === "results-head");
+  const box = head ? head.querySelector(".group-box") : null;
+  if (box) { box.checked = true; box.onchange(); }
+  const groupsBox = s.el("resultsContent").children.find(c => c.className === "building-groups");
+  const bldg = groupsBox ? groupsBox.children.find(c => c.className === "bldg") : null;
+  if (bldg) { bldg.open = true; await bldg.listeners.toggle[0](); await settle(); }
+  const inRow = bldg ? dump(bldg) : "";
+  check("grouped by building, the lot cards inside the building show their lines",
+    !!bldg && inRow.includes("As listed: 45 4504 2 BED + 2 BATH") && inRow.includes("As listed: 48 4804 2 BED + 2 BATH"),
+    inRow.slice(0, 200) || "no building row");
+  check("... and the grouped markup is only the renderer's own", markupProblems(dump(s.el("resultsContent"))).length === 0);
 }
 
 console.log(fail ? `\n${fail} of ${pass + fail} CHECKS FAILED` : `\nALL ${pass} CHECKS PASSED`);

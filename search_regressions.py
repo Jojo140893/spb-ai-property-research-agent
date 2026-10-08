@@ -678,22 +678,19 @@ def written_place_contradicts(rec, suburb, state):
     return written[0] if written else ""
 
 
-# A title that names its lot ("Lot 12", "Unit 2302", "TH17") or a street ("12 Hollins
-# Street", "1386 Peter Thomson Circuit"), money taken out first.
-_TITLE_LOT = re.compile(r"\b(?:lot|unit|apt|apartment|townhouse|villa|th)\s*[#:.]?\s*[a-z]?\d",
-                        re.I)
-_TITLE_STREET = re.compile(r"\b\d+[a-z]?(?:\s*/\s*\d+[a-z]?)?\s+[A-Za-z][A-Za-z'\-]{2,}", re.I)
-_TITLE_MONEY = re.compile(r"[A-Za-z]?\$\s?\d[\d,]*(?:\.\d+)?|\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b")
-
-
 def no_lot_and_no_street(entry):
     """True when a card's title names no lot (lot_number or "Lot N" / "Unit N") and no
     street number and name -- 'GOLF $3,497,500', 'PARK RIDGE', '... Click here Click here'
-    (repair round 2: the row labels are Stage B's work; this says how many reach a list)."""
-    if _norm(entry.get("lot_number")):
-        return False
-    title = _TITLE_MONEY.sub(" ", str(entry.get("lot_address") or ""))
-    return not (_TITLE_LOT.search(title) or _TITLE_STREET.search(title))
+    (repair round 2: the row labels are Stage B's work; this says how many reach a list).
+
+    ONE DEFINITION (8 Oct 2026): address_label.names_no_lot_and_no_street, the one
+    api/research.py reads to decide which cards also show their line as listed (as_listed),
+    so this count and those cards cannot drift apart. Imported when called, like
+    title_as_read: in a replay's child it is the BUNDLE's address_label, the one the answers
+    being checked were made with, and nothing of the app is imported before the child has
+    narrowed sys.path to the bundle."""
+    from address_label import names_no_lot_and_no_street
+    return names_no_lot_and_no_street(entry)
 
 
 # ---------------------------------------------------------------------------- the Dawn lots
