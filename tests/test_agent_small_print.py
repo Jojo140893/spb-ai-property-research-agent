@@ -14,14 +14,18 @@ at every comma, so '$50,000 purchaser rebate/agent bonus' came out '$50'.
 Text only. The packages, the scores, every merge and copy test, the building keys, the
 paging and the counts are what they were: the candidate keeps its title and estate as read
 for api/research.py's copy tests and building keys, and the parity and search-regressions
-checks key a hidden row's twin on the title as shown, on both sides.
+checks key a hidden row's twin and every shown card on the title as read.
 
 Repair round (8 Oct 2026), from the verifiers' findings: a street or place named with an agent
 word is kept ('12 Agent Street'); what a part said before its small print is kept ('Lot 178,
 Wine cellar lot included. Agent' -- Clare could no longer confirm that lot by its words; '12
 Smith St Agent commission 3%'; '3 Bed 3 Bath 1 Powder purchaser'); an incentive parts at more
-breaks so the buyer's money never goes with the agent's; and '$50,000 bonus' beside the
-purchaser's own offer is the agent's.
+breaks so the buyer's money never goes with the agent's.
+
+Second repair round (8 Oct 2026): the words never lose the money incentive_amount stands on
+('$50,000bonus.Purchaserrebate' stays as read beside its 50000: whose $50,000 it is, the
+owner decides); the checks key a card on its title AS READ, so two lots whose titles differ
+only in their small print are never one key; and the text-only comparison reads no clock.
 """
 import json
 import re
@@ -206,32 +210,84 @@ INCENTIVES = [
     ("$20,000 agent bonus, $10,000 purchaser rebate", "$10,000 purchaser rebate"),
     ("$20,000 bonus for agents", ""),
     ("Agent commission 2%", ""),
-    # '$50,000 bonus' beside the purchaser's own offer is the agent's: 12 live rows of
-    # 'Pricelist New Agent.pdf' (South Yarra), whose commission column runs '6% plus' into it
-    ("$50,000bonus.Purchaserrebate", "Purchaserrebate"),
-    ("$50,000 bonus.Purchaserrebate", "Purchaserrebate"),
-    ("$50,000bonus.Purchaser rebate", "Purchaser rebate"),
-    ("$50,000 bonus.Purchaser rebate", "Purchaser rebate"),
 ]
-# A bonus or an offer with no agent beside it is the buyer's, and stays as it was.
+# A bonus or an offer with no agent beside it is the buyer's, and stays as it was. So does
+# '$50,000 bonus' beside the purchaser's rebate, 12 live rows of 'Pricelist New Agent.pdf'
+# (South Yarra), each carded 50000: it names no agent, and whose $50,000 it is the source does
+# not settle -- the owner decides (second repair round, 8 Oct 2026; the round before took the
+# money out and left 'Purchaserrebate', a column heading, beside a confirmed-looking $50,000).
 BUYERS_OWN = ["$35,000 Discount, Bonus", "$10,000 bonus",
               "bonus front lot landscaping worth up to $6,500", "$10,000 purchaser rebate",
-              "rebate + FIRB fee covered (FIRB buyer) or $65,000 | $34,700 rebate"]
+              "rebate + FIRB fee covered (FIRB buyer) or $65,000 | $34,700 rebate",
+              "$50,000bonus.Purchaserrebate", "$50,000 bonus.Purchaserrebate",
+              "$50,000bonus.Purchaser rebate", "$50,000 bonus.Purchaser rebate"]
 
 
 @pytest.mark.parametrize("raw, shown", INCENTIVES)
 def test_an_incentive_loses_the_agents_share_and_never_the_buyers_money(raw, shown):
     """Fails before the repair round (8 Oct 2026): an incentive parted only at commas, '|'
     and '/' between words, so '$5,000 cashback + agent bonus $2,000' came out '' -- the card
-    kept its incentive amount with no words -- and '$50,000bonus.Purchaserrebate' kept the
-    agent's bonus."""
+    kept its incentive amount with no words."""
     assert L.shown_incentive(raw) == shown
     assert L.shown_incentive(shown) == shown
 
 
 @pytest.mark.parametrize("text", BUYERS_OWN)
 def test_the_buyers_own_bonus_or_offer_is_not_the_agents(text):
+    """'$50,000bonus.Purchaserrebate' fails before the second repair round (8 Oct 2026): it
+    came out 'Purchaserrebate' while the card still carried 50000."""
     assert L.shown_incentive(text) is text
+    assert L.shown_incentive(text, 50000.0) is text
+
+
+# (incentive as read, the card's incentive_amount, what people are shown). The words never lose
+# the money the amount stands on: when the strip would take it, the words stay as read.
+WITH_AMOUNT = [
+    ("$50,000 purchaser rebate/agent bonus", 50000.0, "$50,000 purchaser rebate"),
+    ("$50,000bonus.Purchaserrebate", 50000.0, "$50,000bonus.Purchaserrebate"),
+    ("$5,000 cashback + agent bonus $2,000", 5000.0, "$5,000 cashback"),
+    ("$20,000 agent bonus, $10,000 purchaser rebate", 10000.0, "$10,000 purchaser rebate"),
+    # the amount the card carries is the agent's own money: the words say so, as read
+    ("$20,000 agent bonus, $10,000 purchaser rebate", 20000.0,
+     "$20,000 agent bonus, $10,000 purchaser rebate"),
+    ("$5,000 agent bonus", 5000.0, "$5,000 agent bonus"),
+    ("$15k agent bonus", 15000.0, "$15k agent bonus"),
+    # the strip could not keep the buyer's money apart from the agent's words: '' beside
+    # $10,000 would read as an unexplained $10,000, so the words stay
+    ("Agent commission 3% plus $10,000 rebate", 10000.0,
+     "Agent commission 3% plus $10,000 rebate"),
+    # an amount the words never stated is not theirs to keep; no amount, nothing to keep
+    ("Agent commission 2%", 5000.0, ""),
+    ("$5,000 agent bonus", 0.0, ""),
+    ("$5,000 agent bonus", None, ""),
+]
+
+
+@pytest.mark.parametrize("raw, amount, shown", WITH_AMOUNT)
+def test_the_words_never_lose_the_money_the_amount_stands_on(raw, amount, shown):
+    """Fails before the second repair round (8 Oct 2026): shown_incentive took no amount, and
+    '$50,000bonus.Purchaserrebate' came out 'Purchaserrebate' beside incentive_amount 50000 --
+    the card read as a confirmed $50,000 purchaser rebate."""
+    got = L.shown_incentive(raw, amount)
+    assert got == shown
+    assert L.shown_incentive(got, amount) == got
+    if amount and L._states(raw, amount):
+        assert L._states(got, amount), (raw, amount, got)
+
+
+def test_a_candidate_and_its_card_say_the_money_their_amount_stands_on(searched):
+    """Through kommo_agent's candidate and api/research.py's card: both pass the amount, so
+    neither drops the money it stands on (second repair round, 8 Oct 2026)."""
+    research, rows, _now, _before = searched
+    import _bootstrap
+    for text, amount, shown in WITH_AMOUNT[:2] + WITH_AMOUNT[7:8]:
+        row = dict(rows[30], incentive_text=text, incentive_amount=amount)
+        packages, _counts = C.build_packages(S.BRIEF, [row])
+        processed, _rejected = _bootstrap.get_agent().score_candidates(S.BRIEF, packages)
+        cand = processed[0]
+        assert (cand.incentive_text, cand.incentive_amount) == (shown, amount)
+        entry = research._shortlist_entry(cand)
+        assert (entry["incentive_text"], entry["incentive_amount"]) == (shown, amount)
 
 
 def test_money_is_never_cut_at_its_comma():
@@ -295,9 +351,9 @@ def _small_print_stock():
     for r in rows[24:26]:            # a project named off 'Prince Parade Agent.pdf'
         r.update(builder_name="Prince Parade Agent", attribution_scope="project",
                  estate_name=None, source_doc="doc-prince-parade")
-    # Repair round (8 Oct 2026): the agent's '$50,000 bonus' beside the purchaser's offer
-    # ('Pricelist New Agent.pdf'), what a title said before its small print, and an address
-    # named with an agent word.
+    # Repair rounds (8 Oct 2026): '$50,000 bonus' beside the purchaser's offer ('Pricelist New
+    # Agent.pdf'; whose it is, the owner decides, so it stays as read beside its amount), what
+    # a title said before its small print, and an address named with an agent word.
     for r in rows[26:28]:
         r.update(incentive_text="$50,000bonus.Purchaserrebate", incentive_amount=50000.0,
                  suburb="South Yarra", source_doc="doc-south-yarra")
@@ -344,7 +400,8 @@ def searched(tmp_path_factory):
             off.setattr(where, "without_agent_text",
                         lambda value, fallback="", words=None: value, raising=False)
             off.setattr(where, "shown_title", lambda title, card: title, raising=False)
-            off.setattr(where, "shown_incentive", lambda value: value, raising=False)
+            off.setattr(where, "shown_incentive", lambda value, amount=None: value,
+                        raising=False)
         before = _answers(module)
     yield module, rows, now, before
     mp.undo()
@@ -396,16 +453,17 @@ def test_the_titles_say_where_the_lot_is_and_the_offer_stays(searched):
 
 def test_the_repair_round_reaches_every_caller(searched):
     """Fails before the repair round (8 Oct 2026), through the whole search, for the Research
-    tab (paged) and Clare's hook (unpaged): the agent's '$50,000 bonus' stayed in the
-    incentive, 'Lot 178, Wine cellar lot included. Agent' read 'Lot 178', '2 Bed 2 Bath 1
-    Powder purchaser' read only its place, and '12 Agent Street' / "Commission's Hill Estate"
-    lost their names. The incentive amount is as read."""
+    tab (paged) and Clare's hook (unpaged): 'Lot 178, Wine cellar lot included. Agent' read
+    'Lot 178', '2 Bed 2 Bath 1 Powder purchaser' read only its place, and '12 Agent Street' /
+    "Commission's Hill Estate" lost their names. And before the second repair round:
+    '$50,000bonus.Purchaserrebate' read 'Purchaserrebate' beside its 50000. The incentive
+    amount and, with it, the money in its words are as read."""
     _research, _rows, (unpaged, paged), _before = searched
     for resp in (unpaged, paged):
         by_hash = {e["content_hash"]: e for e in resp["shortlist"]}
         for h in ("v2:fresh-00026", "v2:fresh-00027"):
             assert (by_hash[h]["incentive_text"], by_hash[h]["incentive_amount"]) == \
-                ("Purchaserrebate", 50000.0), by_hash[h]
+                ("$50,000bonus.Purchaserrebate", 50000.0), by_hash[h]
         lot178 = by_hash["v2:fresh-00028"]
         assert "Wine cellar lot included" in lot178["lot_address"], lot178["lot_address"]
         assert not SMALL_PRINT.search(lot178["lot_address"]), lot178["lot_address"]
@@ -424,9 +482,26 @@ def _research_norm(value):
     return " ".join(re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).split())
 
 
+# What a wall clock writes into an answer: search_help.timing_ms, search_help.needs_confirming.ms
+# and each search_help.relaxations[].ms. Two runs of one search differ in these by a few ms, so
+# a comparison that kept them failed at random (3 runs in 6 on a quiet machine; second repair
+# round, 8 Oct 2026). budget_ms and deadline_ms are settings, not clocks, and stay compared.
+_CLOCK_KEYS = re.compile(r"^(?:ms|timing_ms|elapsed\w*|\w*seconds)$")
+
+
+def _without_clock(node):
+    """`node` with every clock reading (_CLOCK_KEYS) taken out, at any depth."""
+    if isinstance(node, dict):
+        return {k: _without_clock(v) for k, v in node.items() if not _CLOCK_KEYS.match(k)}
+    if isinstance(node, list):
+        return [_without_clock(v) for v in node]
+    return node
+
+
 def _without_text(resp):
-    """The answer with every text the strip may change taken out: what must be equal."""
-    out = json.loads(json.dumps(resp, default=str))
+    """The answer with every text the strip may change taken out, and every clock reading:
+    what must be equal."""
+    out = _without_clock(json.loads(json.dumps(resp, default=str)))
     for card in _cards(out):
         for field in ("lot_address", "estate_context", "incentive_text", "building_name"):
             card.pop(field, None)
@@ -458,6 +533,29 @@ def test_text_only_every_card_merge_count_and_building_key_is_as_before(searched
     assert "VIC|the albertine external agent" in {b["key"] for b in paged_now["buildings"]}
 
 
+def test_the_text_only_comparison_reads_no_clock(searched):
+    """Fails before the second repair round (8 Oct 2026): _without_text kept search_help's
+    timings, so two runs of one search compared unequal whenever they took a different number
+    of milliseconds, and the test above failed at random. The search's own answer, timed
+    differently, must compare equal -- and a real difference must still show."""
+    _research, _rows, now, _before = searched
+    paged = now[1]
+    assert isinstance(paged.get("search_help"), dict), "premise: the paged answer explains"
+    assert "timing_ms" in paged["search_help"], "premise: the answer carries a clock"
+    retimed = json.loads(json.dumps(paged, default=str))
+    help_ = retimed["search_help"]
+    help_["timing_ms"] += 7
+    if isinstance(help_.get("needs_confirming"), dict) and "ms" in help_["needs_confirming"]:
+        help_["needs_confirming"]["ms"] += 3
+    for step in help_.get("relaxations") or []:
+        if isinstance(step, dict) and "ms" in step:
+            step["ms"] += 5
+    assert _without_text(retimed) == _without_text(paged)
+    moved = json.loads(json.dumps(paged, default=str))
+    moved["shortlist"] = moved["shortlist"][::-1]
+    assert _without_text(moved) != _without_text(paged)
+
+
 def test_the_copy_tests_and_building_keys_read_the_title_and_estate_as_read(searched):
     """The candidate says the clean text and keeps the text as read beside it, and every key
     api/research.py builds from a candidate -- the needs-confirming copy test's listing key
@@ -485,20 +583,65 @@ def test_the_copy_tests_and_building_keys_read_the_title_and_estate_as_read(sear
         "VIC|" + research._norm(raw_estate), "Example Homes price list")
 
 
-def test_a_package_still_meets_the_card_it_was_merged_into():
-    """Fails before 8 Oct 2026: the parity and search-regressions checks keyed a hidden row's
-    twin on the package's title as read and the card's title as sent, so a lot merged into a
-    card whose small print was taken out read as merged into a card nobody sees."""
+# Three lots of one list at one price whose titles differ only in their small print: all three
+# are shown 'Melbourne VIC' (the 8 Oct database has 22 such (title, price) groups, Albertine's
+# 'External Agent Price List, Melbourne VIC' and Aria's 'purchaser, Melbourne VIC' among them).
+_ONE_PRICE = [("v2:mel-a", "External Agent Price List, Melbourne VIC"),
+              ("v2:mel-b", "purchaser, Melbourne VIC"),
+              ("v2:mel-c", "Melbourne VIC")]
+
+
+def _melbourne_cards():
+    """(snapshot rows, cards as /api/research sends them, packages as read) for _ONE_PRICE."""
+    rows = [S.row(h, lot_number=None, lot_address=title, suburb="Melbourne", estate_name=None,
+                  source_doc="doc-mel", price=2730000.0, line_key="k-" + h)
+            for h, title in _ONE_PRICE]
+    place = {"suburb": "Melbourne", "state": "VIC"}
+    packages = [dict(place, content_hash=r["content_hash"],
+                     lot_address=C._display_address(r) or L.NO_ADDRESS,
+                     advertised_package_price=2730000.0) for r in rows]
+    cards = [dict(p, lot_address=L.shown_title(p["lot_address"], place)) for p in packages]
+    return rows, cards, packages
+
+
+def test_the_checks_never_make_one_key_of_two_lots():
+    """Fails before the second repair round (8 Oct 2026): the parity and search-regressions
+    checks keyed a hidden row's twin and every shown card on the title AS SHOWN, so the three
+    lots above were one key, and a lot wrongly hidden behind another lot's card would have
+    passed as collapsed into a visible twin. Keyed on the title as read, as on origin/main:
+    three keys, and each package still meets its own card."""
     import parity_check as P
     import search_regressions as SR
-    package = {"lot_address": "Single Car Space & OB Storage Agent commission=6%plus, "
-                              "South Yarra VIC", "suburb": "South Yarra", "state": "VIC",
-               "advertised_package_price": 1425000.0}
-    card = dict(package, lot_address="Single Car Space & OB Storage, South Yarra VIC")
-    assert SR.card_title(package) == "Single Car Space & OB Storage, South Yarra VIC"
-    assert P._visible_key(package) == P._visible_key(card) == (
-        "single car space & ob storage, south yarra vic", 1425000)
-    bare = dict(package, lot_address="Agent commission=6%plus, South Yarra VIC")
-    assert P._visible_key(bare) == P._visible_key(dict(bare, lot_address="South Yarra VIC"))
-    clean = dict(package, lot_address="Lot 5, Tarneit VIC")
-    assert SR.card_title(clean) == "Lot 5, Tarneit VIC"
+    rows, cards, packages = _melbourne_cards()
+    assert {c["lot_address"] for c in cards} == {"Melbourne VIC"}, "premise: shown alike"
+    catalogue = SR.Catalogue(rows)
+    for card, package in zip(cards, packages):
+        assert SR.title_as_read(card, catalogue) == package["lot_address"]
+        assert P._visible_key(card, catalogue) == P._visible_key(package)
+    assert len({P._visible_key(c, catalogue) for c in cards}) == 3
+    # a card the catalogue does not hold, or a bundle that sends titles as read: as sent
+    assert SR.title_as_read(cards[0], SR.Catalogue([])) == "Melbourne VIC"
+    assert P._visible_key(cards[0]) == ("melbourne vic", 2730000)
+    clean = dict(cards[2], lot_address="Lot 5, Tarneit VIC")
+    assert SR.title_as_read(clean, catalogue) == "Lot 5, Tarneit VIC"
+
+
+def test_the_checks_key_every_card_as_origin_main_did(searched):
+    """Over the whole search, Research tab and Clare's hook: the keys the checks build from
+    the cards sent now (SR.title_as_read on the snapshot) are, card for card, the keys
+    origin/main's checks built from the cards it sent (their lot_address as read) -- so every
+    obvious-row outcome is decided on the same keys. Fails on the first repair round's keys
+    (the title as shown), which made one key of the two stale South Yarra lots."""
+    import parity_check as P
+    import search_regressions as SR
+    _research, _rows, now, before = searched
+    catalogue = SR.Catalogue(C.load_snapshot()[0])
+    for got, was in zip(now, before):
+        keyed_now = [P._visible_key(e, catalogue) for e in _cards(got)]
+        keyed_main = [(str(e.get("lot_address") or "").strip().lower(),
+                       round(SR._num(e.get("advertised_package_price")) or 0))
+                      for e in _cards(was)]
+        assert keyed_now == keyed_main
+    stale = [P._visible_key(e, catalogue) for e in _cards(now[1])
+             if e["content_hash"].startswith("v2:stale-sp-")]
+    assert len(stale) == len(set(stale)) == 2, stale

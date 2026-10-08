@@ -94,7 +94,10 @@ def _shortlist_entry(p, availability=None):
         # when the source only described an incentive in words; the text travels with it
         # so the document can say what was offered without inventing a figure.
         'incentive_amount': getattr(p, 'incentive_amount', 0.0) or 0.0,
-        'incentive_text': shown_incentive(getattr(p, 'incentive_text', '') or ''),
+        # With the amount beside it (8 Oct 2026, second repair round): the words never lose
+        # the money incentive_amount stands on.
+        'incentive_text': shown_incentive(getattr(p, 'incentive_text', '') or '',
+                                          getattr(p, 'incentive_amount', 0.0) or 0.0),
         # Rows on the comparison Coleen's team sends: Estate, Land Price, Build Price.
         'estate_context': without_agent_text(getattr(p, 'estate_context', '') or ''),
         'land_price': p.price_breakdown.land_price,

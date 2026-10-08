@@ -240,7 +240,7 @@ _PART_BREAK = re.compile(
 # An INCENTIVE parts at those and at more (8 Oct 2026, repair round), because the buyer's
 # money and the agent's share sit side by side in one line: a ';' or a ' + ' ('$5,000 cashback
 # + agent bonus $2,000'), a '/' after an amount ('Rebate $1,250,500/agent fee') and a
-# sentence's end ('$50,000bonus.Purchaser rebate'). Without them the agent's words took the
+# sentence's end ('$10,000 rebate.Agent bonus $5,000'). Without them the agent's words took the
 # buyer's offer down with them, and the card kept its incentive amount with no words beside
 # it. Not in a title: 'the build + commission inc GST' is one note, and a ' + ' there would
 # keep its first half.
@@ -295,17 +295,19 @@ _CLOSING_PURCHASER = re.compile(r"(?<=\s)purchasers?\s*$", re.I)
 _COMMISSION_RATE = re.compile(r"agent\s*commission\s*(?:[=:]|\d|of\s+\d)", re.I)
 _LEAD_TAIL = re.compile(r"(?:[\s,;:+&/.\-]|\b(?:plus|and|or|with)\b)+$", re.I)
 _ALNUM = re.compile(r"[^\W_]")
-# '$50,000 bonus' said alone, in an incentive that names the purchaser's own offer beside it:
-# '$50,000bonus.Purchaserrebate' (12 rows of 'Pricelist New Agent.pdf', South Yarra). There the
-# bonus is not the purchaser's -- the same list's commission column runs 'Agent commission=6%
-# plus' into it, and its 3-bed lines read '6%.Purchaser' with no bonus -- so it is the agent's,
-# as Aria's '$50,000 purchaser rebate/agent bonus' says outright. A bonus said with no purchaser
-# offer beside it ('$35,000 Discount, Bonus', 'bonus front lot landscaping') is the buyer's.
-_BARE_BONUS = re.compile(r"\$\s*\d[\d,]*(?:\.\d+)?\s*k?\s*bonus", re.I)
-_PURCHASERS_OFFER = re.compile(
-    r"\bpurchasers?'?\s*(?:rebate|cash\s*back|incentive|discount|bonus|offer)", re.I)
 # What a card is titled when its source row gave no address (api/_candidates.py says it too).
 NO_ADDRESS = "(no address in source row)"
+# THE WORDS NEVER LOSE THE MONEY THE CARD'S AMOUNT STANDS ON (8 Oct 2026, second repair
+# round). A card shows incentive_amount beside its words -- 'Incentive $' on the Research tab,
+# the comparison's Rebate and Effective Price -- and that amount is as read: this change is
+# text only and may not move it. The round before took '$50,000' out of '$50,000bonus.
+# Purchaserrebate' (12 live rows of 'Pricelist New Agent.pdf', South Yarra) as the agent's
+# bonus while the card still said 50000, so it read as a confirmed $50,000 purchaser rebate --
+# and 'Purchaserrebate' alone is only a column heading. Whose $50,000 that is the source does
+# not settle: the owner decides, in a change that may move the amount and the words together.
+# Until then a bare '$N bonus' is no small print (it names no agent), and a strip that would
+# take away the amount the card carries is not made at all: the words stay as read.
+_MONEY_SAID = re.compile(r"\$\s*(\d[\d,]*(?:\.\d+)?)\s*(k\b)?", re.I)
 
 
 def _continues(part: str) -> bool:
@@ -313,6 +315,19 @@ def _continues(part: str) -> bool:
     ('Price is approximately for the build + commission inc GST, estimate combined.')."""
     opening = part.lstrip(" \t\"'([")
     return bool(opening) and opening[0].islower()
+
+
+def _states(text: Any, amount: float) -> bool:
+    """True when `text` states `amount` in dollars: '$50,000', '$50000' and '$50k' all state
+    50000 (see _MONEY_SAID above)."""
+    for m in _MONEY_SAID.finditer("" if text is None else str(text)):
+        try:
+            said = float(m.group(1).replace(",", "")) * (1000 if m.group(2) else 1)
+        except ValueError:
+            continue
+        if abs(said - amount) < 0.5:
+            return True
+    return False
 
 
 def _small_print(text: str, words) -> Optional["re.Match"]:
@@ -354,12 +369,9 @@ def _lead(part: str, at: int, incentive: bool) -> str:
 def _strip(value: Any, fallback: str, words, breaks, incentive: bool) -> Any:
     """without_agent_text and shown_incentive: one pass, its words and its breaks."""
     text = "" if value is None else str(value)
-    bonus_is_agents = incentive and bool(_PURCHASERS_OFFER.search(text))
 
     def at(part):
         """Where `part`'s small print starts; None when it has none."""
-        if bonus_is_agents and _BARE_BONUS.fullmatch(part.strip()):
-            return 0
         m = _small_print(part, words)
         return m.start() if m else None
 
@@ -417,15 +429,30 @@ def without_agent_text(value: Any, fallback: str = "") -> Any:
     return _strip(value, fallback, AGENT_TEXT, _PART_BREAK, incentive=False)
 
 
-def shown_incentive(value: Any) -> Any:
+def shown_incentive(value: Any, amount: Any = None) -> Any:
     """An incentive as people are shown it (8 Oct 2026): without the agent's share -- the
     commission, the agent's bonus -- and with the buyer's offer, purchaser and FIRB words
-    and all, kept ('$50,000 purchaser rebate/agent bonus' -> '$50,000 purchaser rebate';
-    '$50,000bonus.Purchaserrebate' -> 'Purchaserrebate'). It parts at more than a title does
-    (_INCENTIVE_BREAK), and keeps an amount said before the agent's words, so the buyer's
-    money never goes with the agent's. '' when all of it was the agent's; the value itself,
-    untouched, when none of it was. Only the words: incentive_amount is as it was read."""
-    return _strip(value, "", AGENT_ONLY_TEXT, _INCENTIVE_BREAK, incentive=True)
+    and all, kept ('$50,000 purchaser rebate/agent bonus' -> '$50,000 purchaser rebate').
+    It parts at more than a title does (_INCENTIVE_BREAK), and keeps an amount said before
+    the agent's words, so the buyer's money never goes with the agent's. '' when all of it
+    was the agent's; the value itself, untouched, when none of it was. Only the words:
+    incentive_amount is as it was read.
+
+    `amount` is the card's incentive_amount (second repair round, 8 Oct 2026). When the words
+    as read state it and what the strip would leave does not, the strip is not made and the
+    value comes back untouched: the words beside the amount never lose its money
+    ('$50,000bonus.Purchaserrebate' with 50000 stays as it is; 'Agent commission 3% plus
+    $10,000 rebate' with 10000 too, rather than '' beside $10,000; '$20,000 agent bonus,
+    $10,000 purchaser rebate' with 20000 too, so the words still say whose $20,000 it is)."""
+    shown = _strip(value, "", AGENT_ONLY_TEXT, _INCENTIVE_BREAK, incentive=True)
+    try:
+        carried = float(amount or 0)
+    except (TypeError, ValueError):
+        carried = 0.0
+    if (shown is not value and carried > 0 and _states(value, carried)
+            and not _states(shown, carried)):
+        return value
+    return shown
 
 
 def card_place(card: Dict[str, Any]) -> str:
@@ -437,6 +464,7 @@ def card_place(card: Dict[str, Any]) -> str:
 def shown_title(title: Any, card: Dict[str, Any]) -> str:
     """A card's title as people are shown it (8 Oct 2026): without agent small print, and
     when all of it was small print, the card's place -- or with no place either, what a
-    card with no address says. kommo_agent titles every candidate with it, and the parity
-    and search-regressions checks key a hidden row's twin on it, so both sides agree."""
+    card with no address says. kommo_agent titles every candidate with it. Never a key: the
+    parity and search-regressions checks recover a card's title as read from it
+    (search_regressions.title_as_read, 8 Oct 2026), because lots shown alike can be two."""
     return without_agent_text(title, card_place(card) or NO_ADDRESS)

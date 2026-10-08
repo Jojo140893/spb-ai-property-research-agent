@@ -478,8 +478,11 @@ class KommoPropertyResearchAgent:
                 incentive_amount=coerce_number(raw_pkg.get('incentive_amount'), 0.0) or 0.0,
                 # Without the agent's share (8 Oct 2026): '$50,000 purchaser rebate/agent
                 # bonus' reads '$50,000 purchaser rebate'. The offer to the buyer stays, and so
-                # does the amount above.
-                incentive_text=shown_incentive(str(raw_pkg.get('incentive_text') or '')),
+                # does the amount above -- which the words may never lose (second repair
+                # round): with it, a strip that would drop the money it stands on is not made.
+                incentive_text=shown_incentive(
+                    str(raw_pkg.get('incentive_text') or ''),
+                    coerce_number(raw_pkg.get('incentive_amount'), 0.0) or 0.0),
                 estate_context=without_agent_text(_estate_read),
                 # The stated lot, blank when the source gave none; see
                 # CandidateProperty.lot_number for why it cannot ride inside lot_address.
