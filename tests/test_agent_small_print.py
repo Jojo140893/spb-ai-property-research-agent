@@ -52,12 +52,13 @@ TITLES = [
     # a note's tail goes with the note: the part after the comma continues its sentence
     ("Price is approximately for the build + commission inc GST, estimate combined. Please",
      "<place>"),
-    ("to ex GST, with guaranteed income of – per annum on current availability.",
-     "<place>"),
+    ("to ex GST, with guaranteed income of " + chr(0x2013) + " per annum on current "
+     "availability.", "<place>"),
 ]
 ESTATES = [
     ("Stock highlighted in orange below is eligible for the 100% commission offer.", ""),
-    ("UNIT GROUND m² MEZZANINE m² TOTAL m² PRICE GUARANTEED INCOME P.A.*", ""),
+    ("UNIT GROUND m%s MEZZANINE m%s TOTAL m%s PRICE GUARANTEED INCOME P.A.*"
+     % ((chr(0xb2),) * 3), ""),
     ("Property Address FIRB Anticipated Completion Commission Rate& Payment Term", ""),
     ("Upfront FIRB Fee payable by", ""),
     ("purchaser", ""),
