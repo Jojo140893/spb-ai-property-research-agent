@@ -337,6 +337,19 @@ def stored_project_counters(db_path=None) -> Dict[str, int]:
     whenever a header states it, so the newest stated value per project is the last one
     the portal published. Never raises: no database means no counters, not no harvest.
     """
+    return {pid: avail for pid, (avail, _on) in stored_project_counter_details(db_path).items()}
+
+
+def stored_project_counter_details(db_path=None) -> Dict[str, Tuple[int, str]]:
+    """{project id: (the available count its header last stated, the day it was read as
+    dd/mm/YYYY or "")} -- stored_project_counters with the counter's DATE.
+
+    8 Oct 2026: a stored counter is the number the index printed on the last night the
+    project was on it, and that can be weeks ago. The CARLING Carlingford stated 79 on
+    27 Sep; read whole off the index on 8 Oct it held 72, and the 8 lots of the 27 Sep read
+    missing from it were last read on 29 Sep or 5 Oct -- gone from the list since, not
+    missed. The date is what lets a reader tell an old number from tonight's (see
+    _warn_if_short)."""
     import sqlite3
     from pathlib import Path
     try:
@@ -348,13 +361,14 @@ def stored_project_counters(db_path=None) -> Dict[str, int]:
             return {}
         conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
         try:
-            out: Dict[str, int] = {}
-            for pid, avail in conn.execute(
-                    "SELECT source_project_id, project_available FROM buildings "
+            out: Dict[str, Tuple[int, str]] = {}
+            for pid, avail, checked in conn.execute(
+                    "SELECT source_project_id, project_available, checked_at FROM buildings "
                     "WHERE source_channel='Proxima' AND project_available IS NOT NULL "
                     "AND COALESCE(source_project_id,'') <> '' "
                     "ORDER BY (checked_at IS NULL), checked_at DESC"):
-                out.setdefault(str(pid), int(avail))
+                if str(pid) not in out:
+                    out[str(pid)] = (int(avail), _day_of(checked))
             return out
         finally:
             conn.close()
@@ -362,6 +376,95 @@ def stored_project_counters(db_path=None) -> Dict[str, int]:
         logger.warning("Proxima: could not read the stored project counters (%s) -- "
                        "off-index projects will have no count to be short of.", e)
         return {}
+
+
+def stored_row_projects(db_path=None) -> Dict[str, str]:
+    """{content_hash: the project id its stored Proxima row was captured under}, from the
+    database -- a live row's project before a superseded one's. Never raises.
+
+    8 Oct 2026 (second repair round). A lot printed under two projects shares one identity
+    (content_hash leaves the project out), and record_building only FILLS a stored row's
+    project and estate, never rewrites them: whichever copy updates the row, the row keeps
+    the project of its first capture. So _collapse_cross_listed gives the identity to the
+    copy of the project the stored row already belongs to. Without that, Lancelin South
+    Stage C (802) updated rows 19965-19967 -- stored under Stage C Land Only (767), product
+    'Land' -- with its house-and-land prices, and a $358,600 land lot was carded at
+    $701,500 under the Land Only label."""
+    import sqlite3
+    from pathlib import Path
+    try:
+        if db_path is None:
+            import config
+            db_path = config.DATABASE_PATH
+        path = Path(db_path)
+        if not path.exists():
+            return {}
+        conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+        try:
+            out: Dict[str, str] = {}
+            for h, pid in conn.execute(
+                    "SELECT content_hash, source_project_id FROM buildings "
+                    "WHERE source_channel='Proxima' AND COALESCE(content_hash,'') <> '' "
+                    "AND COALESCE(source_project_id,'') <> '' "
+                    "ORDER BY (superseded_by IS NOT NULL AND superseded_by <> ?), id",
+                    (_WITHDRAWN,)):
+                out.setdefault(str(h), str(pid))
+            return out
+        finally:
+            conn.close()
+    except Exception as e:                                            # noqa: BLE001
+        logger.warning("Proxima: could not read the stored rows' projects (%s) -- a lot "
+                       "printed under two projects keeps the lowest project id's identity.", e)
+        return {}
+
+
+# database.WITHDRAWN_FROM_SOURCE, spelled here so this module still imports without it: a
+# row retired that way is the listing's own row, back on the next read (record_building).
+_WITHDRAWN = "withdrawn: the source stopped listing it"
+
+
+def _offer_key(r: Dict[str, Any]) -> Tuple[float, str]:
+    """What makes two copies of one lot the SAME offer: the price they print, to the dollar,
+    and whether they state it for sale (8 Oct 2026, second repair round). By class, not by
+    word: the accordion says "For Sale" and an availability view "Available" for the same
+    thing, and a lot one view calls Sold and another Not Available is unavailable in both --
+    told apart by the word, one lot would be stored, and shown, twice."""
+    price = _num(r.get("advertised_package_price")) or _num(r.get("price")) or 0.0
+    return (round(float(price)), _status_class(r.get("availability_status")))
+
+
+def _status_class(status: Any) -> str:
+    """'available' (For Sale, Available), '' (no status stated) or 'not available'."""
+    said = re.sub(r"\s+", " ", str(status or "")).strip().lower()
+    if not said:
+        return ""
+    return "available" if said in ("for sale", "available") else "not available"
+
+
+def _pid_order(pid: str) -> Tuple[int, Any]:
+    """Project ids in a stable order whatever the page order: numerically, else by text."""
+    return (0, int(pid)) if str(pid).isdigit() else (1, str(pid))
+
+
+def _offer_ordinal(pid: str, used: set) -> int:
+    """The variant_ordinal a second offer of one lot is stored under: its project id, so it
+    names the same row every night whatever order the projects come in (a page-order
+    ordinal would swap two offers' rows, and their prices, the night the order changed)."""
+    import hashlib
+    base = int(pid) if str(pid).isdigit() else \
+        int(hashlib.sha1(str(pid).encode("utf-8")).hexdigest()[:6], 16)
+    ordinal, n = base, 0
+    while ordinal in used or ordinal == 0:
+        n += 1
+        ordinal = base * 1000 + n
+    used.add(ordinal)
+    return ordinal
+
+
+def _day_of(stamp: Any) -> str:
+    """'2026-09-27T11:51:07' -> '27/09/2026'; '' for anything else."""
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", str(stamp or "").strip())
+    return f"{m.group(3)}/{m.group(2)}/{m.group(1)}" if m else ""
 
 
 def _has_field(body: str, key: str) -> bool:
@@ -610,8 +713,16 @@ class ProximaSource(PropertySource):
         # {pid: available count its header last stated}; read from the database when the
         # harvest starts if not handed in. See stored_project_counters.
         self.stored_counters = stored_counters
+        # {pid: the day its stored counter was stated, dd/mm/YYYY}; empty when unknown.
+        self.stored_counter_dates: Dict[str, str] = {}
+        # {content_hash: the project its stored row was captured under}; read from the
+        # database when the harvest starts if not handed in. See stored_row_projects.
+        self.stored_row_projects: Optional[Dict[str, str]] = None
         # Projects whose read ends short of their counter or on a cap signature, by name.
         self.short_projects: List[Dict[str, Any]] = []
+        # Projects read WHOLE that hold fewer lots than an old stored counter (8 Oct 2026):
+        # named in the log and the manifest, never called short. See _warn_if_short.
+        self.stale_counters: List[Dict[str, Any]] = []
         # One entry per project read, for data/harvest_manifest.json.
         self.project_log: List[Dict[str, Any]] = []
         self._topup: Dict[str, Any] = {}
@@ -1015,16 +1126,64 @@ class ProximaSource(PropertySource):
                 break
             ceiling = low
 
+    def _whole(self, read: int, used_api: bool = False) -> str:
+        """How tonight's read of a project is known to be whole, or "" when it is not.
+
+          "availability view"  the whole inventory, every lot with its status;
+          "uncapped"           the portal's own list ended before its 80-lot render cap;
+          "price sorts met"    capped, and the two price sorts and the bands met
+                               (_top_up_capped proved it: self._topup["complete"]).
+        Judged on the read just made, so call it straight after the top-up."""
+        if used_api:
+            return "availability view"
+        if self._topup.get("replays"):
+            return "price sorts met" if self._topup.get("complete") else ""
+        return "uncapped" if read < _RENDER_CAP else ""
+
     def _warn_if_short(self, pid: str, name: str, read: int,
-                       stated: Optional[int]) -> None:
+                       stated: Optional[int], stated_source: Optional[str] = None,
+                       whole: str = "") -> None:
         """Say BY NAME when a project's read looks capped or falls below its counter.
 
         Two signals, either enough. Below the counter it last stated (the header tonight,
         or the database for a project off the index). Or ending on a cap signature --
         exactly 80, 83 or 160 -- which needs no counter at all: on 6 Oct 13 projects ended
         on 83 and nothing said so, because none of them stated a count.
+
+        AN OLD COUNTER IS NOT A SHORT READ (8 Oct 2026). stated_source "stored" means the
+        counter is the database's -- the index's number on the last night the project was
+        on it -- and `whole` says the read just made was proven complete. Then the gap is
+        lots sold or taken off since that night, and the project is named in
+        stale_counters (and the log, at INFO) instead of short_projects. On 8 Oct seven
+        projects, all off the index and read whole, were called short against counters of
+        9 Sep - 1 Oct: 197 Jasmine 2/3, 499 Kensington 8/11, 726 KIARA 27/28, 283 Live
+        Caringbah 138/140, 762 The CARLING 72/79, 529 The Grande 108/117, 810 VERTEX 27/28
+        -- five read under the cap, two (283, 529) topped up until the price bands met, so
+        a lot the counter's night held and tonight lacks was not on the portal's For Sale
+        list tonight. Tonight's own header counter is never discounted, and a read not
+        proven whole is short as before.
+
+        AND ONLY A SMALL GAP (8 Oct 2026, repair round, correctness verifier). For a read
+        under the render cap, "whole" only says the list ended there -- and a narrowed list
+        (the session filter trap) ends under the cap as well. So 2 lots against an old 79,
+        or none against 40, is short as it always was; only a gap old_counter_gap_ok allows
+        (harvest_manifest: at most 3 lots or 10% of the counter, a read of at least one)
+        is a stale counter.
         """
+        from harvest_manifest import old_counter_gap_ok
         below = bool(stated) and read < stated
+        if (below and stated_source == "stored" and whole
+                and old_counter_gap_ok(read, stated)):
+            self.stale_counters.append({"pid": str(pid), "name": name, "read": read,
+                                        "stated": stated,
+                                        "stated_on": self.stored_counter_dates.get(str(pid))
+                                        or "", "whole": whole})
+            logger.info("Proxima: project %s '%s' read %d lot(s), whole (%s), against the %d "
+                        "its counter stated%s -- the difference was sold or withdrawn since, "
+                        "not missed.", pid, name, read, whole, stated,
+                        (" on " + self.stored_counter_dates[str(pid)])
+                        if self.stored_counter_dates.get(str(pid)) else "")
+            return
         # ...unless the top-up just proved the read whole: a project can hold 83 lots.
         signature = read in _CAP_SIGNATURES and not self._topup.get("complete")
         # A band walk that met 80 or more lots at one price could not read past them,
@@ -1088,16 +1247,54 @@ class ProximaSource(PropertySource):
                 "props": tiles, "_body": own}
 
     def _log_project(self, pid: str, name: str, on_index: bool, via_api: bool,
-                     header_counter, stated: Optional[int], read: int) -> None:
-        """One line of data/harvest_manifest.json for this project (see harvest_manifest)."""
+                     header_counter, stated: Optional[int], read: int,
+                     stated_source: Optional[str] = None, whole: str = "") -> None:
+        """One line of data/harvest_manifest.json for this project (see harvest_manifest).
+
+        8 Oct 2026 adds what the parity check's READ bar needs to judge a read without
+        guessing: where `stated` came from (stated_source "header" = tonight's index,
+        "stored" = the database's, with stated_on its day), how the read is known whole
+        (`whole`, see _whole), and -- set later, by search() and _collapse_cross_listed --
+        whether the project is overseas and how many of its lots were stored once under
+        another project (cross_listed, cross_listed_into)."""
         avail, total = header_counter
         self.project_log.append({
             "pid": str(pid), "name": name, "on_index": on_index,
             "via": "availability view" if via_api else "accordion",
             "header_counter": [avail, total] if avail is not None else None,
-            "stated": stated, "printed": read,
+            "stated": stated, "stated_source": stated_source if stated is not None else None,
+            "stated_on": (self.stored_counter_dates.get(str(pid)) or None)
+            if stated_source == "stored" else None,
+            "printed": read, "whole": whole,
             "replays": self._topup.get("replays", 0), "bands": self._topup.get("bands", 0),
-            "short": any(s["pid"] == str(pid) for s in self.short_projects)})
+            "short": any(s["pid"] == str(pid) for s in self.short_projects),
+            "stale_counter": any(s["pid"] == str(pid) for s in self.stale_counters),
+            "overseas": False, "cross_listed": 0, "cross_listed_into": {}})
+
+    def _mark_overseas(self, pid: str, rows: List[Dict[str, Any]]) -> None:
+        """Finish this project's manifest line from the lots it made: `not_a_listing` (tiles
+        that made none), and `overseas` when its lots are not in Australia
+        (8 Oct 2026): no lot names an Australian state and suburb_quality calls every one
+        overseas. That night 8 projects were (DAMAC and Safa Gate in Dubai, five SMDC towers
+        in the Philippines priced in pesos: 5,258 lots); two of them, SMDC Glade Residences
+        ILOILO (696, 80+ lots at one price) and SMDC Gold Residences (693, all 24 replays
+        spent), read short, and the parity check, which judges Australian stock, names them
+        instead of failing on them."""
+        if not self.project_log or self.project_log[-1]["pid"] != str(pid):
+            return
+        # Tiles that made no lot (no price, no address): printed and never stored, and said
+        # so rather than left for the stored-vs-printed bar to find unexplained.
+        self.project_log[-1]["not_a_listing"] = max(0, int(self.project_log[-1]["printed"])
+                                                    - len(rows))
+        if not rows or any(str(r.get("state") or "").strip().upper() in _STATES
+                           for r in rows):
+            return
+        try:
+            import suburb_quality
+            overseas = all(suburb_quality.is_overseas(dict(r)) for r in rows)
+        except Exception:                                             # noqa: BLE001
+            overseas = False
+        self.project_log[-1]["overseas"] = bool(overseas)
 
     def _read_via_api(self, scraper, pid: str) -> Optional[List[Dict[str, str]]]:
         """A project's FULL inventory, via the availability view's own REST call.
@@ -1345,7 +1542,11 @@ class ProximaSource(PropertySource):
 
         results: List[Dict[str, Any]] = []
         if self.stored_counters is None:
-            self.stored_counters = stored_project_counters()
+            details = stored_project_counter_details()
+            self.stored_counters = {pid: avail for pid, (avail, _on) in details.items()}
+            self.stored_counter_dates = {pid: on for pid, (_avail, on) in details.items()}
+        if self.stored_row_projects is None:
+            self.stored_row_projects = stored_row_projects()
         try:
             with scraper.session():
                 scraper.goto(PROJECTS_URL)
@@ -1448,16 +1649,20 @@ class ProximaSource(PropertySource):
                             data["header"].get("project"))
                         stated = (stated_avail if stated_avail is not None
                                   else self.stored_counters.get(pid))
+                        stated_source = ("header" if stated_avail is not None
+                                         else "stored" if stated is not None else None)
                         self._topup = {}
                         if not used_api and len(data.get("props") or []) >= _RENDER_CAP:
                             data["props"] = self._top_up_capped(
                                 scraper, pid, data.get("_body", ""),
                                 data["props"], stated, name=pname)
+                        whole = self._whole(len(data["props"]), used_api)
                         if not used_api:
-                            self._warn_if_short(pid, pname, len(data["props"]), stated)
+                            self._warn_if_short(pid, pname, len(data["props"]), stated,
+                                                stated_source, whole)
                         self._log_project(pid, pname, True, used_api,
                                           (stated_avail, stated_total), stated,
-                                          len(data["props"]))
+                                          len(data["props"]), stated_source, whole)
                         if not data["props"]:
                             self._bump("project published no lots")
                             logger.info("  [%2d/%d] project %s (%s): no lots published",
@@ -1468,6 +1673,7 @@ class ProximaSource(PropertySource):
                         # Colin lost eight minutes of a call to not having it.
                         rows = [r for r in (self._row(d, data["header"], pid)
                                             for d in data["props"]) if r]
+                        self._mark_overseas(pid, rows)
                         if rows:
                             self.projects_with_stock += 1
                         else:
@@ -1514,15 +1720,19 @@ class ProximaSource(PropertySource):
                             # header states no counter off the index, so the stored one
                             # is what a shortfall is measured against.
                             stated = self.stored_counters.get(pid)
+                            stated_source = "stored" if stated is not None else None
                             self._topup = {}
                             if len(props) >= _RENDER_CAP:
                                 props = self._top_up_capped(scraper, pid, data["_body"],
                                                             props, stated, name=name)
-                            self._warn_if_short(pid, name, len(props), stated)
+                            whole = self._whole(len(props))
+                            self._warn_if_short(pid, name, len(props), stated,
+                                                stated_source, whole)
                             self._log_project(pid, name, False, False, (None, None),
-                                              stated, len(props))
+                                              stated, len(props), stated_source, whole)
                             rows = [r for r in (self._row(d, data["header"], pid)
                                                 for d in props) if r]
+                            self._mark_overseas(pid, rows)
                             if rows:
                                 self.projects_with_stock += 1
                                 self.off_index += 1
@@ -1558,27 +1768,116 @@ class ProximaSource(PropertySource):
 
         They also collide on content_hash (estate_name is deliberately not part of
         identity), so the upsert would silently keep whichever landed last. Collapsing
-        here instead makes the choice deterministic — first project wins, in page
-        order — and, more importantly, COUNTED, so the drop shows up in the log rather
-        than looking like lots that were never found.
+        here instead makes the choice deterministic and, more importantly, COUNTED, so
+        the drop shows up in the log rather than looking like lots that were never found.
+
+        ONLY A COPY IS COLLAPSED (8 Oct 2026, second repair round, correctness verifier).
+        Copies that print the same price and state the same status are one offer: kept
+        once, under the project the stored row already belongs to (stored_row_projects),
+        else the first in page order. Copies that DISAGREE are not copies, and each is
+        stored under its own project. Before, the first in page order won whatever the
+        others said, and on 8 Oct that lost two real offers:
+          * Atchison and Kenny Building B (793) printed units B-1301 and B-1803 For Sale;
+            Building A's availability view (161) lists them Not Available, and came first.
+            Both lots were kept as A's Not Available rows (10949, 11009) and hidden from
+            every search, while B's own list -- 19 for sale -- stored 17;
+          * Lancelin South Stage C Land Only (767) printed lots 71, 129 and 130 as land at
+            $358,600-$390,900; Stage C (802) prints the same lots as house-and-land at
+            $701,500-$733,800, and came first. The land offer was gone, and the rows the
+            house-and-land copy updated (19965-19967) are 767's -- carded "Land Only" at the
+            house-and-land price.
+        Now the offer whose project owns the stored row keeps the lot's identity (else the
+        lowest project id, so it does not swap with page order), and every other offer is
+        stored as a variant of it (variant_ordinal: its project id, see _offer_ordinal).
+
+        THE MANIFEST SAYS WHICH LOT WENT WHERE. A collapsed copy is counted on its own
+        project's line (cross_listed, cross_listed_into; duplicates for a lot printed twice
+        in one list) AND named, with the price and status it printed and the identity of
+        the row that holds it (cross_listed_lots, duplicate_lots), so the parity check's
+        READ bar can count it as stored only on row-level proof: a live row under the kept
+        project, read tonight, at that price and status (parity_check
+        cross_listed_row_facts).
         """
         from database import building_content_hash
-        seen: Dict[str, Dict[str, Any]] = {}
-        dropped = []
+        groups: Dict[str, List[Dict[str, Any]]] = {}
         for r in rows:
-            h = building_content_hash(r)
-            if h in seen:
-                dropped.append((r.get("lot_address", ""), seen[h].get("estate_name", ""),
-                                r.get("estate_name", "")))
+            groups.setdefault(building_content_hash(r), []).append(r)
+        log_of = {e["pid"]: e for e in self.project_log}
+        owners = self.stored_row_projects or {}
+
+        def pid_of(r):
+            return str(r.get("source_project_id") or "")
+
+        out: List[Dict[str, Any]] = []
+        dropped, split = [], []
+        for h, copies in groups.items():
+            if len(copies) == 1:
+                out.append(copies[0])
                 continue
-            seen[h] = r
+            owner = owners.get(h, "")
+            offers: Dict[Tuple[float, str], List[Dict[str, Any]]] = {}
+            for r in copies:
+                offers.setdefault(_offer_key(r), []).append(r)
+            # One kept copy per offer: the stored row's project's, else the first printed.
+            kept = [(next((r for r in same if pid_of(r) == owner), same[0]), same)
+                    for same in offers.values()]
+            if len(kept) > 1:
+                base = next((i for i, (r, _same) in enumerate(kept) if pid_of(r) == owner),
+                            None)
+                if base is None:
+                    base = min(range(len(kept)), key=lambda i: _pid_order(pid_of(kept[i][0])))
+                used: set = set()
+                for i, (r, _same) in enumerate(kept):
+                    if i != base:
+                        r["variant_ordinal"] = _offer_ordinal(pid_of(r), used)
+                split.append((copies[0].get("lot_address", ""),
+                              ["%s (%s, $%s)" % (r.get("estate_name") or pid_of(r),
+                                                 r.get("availability_status") or "no status",
+                                                 format(int(_offer_key(r)[0]), ","))
+                               for r, _same in kept]))
+                for r, _same in kept:
+                    mine = log_of.get(pid_of(r))
+                    if mine is not None:
+                        mine["cross_listed_offers"] = int(mine.get("cross_listed_offers")
+                                                          or 0) + 1
+            for keep, same in kept:
+                out.append(keep)
+                final = building_content_hash(keep)
+                into = pid_of(keep)
+                for other in same:
+                    if other is keep:
+                        continue
+                    dropped.append((other.get("lot_address", ""),
+                                    keep.get("estate_name", ""), other.get("estate_name", "")))
+                    mine = log_of.get(pid_of(other))
+                    if mine is None:
+                        continue
+                    lot = {"hash": final, "lot": str(other.get("lot_number") or ""),
+                           "address": str(other.get("lot_address") or "")[:90],
+                           "price": _offer_key(other)[0],
+                           "status": str(other.get("availability_status") or ""),
+                           "into": into}
+                    if into and into != mine["pid"]:
+                        mine["cross_listed"] = int(mine.get("cross_listed") or 0) + 1
+                        where = mine.setdefault("cross_listed_into", {})
+                        where[into] = where.get(into, 0) + 1
+                        mine.setdefault("cross_listed_lots", []).append(lot)
+                    else:
+                        # The same lot printed twice in ONE project: stored once, said so.
+                        mine["duplicates"] = int(mine.get("duplicates") or 0) + 1
+                        mine.setdefault("duplicate_lots", []).append(lot)
         if dropped:
             self.cross_listed = dropped
             logger.info("  %d lot(s) cross-listed under a second project; kept once:",
                         len(dropped))
-            for addr, kept, also in dropped[:10]:
-                logger.info("     %s  [kept: %s | also in: %s]", addr[:58], kept, also)
-        return list(seen.values())
+            for addr, kept_as, also in dropped[:10]:
+                logger.info("     %s  [kept: %s | also in: %s]", addr[:58], kept_as, also)
+        if split:
+            logger.info("  %d lot(s) printed under two projects as DIFFERENT offers (price or "
+                        "status); each stored under its own project:", len(split))
+            for addr, said in split[:10]:
+                logger.info("     %s  [%s]", addr[:58], " | ".join(said))
+        return out
 
     def verify(self, package: Dict[str, Any]) -> Dict[str, Any]:
         return {"verified": False, "status": "Pending Confirmation", "price_change": 0.0}

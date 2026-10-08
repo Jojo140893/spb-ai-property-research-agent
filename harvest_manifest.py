@@ -48,6 +48,25 @@ SCHEMA (version 1)
                  the last one stored), or null,
       replays, bands   POSTs spent past the 80-lot cap, and how many were price bands,
       short      true when the read ended below `stated` or on a cap signature
+    8 Oct 2026 (sources/proxima.py _log_project), so the parity check judges a read on what
+    the harvest knew rather than re-deriving it:
+      stated_source  "header" (tonight's index) or "stored" (the database's, from the last
+                 night the project was on the index); stated_on  that night, dd/mm/YYYY
+      whole      how the read is known complete: "uncapped" (the list ended under the
+                 render cap), "price sorts met", "availability view"; "" when it is not
+      stale_counter  true when a read proven whole is below an old stored counter by no
+                 more than old_counter_gap_ok allows (see there)
+      overseas   true when no lot names an Australian state and every lot is overseas
+      cross_listed, cross_listed_into  lots printed here and stored once under another
+                 project ({pid: n}); duplicates  lots printed twice in this list
+      cross_listed_lots, duplicate_lots  (8 Oct 2026, second repair round) each of those
+                 lots by name: {hash (the identity of the row that holds it), lot,
+                 address, price and status as printed HERE, into (the kept project)} --
+                 the parity READ bar counts one as stored only when that row is live under
+                 `into`, read tonight, at that price and status
+      cross_listed_offers  lots printed here and under another project at another price
+                 or status: two offers, each stored under its own project (not dropped)
+      not_a_listing  tiles that made no lot (no price or no address)
 
   kind "portal" (direct builder portals, one per builder) adds:
       host, cards_found, cards_read   priced cards on the page vs cards read
@@ -83,6 +102,39 @@ OUTCOMES = ("read", "zero-yield", "no price list", "empty folder", "private link
             "skipped by label filter", "not a price list", "no builder heading",
             "no credentials", "login failed", "crashed")
 _STORED = ("new", "updated", "unchanged", "rejected")
+
+# HOW FAR BELOW AN OLD COUNTER A WHOLE READ MAY FALL (8 Oct 2026, repair round). A Proxima
+# project off tonight's index is measured against the database's counter -- the index's
+# number on the last night the project was on it -- and a read proven whole below it is the
+# lots sold or withdrawn since (sources/proxima.py _warn_if_short, parity_check read_bar).
+# "Proven whole" for a read under the render cap only says the list ended there, and a
+# portal that serves a narrowed list (a session filter: browsing Proxima signed in narrows
+# the next harvest) ends under the cap too. So the gap that is excused is bounded by what
+# the first live night showed lots leaving at, with room: on 8 Oct the seven whole reads
+# below old counters were 2/3, 8/11, 27/28, 138/140, 72/79, 108/117 and 27/28 -- at most
+# 3 lots, or 8.9% of the counter (CARLING 7 of 79; The Grande 9 of 117 is 7.7%), and each
+# missing lot's last read was on an earlier night (five of The Grande's on 07/10, so a
+# lot can leave the list within a night). A read of nothing is never excused.
+# 10%, not 15% (8 Oct 2026, second repair round, correctness verifier): 15% let a narrowed
+# "uncapped" list pass at 1.7 times the largest gap seen -- CARLING 68 of an old 79, The
+# Grande 100 of 117, Live Caringbah 120 of 140. 10% still holds the seven real ones (CARLING's
+# 7 of 79 is int(7.9) = 7) and fails those three.
+OLD_COUNTER_GAP_LOTS = 3
+OLD_COUNTER_GAP_SHARE = 0.10
+
+
+def old_counter_gap_ok(read: Any, stated: Any) -> bool:
+    """True when a whole read of `read` lots is close enough under an old counter `stated`
+    to be lots gone since that night: at least one lot read, and at most
+    max(OLD_COUNTER_GAP_LOTS, OLD_COUNTER_GAP_SHARE of the counter) missing."""
+    try:
+        read, stated = int(read), int(stated)
+    except (TypeError, ValueError):
+        return False
+    gap = stated - read
+    return read > 0 and 0 <= gap <= max(OLD_COUNTER_GAP_LOTS,
+                                        int(stated * OLD_COUNTER_GAP_SHARE))
+
 
 ENTRIES: List[Dict[str, Any]] = []
 _BY_KEY: Dict[tuple, Dict[str, Any]] = {}

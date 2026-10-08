@@ -772,7 +772,7 @@ class Run:
     seconds); it is an in-process call of the bundle's run_research, or an HTTP POST."""
 
     def __init__(self, spec, post, catalogue, today, report, mode="snapshot",
-                 checks="nightly", obvious=None, locality=None, only=None):
+                 checks="nightly", obvious=None, locality=None, only=None, places=None):
         self.spec = spec
         self.post = post
         self.catalogue = catalogue
@@ -782,10 +782,14 @@ class Run:
         self.checks = checks
         self.obvious = obvious
         self.locality = locality
+        # suburb -> the states with a locality of that name ([] unknown); None live
+        # (place_states, 8 Oct 2026).
+        self.places = places
         self.only = list(only or ())
         self.responses = {}
         self.warned_locality = set()
         self.warned_lot_postcode = set()
+        self.warned_places = set()
         self.briefs = {b["id"]: b for b in spec["briefs"]}
         unknown = [i for i in self.only if i not in self.briefs]
         if unknown:
@@ -911,7 +915,8 @@ class Run:
 
         self.explain_answered(where, body, resp)
         self.everything_was_searched(where, brief, resp)
-        self.card_invariants(where, used, shortlist, confirming)
+        self.card_invariants(where, used, shortlist, confirming,
+                             strict_places=bool(expect.get("cards_in_their_places")))
         self.kommo(where, resp, shortlist, confirming)
         if expect.get("never"):
             listed = dict(self.spec[expect["never"]])
@@ -1082,7 +1087,7 @@ class Run:
                                  % (cat.name(_hash(entry)), address, _money(price(entry))))
                 break
 
-    def card_invariants(self, where, used, shortlist, confirming):
+    def card_invariants(self, where, used, shortlist, confirming, strict_places=False):
         state = _searched_state(used)
         low = _num(used.get("budget_min")) or 0.0
         high = _num(used.get("budget_max"))
@@ -1127,6 +1132,26 @@ class Run:
                     self.report.fail(where, "%s %s is shown in %s, but its own row writes its "
                                             "address as %r" % (kind, name,
                                                                entry.get("suburb"), written))
+                # NOT A PLACE OF ANOTHER STATE SHOWN IN THIS ONE (8 Oct 2026, second repair
+                # round, correctness verifier): the NT search's only card read "Tarneit, NT"
+                # -- a Victorian lot filed NT on a street name -- and nothing here or in the
+                # parity bars could see a state search answering with another state's lot.
+                # A FAILURE where the brief expects it (expect.cards_in_their_places: the
+                # state-wide briefs that hold none tonight, the territories first); a WARN,
+                # once a card, elsewhere -- the 8 Oct database also shows 10 "Kings Forest,
+                # QLD" and 2 "Jordan Springs, QLD" lots (NSW places) in QLD answers and 2
+                # "Donnybrook, SA" in SA's, older than this check and the client's to settle.
+                card_state = str(entry.get("state") or "").strip().upper()
+                suburb = str(entry.get("suburb") or "").strip()
+                owners = self.places(suburb) if (self.places and suburb and card_state) else []
+                if owners and card_state not in owners:
+                    text = ("%s %s is shown as %s, %s, but %s is a locality of %s only"
+                            % (kind, name, suburb, card_state, suburb, "/".join(owners)))
+                    if strict_places:
+                        self.report.fail(where, text)
+                    elif h not in self.warned_places:
+                        self.warned_places.add(h)
+                        self.report.warn(where, "place: " + text)
                 if kind != "shortlisted":
                     continue
                 if no_lot_and_no_street(entry):
@@ -1834,9 +1859,25 @@ def run_in_bundle(args, report):
     run = Run(load_spec(args.briefs), in_process_post(research), catalogue, today, report,
               mode="snapshot", checks=args.checks,
               obvious=obvious_rows_check(C, research, _bootstrap, catalogue, path),
-              locality=locality_check(catalogue, report), only=args.only)
+              locality=locality_check(catalogue, report), only=args.only,
+              places=place_states(report))
     run.execute()
     return _finish(report, started)
+
+
+def place_states(report):
+    """suburb -> [the states that have a locality of that name], from the bundle's own
+    gazetteer (geo.SuburbGeoIndex, imported from the bundle like locality_check's), or None
+    when it cannot be built (said, as a WARN). card_invariants fails a card shown in a state
+    its suburb is no locality of (8 Oct 2026)."""
+    try:
+        from geo import SuburbGeoIndex
+        geo = SuburbGeoIndex()
+    except Exception as exc:                                          # noqa: BLE001
+        report.warn("setup", "the place-and-state card check is off: %s: %s"
+                    % (type(exc).__name__, exc))
+        return None
+    return geo.states_for_suburb
 
 
 def _finish(report, started):

@@ -756,6 +756,30 @@ console.log("\n--- 'Why only N matched': the counts, and a button per change tha
     out.indexOf("search-help") >= 0 && out.indexOf("prop-card") > out.indexOf("search-help"));
 }
 {
+  // 8 Oct 2026, repair round (callers verifier): a TAS search, and the catalogue holds no
+  // TAS row at all. It read "In TAS, 0 listings are priced at or under $600,000", as though
+  // TAS stock sat above the budget.
+  const empty = searchHelp({
+    brief_as_searched: { state: "TAS", budget_min: 0, budget_max: 600000 },
+    funnel: { snapshot_rows: 19800, out_of_scope: { other_state: 19800 }, gates: [],
+              in_price_range: {}, in_price_range_total: 0, in_state_rows: 0, scored: 0,
+              shortlisted: 0, capped: false },
+    relaxations: [] });
+  const tas = await renderExplained(explained({ shortlist: [], shortlist_count: 0,
+    rejected_count: 0, in_state_rows: 0, needs_confirming: [], needs_confirming_count: 0,
+    needs_confirming_hidden: {}, search_help: empty,
+    brief_used: { state: "TAS", budget_min: 0, budget_max: 600000, primary_suburbs: ["Hobart"] } }));
+  check("a state that holds no listing says so, not '0 listings are priced at or under'",
+    tas.out.includes(tas.api.esc("In TAS, no listings are held at any price."))
+    && !tas.out.includes("listings are priced at or under"), tas.out.slice(0, 600));
+  // ...and one that holds stock, none of it in range, still says what is in range.
+  const some = await renderExplained(explained({ shortlist: [], shortlist_count: 0,
+    search_help: searchHelp({ funnel: { ...searchHelp().funnel, in_price_range_total: 0 } }) }));
+  check("... while a state with stock, none in range, still counts the range",
+    some.out.includes(some.api.esc("In QLD, 0 listings are priced at or under $750,000.")),
+    some.out.slice(0, 600));
+}
+{
   const nothing = await renderExplained(explained({ shortlist: [], shortlist_count: 0,
     search_help: searchHelp({ relaxations: [RELAX.reveal, { ...RELAX.plus10pct, shortlist_count: 12, adds: 12 }] }) }));
   check("with no results it reads 'Why nothing matched'",
@@ -928,13 +952,21 @@ console.log("\n--- applyBriefPatch writes every field a relaxation can change --
     && s.el("stateSelect").value === "", JSON.stringify(s.el("stateSelect").value));
   s.el("stateSelect").value = "QLD";
   s.el("budgetMax").value = "750000";
+  // "NZ", not "TAS": since 8 Oct 2026 the select offers ACT, TAS and NT.
   check("a state the select cannot show is refused, and nothing is written",
-    s.api.applyBriefPatch({ state: "TAS", budget_max: 825000 }) === false
+    s.api.applyBriefPatch({ state: "NZ", budget_max: 825000 }) === false
     && s.el("stateSelect").value === "QLD" && s.el("budgetMax").value === "750000");
   check("a field the form does not have is refused, and nothing is written",
     s.api.applyBriefPatch({ budget_max: 825000, garage_type: "double" }) === false && s.el("budgetMax").value === "750000");
   check("an empty or missing patch is refused",
     s.api.applyBriefPatch({}) === false && s.api.applyBriefPatch(null) === false && s.api.applyBriefPatch([1]) === false);
+  check("ACT, TAS and NT are offered by the State select (8 Oct 2026)",
+    ["ACT", "TAS", "NT"].every(v => STATE_OPTIONS.some(o => o.value === v)),
+    JSON.stringify(STATE_OPTIONS));
+  check("a patch to ACT is written into the State select",
+    s.api.applyBriefPatch({ state: "ACT", budget_max: 825000 }) === true
+    && s.el("stateSelect").value === "ACT" && s.el("budgetMax").value === "825000",
+    JSON.stringify([s.el("stateSelect").value, s.el("budgetMax").value]));
 }
 {
   // Correction 15: Node has no browser validation, so what a box would refuse is read off its
@@ -1223,6 +1255,32 @@ console.log("\n--- release review: the panel's counts, what was left out, and wh
   const none = await renderExplained(explained({ shortlist: [], shortlist_count: 0, needs_confirming: [],
     needs_confirming_count: 0, needs_confirming_hidden: {}, search_help: searchHelp({ relaxations: [] }) }));
   check("... and says nothing when nothing was left out", !none.out.includes("Left out"));
+  // 8 Oct 2026, second repair round (callers verifier): past the request's deadline the
+  // server skips the refusal pass and says the tally may be short. The line printed the
+  // shorter tally as if it were all of them.
+  const skippedHelp = searchHelp({ relaxations: [{ ...RELAX.reveal, count: 0 }],
+    needs_confirming: { count: 0, hidden: { document_reread_without_row: 2 },
+                        hidden_may_be_short: true, refusal_pass_skipped: "past the request deadline" } });
+  const skipped = await renderExplained(explained({ shortlist: [], shortlist_count: 0, needs_confirming: [],
+    needs_confirming_count: 0, needs_confirming_hidden: { document_reread_without_row: 2 }, search_help: skippedHelp }));
+  check("a 'Left out' tally the server could not finish says it is at least that, and why",
+    skipped.out.includes(skipped.api.esc("Nothing to confirm with a builder. Left out (at least; there was not "
+      + "time to count them all): 2 because their list was read again without them.")),
+    (skipped.out.match(/class="sh-grey">[^<]*/g) || []).join(" | "));
+  const nothingCounted = await renderExplained(explained({ shortlist: [], shortlist_count: 0, needs_confirming: [],
+    needs_confirming_count: 0, needs_confirming_hidden: {},
+    search_help: searchHelp({ relaxations: [], needs_confirming: { count: 0, hidden_may_be_short: true } }) }));
+  check("... and with nothing counted, that what was left out is not known",
+    nothingCounted.out.includes(nothingCounted.api.esc("Nothing to confirm with a builder (what was left out is "
+      + "not known: the count may be incomplete).")),
+    (nothingCounted.out.match(/class="sh-grey">[^<]*/g) || []).join(" | "));
+  // the amber group's own line says it too
+  const grouped = await renderExplained(explained({ search_help: searchHelp({ needs_confirming: { count: 3,
+    hidden_may_be_short: true, refusal_pass_skipped: "past the request deadline" } }) }));
+  check("... as does the amber group's 'Also left out'",
+    grouped.out.includes(grouped.api.esc("Also left out (at least; there was not time to count them all): "
+      + "3 because a newer capture of the same lot says otherwise.")),
+    (grouped.out.match(/class="nc-hidden">[^<]*/) || [""])[0]);
 }
 {
   // The reveal button follows the server's 'may be short' flag and counts one as one.
@@ -1523,15 +1581,25 @@ console.log("\n--- a relaxation's count is for the brief that was searched (W14 
 }
 {
   // A patch whose keys the form has, but whose value a box cannot hold (a state the select
-  // does not offer), is never a button that silently does nothing when clicked.
+  // does not offer), is never a button that silently does nothing when clicked. ("NZ": TAS
+  // is offered since 8 Oct 2026.)
   const { out } = await renderExplained(explained({ search_help: searchHelp({ relaxations: [
-    { id: "whole_state", kind: "rerun", label: "All of TAS, not only Hobart",
-      brief_patch: { state: "TAS", primary_suburbs: [], search_radius_km: 0 },
+    { id: "whole_state", kind: "rerun", label: "All of NZ, not only Auckland",
+      brief_patch: { state: "NZ", primary_suburbs: [], search_radius_km: 0 },
       shortlist_count: 7, adds: 5, count_status: "exact" },
   ] }) }), s => { s.el("stateSelect").value = "QLD"; });
   check("a patch the form cannot hold is offered as text, not as a button that does nothing",
-    !/relax-btn[^>]*>All of TAS/.test(out) && out.includes("Change the brief above to try: All of TAS, not only Hobart → 7 matches (+5)"),
+    !/relax-btn[^>]*>All of NZ/.test(out) && out.includes("Change the brief above to try: All of NZ, not only Auckland → 7 matches (+5)"),
     (out.match(/<button[^>]*relax-btn[\s\S]*?<\/button>|class="sh-grey">[^<]*/g) || []).join(" | "));
+  // And the territories now get their button: "All of ACT" after a Braddon search.
+  const act = await renderExplained(explained({ search_help: searchHelp({ relaxations: [
+    { id: "whole_state", kind: "rerun", label: "All of ACT, not only Braddon",
+      brief_patch: { state: "ACT", primary_suburbs: [], search_radius_km: 0 },
+      shortlist_count: 7, adds: 5, count_status: "exact" },
+  ] }) }), s => { s.el("stateSelect").value = "ACT"; });
+  check("a whole-state patch to ACT is a button (8 Oct 2026)",
+    /relax-btn[^>]*>All of ACT/.test(act.out),
+    (act.out.match(/<button[^>]*relax-btn[\s\S]*?<\/button>|class="sh-grey">[^<]*/g) || []).join(" | "));
 }
 
 // ------------------------------------------------------------------ the card's own date (guard)

@@ -268,7 +268,25 @@ crawl. Consequences, all surfaced in the UI rather than hidden:
     shortlisted fewer than `SPB_EXPLAIN_BELOW` (5) the `relaxations`. Each relaxation is
     the real search re-run with its `brief_patch` (count_status `exact`), priced in the
     order include_needs_confirming, +$50,000, +10%, whole state, radius, then the
-    minimums and filters, until `SPB_EXPLAIN_BUDGET_MS` (4000) runs out (`not_computed`).
+    minimums and filters, until `SPB_EXPLAIN_BUDGET_MS` (8000, counted from the first
+    relaxation since 8 Oct 2026) runs out, or the next step would end past
+    `SPB_REQUEST_DEADLINE_MS` (18000 since the 8 Oct repair round, counted from the start
+    of the request) -- `not_computed`, with `skipped` "budget" or "deadline". A step (a
+    gate pass, a dedupe, a chunk of `SPB_SCORE_CHUNK` (500) packages scored, the refusal
+    pass) starts only when twice what that kind of step has cost in the request, per
+    package where it scales, still ends inside both. Every pass of one request shares the
+    brief-independent half of the gates (`_candidates.GateCache`); a relaxation that
+    changes nothing the gates read (whole state, radius) re-scores the search's own pool
+    (`_candidates.pool_key`), and the budget and minimum steps are cut from one gate pass
+    under the loosest of them (`_candidates.WidePool`); the counts are the full re-run's.
+    A pass after the search's own reads that cache and is estimated as the slowest such
+    "warm" pass so far (the admit pass is the first); the WidePool as the cold pass. When
+    the WidePool does not fit, each step it would serve runs its own warm pass instead
+    (8 Oct 2026, second repair round), so the budget steps are not skipped while later,
+    cheaper steps are priced. On a search that prices hints the refusal pass (it only
+    tallies what was left out) runs after them, when there is time. When it is skipped,
+    `search_help.needs_confirming` carries `refusal_pass_skipped` and `hidden_may_be_short`,
+    and the Research tab says its "Left out" tally is "at least" that.
     Posting `brief_patch` over the form returns exactly its `shortlist_count`; after a
     swapped min/max a price patch carries the whole range as searched so that stays true.
     `include_needs_confirming` has no patch: it reveals the list below, and its `capped`

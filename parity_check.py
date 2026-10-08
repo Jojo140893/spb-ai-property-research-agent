@@ -18,11 +18,11 @@ the search says: every live row, in Australia, stamped in the last RECENT_NIGHTS
 priced as a whole home and land (search_regressions.priced_as_a_home, the obvious-rows
 check's own price rule), and stated Available / For Sale -- or blank on a list that never
 states a lot Available (a list with no status column, or one that only marks the lots that
-have gone: being on the list is the statement). Counted per state (VIC, NSW, QLD, SA, WA),
-for E-Agent and for every channel, in lots and in buildings. A building is the estate, else
-the project (a Proxima project, a project-scope stocklist), else the stocklist. Rows with no
-state are counted on a row of their own; ACT, TAS and NT, which the form cannot search by
-state, are noted.
+have gone: being on the list is the statement). Counted per state (VIC, NSW, QLD, SA, WA,
+and since 8 Oct 2026 ACT, TAS and NT, which the form now offers), for E-Agent and for every
+channel, in lots and in buildings. A building is the estate, else the project (a Proxima
+project, a project-scope stocklist), else the stocklist. Rows with no state are counted on a
+row of their own.
 
 THE BARS. Any miss exits 1.
   SHOWN       the shipped bundle's run_research, once per state (state-wide, no budget,
@@ -50,6 +50,18 @@ THE BARS. Any miss exits 1.
               exactly 80, 83 or 160 lots (its render cap, unless its own counter says that
               many) or below its own available counter; every portal read the cards its page
               shows. Without a manifest the bar is skipped, and says so.
+              8 Oct 2026, from the first live night's 13 false alarms: a Proxima lot printed
+              under a second project and stored once under the first (cross_listed_into a
+              project read tonight) counts as stored -- since the second repair round only
+              on its row's evidence: the manifest names the lot (cross_listed_lots) and its
+              row is live under that project, read tonight, at the price and status printed
+              (and shipped, if for sale); a named lot the database contradicts fails
+              whatever the share; a project read WHOLE (`whole`) below an
+              old counter -- the database's, from the last night it was on the index -- by
+              no more than harvest_manifest.old_counter_gap_ok allows (3 lots or 10%, and at
+              least one lot read) is noted, not failed (tonight's own header, or a bigger
+              gap, still fails); and an overseas project
+              (Proxima lists SMDC's Philippine towers) is named, not judged.
 
 HOW IT RUNS. As search_regressions --snapshot does: the database is copied through a
 read-only connection; a child process imports vercel_site/api -- the bundle that ships, made
@@ -91,6 +103,9 @@ from pathlib import Path
 # search_regressions imports the standard library only, so nothing of the app's pipeline
 # can shadow a module of the bundle being checked.
 import search_regressions as SR
+# The manifest's schema module (standard library only, like SR): the READ bar's bound on an
+# old Proxima counter is the harvest's own (old_counter_gap_ok), so the two never differ.
+import harvest_manifest as HM
 
 APP = Path(__file__).resolve().parent
 DEFAULT_SNAPSHOT = APP / "vercel_site" / "stock.json"
@@ -100,8 +115,16 @@ MANIFEST = APP / "data" / "harvest_manifest.json"
 PUBLISHED_NAME = "parity_report.json"
 DEGRADED_MARKER = APP / "_run_degraded"
 
-# The states the Research tab's form offers (index.html stateSelect).
-SEARCHED_STATES = ("VIC", "NSW", "QLD", "SA", "WA")
+# The states the Research tab's form offers (index.html stateSelect). ACT, TAS and NT since
+# 8 Oct 2026: the first live night counted 207 obvious ACT lots (Proxima: The Grande,
+# Canberra; Ahlei and Cento, Braddon) that no state search could ask for by name.
+SEARCHED_STATES = ("VIC", "NSW", "QLD", "SA", "WA", "ACT", "TAS", "NT")
+# The states a working harvest reads stock in every night (6-8 Oct 2026: VIC 2,786 obvious
+# lots, NSW 2,852, QLD 813, SA 117, WA 22), where a state with no obvious lot at all means a
+# dead source. ACT is Proxima's alone and TAS and NT hold none (8 Oct: TAS no row, NT one
+# misfiled Victorian row), so an empty one there is said, not failed -- and a state that had
+# obvious lots and loses them still fails the DRIFT bar.
+CORE_STATES = ("VIC", "NSW", "QLD", "SA", "WA")
 AU_STATES = frozenset(("NSW", "VIC", "QLD", "SA", "WA", "TAS", "NT", "ACT"))
 BLANK = "blank"
 OTHER = "other"
@@ -971,7 +994,13 @@ def measure(args):
                              {lot["hash"] for lot in result["hidden"] if lot["allowed"]},
                              twins=_twins_of(result["hidden"], ())))
         groups[group] = result
+    # THE ROWS BEHIND THE MANIFEST'S "STORED ONCE SOMEWHERE ELSE" (8 Oct 2026, second
+    # repair round): the READ bar counts such a lot as stored only on its row's evidence.
+    manifest = (load_json(args.manifest)
+                if getattr(args, "manifest", None) and Path(args.manifest).is_file() else None)
     out = {"today": today.strftime("%d/%m/%Y"), "snapshot_rows": len(rows),
+           "cross_listed_rows": cross_listed_row_facts(
+               db_rows, manifest, {SR._hash(r) for r in rows} - {""}),
            "obvious": len(lots), "groups": groups,
            "newest_read": newest.strftime("%d/%m/%Y") if newest else "",
            "seconds": round(time.monotonic() - started, 1)}
@@ -1533,7 +1562,10 @@ def coverage_bar(measured, groups):
             continue
         obvious = (result.get("obvious") or {}).get("all") or 0
         e_agent += (result.get("obvious") or {}).get("e-agent") or 0
-        if not obvious:
+        if not obvious and state not in CORE_STATES:
+            notes.append("coverage: %s holds no obvious lot tonight -- nothing read in the "
+                         "last %d nights is stated for sale there" % (state, RECENT_NIGHTS))
+        elif not obvious:
             failures.append({"bar": "coverage", "group": state,
                              "text": "no obvious lot at all -- nothing read in the last %d "
                                      "nights is stated for sale in %s, so the bars there "
@@ -1739,6 +1771,129 @@ def _counter(entry):
     return None
 
 
+def _tonights_header(entry):
+    """The available count tonight's index header stated for a Proxima project, or None."""
+    header = entry.get("header_counter")
+    if isinstance(header, (list, tuple)) and header:
+        return SR._num(header[0]) or None
+    return None
+
+
+def _named_lots(entry):
+    """The lots a Proxima manifest line says were stored once somewhere else, by name
+    (cross_listed_lots and duplicate_lots, 8 Oct 2026, second repair round)."""
+    out = []
+    for key in ("cross_listed_lots", "duplicate_lots"):
+        for lot in entry.get(key) or ():
+            if isinstance(lot, dict) and str(lot.get("hash") or "").strip():
+                out.append(lot)
+    return out
+
+
+def cross_listed_row_facts(db_rows, manifest, snapshot_hashes=()):
+    """{content_hash: [what each database row with that identity says]} for every lot a
+    manifest line names as stored once somewhere else -- the row-level evidence the READ
+    bar's excuse needs (8 Oct 2026, second repair round). Each fact: the row's project,
+    price, status, the day it was last read, whether a capture superseded it, and whether
+    the snapshot that ships holds it."""
+    wanted = {str(lot["hash"]).strip() for e in manifest_entries(manifest)
+              for lot in _named_lots(e)}
+    facts = defaultdict(list)
+    if not wanted:
+        return {}
+    shipped = set(snapshot_hashes or ())
+    for rec in db_rows:
+        h = SR._hash(rec)
+        if h not in wanted:
+            continue
+        facts[h].append({"id": rec.get("id"),
+                         "pid": str(rec.get("source_project_id") or ""),
+                         "price": SR._num(rec.get("price")),
+                         "status": str(rec.get("availability_status") or ""),
+                         "read": str(rec.get("date_checked") or ""),
+                         "superseded": bool(rec.get("superseded_by")),
+                         "in_snapshot": h in shipped})
+    return dict(facts)
+
+
+def _lot_proven(lot, facts, night):
+    """'' when a row proves the named lot stored, else why not. PROOF is a live row with the
+    lot's identity, under the project the harvest says kept it, read tonight, at the price
+    and with the status this project printed -- and, for a lot printed for sale, one the
+    snapshot ships (shown-eligible). Atchison and Kenny Building B's B-1301 and B-1803 (kept
+    as Building A's Not Available rows) and Lancelin's land-only lots 71/129/130 (kept at
+    the house-and-land price) are what this refuses."""
+    if facts is None:
+        return "no row evidence was measured"
+    rows = [f for f in facts.get(str(lot.get("hash") or "").strip()) or ()
+            if not f.get("superseded")]
+    if not rows:
+        return "no live row holds it"
+    into = str(lot.get("into") or "")
+    mine = [f for f in rows if f.get("pid") == into]
+    if not mine:
+        return "its row is under project %s, not %s" % (rows[0].get("pid") or "(none)", into)
+    tonight = SR._day(night)
+    mine = [f for f in mine if SR._day(f.get("read")) == tonight] or mine
+    row = mine[0]
+    if SR._day(row.get("read")) != tonight:
+        return "its row was last read %s" % (row.get("read") or "never")
+    # By class: an accordion's "For Sale" and an availability view's "Available" say the same.
+    status, kept = _status_class(lot.get("status")), _status_class(row.get("status"))
+    if status != kept:
+        return "its row says %s, not %s" % (row.get("status") or "nothing",
+                                            lot.get("status") or "nothing")
+    price, kept_price = SR._num(lot.get("price")), SR._num(row.get("price"))
+    if price is None or kept_price is None or abs(price - kept_price) >= 1:
+        return "its row is priced %s, not %s" % (SR._money(kept_price), SR._money(price))
+    if status == "available" and not row.get("in_snapshot"):
+        return "its row is not in the snapshot that ships"
+    return ""
+
+
+def _status_class(status):
+    """'available', '' (none stated) or 'not available' -- sources/proxima._status_class."""
+    said = re.sub(r"\s+", " ", str(status or "")).strip().lower()
+    if not said:
+        return ""
+    return "available" if said in SR.IS_AVAILABLE else "not available"
+
+
+def _stored_elsewhere(entry, projects_read, facts=None, night=None):
+    """(lots stored once somewhere else ON ROW-LEVEL PROOF, [the named others, each with
+    why], how many more were claimed with no lot named) for a Proxima manifest line:
+    cross-listed under another project read tonight, or printed twice in this project's own
+    list.
+
+    8 Oct 2026: Ascenta Living Traditional printed 80 and stored 76, its other 4 under
+    Coliving (785). A claim into a project nobody read tonight counts for nothing.
+
+    ONLY ON PROOF (second repair round, correctness verifier): the first cut counted every
+    claimed lot as stored, and so passed Atchison and Kenny Building B's 2 For Sale units --
+    kept as Building A's Not Available rows, hidden from every search -- and Lancelin's 3
+    land-only lots, whose rows hold the house-and-land price. A lot now counts only when the
+    manifest names it (cross_listed_lots / duplicate_lots) and `facts`
+    (cross_listed_row_facts) show its row live under the kept project, read tonight, at the
+    printed price and status (_lot_proven). A count with no names -- an older manifest -- is
+    no proof at all."""
+    named = _named_lots(entry)
+    proven, unproven = 0, []
+    for lot in named:
+        into = str(lot.get("into") or "")
+        why = ("project %s was not read tonight" % into
+               if into != str(entry.get("pid") or "") and into not in projects_read
+               else _lot_proven(lot, facts, night))
+        if why:
+            unproven.append("%s (%s)" % (_plain(lot.get("address") or lot.get("lot")
+                                                or "a lot")[:48], why))
+        else:
+            proven += 1
+    claimed = sum(int(SR._num(n) or 0) for n in (entry.get("cross_listed_into") or {}).values()) \
+        if isinstance(entry.get("cross_listed_into"), dict) else 0
+    claimed += int(SR._num(entry.get("duplicates")) or 0)
+    return proven, unproven, max(0, claimed - len(named))
+
+
 def _manifest_key(entry):
     for key in ("stocklist_key", "pid"):
         if str(entry.get(key) or "").strip():
@@ -1769,8 +1924,12 @@ def _is_proxima(entry):
     return "proxima" in text.lower()
 
 
-def read_bar(manifest, history, night, required=False):
+def read_bar(manifest, history, night, required=False, facts=None):
     """[failure], {summary}, [note] from data/harvest_manifest.json (None: none written).
+
+    facts: cross_listed_row_facts for the lots the manifest names as stored once somewhere
+    else (measured from the database with the snapshot); None when none were measured, and
+    then no such lot counts as stored (8 Oct 2026, second repair round).
 
     required (--nightly): the harvest writes the manifest every night, so a nightly run
     without one -- or with one from an earlier night -- FAILS rather than skipping (repair
@@ -1805,19 +1964,43 @@ def read_bar(manifest, history, night, required=False):
                              len(no_outcome), "; ".join(_manifest_label(e)
                                                         for e in no_outcome[:NAME_FIRST]))})
     short = []
+    elsewhere_notes = []
+    projects_read = {str(e.get("pid")) for e in entries
+                     if _is_proxima(e) and str(e.get("pid") or "").strip()
+                     and str(e.get("outcome") or "").strip().lower() == "read"}
     for e in entries:
         printed = SR._num(e.get("printed"))
         stored, refused = _stored(e)
-        if printed and printed > 0 and (stored or 0) < printed * READ_STORED_MIN:
-            short.append("%s (stored %s of %s printed%s)" % (
+        elsewhere, unproven, unnamed = _stored_elsewhere(e, projects_read, facts, night)
+        why_not = "; ".join(unproven[:4] + (
+            ["%s claimed with no lot named, so no row can prove them" % _n(unnamed)]
+            if unnamed else []))
+        # A NAMED LOT THE DATABASE CONTRADICTS FAILS WHATEVER THE SHARE (second repair
+        # round): 2 For Sale units kept as another project's Not Available rows are 2 lots
+        # hidden, in a list of 19 or of 305 alike. A bare count still goes through the share.
+        if (printed and printed > 0 and (stored or 0) + elsewhere < printed * READ_STORED_MIN) \
+                or unproven:
+            short.append("%s (stored %s of %s printed%s%s%s)" % (
                 _manifest_label(e), _n(stored), _n(printed),
-                ", %s refused by a constraint" % _n(refused) if refused else ""))
+                ", %s refused by a constraint" % _n(refused) if refused else "",
+                ", %s stored once under another project" % _n(elsewhere) if elsewhere else "",
+                "; not proven stored elsewhere: %s" % why_not if why_not else ""))
+        elif elsewhere:
+            elsewhere_notes.append("%s %s of %s (%s)" % (
+                _manifest_label(e), _n(elsewhere), _n(printed), ", ".join(
+                    "%s into project %s" % (_n(n), pid)
+                    for pid, n in sorted((e.get("cross_listed_into") or {}).items()))
+                or "printed twice"))
     if short:
         failures.append({"bar": "read", "group": "harvest",
                          "text": "%d document(s) stored under %.0f%% of the lots they printed: %s"
                                  % (len(short), READ_STORED_MIN * 100,
                                     "; ".join(short[:NAME_FIRST]))})
-    capped = []
+    if elsewhere_notes:
+        notes.append("read: %d Proxima project(s) printed lots stored once under another "
+                     "project, or twice in their own list -- counted as stored: %s"
+                     % (len(elsewhere_notes), "; ".join(elsewhere_notes[:NAME_FIRST])))
+    capped, stale, overseas = [], [], []
     for e in entries:
         if not _is_proxima(e):
             continue
@@ -1827,21 +2010,61 @@ def read_bar(manifest, history, night, required=False):
         counter = _counter(e)
         if count is None:
             continue
+        # HOW THE READ IS KNOWN WHOLE, AND HOW OLD THE COUNTER IS (8 Oct 2026). A manifest
+        # from the harvest since then says both: `whole` (the list ended under its render
+        # cap, the price sorts and bands met, or the availability view) and stated_source
+        # ("header" = tonight's index, "stored" = the last night the project was on it). An
+        # entry without them -- an older manifest -- is judged exactly as before.
+        whole = str(e.get("whole") or "").strip()
+        old_counter = (str(e.get("stated_source") or "") == "stored"
+                       and not _tonights_header(e))
+        cut = int(count) in PROXIMA_RENDER_CAPS and counter != count and not whole
+        below = bool(counter) and count < counter
+        if e.get("overseas") is True:
+            # Not Australian stock, which is what this check is about: named, never passed
+            # over in silence (SMDC's Philippine projects, 8 Oct 2026).
+            if cut or below or e.get("short") is True:
+                overseas.append("%s read %s%s" % (_manifest_label(e), _n(count),
+                                                  " (marked short)" if e.get("short") else ""))
+            continue
         # A project that ends exactly where the accordion stops rendering was cut there --
-        # unless its own counter says it has exactly that many available.
-        if int(count) in PROXIMA_RENDER_CAPS and counter != count:
+        # unless its own counter says it has exactly that many available, or the read was
+        # proven whole.
+        # ...and an old counter excuses only a small gap (repair round, 8 Oct 2026): "whole"
+        # for a read under the render cap says only that the list ended there, and a
+        # narrowed list ends there too -- 2 against an old 79 is short, as it always was.
+        excused = bool(old_counter and whole and HM.old_counter_gap_ok(count, counter))
+        if cut:
             capped.append("%s ends at exactly %d%s" % (
                 _manifest_label(e), int(count),
                 " of its %s available" % _n(counter) if counter else ""))
-        elif counter and count < counter:
-            capped.append("%s read %s of its %s available" % (_manifest_label(e), _n(count),
-                                                              _n(counter)))
+        elif below and not excused:
+            why = ""
+            if old_counter and whole:
+                why = (" (nothing read, which an old counter never excuses)" if count <= 0
+                       else " (read whole, but more under its old counter than lots leave a "
+                            "list: at most %d or %d%% may)"
+                       % (HM.OLD_COUNTER_GAP_LOTS, round(HM.OLD_COUNTER_GAP_SHARE * 100)))
+            capped.append("%s read %s of its %s available%s" % (
+                _manifest_label(e), _n(count), _n(counter), why))
+        elif below:
+            # Read whole tonight, against the number the index printed on an earlier night:
+            # the difference sold or left the For Sale list since. Said, never failed.
+            stale.append("%s read %s, whole (%s), against the %s its counter stated%s" % (
+                _manifest_label(e), _n(count), whole, _n(counter),
+                " on %s" % e["stated_on"] if e.get("stated_on") else " on an earlier night"))
         elif e.get("short") is True:
             capped.append("%s: the harvest marked its read short" % _manifest_label(e))
     if capped:
         failures.append({"bar": "read", "group": "Proxima",
                          "text": "%d project(s) were not read to their end: %s"
                                  % (len(capped), "; ".join(capped[:NAME_FIRST]))})
+    if stale:
+        notes.append("read: %d Proxima project(s) hold fewer lots than an old counter, each "
+                     "read whole tonight: %s" % (len(stale), "; ".join(stale[:NAME_FIRST])))
+    if overseas:
+        notes.append("read: %d overseas Proxima project(s) read short -- not Australian stock, "
+                     "not judged: %s" % (len(overseas), "; ".join(overseas[:NAME_FIRST])))
     cards = []
     for e in entries:
         found, read = SR._num(e.get("cards_found")), SR._num(e.get("cards_read"))
@@ -1880,7 +2103,10 @@ def read_bar(manifest, history, night, required=False):
             len(named), "; ".join(named[:NAME_FIRST])))
     summary = {"links": len(entries), "no_outcome": len(no_outcome), "short": len(short),
                "proxima_cut": len(capped), "portals_short": len(cards),
-               "vanished": len(vanished), "manifest": tonight, "labels": labels}
+               "vanished": len(vanished), "manifest": tonight, "labels": labels,
+               # 8 Oct 2026: what the two Proxima rules above now say instead of failing.
+               "proxima_old_counter": len(stale), "proxima_overseas_short": len(overseas),
+               "stored_elsewhere": len(elsewhere_notes)}
     return failures, summary, notes
 
 
@@ -1985,7 +2211,8 @@ def evaluate(measured, history, manifest, nightly=False, acknowledged=None):
     dup_failures, dup_cells, dup_notes = duplicates_bar(groups)
     drift_failures, drift_cells, drift_notes = drift_bar(groups, history, measured["today"])
     read_failures, read_summary, read_notes = read_bar(manifest, history, measured["today"],
-                                                       required=nightly)
+                                                       required=nightly,
+                                                       facts=measured.get("cross_listed_rows"))
     failures = (cover_failures + shown_failures + precision_failures + over_failures
                 + dup_failures + drift_failures + read_failures)
     notes = (cover_notes + shown_notes + over_notes + dup_notes + drift_notes + read_notes
@@ -2105,7 +2332,8 @@ def run(args, out=None):
         measured_path = Path(tmp) / "measured.json"
         cmd = [sys.executable, "-X", "utf8", str(Path(__file__).resolve()), "--in-bundle",
                "--snapshot", str(snapshot), "--db", str(copy), "--bundle", str(bundle),
-               "--out", str(measured_path), "--states", ",".join(args.states)]
+               "--out", str(measured_path), "--states", ",".join(args.states),
+               "--manifest", str(Path(args.manifest).resolve())]
         if args.today:
             cmd += ["--today", args.today]
         done = subprocess.run(cmd, cwd=tmp, env=env, stdout=subprocess.PIPE,

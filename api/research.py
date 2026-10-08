@@ -26,6 +26,7 @@ is a fresh ephemeral file there (see _bootstrap). The stock snapshot is opened
 read-only and never written.
 """
 
+import contextvars
 import itertools
 import json
 import os
@@ -978,9 +979,42 @@ EXPLAIN_KEYS = ("search_help", "needs_confirming", "needs_confirming_count",
 SEARCH_HELP_VERSION = 1
 # Relaxations are priced only for a thin search: a shortlist this long already has options.
 EXPLAIN_BELOW = int(os.environ.get("SPB_EXPLAIN_BELOW", "5"))
-# Every relaxation is a real re-run of the search. Past this many milliseconds of explain
-# work, the rest are reported not_computed rather than making the consultant wait.
-EXPLAIN_BUDGET_MS = int(os.environ.get("SPB_EXPLAIN_BUDGET_MS", "4000"))
+# Every relaxation is a real re-run of the search. Past this many milliseconds OF PRICING
+# RELAXATIONS, the rest are reported not_computed rather than making the consultant wait.
+#
+# 8 Oct 2026: counted from when the relaxations START. It was counted from the start of
+# the explain pass, and the needs-confirming passes before it took 4-5 s on their own once
+# every candidate was scored, so on the live site every relaxation of a thin search came
+# back not_computed (live replay: #12 Werribee, #13 Redbank Plains, whose whole_state must
+# be exact). The relaxations are cheap now (GateCache, pools reused by pool_key, and one
+# _candidates.WidePool for the budget and minimum steps), and REQUEST_DEADLINE_MS below is
+# what keeps the whole request inside the time a consultant waits.
+EXPLAIN_BUDGET_MS = int(os.environ.get("SPB_EXPLAIN_BUDGET_MS", "8000"))
+# THE WHOLE REQUEST'S DEADLINE, from the moment run_research is called. No step of the
+# explanation -- a gate pass, a dedupe, a chunk of scoring, the refusal pass -- STARTS when
+# its estimate (_ESTIMATE_MARGIN times what that kind of step has cost in this request,
+# per package where it scales with them) would end past it, and the same holds for the
+# relaxation budget above.
+#
+# 18 s, not 22 (8 Oct 2026, repair round, callers verifier): with 22 s and "the slowest
+# relaxation so far" as the only estimate, an Any-state search with five minimums started
+# "No minimums at all" -- the widest pool, 2.2 s where every earlier one took under 1 s --
+# just inside the deadline and ended 2.3 s past it, 24 s on the 2x-Vercel model; a
+# consultant should wait ~20 s at most, and Vercel stops the function at 30 s
+# (vercel.json maxDuration). Steps are now estimated by size and scoring is chunked
+# (SCORE_CHUNK), so no single piece of work can carry the request far past 18 s.
+REQUEST_DEADLINE_MS = int(os.environ.get("SPB_REQUEST_DEADLINE_MS", "18000"))
+# A step is started only if this many times its estimate still ends inside the limits.
+_ESTIMATE_MARGIN = 2.0
+# Scoring for a relaxation's count runs in chunks this size, the deadline checked before
+# each (score_candidates scores every package on its own, so the count is the same).
+SCORE_CHUNK = int(os.environ.get("SPB_SCORE_CHUNK", "500"))
+# Seconds per package a dedupe and a score are assumed to cost until this request has
+# measured them on a pool of at least _RATE_SAMPLE packages. Measured on the 8 Oct
+# snapshot on this laptop: 0.025 ms and 0.03-0.06 ms; Vercel ran 1.1-1.4x slower.
+_PRIOR_DEDUPE_S = 0.0001
+_PRIOR_SCORE_S = 0.0002
+_RATE_SAMPLE = 200
 # The amber group lists at most this many; needs_confirming_count stays exact.
 MAX_NEEDS_CONFIRMING = int(os.environ.get("SPB_MAX_NEEDS_CONFIRMING", "50"))
 ADMIT_UNSTATED = ("availability_unstated",)
@@ -1002,8 +1036,132 @@ def _elapsed_ms(started):
 
 
 def _out_of_time(started):
-    """True once the explain work started at `started` has used EXPLAIN_BUDGET_MS."""
+    """True once the relaxations started at `started` have used EXPLAIN_BUDGET_MS."""
     return _elapsed_ms(started) >= EXPLAIN_BUDGET_MS
+
+
+class _Request:
+    """What one run_research call shares with the passes it runs (8 Oct 2026).
+
+      started     time.monotonic() when run_research was called;
+      deadline    started + REQUEST_DEADLINE_MS, in the same clock;
+      gate_cache  _candidates.GateCache over the snapshot this request loaded, handed to
+                  every build_packages it runs (None until the snapshot is prepared);
+      pools       {_candidates.pool_key(brief): (packages, capped)} -- each brief's deduped
+                  packages before scoring, so a relaxation that leaves the pool alone
+                  (whole_state, radius_20, radius_50) scores the search's own pool
+                  instead of building it again. Stored packages are never scored: a
+                  caller scores copies, because scoring writes the suburb into a package.
+      wide_brief  the loosest of the relaxations being priced (_relaxations sets it), and
+      wide        the _candidates.WidePool built for it, once, by the first relaxation it
+                  covers; every other covered one is cut from it without a gate pass;
+      lot_key     _candidates.lot_key_for(rows), built once for every dedupe the
+                  relaxations run (it indexes the whole snapshot);
+      budget_end  when the relaxation budget (EXPLAIN_BUDGET_MS) runs out, while they are
+                  priced; None otherwise;
+      costs       what each kind of step has cost so far in this request, for the
+                  estimates: "pass" seconds (the search's own, cold, gate pass -- it fills
+                  the GateCache), "warm" seconds (the slowest gate pass since, which reads
+                  it: the admit pass, the refusal pass, a relaxation's own pass), "wide"
+                  seconds (the WidePool's build), "dedupe" and "score" seconds per package
+                  (the slowest measured on _RATE_SAMPLE or more);
+      wide_refused  True once the WidePool was not started for want of time: every step
+                  it would have served then runs its own (cheaper, warm) pass instead.
+
+    Carried in a context variable, not in the signatures, so a wrapper of _with_explain or
+    _shortlist_count_for written for the old signature still fits."""
+
+    __slots__ = ("started", "deadline", "gate_cache", "pools", "wide_brief", "wide",
+                 "wide_refused", "lot_key", "budget_end", "costs")
+
+    def __init__(self, started):
+        self.started = started
+        self.deadline = started + REQUEST_DEADLINE_MS / 1000.0
+        self.gate_cache = None
+        self.pools = {}
+        self.wide_brief = None
+        self.wide = None
+        self.wide_refused = False
+        self.lot_key = None
+        self.budget_end = None
+        self.costs = {"pass": 0.0, "warm": 0.0, "wide": 0.0, "dedupe": _PRIOR_DEDUPE_S,
+                      "score": _PRIOR_SCORE_S}
+
+    def measured(self, kind, seconds, packages=None):
+        """Remember what a step cost: a pass by its time, a dedupe or score per package."""
+        if packages is None:
+            self.costs[kind] = max(self.costs.get(kind, 0.0), seconds)
+        elif packages >= _RATE_SAMPLE:
+            self.costs[kind] = max(self.costs.get(kind, 0.0), seconds / packages)
+
+
+_REQUEST = contextvars.ContextVar("spb_research_request", default=None)
+
+
+class _OutOfTime(Exception):
+    """A step of a relaxation's count would end past the budget or the deadline (8 Oct
+    2026). args[0] is which: "budget" or "deadline"."""
+
+
+def _gate_cache():
+    request = _REQUEST.get()
+    return request.gate_cache if request is not None else None
+
+
+def _past_deadline(estimate_s=0.0):
+    """True when work expected to take `estimate_s` would end past this request's deadline
+    (never outside run_research, which has no deadline to keep)."""
+    request = _REQUEST.get()
+    return request is not None and time.monotonic() + estimate_s >= request.deadline
+
+
+def _estimate(kind, packages=None):
+    """_ESTIMATE_MARGIN times what a step of this kind is expected to cost in this request:
+    a dedupe or a chunk of scoring by its number of packages; a gate pass ("warm") as the
+    slowest one since the search's own, which filled the GateCache, or as that cold pass
+    until one has been measured; the WidePool ("wide") as the cold pass -- it gates the
+    loosest brief, and measured on the 8 Oct snapshot it took 0.3-1.0 times the cold pass.
+
+    WARM, NOT COLD (8 Oct 2026, second repair round, callers verifier). Every pass after the
+    search's own reads the GateCache it filled, and the admit and refusal passes took 0.15-0.4
+    times the cold one (Any-state 1.2-1.4 s against 3.1-3.5 s; #13 0.24-0.3 s against
+    1.6-1.8 s). Estimated at twice the cold pass, the refusal pass was skipped on a cold
+    page load, and a budget step's pass whenever the WidePool did not fit -- while the
+    radius steps, which reuse the search's own pool, were priced: the order a consultant
+    tries them in turned upside down."""
+    request = _REQUEST.get()
+    if request is None:
+        return 0.0
+    if kind == "warm":
+        cost = request.costs.get("warm") or request.costs.get("pass", 0.0)
+    elif kind == "wide":
+        cost = request.costs.get("pass", 0.0)
+    else:
+        cost = request.costs.get(kind, 0.0)
+    return _ESTIMATE_MARGIN * (cost if packages is None else cost * packages)
+
+
+def _fits(estimate_s):
+    """True when a step expected to take `estimate_s` would end inside the relaxation budget
+    (while relaxations are priced) and the request's deadline -- _check_time's test, asked."""
+    try:
+        _check_time(estimate_s)
+    except _OutOfTime:
+        return False
+    return True
+
+
+def _check_time(estimate_s):
+    """Raise _OutOfTime when a step expected to take `estimate_s` would end past the
+    relaxation budget (while relaxations are priced) or the request's deadline."""
+    request = _REQUEST.get()
+    if request is None:
+        return
+    end = time.monotonic() + estimate_s
+    if request.budget_end is not None and end >= request.budget_end:
+        raise _OutOfTime("budget")
+    if end >= request.deadline:
+        raise _OutOfTime("deadline")
 
 
 def _money(amount):
@@ -1134,11 +1292,14 @@ def _float(value):
 def _card_identity(cand, row):
     """What a shown card, or a candidate for one, says about which lot it is."""
     row = row or {}
+    lot = " ".join(re.sub(r"[^a-z0-9]+", " ",
+                          str(getattr(cand, "lot_number", "") or "").lower()).split())
     return {
         "state": str(getattr(cand, "state", "") or "").strip().upper(),
         "suburb": str(getattr(cand, "suburb", "") or "").strip().lower(),
-        "lot": " ".join(re.sub(r"[^a-z0-9]+", " ",
-                               str(getattr(cand, "lot_number", "") or "").lower()).split()),
+        # A lot "number" of only zeros is a level column misread (8 Oct 2026, ids 3578 /
+        # 3579: "0 T20" and "0 T21"), and names no lot -- as _candidates.lot_identity says.
+        "lot": lot if _candidates._names_a_lot(lot) else "",
         "price": _float(cand.price_breakdown.advertised_package_price),
         "bedrooms": getattr(cand, "bedrooms", None) or None,
         "land": _float(getattr(cand, "land_size_sqm", 0)),
@@ -1305,7 +1466,11 @@ def _refused_matches(agent, brief_dict, rows, prepared):
             patched.append(row)
     if not real_row:
         return {}, False
-    packages, counts = _candidates.build_packages(brief_dict, patched, prepared=prepared)
+    # The patched list is the snapshot's own rows but for the stand-ins, so the request's
+    # GateCache serves every row it already holds (it never serves a stand-in: those are
+    # new objects, and computed as they always were).
+    packages, counts = _candidates.build_packages(brief_dict, patched, prepared=prepared,
+                                                  gate_cache=_gate_cache())
     stand_ins = [p for p in packages if str(p.get("content_hash") or "") in real_row]
     processed, _rejected = _score_packages(agent, brief_dict, stand_ins, patched)
     hidden = {}
@@ -1316,8 +1481,38 @@ def _refused_matches(agent, brief_dict, rows, prepared):
     return hidden, bool(counts.get("truncated"))
 
 
-def _needs_confirming(agent, brief_dict, rows, prepared, packages, result, shortlist):
+def _refusal_pass_into(agent, brief_dict, rows, prepared, hidden, capped):
+    """Run the refusal pass (_refused_matches) and add its tallies to `hidden`, or -- when it
+    would end past the request's deadline -- skip it and say so in `capped`
+    (refusal_pass_skipped; refusal_pass True, so the tally is said to be possibly short).
+
+    Only the hidden tally comes from this pass (8 Oct 2026). It is a gate pass of its own,
+    so it is estimated as one (repair round): started with nothing but "now" to go on, it
+    could begin a second before the deadline. A WARM one (second repair round): it reads the
+    GateCache, like the admit pass measured before it -- estimated as the cold pass, it was
+    skipped on a cold page load with time to spare."""
+    capped.pop("refusal_pending", None)
+    if _past_deadline(_estimate("warm")):
+        capped["refusal_pass"] = True
+        capped["refusal_pass_skipped"] = "past the request deadline"
+        return
+    request = _REQUEST.get()
+    began = time.monotonic()
+    refused, capped["refusal_pass"] = _refused_matches(agent, brief_dict, rows, prepared)
+    if request is not None:
+        request.measured("warm", time.monotonic() - began)
+    for reason, n in refused.items():
+        hidden[reason] = hidden.get(reason, 0) + n
+
+
+def _needs_confirming(agent, brief_dict, rows, prepared, packages, result, shortlist,
+                      defer_refusal=False):
     """(entries, count, hidden, capped): matches a consultant may confirm and send.
+
+    defer_refusal (8 Oct 2026, second repair round): the refusal pass -- which only adds to
+    `hidden` -- is not run here; capped['refusal_pending'] says one is due, and the caller
+    runs it (_refusal_pass_into) once the relaxations are priced, so the hints a consultant
+    tries first never wait on a tally.
 
     Two sources, never the main pool:
       (a) the pipeline's Pending Confirmation candidates -- stale or demoted rows that passed
@@ -1397,8 +1592,15 @@ def _needs_confirming(agent, brief_dict, rows, prepared, packages, result, short
             continue
         offers.append((cand, pkg))
 
+    began = time.monotonic()
     admitted, admit_counts = _candidates.build_packages(
-        brief_dict, rows, prepared=prepared, admit=ADMIT_UNSTATED, only_admitted=True)
+        brief_dict, rows, prepared=prepared, admit=ADMIT_UNSTATED, only_admitted=True,
+        gate_cache=_gate_cache())
+    request = _REQUEST.get()
+    if request is not None:
+        # A warm pass (it reads the GateCache): what the refusal pass and a relaxation's
+        # own pass are estimated at (_estimate("warm"), 8 Oct 2026).
+        request.measured("warm", time.monotonic() - began)
     admitted_by_hash = {str(p.get("content_hash") or ""): p for p in admitted}
     processed, _rejected = _score_packages(agent, brief_dict, admitted, rows)
     for cand in processed:
@@ -1422,9 +1624,10 @@ def _needs_confirming(agent, brief_dict, rows, prepared, packages, result, short
 
     capped = {"admit_pass": bool(admit_counts.get("truncated")), "refusal_pass": False}
     if admit_counts.get("unstated_not_admitted"):
-        refused, capped["refusal_pass"] = _refused_matches(agent, brief_dict, rows, prepared)
-        for reason, n in refused.items():
-            hidden[reason] = hidden.get(reason, 0) + n
+        if defer_refusal:
+            capped["refusal_pending"] = True
+        else:
+            _refusal_pass_into(agent, brief_dict, rows, prepared, hidden, capped)
 
     entries.sort(key=lambda e: (-(e["score"] or 0), e["advertised_package_price"] or 0,
                                 e["content_hash"]))
@@ -1541,17 +1744,138 @@ def _relaxation_offers(brief_dict, counts, needs_confirming_count, adjustments=(
     return _as_posted(offers, brief_dict, adjustments)
 
 
+def _wide_pool_for(brief_dict, rows, prepared):
+    """The request's _candidates.WidePool when it serves this brief, building it the first
+    time a brief it would cover asks; None outside a request, when no relaxations are being
+    priced, when it does not cover the brief (8 Oct 2026, repair round), or when there was
+    no time to build it (second repair round: the brief then runs its own pass)."""
+    request = _REQUEST.get()
+    if request is None or request.wide_brief is None or request.wide_refused:
+        return None
+    if request.wide is None:
+        if not _candidates.pool_covers(request.wide_brief, brief_dict):
+            return None
+        if not _fits(_estimate("wide")):
+            # NO TIME FOR THE WIDE POOL IS NO REASON TO SKIP THE STEP (8 Oct 2026, second
+            # repair round, callers verifier). Raising here skipped both budget steps and
+            # every minimum -- the first offers a consultant tries -- while the radius steps,
+            # which reuse the search's own pool, were priced. Each covered step now runs its
+            # own warm pass instead, estimated and stopped like any other.
+            request.wide_refused = True
+            return None
+        began = time.monotonic()
+        request.wide = _candidates.WidePool(request.wide_brief, rows, prepared=prepared,
+                                            gate_cache=request.gate_cache)
+        request.measured("wide", time.monotonic() - began)
+    return request.wide if request.wide.serves(brief_dict) else None
+
+
+def _pool_for(brief_dict, rows, prepared):
+    """(packages, capped): the brief's deduped packages before scoring -- build_packages
+    then _candidates.dedupe_packages, the search's own two steps -- served from the
+    request's pools when a brief with the same pool_key already built them (8 Oct 2026),
+    else cut from the request's WidePool when it covers the brief (the same packages, no
+    gate pass), else built. Inside a request each step is first checked against the time
+    left (_check_time raises _OutOfTime). Never score the packages returned: score copies
+    (scoring writes into a package)."""
+    request = _REQUEST.get()
+    key = _candidates.pool_key(brief_dict)
+    hit = request.pools.get(key) if request is not None else None
+    if hit is not None:
+        return hit
+    wide = _wide_pool_for(brief_dict, rows, prepared)
+    if wide is not None:
+        packages, capped = wide.packages_for(brief_dict), False
+    else:
+        _check_time(_estimate("warm"))
+        began = time.monotonic()
+        packages, counts = _candidates.build_packages(brief_dict, rows, prepared=prepared,
+                                                      gate_cache=_gate_cache())
+        capped = bool(counts.get("truncated"))
+        if request is not None:
+            request.measured("warm", time.monotonic() - began)
+    lot_key = None
+    if request is not None:
+        _check_time(_estimate("dedupe", len(packages)))
+        if request.lot_key is None:
+            request.lot_key = _candidates.lot_key_for(rows)
+        lot_key = request.lot_key
+    began = time.monotonic()
+    hit = (tuple(_candidates.dedupe_packages(packages, rows, lot_key=lot_key)), capped)
+    if request is not None:
+        request.measured("dedupe", time.monotonic() - began, len(packages))
+        request.pools[key] = hit
+    return hit
+
+
+def _count_shortlisted(agent, brief_dict, packages):
+    """How many of `packages` (verified or approved copies) score_candidates keeps as
+    VERIFIED or consultant-approved -- in chunks of SCORE_CHUNK inside a request, each
+    checked against the time left first, so one large pool cannot run far past the
+    deadline (8 Oct 2026, repair round). The brief is parsed and its search area drawn
+    once; every package is scored on its own, so the count is the one a single call gives."""
+    from schema import VerificationStatus
+    if not packages:
+        return 0
+    request = _REQUEST.get()
+    chunk = len(packages) if request is None else max(1, SCORE_CHUNK)
+    brief, area = brief_dict, None
+    if len(packages) > chunk:
+        from brief_parser import ClientBriefParser
+        brief = ClientBriefParser.parse_dict(brief_dict)
+        area = agent._search_area(brief)
+    kept = 0
+    for start in range(0, len(packages), chunk):
+        part = packages[start:start + chunk]
+        _check_time(_estimate("score", len(part)))
+        began = time.monotonic()
+        processed, _rejected = agent.score_candidates(brief, part, search_area=area)
+        if request is not None:
+            request.measured("score", time.monotonic() - began, len(part))
+        kept += sum(1 for c in processed
+                    if c.verification_status == VerificationStatus.VERIFIED
+                    or c.consultant_approved)
+    return kept
+
+
 def _shortlist_count_for(agent, brief_dict, rows, prepared):
     """(shortlist_count, capped) for a brief: the search's own path, end to end --
     build_packages, dedupe, score_candidates, the verified-or-approved final pool and
-    SPB_SHORTLIST_MAX -- without the audit write, reports or Kommo payload."""
-    from schema import VerificationStatus
-    packages, counts = _candidates.build_packages(brief_dict, rows, prepared=prepared)
-    processed, _rejected = _score_packages(agent, brief_dict, packages, rows)
-    final = [c for c in processed
-             if c.verification_status == VerificationStatus.VERIFIED or c.consultant_approved]
+    SPB_SHORTLIST_MAX -- without the audit write, reports or Kommo payload.
+
+    CHEAPER, AND THE SAME NUMBER (8 Oct 2026). Only a verified or consultant-approved
+    package can be on the shortlist, and score_candidates scores each package on its own,
+    so only those are scored; and the pool comes from _pool_for, so a relaxation that
+    changes nothing build_packages reads re-scores the search's own pool instead of
+    rebuilding it, and a budget or minimum step is cut from the request's WidePool.
+    test_parity_followups_8oct pins the count against the old full path. Raises
+    _OutOfTime when a step would end past the time left."""
+    packages, capped = _pool_for(brief_dict, rows, prepared)
+    can_count = [dict(p) for p in packages
+                 if p.get("verified") or p.get("consultant_approved")]
+    n = _count_shortlisted(agent, brief_dict, can_count)
     cap = int(os.environ.get("SPB_SHORTLIST_MAX", "0") or 0)
-    return (min(len(final), cap) if cap > 0 else len(final)), bool(counts.get("truncated"))
+    return (min(n, cap) if cap > 0 else n), capped
+
+
+def _wide_brief(brief_dict, offers):
+    """The loosest brief the re-run offers add up to: the highest budget step and every
+    minimum some offer drops. Only those two kinds of change -- WidePool covers no other,
+    and _candidates.pool_covers decides, offer by offer, which it serves."""
+    from brief_parser import coerce_number
+    wide = dict(brief_dict)
+    for offer in offers:
+        patch = offer.get("brief_patch") or {}
+        if offer.get("kind") != "rerun":
+            continue
+        raised = coerce_number(patch.get("budget_max"), None)
+        current = coerce_number(wide.get("budget_max"), 0) or 0
+        if raised and current and raised > current:
+            wide["budget_max"] = raised
+        for field, _name in _MINIMUMS:
+            if field in patch and not (coerce_number(patch[field], 0) or 0):
+                wide[field] = 0
+    return wide
 
 
 def _relaxations(agent, brief_dict, rows, prepared, counts, base_count,
@@ -1559,38 +1883,69 @@ def _relaxations(agent, brief_dict, rows, prepared, counts, base_count,
                  needs_confirming_short=False):
     """Every relaxation with a TRUE count: each is the whole search re-run with its
     brief_patch applied to the brief as searched. Posting that patch back over the form
-    returns exactly shortlist_count (count_status 'exact'). Past EXPLAIN_BUDGET_MS the rest
-    are 'not_computed'; one that fails is 'error' and costs nothing else.
+    returns exactly shortlist_count (count_status 'exact'). Past EXPLAIN_BUDGET_MS of
+    pricing, or when the next one would end past the request's deadline, the rest are
+    'not_computed' with `skipped` saying which; one that fails is 'error' and costs
+    nothing else.
+
+    THE BUDGET STARTS HERE (8 Oct 2026), not when the explanation started: `started` is
+    kept for the callers that pass it and no longer spends this budget. The order is still
+    the priority order -- the budget steps first (critique #24).
+
+    EACH STEP IS ESTIMATED, NOT EACH RELAXATION (repair round). A relaxation is a pool (a
+    gate pass, or a cut of the request's WidePool, then a dedupe) and a count (scoring in
+    chunks of SCORE_CHUNK); before each step its estimate (_estimate) is checked against
+    the budget and the deadline, and a relaxation whose next step would end past either
+    stops there, not_computed, `skipped` naming which. Judged against the slowest whole
+    relaxation so far, "No minimums at all" -- the widest pool, priced last -- started
+    just inside the deadline and ended 2.3 s past it.
 
     capped means what it means on a re-run: the candidate cap cut a pass, so the count may
     be short. On the reveal that is search_help.needs_confirming.count_may_be_short, so the
     button and the count beside it never disagree about whether the number is whole."""
     out = []
-    for offer in _relaxation_offers(brief_dict, counts, needs_confirming_count,
-                                    adjustments):
-        if offer["kind"] == "reveal":
-            known = needs_confirming_count is not None
-            out.append(dict(offer, count=needs_confirming_count,
-                            adds=needs_confirming_count,
-                            count_status="exact" if known else "not_computed",
-                            capped=bool(needs_confirming_short) if known else None))
-            continue
-        if _out_of_time(started):
-            out.append(dict(offer, shortlist_count=None, adds=None,
-                            count_status="not_computed", capped=None))
-            continue
-        began = time.monotonic()
-        try:
-            n, capped = _shortlist_count_for(
-                agent, dict(brief_dict, **offer["brief_patch"]), rows, prepared)
-        except Exception as exc:                                      # noqa: BLE001
-            print("relaxation %s failed: %s" % (offer["id"], type(exc).__name__),
-                  file=sys.stderr)
-            out.append(dict(offer, shortlist_count=None, adds=None, count_status="error",
-                            capped=None, error=type(exc).__name__))
-            continue
-        out.append(dict(offer, shortlist_count=n, adds=n - base_count,
-                        count_status="exact", capped=capped, ms=_elapsed_ms(began)))
+    began_pricing = time.monotonic()
+    offers = _relaxation_offers(brief_dict, counts, needs_confirming_count, adjustments)
+    request = _REQUEST.get()
+    if request is not None:
+        request.budget_end = began_pricing + EXPLAIN_BUDGET_MS / 1000.0
+        request.wide_brief = _wide_brief(brief_dict, offers)
+    try:
+        for offer in offers:
+            if offer["kind"] == "reveal":
+                known = needs_confirming_count is not None
+                out.append(dict(offer, count=needs_confirming_count,
+                                adds=needs_confirming_count,
+                                count_status="exact" if known else "not_computed",
+                                capped=bool(needs_confirming_short) if known else None))
+                continue
+            skipped = ("budget" if _out_of_time(began_pricing)
+                       else "deadline" if _past_deadline() else None)
+            began = time.monotonic()
+            if not skipped:
+                try:
+                    n, capped = _shortlist_count_for(
+                        agent, dict(brief_dict, **offer["brief_patch"]), rows, prepared)
+                except _OutOfTime as late:
+                    skipped = late.args[0] if late.args else "deadline"
+                except Exception as exc:                              # noqa: BLE001
+                    print("relaxation %s failed: %s" % (offer["id"], type(exc).__name__),
+                          file=sys.stderr)
+                    out.append(dict(offer, shortlist_count=None, adds=None,
+                                    count_status="error", capped=None,
+                                    error=type(exc).__name__))
+                    continue
+            if skipped:
+                out.append(dict(offer, shortlist_count=None, adds=None,
+                                count_status="not_computed", capped=None, skipped=skipped))
+                continue
+            out.append(dict(offer, shortlist_count=n, adds=n - base_count,
+                            count_status="exact", capped=capped, ms=_elapsed_ms(began)))
+    finally:
+        if request is not None:
+            request.budget_end = None
+            request.wide_brief = request.wide = None
+            request.wide_refused = False
     return out
 
 
@@ -1625,10 +1980,17 @@ def _with_explain(response, brief_dict, rows, prepared, counts, packages, result
         help_["candidate_cap"] = {"limit": _candidates.MAX_CANDIDATES,
                                   "cut": counts["truncated"]}
     if agent is not None:
+        # A THIN SEARCH PRICES ITS HINTS BEFORE THE REFUSAL TALLY (8 Oct 2026, second repair
+        # round): that pass only counts what was left out, and run first it took the time a
+        # budget step needed (Any state, one suburb, big pool: 2x-Vercel emulation).
+        thin = (response.get("shortlist_count") or 0) < EXPLAIN_BELOW
+        pending = None
         try:
             every, total, hidden, capped = _needs_confirming(
                 agent, brief_dict, rows, prepared, packages, result,
-                (result or {}).get("shortlist") or [])
+                (result or {}).get("shortlist") or [], defer_refusal=thin)
+            if capped.get("refusal_pending"):
+                pending = (hidden, capped)
             # A PAGE OF THEM. Unpaged, the first MAX_NEEDS_CONFIRMING as before; paged, the
             # page asked for, so the dashboard can list every one (7 Oct 2026).
             if paging is None:
@@ -1660,12 +2022,16 @@ def _with_explain(response, brief_dict, rows, prepared, counts, packages, result
                               and 0 <= e["age_days"] < RECENT_NIGHTS),
                 "recent_nights": RECENT_NIGHTS,
                 "ms": _elapsed_ms(started)}
+            if capped.get("refusal_pass_skipped"):
+                help_["needs_confirming"]["refusal_pass_skipped"] = \
+                    capped["refusal_pass_skipped"]
         except Exception as exc:                                      # noqa: BLE001
             traceback.print_exc(file=sys.stderr)
             errors.append("needs_confirming: %s" % type(exc).__name__)
         base = response.get("shortlist_count") or 0
         help_["explain_below"] = EXPLAIN_BELOW
         help_["budget_ms"] = EXPLAIN_BUDGET_MS
+        help_["deadline_ms"] = REQUEST_DEADLINE_MS
         if base < EXPLAIN_BELOW:
             try:
                 help_["relaxations"] = _relaxations(
@@ -1682,6 +2048,21 @@ def _with_explain(response, brief_dict, rows, prepared, counts, packages, result
             help_["relaxations"] = []
             help_["relaxations_note"] = ("not priced: the search already shortlisted %d "
                                          "(SPB_EXPLAIN_BELOW is %d)" % (base, EXPLAIN_BELOW))
+        if pending is not None:
+            hidden, capped = pending
+            try:
+                _refusal_pass_into(agent, brief_dict, rows, prepared, hidden, capped)
+            except Exception as exc:                                  # noqa: BLE001
+                traceback.print_exc(file=sys.stderr)
+                capped["refusal_pass"] = True
+                errors.append("needs_confirming: %s" % type(exc).__name__)
+            nc = help_.get("needs_confirming")
+            if isinstance(nc, dict):
+                nc["hidden"] = dict(hidden)
+                nc["hidden_may_be_short"] = bool(nc.get("hidden_may_be_short")
+                                                 or capped["refusal_pass"])
+                if capped.get("refusal_pass_skipped"):
+                    nc["refusal_pass_skipped"] = capped["refusal_pass_skipped"]
     else:
         help_["relaxations"] = []
     if errors:
@@ -1694,7 +2075,18 @@ def _with_explain(response, brief_dict, rows, prepared, counts, packages, result
 
 
 def run_research(payload):
-    """The whole endpoint as a plain function, so it is testable without a socket."""
+    """The whole endpoint as a plain function, so it is testable without a socket.
+
+    Each call carries a _Request (its start, deadline, GateCache and pools) in _REQUEST for
+    the passes it runs, and drops it on the way out (8 Oct 2026)."""
+    token = _REQUEST.set(_Request(time.monotonic()))
+    try:
+        return _run_research(payload)
+    finally:
+        _REQUEST.reset(token)
+
+
+def _run_research(payload):
     # Anything can arrive over HTTP. A payload that is not an object, or a client_brief
     # sent as a string or a list, used to reach .get() and raise — answering a malformed
     # request with a 500 ("we broke") instead of telling the caller what was wrong.
@@ -1798,7 +2190,18 @@ def run_research(payload):
     # the explain pass below runs build_packages again for needs-confirming and for every
     # relaxation it prices. Pure, so the search itself is unchanged by it.
     prepared = _candidates.prepared_for_snapshot(rows, snapshot_path)
-    packages, counts = _candidates.build_packages(brief_dict, rows, prepared=prepared)
+    # ONE GateCache FOR THE WHOLE REQUEST (8 Oct 2026): this pass fills it and every pass
+    # the explanation runs after it reads it -- see _candidates.GateCache.
+    request = _REQUEST.get()
+    if request is not None:
+        request.gate_cache = _candidates.GateCache(rows, prepared)
+    began = time.monotonic()
+    packages, counts = _candidates.build_packages(brief_dict, rows, prepared=prepared,
+                                                  gate_cache=_gate_cache())
+    if request is not None:
+        # The first, cold, pass: what every later gate pass of the request is estimated at
+        # (_estimate), and an upper bound on them -- they read the GateCache it filled.
+        request.measured("pass", time.monotonic() - began)
 
     # The local run dedupes captured packages before scoring (kommo_agent.py:79). Stored
     # stock holds price-only variant siblings of the same lot, so without this the same
@@ -1806,9 +2209,23 @@ def run_research(payload):
     # card since 7 Oct 2026 (_candidates.dedupe_packages), so two units of one building
     # carded "Melbourne VIC" at one price are no longer one card.
     before_dedupe = len(packages)
-    packages = _candidates.dedupe_packages(packages, rows)
+    if request is not None:
+        # Indexed once for the request, so a relaxation's dedupe does not index the whole
+        # snapshot again, and the time measured below is the dedupe's own (8 Oct 2026).
+        request.lot_key = _candidates.lot_key_for(rows)
+    began = time.monotonic()
+    packages = _candidates.dedupe_packages(
+        packages, rows, lot_key=request.lot_key if request is not None else None)
+    if request is not None:
+        request.measured("dedupe", time.monotonic() - began, before_dedupe)
     counts['duplicates_merged'] = before_dedupe - len(packages)
     counts['scored'] = len(packages)
+    if explain and request is not None:
+        # This search's pool, as _pool_for would build it, for the relaxations that leave
+        # the pool alone (whole_state, radius_20, radius_50). Copied BEFORE the pipeline
+        # scores it: scoring writes the resolved suburb into each package (8 Oct 2026).
+        request.pools[_candidates.pool_key(brief_dict)] = (
+            tuple(dict(p) for p in packages), bool(counts.get('truncated')))
 
     coverage = _candidates.coverage_sentence(
         counts, snapshot_path, str(brief_dict.get('state') or '').upper())
