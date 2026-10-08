@@ -33,14 +33,6 @@
             "E-Agent - Canvas Cooroy", "E-Agent - Trinidad Terrace"],
    "why": "QLD project lists on Dropbox not read since 22-24 Sep (Waverley since 1 Oct): their folders list empty to the harvest; their lots leave the 14-day shortlist by 8 Oct on their own. Owner to open the folder links the harvest manifest names",
    "until": "14/10/2026"
-  },
-  {
-   "group": "NT",
-   "bar": "unread",
-   "docs": ["E-Agent - 3HairpinDrive"],
-   "ids": [18644],
-   "why": "8 Oct 2026, the first night NT is searched: the database's only NT row (id 18644, '46Archer Drive $699,000') is a lot of a pooled E-Agent list whose other stated lines are 51 VIC (Warragul, Drouin, Merbein, Tarneit, Bonnie Brook) and 1 SA, filed NT because the glued street '46Archer Drive' was read as Archer, a Palmerston NT suburb; last read 24/09, when E-Agent moved its pooled lists behind the EAgent Stocklist login the client still has to supply. It leaves the 14-day shortlist on 09/10 on its own. Owner: the state rule (a suburb vote from a street name on a list whose other lines all name another state); client: the EAgent Stocklist login",
-   "until": "10/10/2026"
   }
  ]
 }

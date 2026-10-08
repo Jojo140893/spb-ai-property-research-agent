@@ -59,6 +59,13 @@ SCHEMA (version 1)
       overseas   true when no lot names an Australian state and every lot is overseas
       cross_listed, cross_listed_into  lots printed here and stored once under another
                  project ({pid: n}); duplicates  lots printed twice in this list
+      cross_listed_lots, duplicate_lots  (8 Oct 2026, second repair round) each of those
+                 lots by name: {hash (the identity of the row that holds it), lot,
+                 address, price and status as printed HERE, into (the kept project)} --
+                 the parity READ bar counts one as stored only when that row is live under
+                 `into`, read tonight, at that price and status
+      cross_listed_offers  lots printed here and under another project at another price
+                 or status: two offers, each stored under its own project (not dropped)
       not_a_listing  tiles that made no lot (no price or no address)
 
   kind "portal" (direct builder portals, one per builder) adds:
@@ -108,8 +115,12 @@ _STORED = ("new", "updated", "unchanged", "rejected")
 # 3 lots, or 8.9% of the counter (CARLING 7 of 79; The Grande 9 of 117 is 7.7%), and each
 # missing lot's last read was on an earlier night (five of The Grande's on 07/10, so a
 # lot can leave the list within a night). A read of nothing is never excused.
+# 10%, not 15% (8 Oct 2026, second repair round, correctness verifier): 15% let a narrowed
+# "uncapped" list pass at 1.7 times the largest gap seen -- CARLING 68 of an old 79, The
+# Grande 100 of 117, Live Caringbah 120 of 140. 10% still holds the seven real ones (CARLING's
+# 7 of 79 is int(7.9) = 7) and fails those three.
 OLD_COUNTER_GAP_LOTS = 3
-OLD_COUNTER_GAP_SHARE = 0.15
+OLD_COUNTER_GAP_SHARE = 0.10
 
 
 def old_counter_gap_ok(read: Any, stated: Any) -> bool:

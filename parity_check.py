@@ -52,9 +52,13 @@ THE BARS. Any miss exits 1.
               shows. Without a manifest the bar is skipped, and says so.
               8 Oct 2026, from the first live night's 13 false alarms: a Proxima lot printed
               under a second project and stored once under the first (cross_listed_into a
-              project read tonight) counts as stored; a project read WHOLE (`whole`) below an
+              project read tonight) counts as stored -- since the second repair round only
+              on its row's evidence: the manifest names the lot (cross_listed_lots) and its
+              row is live under that project, read tonight, at the price and status printed
+              (and shipped, if for sale); a named lot the database contradicts fails
+              whatever the share; a project read WHOLE (`whole`) below an
               old counter -- the database's, from the last night it was on the index -- by
-              no more than harvest_manifest.old_counter_gap_ok allows (3 lots or 15%, and at
+              no more than harvest_manifest.old_counter_gap_ok allows (3 lots or 10%, and at
               least one lot read) is noted, not failed (tonight's own header, or a bigger
               gap, still fails); and an overseas project
               (Proxima lists SMDC's Philippine towers) is named, not judged.
@@ -990,7 +994,13 @@ def measure(args):
                              {lot["hash"] for lot in result["hidden"] if lot["allowed"]},
                              twins=_twins_of(result["hidden"], ())))
         groups[group] = result
+    # THE ROWS BEHIND THE MANIFEST'S "STORED ONCE SOMEWHERE ELSE" (8 Oct 2026, second
+    # repair round): the READ bar counts such a lot as stored only on its row's evidence.
+    manifest = (load_json(args.manifest)
+                if getattr(args, "manifest", None) and Path(args.manifest).is_file() else None)
     out = {"today": today.strftime("%d/%m/%Y"), "snapshot_rows": len(rows),
+           "cross_listed_rows": cross_listed_row_facts(
+               db_rows, manifest, {SR._hash(r) for r in rows} - {""}),
            "obvious": len(lots), "groups": groups,
            "newest_read": newest.strftime("%d/%m/%Y") if newest else "",
            "seconds": round(time.monotonic() - started, 1)}
@@ -1769,20 +1779,119 @@ def _tonights_header(entry):
     return None
 
 
-def _stored_elsewhere(entry, projects_read):
-    """Lots a Proxima project printed that the harvest stored ONCE, somewhere else
-    (8 Oct 2026): cross-listed under another project that was read tonight
-    (cross_listed_into, counted only for a project in `projects_read`), or printed twice in
-    this project's own list (duplicates). Ascenta Living Traditional printed 80 and stored
-    76: its other 4 are Coliving's (785) rows, read the same night. A claim into a project
-    nobody read tonight counts for nothing, so a lot cannot vanish into a name."""
-    into = entry.get("cross_listed_into")
-    elsewhere = 0
-    if isinstance(into, dict):
-        for pid, n in into.items():
-            if str(pid) in projects_read:
-                elsewhere += int(SR._num(n) or 0)
-    return elsewhere + int(SR._num(entry.get("duplicates")) or 0)
+def _named_lots(entry):
+    """The lots a Proxima manifest line says were stored once somewhere else, by name
+    (cross_listed_lots and duplicate_lots, 8 Oct 2026, second repair round)."""
+    out = []
+    for key in ("cross_listed_lots", "duplicate_lots"):
+        for lot in entry.get(key) or ():
+            if isinstance(lot, dict) and str(lot.get("hash") or "").strip():
+                out.append(lot)
+    return out
+
+
+def cross_listed_row_facts(db_rows, manifest, snapshot_hashes=()):
+    """{content_hash: [what each database row with that identity says]} for every lot a
+    manifest line names as stored once somewhere else -- the row-level evidence the READ
+    bar's excuse needs (8 Oct 2026, second repair round). Each fact: the row's project,
+    price, status, the day it was last read, whether a capture superseded it, and whether
+    the snapshot that ships holds it."""
+    wanted = {str(lot["hash"]).strip() for e in manifest_entries(manifest)
+              for lot in _named_lots(e)}
+    facts = defaultdict(list)
+    if not wanted:
+        return {}
+    shipped = set(snapshot_hashes or ())
+    for rec in db_rows:
+        h = SR._hash(rec)
+        if h not in wanted:
+            continue
+        facts[h].append({"id": rec.get("id"),
+                         "pid": str(rec.get("source_project_id") or ""),
+                         "price": SR._num(rec.get("price")),
+                         "status": str(rec.get("availability_status") or ""),
+                         "read": str(rec.get("date_checked") or ""),
+                         "superseded": bool(rec.get("superseded_by")),
+                         "in_snapshot": h in shipped})
+    return dict(facts)
+
+
+def _lot_proven(lot, facts, night):
+    """'' when a row proves the named lot stored, else why not. PROOF is a live row with the
+    lot's identity, under the project the harvest says kept it, read tonight, at the price
+    and with the status this project printed -- and, for a lot printed for sale, one the
+    snapshot ships (shown-eligible). Atchison and Kenny Building B's B-1301 and B-1803 (kept
+    as Building A's Not Available rows) and Lancelin's land-only lots 71/129/130 (kept at
+    the house-and-land price) are what this refuses."""
+    if facts is None:
+        return "no row evidence was measured"
+    rows = [f for f in facts.get(str(lot.get("hash") or "").strip()) or ()
+            if not f.get("superseded")]
+    if not rows:
+        return "no live row holds it"
+    into = str(lot.get("into") or "")
+    mine = [f for f in rows if f.get("pid") == into]
+    if not mine:
+        return "its row is under project %s, not %s" % (rows[0].get("pid") or "(none)", into)
+    tonight = SR._day(night)
+    mine = [f for f in mine if SR._day(f.get("read")) == tonight] or mine
+    row = mine[0]
+    if SR._day(row.get("read")) != tonight:
+        return "its row was last read %s" % (row.get("read") or "never")
+    # By class: an accordion's "For Sale" and an availability view's "Available" say the same.
+    status, kept = _status_class(lot.get("status")), _status_class(row.get("status"))
+    if status != kept:
+        return "its row says %s, not %s" % (row.get("status") or "nothing",
+                                            lot.get("status") or "nothing")
+    price, kept_price = SR._num(lot.get("price")), SR._num(row.get("price"))
+    if price is None or kept_price is None or abs(price - kept_price) >= 1:
+        return "its row is priced %s, not %s" % (SR._money(kept_price), SR._money(price))
+    if status == "available" and not row.get("in_snapshot"):
+        return "its row is not in the snapshot that ships"
+    return ""
+
+
+def _status_class(status):
+    """'available', '' (none stated) or 'not available' -- sources/proxima._status_class."""
+    said = re.sub(r"\s+", " ", str(status or "")).strip().lower()
+    if not said:
+        return ""
+    return "available" if said in SR.IS_AVAILABLE else "not available"
+
+
+def _stored_elsewhere(entry, projects_read, facts=None, night=None):
+    """(lots stored once somewhere else ON ROW-LEVEL PROOF, [the named others, each with
+    why], how many more were claimed with no lot named) for a Proxima manifest line:
+    cross-listed under another project read tonight, or printed twice in this project's own
+    list.
+
+    8 Oct 2026: Ascenta Living Traditional printed 80 and stored 76, its other 4 under
+    Coliving (785). A claim into a project nobody read tonight counts for nothing.
+
+    ONLY ON PROOF (second repair round, correctness verifier): the first cut counted every
+    claimed lot as stored, and so passed Atchison and Kenny Building B's 2 For Sale units --
+    kept as Building A's Not Available rows, hidden from every search -- and Lancelin's 3
+    land-only lots, whose rows hold the house-and-land price. A lot now counts only when the
+    manifest names it (cross_listed_lots / duplicate_lots) and `facts`
+    (cross_listed_row_facts) show its row live under the kept project, read tonight, at the
+    printed price and status (_lot_proven). A count with no names -- an older manifest -- is
+    no proof at all."""
+    named = _named_lots(entry)
+    proven, unproven = 0, []
+    for lot in named:
+        into = str(lot.get("into") or "")
+        why = ("project %s was not read tonight" % into
+               if into != str(entry.get("pid") or "") and into not in projects_read
+               else _lot_proven(lot, facts, night))
+        if why:
+            unproven.append("%s (%s)" % (_plain(lot.get("address") or lot.get("lot")
+                                                or "a lot")[:48], why))
+        else:
+            proven += 1
+    claimed = sum(int(SR._num(n) or 0) for n in (entry.get("cross_listed_into") or {}).values()) \
+        if isinstance(entry.get("cross_listed_into"), dict) else 0
+    claimed += int(SR._num(entry.get("duplicates")) or 0)
+    return proven, unproven, max(0, claimed - len(named))
 
 
 def _manifest_key(entry):
@@ -1815,8 +1924,12 @@ def _is_proxima(entry):
     return "proxima" in text.lower()
 
 
-def read_bar(manifest, history, night, required=False):
+def read_bar(manifest, history, night, required=False, facts=None):
     """[failure], {summary}, [note] from data/harvest_manifest.json (None: none written).
+
+    facts: cross_listed_row_facts for the lots the manifest names as stored once somewhere
+    else (measured from the database with the snapshot); None when none were measured, and
+    then no such lot counts as stored (8 Oct 2026, second repair round).
 
     required (--nightly): the harvest writes the manifest every night, so a nightly run
     without one -- or with one from an earlier night -- FAILS rather than skipping (repair
@@ -1858,12 +1971,20 @@ def read_bar(manifest, history, night, required=False):
     for e in entries:
         printed = SR._num(e.get("printed"))
         stored, refused = _stored(e)
-        elsewhere = _stored_elsewhere(e, projects_read)
-        if printed and printed > 0 and (stored or 0) + elsewhere < printed * READ_STORED_MIN:
-            short.append("%s (stored %s of %s printed%s%s)" % (
+        elsewhere, unproven, unnamed = _stored_elsewhere(e, projects_read, facts, night)
+        why_not = "; ".join(unproven[:4] + (
+            ["%s claimed with no lot named, so no row can prove them" % _n(unnamed)]
+            if unnamed else []))
+        # A NAMED LOT THE DATABASE CONTRADICTS FAILS WHATEVER THE SHARE (second repair
+        # round): 2 For Sale units kept as another project's Not Available rows are 2 lots
+        # hidden, in a list of 19 or of 305 alike. A bare count still goes through the share.
+        if (printed and printed > 0 and (stored or 0) + elsewhere < printed * READ_STORED_MIN) \
+                or unproven:
+            short.append("%s (stored %s of %s printed%s%s%s)" % (
                 _manifest_label(e), _n(stored), _n(printed),
                 ", %s refused by a constraint" % _n(refused) if refused else "",
-                ", %s stored once under another project" % _n(elsewhere) if elsewhere else ""))
+                ", %s stored once under another project" % _n(elsewhere) if elsewhere else "",
+                "; not proven stored elsewhere: %s" % why_not if why_not else ""))
         elif elsewhere:
             elsewhere_notes.append("%s %s of %s (%s)" % (
                 _manifest_label(e), _n(elsewhere), _n(printed), ", ".join(
@@ -2090,7 +2211,8 @@ def evaluate(measured, history, manifest, nightly=False, acknowledged=None):
     dup_failures, dup_cells, dup_notes = duplicates_bar(groups)
     drift_failures, drift_cells, drift_notes = drift_bar(groups, history, measured["today"])
     read_failures, read_summary, read_notes = read_bar(manifest, history, measured["today"],
-                                                       required=nightly)
+                                                       required=nightly,
+                                                       facts=measured.get("cross_listed_rows"))
     failures = (cover_failures + shown_failures + precision_failures + over_failures
                 + dup_failures + drift_failures + read_failures)
     notes = (cover_notes + shown_notes + over_notes + dup_notes + drift_notes + read_notes
@@ -2210,7 +2332,8 @@ def run(args, out=None):
         measured_path = Path(tmp) / "measured.json"
         cmd = [sys.executable, "-X", "utf8", str(Path(__file__).resolve()), "--in-bundle",
                "--snapshot", str(snapshot), "--db", str(copy), "--bundle", str(bundle),
-               "--out", str(measured_path), "--states", ",".join(args.states)]
+               "--out", str(measured_path), "--states", ",".join(args.states),
+               "--manifest", str(Path(args.manifest).resolve())]
         if args.today:
             cmd += ["--today", args.today]
         done = subprocess.run(cmd, cwd=tmp, env=env, stdout=subprocess.PIPE,

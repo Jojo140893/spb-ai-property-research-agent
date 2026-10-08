@@ -6163,8 +6163,14 @@ python state_sync.py push</pre>
             // Nothing offered: say what was left out and why, here, because the amber group
             // that would say it is not drawn (release review: Wacol $595k on QLD <= $600k).
             const left = hiddenReasons(d);
+            // ...and when the server says its tally of them may be short, so does the line
+            // (8 Oct 2026, second repair round: a search that ran out of time for the
+            // refusal pass printed a shorter "Left out" as if it were all of them).
+            const leftShort = hiddenShortText(d);
             if (left.length) {
-                parts.push(`<div class="sh-grey">${esc(`Nothing to confirm with a builder. Left out: ${left.join('; ')}.`)}</div>`);
+                parts.push(`<div class="sh-grey">${esc(`Nothing to confirm with a builder. Left out${leftShort ? ` (at least; ${leftShort})` : ''}: ${left.join('; ')}.`)}</div>`);
+            } else if (leftShort) {
+                parts.push(`<div class="sh-grey">${esc(`Nothing to confirm with a builder (what was left out is not known: ${leftShort}).`)}</div>`);
             }
         }
 
@@ -6370,8 +6376,20 @@ python state_sync.py push</pre>
             ${total > list.length ? `<div class="nc-intro">${esc(`Showing the ${list.length} best matches of ${total}.`)}</div>` : ''}
             ${list.map(needsConfirmingCard).join('')}
             ${more ? `<button type="button" class="btn-ghost nc-more">${esc(more)}</button>` : ''}
-            ${hidden.length ? `<div class="nc-hidden">${esc(`Also left out: ${hidden.join('; ')}.`)}</div>` : ''}
+            ${hidden.length ? `<div class="nc-hidden">${esc(`Also left out${hiddenShortText(d) ? ` (at least; ${hiddenShortText(d)})` : ''}: ${hidden.join('; ')}.`)}</div>` : ''}
         </details>`;
+    }
+
+    /* Why the server's tally of what it left out may be short, or '' when it is whole
+       (search_help.needs_confirming.hidden_may_be_short / refusal_pass_skipped, 8 Oct 2026):
+       the pass that counts the refused matches was not started in time, or a candidate cap
+       cut a pass. Plain text; the caller escapes it. */
+    function hiddenShortText(d) {
+        const help = d && d.search_help;
+        const nc = help && typeof help === 'object' ? help.needs_confirming : null;
+        if (!nc || typeof nc !== 'object') return '';
+        if (nc.refusal_pass_skipped) return 'there was not time to count them all';
+        return nc.hidden_may_be_short === true ? 'the count may be incomplete' : '';
     }
 
     // How many of the group were read in the last 3 nights, by the server's count. 0 when it

@@ -1127,8 +1127,39 @@ def _verdict(toks: List[str], breaks: Any, i: int, size: int, geo: Any, estate: 
             estate_words.update(range(i, j))
         return "estate"
     if nxt and _STREET_TYPE.fullmatch(nxt):
-        return "street"
+        # A house number before it as well: a street address, never a last resort.
+        return "refuse" if _house_numbered_street(toks, breaks, i, size) else "street"
     return "take"
+
+
+def _house_numbered_street(toks: List[str], breaks: Any, i: int, size: int) -> bool:
+    """True when the name toks[i:i+size] is a street's in a written address: a house number
+    straight before it and a street type straight after, nothing between ("46Archer Drive",
+    "46 Archer Drive", "12 Werribee Street"). A LOT number is not a house number: "Lot 12
+    Point Cook Rd" is a lot on the road its suburb is named for, and still reads Point Cook
+    (tests/test_estate_design_and_lot_are_not_places.py).
+
+    8 Oct 2026 (second repair round, correctness verifier). A name followed by a street type
+    is kept as a LAST RESORT (suburb_in_row_text) because an estate is often named after its
+    suburb and "Wadalba 49 Road" puts the number after the name. With the number in front
+    the line is a street address and the name is the street's. E-Agent's pooled list
+    "3HairpinDrive" printed "46Archer Drive $699,000.00 ..." on its own line (its locality
+    line went to the row beside it); nothing else in the line is a place, so the last
+    resort read Archer, a Palmerston NT suburb, and the lot -- one of 51 Victorian lines --
+    was filed NT (id 18644): the NT search's only result, "Tarneit, NT", and offered to a
+    Darwin caller by Clare. Such a name is refused, which can leave a row blank -- never put
+    it in a state origin/main would not (tests/test_state_invariant.py)."""
+    from geo import _STREET_TYPE
+    j = i + size
+    if not (i > 0 and i not in breaks and re.fullmatch(r"\d{1,5}", toks[i - 1])
+            and j < len(toks) and j not in breaks and _STREET_TYPE.fullmatch(toks[j])):
+        return False
+    return not (i > 1 and (i - 1) not in breaks and _LOT_WORD.fullmatch(toks[i - 2]))
+
+
+# The words that make the number after them a lot's, not a house's (_house_numbered_street).
+_LOT_WORD = re.compile(r"lots?|unit|units|stage|block|villa|townhouse|th|apt|apartment|no",
+                       re.IGNORECASE)
 
 
 def label_tail_is_the_pair(label: Any, one: Any, other: Any) -> bool:
@@ -1269,6 +1300,8 @@ def reading_refuses(text: Any, name: Any, geo: Any, stocked: Any = None) -> bool
         size = len(want)
         sure = (_MONTH_WORD.match(toks[i])
                 or (size == 1 and _STREET_TYPE.fullmatch(toks[i]))
+                # a street's name in a written address (8 Oct 2026): "46Archer Drive"
+                or _house_numbered_street(toks, breaks, i, size)
                 or _inside_a_longer_place(spans, i, size)
                 or (i and i not in breaks and _REGION_HEAD.match(toks[i - 1]))
                 or (not_the_locality_here(toks, i, size, geo, "", breaks,

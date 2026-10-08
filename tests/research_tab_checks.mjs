@@ -1255,6 +1255,32 @@ console.log("\n--- release review: the panel's counts, what was left out, and wh
   const none = await renderExplained(explained({ shortlist: [], shortlist_count: 0, needs_confirming: [],
     needs_confirming_count: 0, needs_confirming_hidden: {}, search_help: searchHelp({ relaxations: [] }) }));
   check("... and says nothing when nothing was left out", !none.out.includes("Left out"));
+  // 8 Oct 2026, second repair round (callers verifier): past the request's deadline the
+  // server skips the refusal pass and says the tally may be short. The line printed the
+  // shorter tally as if it were all of them.
+  const skippedHelp = searchHelp({ relaxations: [{ ...RELAX.reveal, count: 0 }],
+    needs_confirming: { count: 0, hidden: { document_reread_without_row: 2 },
+                        hidden_may_be_short: true, refusal_pass_skipped: "past the request deadline" } });
+  const skipped = await renderExplained(explained({ shortlist: [], shortlist_count: 0, needs_confirming: [],
+    needs_confirming_count: 0, needs_confirming_hidden: { document_reread_without_row: 2 }, search_help: skippedHelp }));
+  check("a 'Left out' tally the server could not finish says it is at least that, and why",
+    skipped.out.includes(skipped.api.esc("Nothing to confirm with a builder. Left out (at least; there was not "
+      + "time to count them all): 2 because their list was read again without them.")),
+    (skipped.out.match(/class="sh-grey">[^<]*/g) || []).join(" | "));
+  const nothingCounted = await renderExplained(explained({ shortlist: [], shortlist_count: 0, needs_confirming: [],
+    needs_confirming_count: 0, needs_confirming_hidden: {},
+    search_help: searchHelp({ relaxations: [], needs_confirming: { count: 0, hidden_may_be_short: true } }) }));
+  check("... and with nothing counted, that what was left out is not known",
+    nothingCounted.out.includes(nothingCounted.api.esc("Nothing to confirm with a builder (what was left out is "
+      + "not known: the count may be incomplete).")),
+    (nothingCounted.out.match(/class="sh-grey">[^<]*/g) || []).join(" | "));
+  // the amber group's own line says it too
+  const grouped = await renderExplained(explained({ search_help: searchHelp({ needs_confirming: { count: 3,
+    hidden_may_be_short: true, refusal_pass_skipped: "past the request deadline" } }) }));
+  check("... as does the amber group's 'Also left out'",
+    grouped.out.includes(grouped.api.esc("Also left out (at least; there was not time to count them all): "
+      + "3 because a newer capture of the same lot says otherwise.")),
+    (grouped.out.match(/class="nc-hidden">[^<]*/) || [""])[0]);
 }
 {
   // The reveal button follows the server's 'may be short' flag and counts one as one.

@@ -45,6 +45,11 @@ IDS = {"v2:aec54350": 11878, "v2:30440e59": 11879, "v2:325f8457": 11880,
 # applies them: Howard 18491 and Windermere 9568-9571 retired, Wollert lot 618 filed VIC.
 C5_SUPERSEDED = ("v2:43802e2d", "v2:d32b17a9", "v2:50cabe9b", "v2:b399f290", "v2:022e96c6")
 C5_TO_VIC = ("v2:1c5ca48e",)
+# And the state today's enrich gives E-Agent's pooled line "46Archer Drive $699,000 ..."
+# (id 18644): blank, not NT (8 Oct 2026, state_resolver._house_numbered_street -- the
+# street was read as Archer, Palmerston NT). Measured on the 8 Oct database: NT -> blank,
+# and the search then files it VIC from its list. Filed NT, nt_any fails its card by name.
+C5_STATE_CLEARED = ("v2:9c3fe9b4",)
 # The one brief the subset cannot answer. It holds every document with a QLD or blank-state
 # row at or under $850,000, which carries no Werribee stock; Werribee runs against the full
 # snapshot in the acceptance replays.
@@ -68,6 +73,8 @@ def _c5(rows):
         elif h in C5_TO_VIC:
             row = dict(row, state="VIC",
                        state_source="row text locality (over suburb column)")
+        elif h in C5_STATE_CLEARED:
+            row = dict(row, state=None, state_source=None)
         # AND THE SUBURB TODAY'S BUILD READS OFF A ROW'S OWN WRITTEN ADDRESS (repair round 2,
         # 7 Oct 2026). The subset was published by the 17 Sep build, which carded "Mt
         # Duneed,Victoria,3217" as Tarneit; the replay now fails such a card by name.

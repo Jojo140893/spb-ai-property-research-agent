@@ -318,6 +318,7 @@
       "drop": ["budget_max", "preferred_spending_cap"],
       "expect": {
         "brief_used": {"state": "VIC", "budget_min": 0, "budget_max": 9007199254740991},
+        "cards_in_their_places": true,
         "funnel": true,
         "obvious_rows": true
       }
@@ -330,6 +331,7 @@
       "drop": ["budget_max", "preferred_spending_cap"],
       "expect": {
         "brief_used": {"state": "NSW", "budget_min": 0, "budget_max": 9007199254740991},
+        "cards_in_their_places": true,
         "funnel": true,
         "obvious_rows": true
       }
@@ -367,6 +369,7 @@
       "drop": ["budget_max", "preferred_spending_cap"],
       "expect": {
         "brief_used": {"state": "WA", "budget_min": 0, "budget_max": 9007199254740991},
+        "cards_in_their_places": true,
         "funnel": true,
         "obvious_rows": true
       }
@@ -379,6 +382,7 @@
       "drop": ["budget_max", "preferred_spending_cap"],
       "expect": {
         "brief_used": {"state": "ACT", "budget_min": 0, "budget_max": 9007199254740991},
+        "cards_in_their_places": true,
         "funnel": true,
         "obvious_rows": true
       }
@@ -391,6 +395,7 @@
       "drop": ["budget_max", "preferred_spending_cap"],
       "expect": {
         "brief_used": {"state": "TAS", "budget_min": 0, "budget_max": 9007199254740991},
+        "cards_in_their_places": true,
         "funnel": true,
         "obvious_rows": true
       }
@@ -398,11 +403,12 @@
     {
       "id": "nt_any",
       "plan": "parity 8 Oct 2026",
-      "title": "NT, no budget, every suburb: offered since 8 Oct",
+      "title": "NT, no budget, every suburb: offered since 8 Oct; its only card on the 8 Oct database was a Victorian lot read as 'Tarneit, NT' (id 18644, filed NT on the street '46Archer Drive' -- fixed in state_resolver the same day)",
       "client_brief": {"state": "NT"},
       "drop": ["budget_max", "preferred_spending_cap"],
       "expect": {
         "brief_used": {"state": "NT", "budget_min": 0, "budget_max": 9007199254740991},
+        "cards_in_their_places": true,
         "funnel": true,
         "obvious_rows": true
       }

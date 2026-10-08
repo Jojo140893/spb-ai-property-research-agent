@@ -279,6 +279,14 @@ crawl. Consequences, all surfaced in the UI rather than hidden:
     changes nothing the gates read (whole state, radius) re-scores the search's own pool
     (`_candidates.pool_key`), and the budget and minimum steps are cut from one gate pass
     under the loosest of them (`_candidates.WidePool`); the counts are the full re-run's.
+    A pass after the search's own reads that cache and is estimated as the slowest such
+    "warm" pass so far (the admit pass is the first); the WidePool as the cold pass. When
+    the WidePool does not fit, each step it would serve runs its own warm pass instead
+    (8 Oct 2026, second repair round), so the budget steps are not skipped while later,
+    cheaper steps are priced. On a search that prices hints the refusal pass (it only
+    tallies what was left out) runs after them, when there is time. When it is skipped,
+    `search_help.needs_confirming` carries `refusal_pass_skipped` and `hidden_may_be_short`,
+    and the Research tab says its "Left out" tally is "at least" that.
     Posting `brief_patch` over the form returns exactly its `shortlist_count`; after a
     swapped min/max a price patch carries the whole range as searched so that stays true.
     `include_needs_confirming` has no patch: it reveals the list below, and its `capped`

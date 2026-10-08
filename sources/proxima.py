@@ -378,6 +378,89 @@ def stored_project_counter_details(db_path=None) -> Dict[str, Tuple[int, str]]:
         return {}
 
 
+def stored_row_projects(db_path=None) -> Dict[str, str]:
+    """{content_hash: the project id its stored Proxima row was captured under}, from the
+    database -- a live row's project before a superseded one's. Never raises.
+
+    8 Oct 2026 (second repair round). A lot printed under two projects shares one identity
+    (content_hash leaves the project out), and record_building only FILLS a stored row's
+    project and estate, never rewrites them: whichever copy updates the row, the row keeps
+    the project of its first capture. So _collapse_cross_listed gives the identity to the
+    copy of the project the stored row already belongs to. Without that, Lancelin South
+    Stage C (802) updated rows 19965-19967 -- stored under Stage C Land Only (767), product
+    'Land' -- with its house-and-land prices, and a $358,600 land lot was carded at
+    $701,500 under the Land Only label."""
+    import sqlite3
+    from pathlib import Path
+    try:
+        if db_path is None:
+            import config
+            db_path = config.DATABASE_PATH
+        path = Path(db_path)
+        if not path.exists():
+            return {}
+        conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+        try:
+            out: Dict[str, str] = {}
+            for h, pid in conn.execute(
+                    "SELECT content_hash, source_project_id FROM buildings "
+                    "WHERE source_channel='Proxima' AND COALESCE(content_hash,'') <> '' "
+                    "AND COALESCE(source_project_id,'') <> '' "
+                    "ORDER BY (superseded_by IS NOT NULL AND superseded_by <> ?), id",
+                    (_WITHDRAWN,)):
+                out.setdefault(str(h), str(pid))
+            return out
+        finally:
+            conn.close()
+    except Exception as e:                                            # noqa: BLE001
+        logger.warning("Proxima: could not read the stored rows' projects (%s) -- a lot "
+                       "printed under two projects keeps the lowest project id's identity.", e)
+        return {}
+
+
+# database.WITHDRAWN_FROM_SOURCE, spelled here so this module still imports without it: a
+# row retired that way is the listing's own row, back on the next read (record_building).
+_WITHDRAWN = "withdrawn: the source stopped listing it"
+
+
+def _offer_key(r: Dict[str, Any]) -> Tuple[float, str]:
+    """What makes two copies of one lot the SAME offer: the price they print, to the dollar,
+    and whether they state it for sale (8 Oct 2026, second repair round). By class, not by
+    word: the accordion says "For Sale" and an availability view "Available" for the same
+    thing, and a lot one view calls Sold and another Not Available is unavailable in both --
+    told apart by the word, one lot would be stored, and shown, twice."""
+    price = _num(r.get("advertised_package_price")) or _num(r.get("price")) or 0.0
+    return (round(float(price)), _status_class(r.get("availability_status")))
+
+
+def _status_class(status: Any) -> str:
+    """'available' (For Sale, Available), '' (no status stated) or 'not available'."""
+    said = re.sub(r"\s+", " ", str(status or "")).strip().lower()
+    if not said:
+        return ""
+    return "available" if said in ("for sale", "available") else "not available"
+
+
+def _pid_order(pid: str) -> Tuple[int, Any]:
+    """Project ids in a stable order whatever the page order: numerically, else by text."""
+    return (0, int(pid)) if str(pid).isdigit() else (1, str(pid))
+
+
+def _offer_ordinal(pid: str, used: set) -> int:
+    """The variant_ordinal a second offer of one lot is stored under: its project id, so it
+    names the same row every night whatever order the projects come in (a page-order
+    ordinal would swap two offers' rows, and their prices, the night the order changed)."""
+    import hashlib
+    base = int(pid) if str(pid).isdigit() else \
+        int(hashlib.sha1(str(pid).encode("utf-8")).hexdigest()[:6], 16)
+    ordinal, n = base, 0
+    while ordinal in used or ordinal == 0:
+        n += 1
+        ordinal = base * 1000 + n
+    used.add(ordinal)
+    return ordinal
+
+
 def _day_of(stamp: Any) -> str:
     """'2026-09-27T11:51:07' -> '27/09/2026'; '' for anything else."""
     m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", str(stamp or "").strip())
@@ -632,6 +715,9 @@ class ProximaSource(PropertySource):
         self.stored_counters = stored_counters
         # {pid: the day its stored counter was stated, dd/mm/YYYY}; empty when unknown.
         self.stored_counter_dates: Dict[str, str] = {}
+        # {content_hash: the project its stored row was captured under}; read from the
+        # database when the harvest starts if not handed in. See stored_row_projects.
+        self.stored_row_projects: Optional[Dict[str, str]] = None
         # Projects whose read ends short of their counter or on a cap signature, by name.
         self.short_projects: List[Dict[str, Any]] = []
         # Projects read WHOLE that hold fewer lots than an old stored counter (8 Oct 2026):
@@ -1081,7 +1167,7 @@ class ProximaSource(PropertySource):
         under the render cap, "whole" only says the list ended there -- and a narrowed list
         (the session filter trap) ends under the cap as well. So 2 lots against an old 79,
         or none against 40, is short as it always was; only a gap old_counter_gap_ok allows
-        (harvest_manifest: at most 3 lots or 15% of the counter, a read of at least one)
+        (harvest_manifest: at most 3 lots or 10% of the counter, a read of at least one)
         is a stale counter.
         """
         from harvest_manifest import old_counter_gap_ok
@@ -1459,6 +1545,8 @@ class ProximaSource(PropertySource):
             details = stored_project_counter_details()
             self.stored_counters = {pid: avail for pid, (avail, _on) in details.items()}
             self.stored_counter_dates = {pid: on for pid, (_avail, on) in details.items()}
+        if self.stored_row_projects is None:
+            self.stored_row_projects = stored_row_projects()
         try:
             with scraper.session():
                 scraper.goto(PROJECTS_URL)
@@ -1680,47 +1768,116 @@ class ProximaSource(PropertySource):
 
         They also collide on content_hash (estate_name is deliberately not part of
         identity), so the upsert would silently keep whichever landed last. Collapsing
-        here instead makes the choice deterministic — first project wins, in page
-        order — and, more importantly, COUNTED, so the drop shows up in the log rather
-        than looking like lots that were never found.
+        here instead makes the choice deterministic and, more importantly, COUNTED, so
+        the drop shows up in the log rather than looking like lots that were never found.
+
+        ONLY A COPY IS COLLAPSED (8 Oct 2026, second repair round, correctness verifier).
+        Copies that print the same price and state the same status are one offer: kept
+        once, under the project the stored row already belongs to (stored_row_projects),
+        else the first in page order. Copies that DISAGREE are not copies, and each is
+        stored under its own project. Before, the first in page order won whatever the
+        others said, and on 8 Oct that lost two real offers:
+          * Atchison and Kenny Building B (793) printed units B-1301 and B-1803 For Sale;
+            Building A's availability view (161) lists them Not Available, and came first.
+            Both lots were kept as A's Not Available rows (10949, 11009) and hidden from
+            every search, while B's own list -- 19 for sale -- stored 17;
+          * Lancelin South Stage C Land Only (767) printed lots 71, 129 and 130 as land at
+            $358,600-$390,900; Stage C (802) prints the same lots as house-and-land at
+            $701,500-$733,800, and came first. The land offer was gone, and the rows the
+            house-and-land copy updated (19965-19967) are 767's -- carded "Land Only" at the
+            house-and-land price.
+        Now the offer whose project owns the stored row keeps the lot's identity (else the
+        lowest project id, so it does not swap with page order), and every other offer is
+        stored as a variant of it (variant_ordinal: its project id, see _offer_ordinal).
+
+        THE MANIFEST SAYS WHICH LOT WENT WHERE. A collapsed copy is counted on its own
+        project's line (cross_listed, cross_listed_into; duplicates for a lot printed twice
+        in one list) AND named, with the price and status it printed and the identity of
+        the row that holds it (cross_listed_lots, duplicate_lots), so the parity check's
+        READ bar can count it as stored only on row-level proof: a live row under the kept
+        project, read tonight, at that price and status (parity_check
+        cross_listed_row_facts).
         """
         from database import building_content_hash
-        seen: Dict[str, Dict[str, Any]] = {}
-        dropped = []
-        # THE PROJECT A DROPPED LOT WAS PRINTED UNDER IS TOLD WHERE IT WENT (8 Oct 2026). Its
-        # manifest line counted the lot as printed and nothing stored it there, so the parity
-        # check read Ascenta Living Traditional as "stored 76 of 80 printed" -- the 4 were
-        # stored once, under Ascenta Living Coliving (785), as were the 2 of Atchison and
-        # Kenny Building B, the 3 of Lancelin South Stage C Land Only and the 1 of Park
-        # Avenue II Stage 3: all 10 are live rows read that night. (Repair round: the
-        # harvest kept Lancelin's 3 under Stage C (802), but the database rows they updated,
-        # ids 19965-19967, keep the project and estate of their first capture -- 767, "Land
-        # Only", with the house-and-land price. The count is right; the upsert's choice of
-        # project is older than this and is named as open.)
-        log_of = {e["pid"]: e for e in self.project_log}
+        groups: Dict[str, List[Dict[str, Any]]] = {}
         for r in rows:
-            h = building_content_hash(r)
-            if h in seen:
-                dropped.append((r.get("lot_address", ""), seen[h].get("estate_name", ""),
-                                r.get("estate_name", "")))
-                mine = log_of.get(str(r.get("source_project_id") or ""))
-                kept_in = str(seen[h].get("source_project_id") or "")
-                if mine is not None and kept_in and kept_in != mine["pid"]:
-                    mine["cross_listed"] = int(mine.get("cross_listed") or 0) + 1
-                    into = mine.setdefault("cross_listed_into", {})
-                    into[kept_in] = into.get(kept_in, 0) + 1
-                elif mine is not None:
-                    # The same lot printed twice in ONE project: stored once, said so.
-                    mine["duplicates"] = int(mine.get("duplicates") or 0) + 1
+            groups.setdefault(building_content_hash(r), []).append(r)
+        log_of = {e["pid"]: e for e in self.project_log}
+        owners = self.stored_row_projects or {}
+
+        def pid_of(r):
+            return str(r.get("source_project_id") or "")
+
+        out: List[Dict[str, Any]] = []
+        dropped, split = [], []
+        for h, copies in groups.items():
+            if len(copies) == 1:
+                out.append(copies[0])
                 continue
-            seen[h] = r
+            owner = owners.get(h, "")
+            offers: Dict[Tuple[float, str], List[Dict[str, Any]]] = {}
+            for r in copies:
+                offers.setdefault(_offer_key(r), []).append(r)
+            # One kept copy per offer: the stored row's project's, else the first printed.
+            kept = [(next((r for r in same if pid_of(r) == owner), same[0]), same)
+                    for same in offers.values()]
+            if len(kept) > 1:
+                base = next((i for i, (r, _same) in enumerate(kept) if pid_of(r) == owner),
+                            None)
+                if base is None:
+                    base = min(range(len(kept)), key=lambda i: _pid_order(pid_of(kept[i][0])))
+                used: set = set()
+                for i, (r, _same) in enumerate(kept):
+                    if i != base:
+                        r["variant_ordinal"] = _offer_ordinal(pid_of(r), used)
+                split.append((copies[0].get("lot_address", ""),
+                              ["%s (%s, $%s)" % (r.get("estate_name") or pid_of(r),
+                                                 r.get("availability_status") or "no status",
+                                                 format(int(_offer_key(r)[0]), ","))
+                               for r, _same in kept]))
+                for r, _same in kept:
+                    mine = log_of.get(pid_of(r))
+                    if mine is not None:
+                        mine["cross_listed_offers"] = int(mine.get("cross_listed_offers")
+                                                          or 0) + 1
+            for keep, same in kept:
+                out.append(keep)
+                final = building_content_hash(keep)
+                into = pid_of(keep)
+                for other in same:
+                    if other is keep:
+                        continue
+                    dropped.append((other.get("lot_address", ""),
+                                    keep.get("estate_name", ""), other.get("estate_name", "")))
+                    mine = log_of.get(pid_of(other))
+                    if mine is None:
+                        continue
+                    lot = {"hash": final, "lot": str(other.get("lot_number") or ""),
+                           "address": str(other.get("lot_address") or "")[:90],
+                           "price": _offer_key(other)[0],
+                           "status": str(other.get("availability_status") or ""),
+                           "into": into}
+                    if into and into != mine["pid"]:
+                        mine["cross_listed"] = int(mine.get("cross_listed") or 0) + 1
+                        where = mine.setdefault("cross_listed_into", {})
+                        where[into] = where.get(into, 0) + 1
+                        mine.setdefault("cross_listed_lots", []).append(lot)
+                    else:
+                        # The same lot printed twice in ONE project: stored once, said so.
+                        mine["duplicates"] = int(mine.get("duplicates") or 0) + 1
+                        mine.setdefault("duplicate_lots", []).append(lot)
         if dropped:
             self.cross_listed = dropped
             logger.info("  %d lot(s) cross-listed under a second project; kept once:",
                         len(dropped))
-            for addr, kept, also in dropped[:10]:
-                logger.info("     %s  [kept: %s | also in: %s]", addr[:58], kept, also)
-        return list(seen.values())
+            for addr, kept_as, also in dropped[:10]:
+                logger.info("     %s  [kept: %s | also in: %s]", addr[:58], kept_as, also)
+        if split:
+            logger.info("  %d lot(s) printed under two projects as DIFFERENT offers (price or "
+                        "status); each stored under its own project:", len(split))
+            for addr, said in split[:10]:
+                logger.info("     %s  [%s]", addr[:58], " | ".join(said))
+        return out
 
     def verify(self, package: Dict[str, Any]) -> Dict[str, Any]:
         return {"verified": False, "status": "Pending Confirmation", "price_change": 0.0}
