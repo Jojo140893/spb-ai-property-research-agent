@@ -601,8 +601,14 @@ def read_left_it_out(rec, doc, latest_read, reads, cut_short, full):
     return bool(full(dict(reads.get(doc) or {})))
 
 
-def _visible_key(entry_or_package):
-    return (str(entry_or_package.get("lot_address") or "").strip().lower(),
+def _visible_key(entry_or_package, catalogue=None):
+    # On the title AS READ (8 Oct 2026, second repair round): a package carries it, and a
+    # card shown with its small print taken out is keyed on the title it was read under
+    # (SR.title_as_read, from its snapshot row in `catalogue`), so two lots whose titles
+    # differ only in their small print stay two keys, as on origin/main.
+    title = (SR.title_as_read(entry_or_package, catalogue) if catalogue is not None
+             else str(entry_or_package.get("lot_address") or ""))
+    return (title.strip().lower(),
             round(SR._num(entry_or_package.get("advertised_package_price")) or 0))
 
 
@@ -867,10 +873,10 @@ def measure(args):
         entries = got["shortlist"] + got["needs_confirming"]
         shown = {SR._hash(e) for e in entries} - {""}
         shown_anywhere |= shown
-        visible = {_visible_key(e) for e in entries}
+        visible = {_visible_key(e, catalogue) for e in entries}
         shown_by_key = defaultdict(list)
         for e in entries:
-            shown_by_key[_visible_key(e)].append(SR._hash(e))
+            shown_by_key[_visible_key(e, catalogue)].append(SR._hash(e))
         mine = by_group.get(state, [])
         hidden = [lot for lot in mine if lot["hash"] not in shown]
         # The rows with no state ride along on a state's explanation only when that state

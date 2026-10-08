@@ -52,6 +52,7 @@ from sources.dedupe import DedupeEngine
 from geo import SuburbGeoIndex
 from benchmark import BenchmarkEngine
 from client_report import ClientReportGenerator
+from address_label import shown_incentive, shown_title, without_agent_text
 import config
 
 
@@ -424,9 +425,19 @@ class KommoPropertyResearchAgent:
                     proposed_mitigation=r.get('mitigation', 'Standard due diligence')
                 ))
 
+            # NO AGENT SMALL PRINT IN WHAT A CANDIDATE SAYS (8 Oct 2026): 'Agent commission=
+            # 6%plus' in a title, a commission-offer heading as the estate, 'agent bonus' in an
+            # incentive. Taken out once, here, so the shortlist, the Kommo note's lines and top
+            # match, the rejected log, the client report and the comparisons all read the
+            # same clean text. Text only: scoring reads none of it, every merge of packages
+            # ran before this point, and the title and estate as read stay on the candidate
+            # (lot_address_as_read / estate_context_as_read, below) for api/research.py's
+            # copy tests and building keys, so no card is merged, split or regrouped by it.
+            _title_read = raw_pkg.get('lot_address', f"Lot {idx+1}")
+            _estate_read = str(raw_pkg.get('estate_context') or '')
             cand = CandidateProperty(
                 property_id=f"PROP-{idx+1}",
-                lot_address=raw_pkg.get('lot_address', f"Lot {idx+1}"),
+                lot_address=shown_title(_title_read, raw_pkg),
                 # Blank, never the client's target suburb and never the literal string
                 # 'Target Suburb' — see the note above the benchmark call.
                 suburb=raw_pkg.get('suburb') or '',
@@ -465,8 +476,14 @@ class KommoPropertyResearchAgent:
                 content_hash=str(raw_pkg.get('content_hash') or ''),
                 # The rebate, for the comparison one-pager's Rebate / Effective Price.
                 incentive_amount=coerce_number(raw_pkg.get('incentive_amount'), 0.0) or 0.0,
-                incentive_text=str(raw_pkg.get('incentive_text') or ''),
-                estate_context=str(raw_pkg.get('estate_context') or ''),
+                # Without the agent's share (8 Oct 2026): '$50,000 purchaser rebate/agent
+                # bonus' reads '$50,000 purchaser rebate'. The offer to the buyer stays, and so
+                # does the amount above -- which the words may never lose (second repair
+                # round): with it, a strip that would drop the money it stands on is not made.
+                incentive_text=shown_incentive(
+                    str(raw_pkg.get('incentive_text') or ''),
+                    coerce_number(raw_pkg.get('incentive_amount'), 0.0) or 0.0),
+                estate_context=without_agent_text(_estate_read),
                 # The stated lot, blank when the source gave none; see
                 # CandidateProperty.lot_number for why it cannot ride inside lot_address.
                 lot_number=str(raw_pkg.get('lot_number') or '').strip(),
@@ -502,6 +519,12 @@ class KommoPropertyResearchAgent:
                 raw_pkg.get('availability_by_exception_list'))
             cand.availability_status = raw_pkg.get('availability_status')
             cand.age_days = raw_pkg.get('age_days')
+            #   lot_address_as_read / estate_context_as_read  the title and estate as the
+            #                              package read them, small print and all (8 Oct
+            #                              2026): what api/research.py's copy tests and
+            #                              building keys read, exactly as before the strip
+            cand.lot_address_as_read = _title_read
+            cand.estate_context_as_read = _estate_read
 
             # Step 11: Score Property Matrix
             cand.scoring = ScoringEngine.evaluate_property(brief, cand)

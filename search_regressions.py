@@ -1499,7 +1499,7 @@ def obvious_rows_check(C, research, bootstrap, catalogue, snapshot_path):
         rows_ = picked(state, low, high, run.today)
         shown = {_hash(e): "shortlist" for e in resp.get("shortlist") or []}
         shown.update({_hash(e): "needs_confirming" for e in resp.get("needs_confirming") or []})
-        visible = {(str(e.get("lot_address") or "").strip().lower(),
+        visible = {(title_as_read(e, catalogue).strip().lower(),
                     round(_num(e.get("advertised_package_price")) or 0))
                    for e in (resp.get("shortlist") or []) + (resp.get("needs_confirming") or [])}
         pending = [r for r in rows_ if _hash(r) not in shown]
@@ -1597,14 +1597,49 @@ def obvious_rows_check(C, research, bootstrap, catalogue, snapshot_path):
     return hook
 
 
-def _as_candidate(card):
+def title_as_read(card, catalogue):
+    """The title a shortlist or needs-confirming card was READ under, agent small print and
+    all: the title its package carries, and what /api/research sent before 8 Oct 2026. A
+    hidden row's twin (its package's title as read, at its price) is looked for among the
+    cards by it, exactly as on origin/main.
+
+    NOT THE TITLE AS SHOWN (8 Oct 2026, second repair round). The round before keyed both
+    sides on address_label.shown_title, and on the 8 Oct database that made one key of lots
+    that are two: 'External Agent Price List, Melbourne VIC', 'purchaser, Melbourne VIC' and
+    'Melbourne VIC' at one price all read 'melbourne vic' (22 such keys), so a lot wrongly
+    hidden behind a different lot's card would have passed as collapsed into a visible twin.
+
+    Recovered from the card's own snapshot row: the title its package was given
+    (_candidates._display_address, or NO_ADDRESS), when that title with its small print out
+    is what the card says. Otherwise the card's title as sent: a bundle from before 8 Oct
+    2026 (no shown_title) sends it as read, and a card that took a twin's "Lot N" title
+    (collapse_same_lot) carries no small print of its own row. Imported when called, so it
+    is the BUNDLE's modules once the child has narrowed sys.path to them."""
+    sent = str(card.get("lot_address") or "")
+    try:
+        from address_label import NO_ADDRESS, shown_title
+        from _candidates import _display_address
+    except ImportError:
+        return sent
+    row = catalogue.row(_hash(card)) if catalogue is not None else None
+    if not row:
+        return sent
+    read = str(_display_address(row) or NO_ADDRESS)
+    if read != sent and str(shown_title(read, card) or "") == sent:
+        return read
+    return sent
+
+
+def _as_candidate(card, title=None):
     """A shortlist card, needs-confirming card or package, shaped as the scored candidate
-    research._card_identity reads."""
+    research._card_identity reads; `title` in place of the card's own, when given (a card's
+    title as read, title_as_read)."""
     from types import SimpleNamespace
     return SimpleNamespace(
         state=card.get("state"), suburb=card.get("suburb"), lot_number=card.get("lot_number"),
         bedrooms=card.get("bedrooms"), land_size_sqm=card.get("land_size_sqm"),
-        house_size_sqm=card.get("house_size_sqm"), lot_address=card.get("lot_address") or "",
+        house_size_sqm=card.get("house_size_sqm"),
+        lot_address=(card.get("lot_address") or "") if title is None else title,
         content_hash=card.get("content_hash"),
         price_breakdown=SimpleNamespace(
             advertised_package_price=card.get("advertised_package_price")))
@@ -1625,7 +1660,10 @@ def shown_copy_finder(research, resp, catalogue):
     by_price = {}
     for card in list(resp.get("shortlist") or []) + list(resp.get("needs_confirming") or []):
         try:
-            y = ident_of(_as_candidate(card), catalogue.row(_hash(card)))
+            # On the card's title as read (8 Oct 2026), as the package's is: the copy test
+            # reads what it read before the small print was taken out of what people see.
+            y = ident_of(_as_candidate(card, title_as_read(card, catalogue)),
+                         catalogue.row(_hash(card)))
         except Exception:                                             # noqa: BLE001
             continue
         if y.get("price"):
