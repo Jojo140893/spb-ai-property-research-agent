@@ -52,7 +52,7 @@ from sources.dedupe import DedupeEngine
 from geo import SuburbGeoIndex
 from benchmark import BenchmarkEngine
 from client_report import ClientReportGenerator
-from address_label import AGENT_ONLY_TEXT, shown_title, without_agent_text
+from address_label import shown_incentive, shown_title, without_agent_text
 import config
 
 
@@ -479,8 +479,7 @@ class KommoPropertyResearchAgent:
                 # Without the agent's share (8 Oct 2026): '$50,000 purchaser rebate/agent
                 # bonus' reads '$50,000 purchaser rebate'. The offer to the buyer stays, and so
                 # does the amount above.
-                incentive_text=without_agent_text(str(raw_pkg.get('incentive_text') or ''),
-                                                  words=AGENT_ONLY_TEXT),
+                incentive_text=shown_incentive(str(raw_pkg.get('incentive_text') or '')),
                 estate_context=without_agent_text(_estate_read),
                 # The stated lot, blank when the source gave none; see
                 # CandidateProperty.lot_number for why it cannot ride inside lot_address.

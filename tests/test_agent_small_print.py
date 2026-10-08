@@ -15,6 +15,13 @@ Text only. The packages, the scores, every merge and copy test, the building key
 paging and the counts are what they were: the candidate keeps its title and estate as read
 for api/research.py's copy tests and building keys, and the parity and search-regressions
 checks key a hidden row's twin on the title as shown, on both sides.
+
+Repair round (8 Oct 2026), from the verifiers' findings: a street or place named with an agent
+word is kept ('12 Agent Street'); what a part said before its small print is kept ('Lot 178,
+Wine cellar lot included. Agent' -- Clare could no longer confirm that lot by its words; '12
+Smith St Agent commission 3%'; '3 Bed 3 Bath 1 Powder purchaser'); an incentive parts at more
+breaks so the buyer's money never goes with the agent's; and '$50,000 bonus' beside the
+purchaser's own offer is the agent's.
 """
 import json
 import re
@@ -32,21 +39,25 @@ import _candidates as C  # noqa: E402
 import address_label as L  # noqa: E402
 from tests import _synthetic_stock as S  # noqa: E402
 
-# What a person must not read. "E-Agent" is the portal's name, which a channel says.
-SMALL_PRINT = re.compile(r"commission|(?<!E-)\bagent|purchaser|eligib|highlighted|\bfirb\b|"
-                         r"guaranteed income", re.I)
+# What a person must not read. "E-Agent" is the portal's name, which a channel says; '12 Agent
+# Street' and "Commission's Hill Estate" are a street and an estate (the stock below has both).
+_NAMES = r"(?! Street)(?!(?:'|&#x27;|&#39;)s Hill Estate)"
+SMALL_PRINT = re.compile(r"commission%s|(?<!E-)\bagent%s|purchaser|eligib|highlighted|\bfirb\b|"
+                         r"guaranteed income" % (_NAMES, _NAMES), re.I)
 # In an incentive the buyer's offer stays: only the agent's share is small print there.
 AGENTS_SHARE = re.compile(r"commission|(?<!E-)\bagent", re.I)
 
 TITLES = [
     # live titles on the 8 Oct database copy, each with what a person now reads
-    ("Single Car Space & OB Storage Agent commission=6%plus, South Yarra VIC", "South Yarra VIC"),
+    ("Single Car Space & OB Storage Agent commission=6%plus, South Yarra VIC",
+     "Single Car Space & OB Storage, South Yarra VIC"),
     ("Agentcommission=6%plus, South Yarra VIC", "South Yarra VIC"),
-    ("Carstacker.Agentcommission=, South Yarra VIC", "South Yarra VIC"),
+    ("Carstacker.Agentcommission=, South Yarra VIC", "Carstacker, South Yarra VIC"),
     ("4 SE- Chapel St, Agent commission=6%plus", "4 SE- Chapel St"),
-    ("Lot 178, Wine cellar lot included. Agent", "Lot 178"),
+    ("Lot 178, Wine cellar lot included. Agent", "Lot 178, Wine cellar lot included"),
     ("LISTINGSAVAILABLEFORSALEFORE-AGENT, Flagstaff VIC", "Flagstaff VIC"),
-    ("2 Bed 2 Bath 1 Powder purchaser, Melbourne VIC", "Melbourne VIC"),
+    ("2 Bed 2 Bath 1 Powder purchaser, Melbourne VIC", "2 Bed 2 Bath 1 Powder, Melbourne VIC"),
+    ("purchaser, Melbourne VIC", "Melbourne VIC"),
     ("Upfront FIRB Fee payable by, St Kilda Road VIC", "St Kilda Road VIC"),
     ("External Agent Price List, Melbourne VIC", "Melbourne VIC"),
     # a note's tail goes with the note: the part after the comma continues its sentence
@@ -90,9 +101,137 @@ def test_an_estate_loses_its_small_print_and_keeps_its_name(raw, shown):
 
 @pytest.mark.parametrize("text", CLEAN)
 def test_a_text_without_small_print_comes_back_as_it_was(text):
-    words = L.AGENT_ONLY_TEXT if "rebate" in text else L.AGENT_TEXT
-    assert L.without_agent_text(text, "<place>", words=words) is text
+    if "rebate" in text:
+        assert L.shown_incentive(text) is text
+    else:
+        assert L.without_agent_text(text, "<place>") is text
     assert L.without_agent_text(None) is None
+    assert L.shown_incentive(None) is None
+
+
+# A street or a place named with an agent word, written as a name: an address, kept whole.
+NAMED = [
+    "12 Agent Street, Tarneit VIC",
+    "Lot 5 Commission Road, Tarneit",
+    "Lot 3, Purchaser Court, Tarneit",
+    "Lot 12, Commission's Hill Estate, Tarneit",
+    "Lot 5 Eligibility Lane, Tarneit",
+    "Lot 5 Highlighted Way, Tarneit",
+    "12 AGENT STREET, TARNEIT VIC",
+    "Lot 12 Smith St/Agent Rd corner, Tarneit",
+]
+
+
+@pytest.mark.parametrize("title", NAMED)
+def test_a_street_or_place_named_with_an_agent_word_is_kept(title):
+    """Fails before the repair round (8 Oct 2026): whole words alone read 'Agent Street' as a
+    note, and '12 Agent Street, Tarneit VIC' came out 'Tarneit VIC'."""
+    assert L.without_agent_text(title, "<place>") is title
+    assert L.shown_title(title, {"suburb": "Tarneit", "state": "VIC"}) is title
+
+
+def test_a_note_is_still_a_note_when_it_is_not_written_as_a_name():
+    # lower case: a note's words, not a name
+    assert L.without_agent_text("commission road show, Tarneit", "<place>") == "Tarneit"
+    # the type must follow the word: 'Agent commission' is a note even before a street
+    assert L.without_agent_text("Lot 5, Agent commission Smith St", "<place>") == "Lot 5"
+
+
+# What a part said before its small print, kept: a sentence that ended before it, a street
+# address in front of it. 'Lot 178, Wine cellar lot included. Agent' is a live title.
+LEADS = [
+    ("Lot 178, Wine cellar lot included. Agent", "Lot 178, Wine cellar lot included"),
+    ("Wine cellar lot included.Agent, South Yarra VIC", "Wine cellar lot included, South Yarra VIC"),
+    ("Car stacker. Agent commission =, South Yarra VIC", "Car stacker, South Yarra VIC"),
+    ("NE -river & Eastern Double Car Space & OB Storage Wine cellar lot included. Agent, "
+     "South Yarra VIC", "NE -river & Eastern Double Car Space & OB Storage Wine cellar lot "
+     "included, South Yarra VIC"),
+    # '2.5' is no sentence's end, and the lot's description before the stop stays whole
+    ("3BED2.5BATH+STUDY+2 Wine cellar lot included. Agent, South Yarra VIC",
+     "3BED2.5BATH+STUDY+2 Wine cellar lot included, South Yarra VIC"),
+    ("12 Smith St Agent commission 3%", "12 Smith St"),
+    ("Lot 5 Smith Road Agent commission 2%, Tarneit", "Lot 5 Smith Road, Tarneit"),
+    # small print in brackets goes with its brackets
+    ("Lot 12, 12 Smith St (FIRB approved), Tarneit", "Lot 12, 12 Smith St, Tarneit"),
+    # a lone 'purchaser' closing a line is the next column's heading run into it (Aria)
+    ("3 Bed 3 Bath 1 Powder purchaser, Melbourne VIC", "3 Bed 3 Bath 1 Powder, Melbourne VIC"),
+    ("Single Car Space Single Car Space Storage Cage purchaser",
+     "Single Car Space Single Car Space Storage Cage"),
+    # an agent's commission rate closing a line is the commission column run into it
+    # ('Pricelist New Agent.pdf')
+    ("Single Car Space & OB Storage Agentcommission=6%plus, South Yarra VIC",
+     "Single Car Space & OB Storage, South Yarra VIC"),
+    ("SE-Eastern suburb Double Car Space&OB Storage Agent commission = 6%.",
+     "SE-Eastern suburb Double Car Space&OB Storage"),
+]
+
+
+@pytest.mark.parametrize("raw, shown", LEADS)
+def test_what_a_part_said_before_its_small_print_is_kept(raw, shown):
+    """Fails before the repair round (8 Oct 2026): a part with small print went whole, so
+    'Lot 178, Wine cellar lot included. Agent' read 'Lot 178' and Clare, asked for 'Lot 178,
+    Wine cellar lot included', could no longer confirm the lot; '12 Smith St Agent commission
+    3%' lost its street; a unit's own words went with the commission or heading after them."""
+    assert L.without_agent_text(raw, "<place>") == shown
+
+
+def test_a_note_with_nothing_before_its_small_print_still_goes_whole():
+    for raw in ("Agent commission=6%plus", "Agentcommission=6%plus",
+                "Stock highlighted in orange below is eligible for the 100% commission offer.",
+                "UNIT GROUND m2 MEZZANINE m2 TOTAL m2 PRICE GUARANTEED INCOME P.A.*",
+                "External Agent Price List", "purchaser",
+                "Property Address FIRB Anticipated Completion Commission Rate& Payment Term",
+                # what is said OF the purchaser or the commission is a note, not the line's
+                # own words
+                "Stamp duty payable by purchaser", "Foreign purchaser",
+                "Lot 5 sold to the purchaser", "3 Bed 3 Bath purchaser rebate",
+                "Price includes Agent commission = 2%", "Plus Agent commission = 2%",
+                "Price excludes agent commission of 2%"):
+        assert L.without_agent_text(raw) == "", raw
+
+
+INCENTIVES = [
+    # the agent's share goes; the buyer's money and its words stay
+    ("$50,000 purchaser rebate/agent bonus", "$50,000 purchaser rebate"),
+    ("$5,000 cashback + agent bonus $2,000", "$5,000 cashback"),
+    ("Rebate $1,250,500/agent fee", "Rebate $1,250,500"),
+    ("Agent bonus $5,000; Purchaser rebate $10,000", "Purchaser rebate $10,000"),
+    ("Commission 4% + $10,000 rebate", "$10,000 rebate"),
+    ("$15,000 rebate (agent referral fee $2,000)", "$15,000 rebate"),
+    ("$15,000 rebate (agent fee $2,000) plus FIRB covered", "$15,000 rebate plus FIRB covered"),
+    ("$10,000 rebate.Agent bonus $5,000", "$10,000 rebate"),
+    ("Rebate $15,000 agent fee $2,000", "Rebate $15,000"),
+    ("$10,000 rebate plus agent commission 2%", "$10,000 rebate"),
+    # an amount that is the agent's goes with the agent's words
+    ("$20,000 agent bonus, $10,000 purchaser rebate", "$10,000 purchaser rebate"),
+    ("$20,000 bonus for agents", ""),
+    ("Agent commission 2%", ""),
+    # '$50,000 bonus' beside the purchaser's own offer is the agent's: 12 live rows of
+    # 'Pricelist New Agent.pdf' (South Yarra), whose commission column runs '6% plus' into it
+    ("$50,000bonus.Purchaserrebate", "Purchaserrebate"),
+    ("$50,000 bonus.Purchaserrebate", "Purchaserrebate"),
+    ("$50,000bonus.Purchaser rebate", "Purchaser rebate"),
+    ("$50,000 bonus.Purchaser rebate", "Purchaser rebate"),
+]
+# A bonus or an offer with no agent beside it is the buyer's, and stays as it was.
+BUYERS_OWN = ["$35,000 Discount, Bonus", "$10,000 bonus",
+              "bonus front lot landscaping worth up to $6,500", "$10,000 purchaser rebate",
+              "rebate + FIRB fee covered (FIRB buyer) or $65,000 | $34,700 rebate"]
+
+
+@pytest.mark.parametrize("raw, shown", INCENTIVES)
+def test_an_incentive_loses_the_agents_share_and_never_the_buyers_money(raw, shown):
+    """Fails before the repair round (8 Oct 2026): an incentive parted only at commas, '|'
+    and '/' between words, so '$5,000 cashback + agent bonus $2,000' came out '' -- the card
+    kept its incentive amount with no words -- and '$50,000bonus.Purchaserrebate' kept the
+    agent's bonus."""
+    assert L.shown_incentive(raw) == shown
+    assert L.shown_incentive(shown) == shown
+
+
+@pytest.mark.parametrize("text", BUYERS_OWN)
+def test_the_buyers_own_bonus_or_offer_is_not_the_agents(text):
+    assert L.shown_incentive(text) is text
 
 
 def test_money_is_never_cut_at_its_comma():
@@ -100,16 +239,18 @@ def test_money_is_never_cut_at_its_comma():
     rebate/agent bonus' (37 live rows) came out '$50'. The amount is one part; the '/' sets
     the agent's bonus apart, and the purchaser's rebate is the offer."""
     raw = "$50,000 purchaser rebate/agent bonus"
-    assert L.without_agent_text(raw, words=L.AGENT_ONLY_TEXT) == "$50,000 purchaser rebate"
+    assert L.shown_incentive(raw) == "$50,000 purchaser rebate"
     # as a title or estate the purchaser words go too -- and still nothing reads '$50'
     assert L.without_agent_text(raw, "<place>") == "<place>"
     assert L.without_agent_text("$1,250,000 to $1,300,000, Agent commission 2%") == \
         "$1,250,000 to $1,300,000"
-    # a unit address keeps its slash: '3/45' is not a break
-    assert L.without_agent_text("3/45 May Street Agent commission, Kew VIC") == "Kew VIC"
+    # a unit address keeps its slash: '3/45' is not a break, and the street before the note
+    # stays (repair round, 8 Oct 2026)
+    assert L.without_agent_text("3/45 May Street Agent commission, Kew VIC") == \
+        "3/45 May Street, Kew VIC"
 
 
-@pytest.mark.parametrize("raw, _shown", TITLES + ESTATES)
+@pytest.mark.parametrize("raw, _shown", TITLES + ESTATES + LEADS)
 def test_what_comes_back_carries_no_small_print_and_a_second_pass_changes_nothing(raw, _shown):
     once = L.without_agent_text(raw, "<place>")
     assert not L.AGENT_TEXT.search(once), once
@@ -133,8 +274,11 @@ def _small_print_stock():
             "Stock highlighted in orange below is eligible for the 100% commission offer."),
             lot_address=("Single Car Space & OB Storage Agent commission=6%plus, South Yarra VIC"
                          if i % 2 else "Agent commission=6%plus, South Yarra VIC"))
-    for r in rows[8:12]:
+    for r in rows[8:10]:
         r.update(estate_name="Upfront FIRB Fee payable by", lot_number=None,
+                 lot_address="2 Bed 2 Bath 1 Powder purchaser")
+    for r in rows[10:12]:            # Aria: the estate column ends in the next one's heading
+        r.update(estate_name="2 Bed 2 Bath 1 Powder purchaser", lot_number=None,
                  lot_address="2 Bed 2 Bath 1 Powder purchaser")
     for r in rows[12:16]:            # a project named off 'The Albertine External Agent.pdf'
         r.update(builder_name="The Albertine External Agent", attribution_scope="project",
@@ -151,11 +295,22 @@ def _small_print_stock():
     for r in rows[24:26]:            # a project named off 'Prince Parade Agent.pdf'
         r.update(builder_name="Prince Parade Agent", attribution_scope="project",
                  estate_name=None, source_doc="doc-prince-parade")
+    # Repair round (8 Oct 2026): the agent's '$50,000 bonus' beside the purchaser's offer
+    # ('Pricelist New Agent.pdf'), what a title said before its small print, and an address
+    # named with an agent word.
+    for r in rows[26:28]:
+        r.update(incentive_text="$50,000bonus.Purchaserrebate", incentive_amount=50000.0,
+                 suburb="South Yarra", source_doc="doc-south-yarra")
+    rows[28].update(lot_number="178", lot_address="Lot 178, Wine cellar lot included. Agent",
+                    suburb="South Yarra", estate_name="Wine cellar lot included. Agent",
+                    source_doc="doc-south-yarra")
+    rows[29].update(lot_number="7", lot_address="Lot 7, 12 Agent Street",
+                    estate_name="Commission's Hill Estate", source_doc="doc-commissions-hill")
     # Two stale lots, one price and design, no lot number, on two documents, whose titles
     # differ only in their small print: as shown both read 'South Yarra VIC'. Two lots, so
     # both are offered to confirm -- a copy test on the title as shown would hide one.
-    for n, title in enumerate(("Car stacker. Agent commission =, South Yarra VIC",
-                               "Wine cellar lot included. Agent, South Yarra VIC")):
+    for n, title in enumerate(("Agent commission =6%plus, South Yarra VIC",
+                               "Agentcommission=6%plus, South Yarra VIC")):
         rows.append(S.row("v2:stale-sp-%d" % n, builder_name="Old Rise Homes",
                           lot_number=None, lot_address=title, suburb="South Yarra",
                           estate_name=None, source_doc="doc-stale-sp-%d" % n,
@@ -189,6 +344,7 @@ def searched(tmp_path_factory):
             off.setattr(where, "without_agent_text",
                         lambda value, fallback="", words=None: value, raising=False)
             off.setattr(where, "shown_title", lambda title, card: title, raising=False)
+            off.setattr(where, "shown_incentive", lambda value: value, raising=False)
         before = _answers(module)
     yield module, rows, now, before
     mp.undo()
@@ -236,6 +392,32 @@ def test_the_titles_say_where_the_lot_is_and_the_offer_stays(searched):
     flagstaff = {b["name"] for b in paged["buildings"] if b["key"] == "VIC|" + _research_norm(
         "LISTINGSAVAILABLEFORSALEFORE-AGENT")}
     assert flagstaff == {"Price list (builder not named)"}, flagstaff
+
+
+def test_the_repair_round_reaches_every_caller(searched):
+    """Fails before the repair round (8 Oct 2026), through the whole search, for the Research
+    tab (paged) and Clare's hook (unpaged): the agent's '$50,000 bonus' stayed in the
+    incentive, 'Lot 178, Wine cellar lot included. Agent' read 'Lot 178', '2 Bed 2 Bath 1
+    Powder purchaser' read only its place, and '12 Agent Street' / "Commission's Hill Estate"
+    lost their names. The incentive amount is as read."""
+    _research, _rows, (unpaged, paged), _before = searched
+    for resp in (unpaged, paged):
+        by_hash = {e["content_hash"]: e for e in resp["shortlist"]}
+        for h in ("v2:fresh-00026", "v2:fresh-00027"):
+            assert (by_hash[h]["incentive_text"], by_hash[h]["incentive_amount"]) == \
+                ("Purchaserrebate", 50000.0), by_hash[h]
+        lot178 = by_hash["v2:fresh-00028"]
+        assert "Wine cellar lot included" in lot178["lot_address"], lot178["lot_address"]
+        assert not SMALL_PRINT.search(lot178["lot_address"]), lot178["lot_address"]
+        named = by_hash["v2:fresh-00029"]
+        assert "12 Agent Street" in named["lot_address"], named["lot_address"]
+        for h in ("v2:fresh-00010", "v2:fresh-00011"):
+            unit = by_hash[h]["lot_address"]
+            assert unit.startswith("2 Bed 2 Bath 1 Powder"), unit
+            assert not SMALL_PRINT.search(unit), unit
+    full = {e["content_hash"]: e for e in paged["shortlist"]}
+    assert full["v2:fresh-00028"]["estate_context"] == "Wine cellar lot included"
+    assert full["v2:fresh-00029"]["estate_context"] == "Commission's Hill Estate"
 
 
 def _research_norm(value):
@@ -312,8 +494,11 @@ def test_a_package_still_meets_the_card_it_was_merged_into():
     package = {"lot_address": "Single Car Space & OB Storage Agent commission=6%plus, "
                               "South Yarra VIC", "suburb": "South Yarra", "state": "VIC",
                "advertised_package_price": 1425000.0}
-    card = dict(package, lot_address="South Yarra VIC")
-    assert SR.card_title(package) == "South Yarra VIC"
-    assert P._visible_key(package) == P._visible_key(card) == ("south yarra vic", 1425000)
+    card = dict(package, lot_address="Single Car Space & OB Storage, South Yarra VIC")
+    assert SR.card_title(package) == "Single Car Space & OB Storage, South Yarra VIC"
+    assert P._visible_key(package) == P._visible_key(card) == (
+        "single car space & ob storage, south yarra vic", 1425000)
+    bare = dict(package, lot_address="Agent commission=6%plus, South Yarra VIC")
+    assert P._visible_key(bare) == P._visible_key(dict(bare, lot_address="South Yarra VIC"))
     clean = dict(package, lot_address="Lot 5, Tarneit VIC")
     assert SR.card_title(clean) == "Lot 5, Tarneit VIC"

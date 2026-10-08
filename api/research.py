@@ -42,7 +42,7 @@ if _HERE not in sys.path:
 
 import _bootstrap
 import _candidates
-from address_label import AGENT_ONLY_TEXT, shown_title, without_agent_text
+from address_label import shown_incentive, shown_title, without_agent_text
 
 # The rejection log is rendered as one card per entry, so an uncapped log would post
 # hundreds of DOM nodes. The count stays exact; the list is trimmed and says so.
@@ -94,8 +94,7 @@ def _shortlist_entry(p, availability=None):
         # when the source only described an incentive in words; the text travels with it
         # so the document can say what was offered without inventing a figure.
         'incentive_amount': getattr(p, 'incentive_amount', 0.0) or 0.0,
-        'incentive_text': without_agent_text(getattr(p, 'incentive_text', '') or '',
-                                             words=AGENT_ONLY_TEXT),
+        'incentive_text': shown_incentive(getattr(p, 'incentive_text', '') or ''),
         # Rows on the comparison Coleen's team sends: Estate, Land Price, Build Price.
         'estate_context': without_agent_text(getattr(p, 'estate_context', '') or ''),
         'land_price': p.price_breakdown.land_price,
