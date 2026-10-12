@@ -1888,5 +1888,15 @@ console.log("\n--- a card titled only by its place shows its line as listed (8 O
   check("... and the grouped markup is only the renderer's own", markupProblems(dump(s.el("resultsContent"))).length === 0);
 }
 
+// ------------------------------------------------------------------ the Group by building switch
+// 12 Oct 2026: the form's `input { width: 100% }` stretched this checkbox into a wide box and
+// wrapped "Group by building" onto three lines over every search's results.
+console.log("\n--- the Group by building switch keeps its checkbox small and its label on one line ---");
+const css = (html.match(/<style>([\s\S]*?)<\/style>/) || ["", ""])[1].replace(/\/\*[\s\S]*?\*\//g, "");
+check("the switch's checkbox is not stretched by the form's width:100%",
+      /\.results-head\s+\.group-toggle\s+input\s*\{[^}]*width\s*:\s*auto/.test(css));
+check("the switch's label does not wrap",
+      /\.results-head\s+\.group-toggle\s*\{[^}]*white-space\s*:\s*nowrap/.test(css));
+
 console.log(fail ? `\n${fail} of ${pass + fail} CHECKS FAILED` : `\nALL ${pass} CHECKS PASSED`);
 process.exit(fail ? 1 : 0);
