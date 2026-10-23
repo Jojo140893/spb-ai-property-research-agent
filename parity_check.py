@@ -353,7 +353,8 @@ def building_of(rec, group, doc, label):
     return "%s|%s" % (group, key), _plain(name)[:80]
 
 
-def obvious_lots(catalogue, today, build_cells, overseas, left_out=None, blank_stating=None):
+def obvious_lots(catalogue, today, build_cells, overseas, left_out=None, blank_stating=None,
+                 withdrawn=None):
     """[lot] for every obvious lot, picked from the database (see the module docstring).
     Each lot is a dict: hash, id, group (a searched state, BLANK or OTHER), channel,
     e_agent, building, building_label, doc, doc_label, price.
@@ -366,7 +367,11 @@ def obvious_lots(catalogue, today, build_cells, overseas, left_out=None, blank_s
     left out ONLY for being blank on a list that states "Available" beside them (repair
     round 2, 7 Oct 2026, parity verifier): E-Agent's PDF still shows those lots -- AVIA's 35
     'EOI' lines, a status column the parser missed -- and a 100% read against a set that
-    leaves them out says nothing about them, so the report names how many and where."""
+    leaves them out says nothing about them, so the report names how many and where.
+
+    withdrawn(builder_name) -> True drops a builder the client has withdrawn: the search
+    leaves it out on purpose, and Proxima listing its lots tonight does not make them lots
+    the app should show."""
     nights = {today - timedelta(days=i) for i in range(RECENT_NIGHTS)}
     live = [r for r in catalogue.db.values() if not r.get("superseded_by")]
     docs = {}
@@ -391,6 +396,8 @@ def obvious_lots(catalogue, today, build_cells, overseas, left_out=None, blank_s
         if blank_beside_stated and blank_stating is None:
             continue
         if left_out is not None and left_out(rec, doc):
+            continue
+        if withdrawn is not None and withdrawn(rec.get("builder_name")):
             continue
         if not SR.priced_as_a_home(rec, build_cells(dict(rec))):
             continue
@@ -839,8 +846,11 @@ def measure(args):
         return read_left_it_out(rec, doc, latest_read, reads, cut_short, full)
 
     blank_stating = {}
+    # The bundle's own rule, so parity drops exactly what the shipped search drops. An
+    # older bundle without it still shows the builder, and parity then counts it.
     lots = obvious_lots(catalogue, today, C.snapshot_build_cells, overseas, left_out,
-                        blank_stating=blank_stating)
+                        blank_stating=blank_stating,
+                        withdrawn=getattr(C, "is_withdrawn_builder", None))
     by_group = defaultdict(list)
     for lot in lots:
         by_group[lot["group"]].append(lot)
@@ -2090,12 +2100,24 @@ def read_bar(manifest, history, night, required=False, facts=None):
     for n in earlier:
         for key, label in (n.get("manifest_labels") or {}).items():
             labels.setdefault(key, label)
+    # A WITHDRAWN BUILDER'S PORTAL stops being read on purpose (builder_names), so for a
+    # week after it is withdrawn its link is named here, not failed. Imported here, in the
+    # parent: the --in-bundle child must import builder_names from the bundle only.
+    from builder_names import is_withdrawn_builder
+    withdrawn = []
     for key in sorted(set(tonight) | {k for n in earlier for k in (n.get("manifest") or {})}):
         if tonight.get(key):
             continue
         before = [(n.get("manifest") or {}).get(key) for n in earlier]
         if any(b for b in before if isinstance(b, (int, float))):
-            vanished.append(labels.get(key) or key)
+            label = labels.get(key) or key
+            if any(is_withdrawn_builder(part) for part in label.split(" - ")):
+                withdrawn.append(label)
+            else:
+                vanished.append(label)
+    if withdrawn:
+        notes.append("read: %d link(s) of a withdrawn builder no longer read, by design -- %s"
+                     % (len(withdrawn), "; ".join(withdrawn[:NAME_FIRST])))
     if vanished:
         failures.append({"bar": "read", "group": "harvest",
                          "text": "%d document(s) yielded lots in the last week and 0 tonight "

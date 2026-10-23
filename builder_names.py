@@ -73,6 +73,34 @@ CLIENT_CONFIRMED_ALIASES = {
     "level33": "Atchison and Kenny",
 }
 
+# Builders the CLIENT has withdrawn. No harvest reads their portal, no search returns
+# their lots and nothing recommends them, whichever channel the lot arrived through. Like
+# the aliases above, only from someone with authority saying so, recorded with who and when.
+#
+#   Bathla — Colin Nduru, call of 23 Oct 2026: "Take off Butler. They went off bust.
+#   We're no longer using them. So just, just delete them." Fathom heard "Bathla" as
+#   "Butler"; Bathla is the only name on the sign-in table he was reading from, and Bathla
+#   Group entered voluntary administration on 25 Aug 2026. Most of its stock came through
+#   Proxima (198 of its 226 rows in the 26 Sep database), not its own portal, so this is a
+#   rule about the builder and not about the portal.
+#
+# The stored rows are left in the database. Taking a name off this list brings them back.
+WITHDRAWN_BUILDERS = frozenset({"Bathla Development"})
+
+
+def is_withdrawn_builder(name: str) -> bool:
+    """True when this builder name, in any spelling the client has merged, is withdrawn.
+
+    Matched through CLIENT_CONFIRMED_ALIASES and nothing looser: "Bathla Group" on a
+    Proxima row and "Bathla" on the portal are withdrawn, and a name that merely
+    contains "bathla" is not.
+    """
+    raw = str(name or "").strip()
+    if not raw:
+        return False
+    return CLIENT_CONFIRMED_ALIASES.get(_squash(raw), raw) in WITHDRAWN_BUILDERS
+
+
 # Values that cannot be a company, whatever field they arrived in. A floor, a stage or a
 # tower is a place inside a development, and storing one as the builder puts a fiction in
 # front of a buyer — "Level 33" reached 318 listings that way. Structural, so the next

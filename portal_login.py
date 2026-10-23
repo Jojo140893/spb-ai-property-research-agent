@@ -37,6 +37,7 @@ from pathlib import Path
 
 import config
 from builder_registry import BuilderRegistry
+from builder_names import is_withdrawn_builder
 from sources.scraper_base import (SESSION_DIR, PLAYWRIGHT_AVAILABLE, browser_user_agent,
                                   LOGGED_IN_JS)
 
@@ -63,6 +64,10 @@ def _targets():
     for b in reg.get_all_builders():
         url = (b.get("portal_url") or "").strip()
         if not real(url):
+            continue
+        # Withdrawn by the client: the harvest no longer signs in, so a row here could
+        # only age into "expired" and send someone to fix a supplier that is gone.
+        if is_withdrawn_builder(b.get("builder_name")):
             continue
         if "e-agent" in url.lower():
             if "e_agent" not in seen:

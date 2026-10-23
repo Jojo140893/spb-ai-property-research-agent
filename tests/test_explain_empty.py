@@ -227,7 +227,9 @@ def test_the_funnel_accounts_for_colins_search(colin_by_mode, mode):
     out = colin_by_mode[mode]
     expected = FUNNEL_BY_MODE[mode]
     funnel = out["search_help"]["funnel"]
-    assert funnel["snapshot_rows"] == 8694
+    # 8,694 rows in the 17 Sep fixture. Bathla's 198 no longer load since it was withdrawn
+    # (builder_names, 23 Oct 2026); all 198 are NSW, so nothing below this QLD search moves.
+    assert funnel["snapshot_rows"] == 8694 - 198
     assert (funnel["snapshot_rows"] - sum(funnel["out_of_scope"].values())
             == funnel["in_state_rows"] == out["in_state_rows"])
     assert funnel["shortlisted"] == out["shortlist_count"] == 2
