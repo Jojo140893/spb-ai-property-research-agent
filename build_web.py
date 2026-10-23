@@ -1105,6 +1105,16 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     if _guessed:
         print(f"    {_guessed} listing(s) took a suburb from their builder's or "
               f"document's other lots (inferred, badged, never benchmarked)")
+    # A BUILDER THE CLIENT HAS WITHDRAWN (builder_names.WITHDRAWN_BUILDERS) leaves here,
+    # after every pass above has read its rows as evidence for their neighbours, so no
+    # other row's suburb or state differs from a build without this. stock.json, the
+    # coverage floor and our side of the benchmarks below then never see it.
+    from builder_names import is_withdrawn_builder
+    _kept = [b for b in buildings if not is_withdrawn_builder(b.get("builder_name"))]
+    if len(_kept) != len(buildings):
+        print(f"    {len(buildings) - len(_kept)} listing(s) left out: their builder "
+              f"is withdrawn")
+    buildings = _kept
     # WHAT THE APP WILL ACTUALLY RESOLVE, measured here because this is the only place
     # that holds both the graded rows and the sibling maps at once. The stored grade
     # alone understates it -- the estate and page maps run per REQUEST in
@@ -1461,6 +1471,9 @@ _FUNCTION_ROOT_MODULES = (
     # _candidates.py imports this to decide whether a row's suburb is a place at all.
     # Omitting it would not fail the build — it would fail every deployed search.
     "suburb_quality.py",
+    # _candidates.py and sources/builder_portals.py import is_withdrawn_builder from it at
+    # module level. Standard library only.
+    "builder_names.py",
     # THE DOCUMENT MAP HAD NEVER SHIPPED. suburb_quality imports this lazily inside a
     # try/except for both FROM_DOCUMENT and FROM_VERIFIED, so its absence in the bundle
     # was not an error anywhere: the deployed API simply answered "" to both and 941
@@ -2274,6 +2287,10 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
     portals = [_health(n, t, portal_ts) for n, t in
                _tally("builder_name", " AND source_channel LIKE ?",
                       ("Direct Builder Portal%",)).items()]
+    # A withdrawn builder's portal is no longer read, so its row would only age into a
+    # stale alarm naming a supplier the client has dropped.
+    from builder_names import is_withdrawn_builder
+    portals = [p for p in portals if not is_withdrawn_builder(p["channel"])]
     portals.sort(key=lambda c: (-(c["days_ago"] or 0), -c["live"]))
     for p in portals:
         p["login"] = _login_for(p["channel"], logins)

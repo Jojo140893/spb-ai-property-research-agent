@@ -31,6 +31,7 @@ except ImportError:                                                     # pragma
     from types import SimpleNamespace as _Stub
     harvest_manifest = _Stub(entry=lambda *a, **k: {}, tag=lambda *a, **k: None)
 from builder_registry import BuilderRegistry
+from builder_names import is_withdrawn_builder
 
 logger = logging.getLogger("spb.scraper.portals")
 
@@ -434,9 +435,11 @@ class BuilderPortalSource(PropertySource):
                                                            "proxima", "----"))
         # A real non-E-Agent portal URL is its own stock source, so scrape it even if
         # the builder is also listed on E-Agent (E-Agent is handled separately).
+        # A builder the client has withdrawn is not signed in to at all (builder_names).
         targets = [
             b for b in self.registry.get_builders_by_state(state)
             if _real_portal(b.get("portal_url"))
+            and not is_withdrawn_builder(b.get("builder_name"))
         ]
         if not targets:
             logger.info("Builder portal search: no direct-portal builders in scope for %s.", state)

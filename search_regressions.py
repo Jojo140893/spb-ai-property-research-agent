@@ -1415,12 +1415,13 @@ def _email_lot_key(rec, catalogue):
     return doc, lot, int(round(price))
 
 
-def obvious_candidates(catalogue, state, low, high, today, build_cells):
+def obvious_candidates(catalogue, state, low, high, today, build_cells, withdrawn=None):
     """The obvious rows for a state and price range, picked from the DATABASE: live, in
     the state, priced in range, stated available, at most OBVIOUS_MAX_DAYS old, and not a
     Build Only / Land Only price (by its text, or by its own land and build columns), one
     part of a bigger printed total, or a price-list line that does not print its price
-    (build_cells is the bundle's snapshot_build_cells).
+    (build_cells is the bundle's snapshot_build_cells), nor a builder the client has
+    withdrawn (withdrawn is the bundle's is_withdrawn_builder; None for an older bundle).
 
     An emailed row ages from the list's FIRST read (critique #27), and a lot's first read
     is the earliest of its live twins on that list: a re-parse stamps its rows with a later
@@ -1439,6 +1440,8 @@ def obvious_candidates(catalogue, state, low, high, today, build_cells):
     out = []
     for rec in live_db:
         if str(rec.get("state") or "").strip().upper() != state:
+            continue
+        if withdrawn is not None and withdrawn(rec.get("builder_name")):
             continue
         price = _num(rec.get("price"))
         if not price or price <= 0 or price < low or (high and price > high):
@@ -1510,7 +1513,8 @@ def obvious_rows_check(C, research, bootstrap, catalogue, snapshot_path):
     """The independent obvious-rows check, as a Run hook. See the module docstring."""
 
     def picked(state, low, high, today):
-        return obvious_candidates(catalogue, state, low, high, today, C.snapshot_build_cells)
+        return obvious_candidates(catalogue, state, low, high, today, C.snapshot_build_cells,
+                                  withdrawn=getattr(C, "is_withdrawn_builder", None))
 
     def hook(run, where, brief, body, resp):
         used = resp.get("brief_used") or {}

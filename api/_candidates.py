@@ -44,6 +44,7 @@ from _bootstrap import HERE, ROOT
 import suburb_quality
 from address_label import clean_display_address, display_suburb
 from provenance import primary_source_link
+from builder_names import is_withdrawn_builder
 
 # Exactly the fields build_web.py exports to stock.json, so both readers agree and
 # neither can reach an internal column (content_hash, dedup_key, source_text).
@@ -501,7 +502,11 @@ def load_snapshot():
         tried.append(str(path))
         if not path.exists():
             continue
-        return (_read_json(path) if kind == "json" else _read_sqlite(path)), str(path)
+        rows = _read_json(path) if kind == "json" else _read_sqlite(path)
+        # A withdrawn builder is never a candidate, whichever reader found the row.
+        # build_web already leaves it out of stock.json; this also holds for a snapshot
+        # built before it was withdrawn, and for a database read directly.
+        return [r for r in rows if not is_withdrawn_builder(r.get("builder_name"))], str(path)
     raise FileNotFoundError(
         "no stock snapshot found (looked at: %s). Deploy stock.json alongside the "
         "function, or set SPB_SNAPSHOT_JSON / SPB_SNAPSHOT_DB." % ", ".join(tried))
