@@ -340,6 +340,46 @@ console.log("\n--- /r is public, and NOTHING else is ---");
         stock && stock.status === 401, "CATALOGUE EXPOSED");
 }
 
+console.log("\n--- the forgot-password routes: four exact matches, and the login page links to them ---");
+{
+  // 23 Oct 2026. The person using them has lost the password, so they cannot hold a session; that
+  // makes them the only other public routes besides /r, and their scope must stay exactly this size.
+  // (tests/forgot_password_checks.mjs probes every route and method; this is the part that belongs
+  // beside the /r checks, and runs with the feature UNCONFIGURED: no Blob token, no SMTP password.)
+  for (const p of ["/forgot", "/reset"]) {
+    const res = await call(req(p, { accept: "text/html" }));
+    check(`GET ${p} is served without a login`, res && res.status === 200 &&
+          (await res.text()).includes("Password reset is not set up yet"), res && "status " + res.status);
+  }
+  for (const p of ["/api/auth/forgot", "/api/auth/reset"]) {
+    const res = await call(req(p, { method: "POST" }));
+    check(`POST ${p} reaches its function without a login`, res === undefined, res && "status " + res.status);
+    const get = await call(req(p));
+    check(`GET ${p} still requires a login`, get && get.status === 401, get ? "status " + get.status : "SERVED");
+  }
+  for (const m of ["POST", "PUT", "DELETE", "PATCH"]) {
+    for (const p of ["/forgot", "/reset"]) {
+      const res = await call(req(p, { method: m }));
+      check(`${m} ${p} still requires a login`, res && res.status === 401, res ? "status " + res.status : "SERVED");
+    }
+  }
+  // A prefix test would open every one of these.
+  for (const p of ["/forgot/", "/reset/", "/forgot.html", "/reset.html", "/forgotten", "/resets", "/forgot-password",
+                   "/api/auth", "/api/auth/", "/api/auth/other", "/api/auth/forgot/", "/api/auth/reset/",
+                   "/api/auth/forgot.py", "/api/auth/reset.py", "/api/auth/forgotx", "/API/auth/forgot", "/Forgot"]) {
+    const res = await call(req(p, { method: p.startsWith("/api") ? "POST" : "GET" }));
+    check(`${p} still requires a login`, res && res.status === 401, res ? "status " + res.status : "SERVED WITHOUT AUTH");
+  }
+  const login = await (await call(req("/login", { accept: "text/html" }))).text();
+  check("the login page links to /forgot", login.includes('<a href="/forgot">Forgot password?</a>'));
+  const done = await (await call(req("/login?reset=1", { accept: "text/html" }))).text();
+  check("/login?reset=1 says the password was changed", /Password changed[^<]*sign in with the new password/.test(done));
+  check("  ...and an ordinary /login does not", !/Password changed/.test(login));
+  const unconfigured = await call(req("/forgot", { accept: "text/html" }));
+  check("unconfigured, the forgot page never offers a button", !(await unconfigured.text()).includes("Email me a code"));
+  delete process.env.SPB_SMTP_PASSWORD;
+}
+
 console.log("\n--- signing out ---");
 {
   const res = await call(req("/logout", { cookie, accept: "text/html" }));
