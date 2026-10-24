@@ -200,8 +200,13 @@ class BuilderPortalSource(PropertySource):
                     scraper.throttle()
                 except Exception as e:
                     logger.error("[%s] two-step login stalled after the identifier step: %s", cfg.name, e)
+                    # "error", like any other form that timed out: the password was never
+                    # typed, so the portal has not refused it. Left at "bounced" the harvest
+                    # itself said "could not sign in" about a password step that never
+                    # showed; now the check that follows decides the row.
+                    self._login_how = "error"
                     self._login_reason = ("the password step never appeared after the "
-                                          "identifier (%s)" % type(e).__name__)
+                                          "identifier: %s" % type(e).__name__)
                     return False
             page.fill(cfg.password_selector, password, timeout=10000)
             page.click(cfg.submit_selector, timeout=10000)

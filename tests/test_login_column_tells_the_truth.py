@@ -9,7 +9,8 @@ THE NIGHT THIS EXISTS FOR, 23 Oct 2026 (run 39950641008). The Login column read:
     Proxima    NOT CHECKED       -- as it had through a real 11-day sign-in outage
                                     (12 Oct 20:51 to 23 Oct 11:31), while the harvest
                                     logged "still bounced ... the password may have
-                                    changed" every night
+                                    changed" on 11 of its 12 runs (on 21 Oct the
+                                    sign-in form timed out instead)
 
 The owner and the client would chase two logins that were fine and miss the one that was
 broken. Three causes, each pinned here:
@@ -204,6 +205,10 @@ class _Page:
         self.ctx, self.web = ctx, ctx.web
         self.url, self.doc, self.fields = "about:blank", _Doc(""), {}
 
+    @property
+    def context(self):
+        return self.ctx
+
     # -- navigation
     def goto(self, url, wait_until=None, timeout=None):
         self.web.loads.append((url, wait_until))
@@ -315,6 +320,10 @@ class _Ctx:
 
     def signed_in(self):
         return self.token in self.web.live
+
+    def clear_cookies(self, **kw):
+        # E-Agent's _login clears its own cookies before signing in as a new visitor.
+        self.token = None
 
     def new_page(self):
         return _Page(self)
@@ -662,15 +671,31 @@ def test_the_harvests_own_sign_in_reaches_the_settings_payload(web, monkeypatch,
     assert _harvest_proxima() == [], "premise: Proxima bounced"
     launched_by_harvest = web.launches
 
-    web.live.discard("t-hermitage")       # the portal ends the session after the read
+    # Both sessions end after the read, so the check that follows finds each one signed
+    # out. Only the harvest's own record can then say "signed in" for either: had E-Agent's
+    # session been left live, the check's probe would have said "ok" by itself, and a
+    # harvest that recorded nothing for E-Agent would have passed this test (review of
+    # 5b80378: removing every E-Agent record left all 19 tests green).
+    web.live.discard("t-eagent")
+    web.live.discard("t-hermitage")
     loads_before = len(web.loads)
     _check(monkeypatch, "e_agent", "hermitage", "proxima", "torsion", write=True)
     assert not any(PX in u for u, _ in web.loads[loads_before:]), "the check opened Proxima"
     assert web.launches == launched_by_harvest + 2, "one look each at E-Agent and Hermitage"
 
     payload, rows = _channels(tmp_path)
-    assert rows["E-Agent"]["login"]["state"] == "ok", rows["E-Agent"]["login"]
+    ea = rows["E-Agent"]["login"]
+    assert ea["state"] == "ok", ea
+    assert ea.get("basis") == "harvest", ea
+    assert "signed in by the harvest" in ea["note"], ea
+    assert "the check after it found the saved session signed out" in ea["note"], ea
+    # The check's reason is published inside the note's own brackets: a path, no host, and
+    # no second pair of brackets of its own (5b80378 read "(... (last: https://www...))").
+    assert "the last at /" in ea["note"], ea
+    assert "e-agent.com.au" not in ea["note"] + ea.get("reason", ""), ea
+    assert "))" not in ea["note"], ea
     assert rows["Hermitage Homes"]["login"]["state"] == "ok", rows["Hermitage Homes"]["login"]
+    assert rows["Hermitage Homes"]["login"].get("basis") == "harvest"
     assert "signed in by the harvest" in rows["Hermitage Homes"]["login"]["note"]
     assert "signed out (password field at /login)" in rows["Hermitage Homes"]["login"]["note"]
     px = rows["Proxima"]["login"]
@@ -734,6 +759,95 @@ def test_a_hermitage_read_that_has_to_sign_in_says_so(web, monkeypatch):
     assert _harvest_hermitage(monkeypatch)
     rec = scraper_base.read_harvest_logins()["portal_hermitage_homes"]
     assert rec["outcome"] == "signed_in", rec
+
+
+TWO_STEP = "https://portal.twostep.example"
+TWO_STEP_ID_PAGE = """<html><body><form><input name="email" type="email">
+<button>Continue</button></form></body></html>"""
+
+
+def _harvest_two_step(monkeypatch):
+    """A two-step portal (email, Continue, then the password), the shape Bathla and FRD
+    had, built from Hermitage's config so only the steps differ. Registered under its own
+    host, so the harvest and the check both find it by config_for_url."""
+    import dataclasses
+    from sources import portal_config
+    monkeypatch.setattr(builder_portals, "extract_listings",
+                        lambda page, builder_hint="", state_hint="": [])
+    monkeypatch.setattr(builder_portals, "_load_every_card", lambda scraper, cfg: None)
+    cfg = dataclasses.replace(
+        builder_portals.config_for_url(HERMITAGE + "/login"), name="Two Step Homes",
+        login_url=TWO_STEP + "/login", listings_url=TWO_STEP + "/stock",
+        email_selector="input[name='email']", continue_selector="button:has-text('Continue')",
+        password_selector="input[type=password]", logged_in_selector="text=Logout")
+    monkeypatch.setitem(portal_config.BUILDER_PORTAL_CONFIGS, "portal.twostep.example", cfg)
+    monkeypatch.setitem(TARGETS, "two_step",
+                        ("portal_two_step_homes", "Two Step Homes", TWO_STEP + "/login"))
+    builder = {"builder_name": "Two Step Homes", "portal_url": TWO_STEP + "/login",
+               "states": ["VIC"], "portal_login_email": "agent@example.test",
+               "portal_login_password": "pw"}
+    bp = builder_portals.BuilderPortalSource(registry=_NoBuilders())
+    return bp._scrape_builder_pages(builder, {}, cfg)
+
+
+@pytest.mark.parametrize("portal", ["e_agent", "portal_two_step_homes"])
+def test_a_sign_in_form_that_never_opens_says_nothing_about_the_password(web, monkeypatch,
+                                                                          portal):
+    """The rule the record keeps: a form that timed out is "error", no verdict, because no
+    password was ever typed. 5b80378 broke it in two places and wrote "bounced" -- RE-LOGIN
+    NEEDED on the strength of a page that never showed its form:
+
+      e_agent                E-Agent's members form never appeared. On 24 Sep that exact
+                             ending was a selector that opened Google's popup, not a refusal.
+      portal_two_step_homes  the password step never appeared after the email step.
+
+    With no verdict from the harvest the check decides, and the note says what the harvest
+    saw."""
+    _session(web.sessions / (portal + ".json"), "t-ended")
+    if portal == "e_agent":
+        monkeypatch.setattr(e_agent, "open_members_form",
+                            lambda page, password_selector=None, seconds=30: (None, None, False))
+        monkeypatch.setattr(EAgentSource, "_record_login_failure", lambda *a, **k: None)
+        src = EAgentSource()
+        src.username, src.password = "agent@example.test", "pw"
+        src._scrape_stocklist_files = lambda scraper: []
+        src._scrape_category_pages = lambda scraper, seen: []
+        src._scrape_listings = lambda scraper: []
+        assert src.search({}) == []
+        said, target = "the login form never appeared", "e_agent"
+    else:
+        web.pages[TWO_STEP + "/stock"] = ("<html><body>Logout</body></html>",
+                                          "->" + TWO_STEP + "/login")
+        web.pages[TWO_STEP + "/login"] = (TWO_STEP_ID_PAGE, TWO_STEP_ID_PAGE)
+        assert _harvest_two_step(monkeypatch) == []
+        said = "the password step never appeared after the identifier: TimeoutError"
+        target = "two_step"
+
+    rec = scraper_base.read_harvest_logins()[portal]
+    assert rec["outcome"] == "error", rec
+    assert rec["reason"] == said, rec
+
+    row = _check(monkeypatch, target)[portal]
+    assert row["basis"] == "check", row
+    assert row["state"] == "expired", row          # the saved session itself is dead
+    assert "did not finish (%s)" % said in row["note"], row
+    assert "could not sign in" not in row["note"], row
+    assert "))" not in row["note"], row
+
+
+def test_a_hand_edited_record_cannot_stop_the_check(tmp_path):
+    """The harvest writes naive local times. An "at" with a timezone, from a hand edit,
+    made the age arithmetic raise TypeError and took the whole --check down with it."""
+    path = tmp_path / "h.json"
+    path.write_text(json.dumps({
+        "portal_x": {"outcome": "session", "reason": "", "url": "",
+                     "at": "2026-10-24T00:40:00+11:00", "run": "by hand"},
+        "portal_y": {"outcome": "bounced", "reason": "r", "url": "",
+                     "at": datetime.now().isoformat(timespec="seconds"), "run": "r"}}),
+        encoding="utf-8")
+    got = scraper_base.read_harvest_logins(path)
+    assert "portal_x" not in got
+    assert got["portal_y"]["outcome"] == "bounced", "a good record beside it still reads"
 
 
 # ------------------------------------------------------------------ the record itself

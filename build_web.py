@@ -2125,8 +2125,9 @@ def _login_for(name, logins):
     #
     # And who measured it and what the page showed (23 Oct 2026): "basis" is "harvest"
     # when tonight's own sign-in decided the row and "check" when the saved session was
-    # reopened afterwards; "reason" tells a dead session from a crash. The row's URL stays
-    # in login_status.json and is not published.
+    # reopened afterwards; "reason" tells a dead session from a crash. The row's "url"
+    # stays in login_status.json and is not published; a reason or note names a PATH at
+    # most ("password field at /login"), never a host or a query string.
     for k in ("self_service", "blocked_by", "note", "basis", "reason"):
         if k in hit:
             out[k] = hit[k]

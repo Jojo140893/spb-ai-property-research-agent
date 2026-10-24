@@ -34,6 +34,7 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import config
 from builder_registry import BuilderRegistry
@@ -125,8 +126,9 @@ def _needs_no_login(name, url) -> bool:
 # This used to read "harvests from .browser_profiles, not this session file", which stopped
 # being true on the runner, and with nothing else to go on the cell said NOT CHECKED through
 # an 11-day sign-in outage (12 Oct 20:51 to 23 Oct 11:31) while the harvest logged "still
-# bounced ... the password may have changed" every night. The text below is shown only on a
-# night the harvest did not try Proxima at all.
+# bounced ... the password may have changed" on 11 of its 12 runs (on 21 Oct the sign-in
+# form timed out instead: "sign-in attempt failed (Page.click: Timeout)"). The text below
+# is shown only on a night the harvest did not try Proxima at all.
 _ELSEWHERE = {"portal_proxima": "only the nightly harvest signs in to Proxima (this check "
                                 "never opens it), and it did not try tonight"}
 
@@ -176,10 +178,13 @@ def _probe_session(name, url) -> dict:
                 from sources.e_agent import EAgentSource
                 ok = bool(EAgentSource()._authenticated(scraper))
                 where = safe_url(scraper.page.url)
+                # The PATH only, as signed_out_reason gives it: the reason is published in
+                # channels.json (the row's full url is not), and it is set inside the
+                # note's own brackets ("signed out (...)"), so it carries none of its own.
                 return {"signed_in": ok, "url": where,
                         "reason": "" if ok else
-                        "no stocklist file on the members' pages it opened (last: %s)"
-                        % (where or "?")}
+                        "no stocklist file on the members' pages it opened, the last at %s"
+                        % (urlsplit(where).path or "?")}
             scraper.goto(cfg.listings_url or url)
             ok = bool(scraper.is_logged_in(cfg.logged_in_selector or ""))
             where = safe_url(scraper.page.url)

@@ -314,8 +314,9 @@ def signed_out_reason(page) -> str:
 #     a page that has not carried one since 24 Sep (18 of 18 nights "expired").
 #   * Proxima read NOT CHECKED through an 11-day sign-in outage (12 Oct 20:51 to
 #     23 Oct 11:31). The check never opens Proxima, rightly, and the harvest -- which
-#     tried every night and logged "signed in but still bounced ... the password may have
-#     changed" -- wrote its answer only into a log nobody reads.
+#     tried on every run and logged "signed in but still bounced ... the password may have
+#     changed" on 11 of the 12 (on 21 Oct the sign-in form timed out instead) -- wrote its
+#     answer only into a log nobody reads.
 #
 # So each harvest now writes down what IT found, per session: the saved session was
 # accepted, it signed back in with the stored password, or it was bounced. That is the
@@ -391,7 +392,9 @@ def read_harvest_logins(path: Optional[Path] = None,
             continue
         try:
             age_h = (now - datetime.fromisoformat(str(rec.get("at")))).total_seconds() / 3600
-        except ValueError:
+        except (ValueError, TypeError):
+            # TypeError: an "at" carrying a timezone cannot be taken from a naive now. The
+            # harvest never writes one, but a hand-edited file must not stop --check.
             continue
         if -1 <= age_h <= HARVEST_LOGIN_FRESH_HOURS:
             out[name] = rec

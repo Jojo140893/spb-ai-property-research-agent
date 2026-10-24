@@ -1497,8 +1497,9 @@ class ProximaSource(PropertySource):
         # EVERY ENDING IS WRITTEN DOWN (record_harvest_login), because this is the only
         # place Proxima's sign-in is ever measured. portal_login --check never opens it, so
         # from 12 Oct 20:51 to 23 Oct 11:31 the line below -- "signed in but still bounced
-        # ... the password may have changed" -- was logged on every run and the Settings
-        # tab's Login cell said NOT CHECKED for all eleven days.
+        # ... the password may have changed" -- was logged on 11 of the 12 runs (on 21 Oct
+        # the form's click timed out instead, the "error" ending), and the Settings tab's
+        # Login cell said NOT CHECKED for all eleven days.
         if not (user and password):
             logger.error("Proxima bounced to %s and no stored credentials are available "
                          "to sign back in. Run: python portal_login.py portal_proxima "

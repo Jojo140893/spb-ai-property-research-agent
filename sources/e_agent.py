@@ -505,7 +505,14 @@ class EAgentSource(PropertySource):
             dialog, password, reached = open_members_form(page, self.cfg.password_selector)
             if not reached:
                 self._record_login_failure(page, dialog)
-                self._note_sign_in(scraper, "bounced", "the login form never appeared")
+                # "error", NOT "bounced": no password was ever typed, so this says nothing
+                # about whether it works. On 24 Sep this exact ending was a selector that
+                # opened Google's popup, not a login E-Agent had refused. With no verdict
+                # from the harvest the check after it decides the row; the saved session
+                # has already failed by this point, so that usually still reads RE-LOGIN
+                # NEEDED, but on the check's own evidence and with this ending in the note
+                # rather than "could not sign in".
+                self._note_sign_in(scraper, "error", "the login form never appeared")
                 return False
             dialog.locator(self.cfg.email_selector).fill(self.username, timeout=10000)
             password.fill(self.password, timeout=10000)
