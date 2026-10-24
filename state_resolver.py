@@ -585,7 +585,8 @@ def file_is_national(proven_states: Any) -> bool:
 
 def resolve_state(postcode: Any = None, suburb: str = "", page_state: Any = "",
                   geo: Any = None, listing_state: Any = "",
-                  lot_number: Any = None, row_text: Any = None) -> Tuple[str, str]:
+                  lot_number: Any = None, row_text: Any = None, estate: Any = "",
+                  read_the_address: bool = False) -> Tuple[str, str]:
     """Return (state, signal). Both empty when nothing reliable is available.
 
     Decided by AGREEMENT, not by a fixed ranking, because cross-checking the signals
@@ -612,6 +613,10 @@ def resolve_state(postcode: Any = None, suburb: str = "", page_state: Any = "",
     Talladega Rd, Clyde" stored 2704 as its postcode -- NSW -- and Clyde, a locality in NSW
     and VIC, agreed with it, so five Tomorrow Homes lots off the VIC page went to NSW.
     `row_text` likewise: the number opening the row is its lot (postcode_opens_the_row).
+
+    `read_the_address` (24 Oct 2026, enrich's own decisions; origin/main's answer is asked
+    without it): where the page and a one-state suburb conflict, the row's own address can
+    take the suburb's side -- address_over_page, which reads `row_text` and `estate`.
     """
     postcode = _unless_lot_number(postcode, lot_number, row_text, geo)
     votes: Dict[str, List[str]] = {}
@@ -656,8 +661,14 @@ def resolve_state(postcode: Any = None, suburb: str = "", page_state: Any = "",
 
     # Signals disagree and nothing corroborates either. The page state is the only one
     # derived systematically (read off E-Agent's own navigation), so use it — labelled,
-    # so the export shows the answer was contested.
+    # so the export shows the answer was contested. Unless the row's address says where it
+    # is (address_over_page).
     if hint:
+        if read_the_address and len(candidates) == 1 and candidates[0] != hint:
+            moved = address_over_page(row_text if row_text is not None else (), estate,
+                                      suburb, hint, geo)
+            if moved:
+                return moved, ADDRESS_OVER_PAGE_SOURCE
         return hint, "e-agent page (conflicting signals)"
     return "", ""
 
@@ -1512,11 +1523,17 @@ def places_after_a_street(row_text: Any, geo: Any = None) -> set:
     to NSW on "Regents Park Dc" around origin/main's guess Regents Park, though the row
     writes a one-state TAS place after its street. enrich_buildings.longer_name_stands
     counts these as states the row names."""
-    from geo import _STREET_TYPE
     if geo is None:
         return set()
     texts = row_text if isinstance(row_text, (list, tuple)) else [row_text]
-    out = set()
+    return {st for _name, st in _names_after_a_street(texts, geo)}
+
+
+def _names_after_a_street(texts: Any, geo: Any) -> List[Tuple[str, str]]:
+    """(name, state) for each place places_after_a_street reads: the words, and their one
+    state."""
+    from geo import _STREET_TYPE
+    out = []
     for text in texts:
         toks, breaks = _tokens(text)
         spans = _place_spans(toks, breaks, geo)
@@ -1534,9 +1551,78 @@ def places_after_a_street(row_text: Any, geo: Any = None) -> set:
                 k = j + 1 + size
                 if k < len(toks) and _STREET_TYPE.fullmatch(toks[k]):
                     continue
-                out.add(states[0])
+                out.append((" ".join(toks[j + 1:k]), states[0]))
                 break
     return out
+
+
+# --- the address over the page ------------------------------------------------------------
+#
+# 24 Oct 2026. APLACE by Glenville's price list carries QLD and VIC lots under section
+# headings ("BRISBANE WEST", "VIC - SOUTH EAST"), and hangs on E-Agent's VIC page. Its
+# 23 Oct version came in under a new file name, and the two lots it added --
+#
+#     "1524 Gilchrist Street, BRISBANE WEST"    line "Dawn 1524 Gilchrist Street Dawn ..."
+#     "10 New Road, BRISBANE NORTH"             line "Joyner 10 New Road Park Lane ..."
+#
+# -- prove nothing on their own, so their page decided them: resolve_state's guess
+# 'Brisbane' (QLD only) against the VIC page, nothing corroborating either, is "conflicting
+# signals", and the page wins. Two Queensland homes were on the live VIC shortlist. (The
+# file did not read as national because a re-read keeps a row's first stocklist_file: the
+# lots the old version also held still count under the old file.)
+#
+# The page loses only where the row's own ADDRESS answers: a place of one state written
+# straight after its street, its suburb a place of that state only, every place the row
+# writes anywhere a place of that state, and no other state written. And never a name
+# taken from the row's estate -- "5708 Piebald St, Mandalay" is the Mandalay estate in
+# Beveridge, VIC, and Mandalay is a Queensland locality -- unless the estate is that place
+# and a compass word, a section heading ("BRISBANE WEST"). Measured on the 26 Sep copy with
+# both APLACE lists stored on it: enrich moves exactly those two rows this way. A bare
+# place word in a line, with no street before it, is still the page's to decide: Verv 19094
+# "... SS West 4327 Jubilee Wyndhamvale" (Jubilee, QLD) is VIC, as its page says.
+ADDRESS_OVER_PAGE_SOURCE = "suburb + address (over e-agent page)"
+_COMPASS_WORD = re.compile(r"^(?:north|south|east|west|central|north-?east|north-?west|"
+                           r"south-?east|south-?west)$", re.IGNORECASE)
+
+
+def _taken_from_the_estate(name: str, estate: Any) -> bool:
+    """True when `name` is the row's estate name or lies inside it -- bar an estate that is
+    `name` followed by compass words only ("BRISBANE WEST")."""
+    words = [t.lower() for t in _TEXT_TOKEN.findall(name)]
+    est = [t.lower() for t in _TEXT_TOKEN.findall(str(estate or ""))]
+    if not words or not any(est[i:i + len(words)] == words
+                            for i in range(len(est) - len(words) + 1)):
+        return False
+    rest = est[len(words):]
+    return not (est[:len(words)] == words and rest
+                and all(_COMPASS_WORD.fullmatch(w) for w in rest))
+
+
+def address_over_page(row_text: Any, estate: Any, suburb: Any, page: Any, geo: Any) -> str:
+    """The state the row's own address gives it over its page (see above), or ''."""
+    page = normalise_state(page)
+    if not page or geo is None:
+        return ""
+    texts = list(row_text) if isinstance(row_text, (list, tuple)) else [row_text]
+    try:
+        named = _names_after_a_street(texts, geo)
+        mine = [s for s in geo.states_for_suburb(str(suburb or "")) if s in VALID_STATES] \
+            if str(suburb or "").strip() else []
+    except Exception:                                                 # noqa: BLE001
+        return ""
+    states = {st for _name, st in named}
+    if len(states) != 1 or page in states:
+        return ""
+    other = next(iter(states))
+    if mine != [other] or any(_taken_from_the_estate(n, estate) for n, _st in named):
+        return ""
+    if states_written_in(texts, geo) - {other}:
+        return ""
+    for text in texts + [estate, suburb]:
+        toks, breaks = _tokens(text)
+        if any(other not in sts for sts in _place_spans(toks, breaks, geo).values()):
+            return ""
+    return other
 
 
 # The words of _NOT_A_LOCALITY_AFTER that make a name part of a street's or an estate's --
