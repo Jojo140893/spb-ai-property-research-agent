@@ -87,7 +87,8 @@ class Nights:
         self.started = False
         self.out = ""
 
-    def run(self, night, lots, entries=(), documents=None, link_notes=None, apply=True):
+    def run(self, night, lots, entries=(), documents=None, link_notes=None, apply=True,
+            manifest=True):
         import repair_rows as RR
         import supersede_duplicates as SD
         # Another list, read every night, whose one line also reached the inbox: the
@@ -99,10 +100,11 @@ class Nights:
             self.started = True
         for b in lots:
             self.db.record_building(dict(b))
-        self.manifest.write_text(json.dumps({
-            "schema": 1, "generated": _night_dt(night).strftime("%d/%m/%Y %H:%M"),
-            "entries": list(entries), "documents": documents or {},
-            "link_notes": link_notes or {}}), encoding="utf-8")
+        if manifest:                           # else last night's: too old to be tonight's
+            self.manifest.write_text(json.dumps({
+                "schema": 1, "generated": _night_dt(night).strftime("%d/%m/%Y %H:%M"),
+                "entries": list(entries), "documents": documents or {},
+                "link_notes": link_notes or {}}), encoding="utf-8")
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             SD.main([])
@@ -435,6 +437,25 @@ def test_the_accountable_anchor_frees_a_list_held_by_its_own_gone_rows(tmp_path,
         n.run(night, lots, entries=[_project_entry("53", len(carried), whole="uncapped")])
     assert "6" in n.retired(), "the lot the project stopped listing was never retired"
     assert not {"1", "2", "3", "4", "5"} & n.retired()
+
+
+def test_a_night_without_a_manifest_holds_the_new_rules(tmp_path, monkeypatch):
+    """With no harvest manifest no veto can fire, so that night nothing beyond what the old
+    rule retires is written: the anchor's retirement of lot 6 waits for a night that has
+    one."""
+    n = Nights(tmp_path, monkeypatch)
+    for night in range(1, 18):
+        carried = range(1, 7) if night == 1 else range(1, 6)
+        lots = [_proxima(i, night, pid="53", status="Available") for i in carried]
+        if night == 1:
+            lots += [_proxima(i, 1, pid="53", status="Not Available")
+                     for i in range(100, 120)]
+        n.run(night, lots, entries=[_project_entry("53", len(carried), whole="uncapped")],
+              manifest=night not in (15, 16))
+        if night == 16:
+            assert "6" not in n.retired(), "retired on a night with no manifest"
+            assert "no harvest manifest tonight" in n.out
+    assert "6" in n.retired()
 
 
 @pytest.mark.parametrize("floor_on_members", [True, False])
@@ -981,3 +1002,59 @@ def test_rule_b_is_off_for_e_agent_without_the_file_key(tmp_path, monkeypatch):
         _eagent_night(n, night, links if night <= 5 else links[1:])
     assert not _lots_of(links[0]) & n.retired()
     assert "stocklist_file_key cannot be imported" in n.out
+
+
+# ------------------------------------------------------------------ 8. what the log says
+
+def test_the_log_names_every_half_read_list_never_its_link(tmp_path, monkeypatch):
+    """Section 12 printed the first 56 characters of each partial list's url -- for a
+    Dropbox or SharePoint share, the capability itself, in a public repo's nightly log.
+    It now names the list (channel, builder, host, project), its key, what decided it and
+    how many nights it has been stalled."""
+    n = Nights(tmp_path, monkeypatch)
+    doc = "https://www.dropbox.com/scl/fo/abc123/sheet?rlkey=secretkey"
+    for night in range(1, 9):
+        carried = range(1, 30) if night <= 2 else [1]
+        n.run(night, [_lot(i, night, doc=doc) for i in carried])
+    section = n.out[n.out.index("\n12. "):n.out.index("\n11. ")]
+    assert "rlkey" not in section and "/scl/fo/" not in section, section
+    assert "E-Agent | Example Homes | www.dropbox.com" in section
+    assert "collapsed 1 of 29" in section and "stalled   6 night(s)" in section, section
+
+
+def test_the_first_night_lists_inherited_retirements_on_a_cut_read(tmp_path, monkeypatch):
+    """The old rule could not see a cut read: it retired lots 81-85 behind Proxima's 80-lot
+    cap. Kept now, those are listed for a person on the ledger's first night with a
+    manifest -- the night that can tell which reads were cut."""
+    n = Nights(tmp_path, monkeypatch)
+    for i in range(1, 15):
+        n.db.record_building(_proxima(i, 1, status="Available"))
+    con = sqlite3.connect(str(n.path))
+    con.execute("UPDATE buildings SET superseded_by=?, availability_status='Sold' WHERE "
+                "CAST(lot_number AS INTEGER) > 10", (WITHDRAWN_FROM_SOURCE,))
+    con.commit()
+    con.close()
+    n.run(2, [_proxima(i, 2, status="Available") for i in range(1, 11)],
+          entries=[_project_entry("587", 10, stated=14, short=True)])
+    assert "9c. first night of the ledger: 4 retirement(s)" in n.out, n.out[-2500:]
+    assert n.retired() == {"11", "12", "13", "14"}, "the report changed what is retired"
+    n.run(3, [_proxima(i, 3, status="Available") for i in range(1, 11)],
+          entries=[_project_entry("587", 10, stated=14, short=True)])
+    assert "9c." not in n.out, "listed again after the first night"
+
+
+def test_explain_says_where_a_row_stands(tmp_path, monkeypatch):
+    import list_ledger
+    import repair_rows as RR
+    n = Nights(tmp_path, monkeypatch)
+    links = [_page(k) for k in range(12)]
+    for night in range(1, 11):
+        _eagent_night(n, night, links if night <= 5 else links[1:])
+    con = sqlite3.connect(str(n.path))
+    con.row_factory = sqlite3.Row
+    row = dict(con.execute("SELECT * FROM buildings WHERE lot_number='1'").fetchone())
+    text = "\n".join(list_ledger.explain(con, row, RR._doc_key(row, True)))
+    con.close()
+    assert "5 night(s) counted since" in text, text
+    assert "absent from its list for" in text and "whole reads since" in text, text
+    assert "https://" not in text and "link-0" not in text, text

@@ -1684,7 +1684,8 @@ def plan_retirements(rows, today, ledger, verdicts, tonight=None):
     RULE B (the source stopped offering the list) are printed as "would retire" while the
     ledger is calibrating, and capped after."""
     import list_ledger
-    plan = {"apply": [], "would": [], "deferred": [], "vetoed": 0, "undone": 0}
+    plan = {"apply": [], "would": [], "deferred": [], "vetoed": 0, "undone": 0,
+            "held_because": ""}
     items, taken = [], set()
     retired = {r["id"] for r in rows if str(r["superseded_by"] or "") == WITHDRAWN_FROM_SOURCE}
     for r, silent in main_rule_tonight(rows, today):
@@ -1714,7 +1715,11 @@ def plan_retirements(rows, today, ledger, verdicts, tonight=None):
         new.append({"row": r, "silent": silent, "rule": rule, "main": False,
                     "key": _doc_key(r, True), "older": None, "basis": basis})
         taken.add(r["id"])
-    if ledger.calibrating:
+    # Held while the ledger is young, and on a night with no manifest: without one no veto
+    # can fire, so nothing beyond what the old rule retires is trusted that night.
+    plan["held_because"] = ("calibrating" if ledger.calibrating else
+                            "no harvest manifest tonight" if tonight is None else "")
+    if plan["held_because"]:
         plan["would"] = new
         new = []
     items, plan["deferred"] = cap_retirements(items + new, rows)
@@ -1734,8 +1739,8 @@ def _report_partial_lists(half_read, verdicts, ledger):
     for key, missing, total in sorted(half_read, key=lambda x: (-x[1], str(x[0]))):
         v = verdicts[key]
         stalled = ledger.stalled(v.list_key) if ledger is not None else 0
-        print(f"     {missing:4}/{total:<4} held, stalled {stalled:>3} night(s)  "
-              f"{v.label[:60]} [{v.list_key}]")
+        print(f"     {missing:4} of {total:<4} held not on its newest read, stalled "
+              f"{stalled:>3} night(s)  {v.label[:60]} [{v.list_key}]")
         print(f"            {v.basis[:110]}")
 
 
@@ -1759,9 +1764,10 @@ def _report_plan(plan, ledger, tonight, verdicts):
     if plan["would"]:
         chans = collections.Counter(str(it["row"]["source_channel"] or "")
                                     for it in plan["would"])
-        print(f"       calibrating (night {ledger.nights_recorded + 1} of "
-              f"{list_ledger.CALIBRATION_NIGHTS}): {len(plan['would'])} would retire, "
-              f"held until then {dict(chans)}")
+        why = (f"calibrating (night {ledger.nights_recorded + 1} of "
+               f"{list_ledger.CALIBRATION_NIGHTS})" if plan["held_because"] == "calibrating"
+               else plan["held_because"])
+        print(f"       {why}: {len(plan['would'])} would retire, held {dict(chans)}")
         for it in sorted(plan["would"], key=lambda x: -x["silent"])[:4]:
             r = it["row"]
             print(f"         would retire  {str(r['builder_name'] or '?')[:24]:<26} silent "
@@ -1775,6 +1781,37 @@ def _report_plan(plan, ledger, tonight, verdicts):
         print(f"       the old rule's retirements held back: {plan['vetoed']} on a read "
               f"tonight's manifest vetoes, {plan['undone']} a person put back")
     _report_rule_b(plan.get("rule_b"))
+
+
+def _report_inherited(rows, verdicts, ledger, tonight):
+    """The ledger's first night with a manifest only: retirements the old rule made, now
+    kept, on lists tonight's manifest calls short, capped or half-fetched. The old rule
+    could not see a cut read (it retired lots 81-85 behind Proxima's 80-lot cap), so these
+    are listed for a person to review rather than trusted or undone wholesale."""
+    import list_ledger
+    if ledger is None or tonight is None or any(
+            ledger.channel_history(ch) for ch in ("E-Agent", "Proxima", PORTAL_CHANNEL)):
+        return
+    vetoed = {k: v for k, v in verdicts.items() if v.vetoed}
+    held = collections.Counter()
+    for r in rows:
+        if (str(r["superseded_by"] or "") == WITHDRAWN_FROM_SOURCE
+                and str(r["source_channel"] or "") in RELISTING_CHANNELS):
+            k = _doc_key(r, True)
+            if k in vetoed:
+                held[k] += 1
+    if not held:
+        return
+    print(f"   9c. first night of the ledger: {sum(held.values())} retirement(s) the old rule "
+          f"made, now kept, on {len(held)} list(s) tonight's manifest calls short or cut -- "
+          f"for a person to review (repair_rows.py --explain ROW_ID):")
+    for k, n in held.most_common(12):
+        v = vetoed[k]
+        print(f"         {n:>4} retired  {v.label[:56]} [{v.list_key}]  "
+              f"{v.basis[len(list_ledger.VETO):][:56]}")
+
+
+PORTAL_CHANNEL = "Direct Builder Portal (live)"
 
 
 def _report_rule_b(rb):
@@ -1956,6 +1993,7 @@ def main(apply_changes):
               f"silent {silent} day(s)   {str(r['lot_address'] or '')[:48]}")
     if plan is not None:
         _report_plan(plan, ledger, tonight, verdicts)
+        _report_inherited(rows, verdicts, ledger, tonight)
     for r in controls[:3]:
         print(f"     {str(r['builder_name'] or '?')[:24]:<26} {str(r['source_text'])[:58]!r}")
     fragments = find_spec_fragments(live)

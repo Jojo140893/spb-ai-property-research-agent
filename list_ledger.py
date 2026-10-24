@@ -134,7 +134,8 @@ PRUNE_NIGHTS = 120
 RENDER_CAPS_FALLBACK = (80, 83, 160)
 
 # Channels whose count history can never show a read whole on its own.
-PROOF_REQUIRED = frozenset({"Proxima", "Direct Builder Portal (live)", "E-Agent Stocklist"})
+PORTAL = "Direct Builder Portal (live)"
+PROOF_REQUIRED = frozenset({"Proxima", PORTAL, "E-Agent Stocklist"})
 # A link or piece outcome that means the read of that link failed, in part or in whole.
 FAILED_OUTCOMES = frozenset({"fetch failed", "empty folder", "private link", "crashed",
                              "login failed", "no credentials"})
@@ -253,16 +254,22 @@ def _is_hash_mark(mark):
     return str(mark or "").startswith(HASH_RECIPE_VERSION + ":")
 
 
+_CAPS = []
+
+
 def render_caps():
-    try:
-        import sys
-        api = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api")
-        if api not in sys.path:
-            sys.path.insert(0, api)
-        from _candidates import PROXIMA_RENDER_CAPS
-        return tuple(PROXIMA_RENDER_CAPS)
-    except Exception:                                      # noqa: BLE001
-        return RENDER_CAPS_FALLBACK
+    """api/_candidates.PROXIMA_RENDER_CAPS (read once), or the pinned fallback."""
+    if not _CAPS:
+        try:
+            import sys
+            api = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api")
+            if api not in sys.path:
+                sys.path.insert(0, api)
+            from _candidates import PROXIMA_RENDER_CAPS
+            _CAPS.append(tuple(PROXIMA_RENDER_CAPS))
+        except Exception:                                  # noqa: BLE001
+            _CAPS.append(RENDER_CAPS_FALLBACK)
+    return _CAPS[0]
 
 
 _FILE_KEY = {}
@@ -311,15 +318,19 @@ def _norm(v):
 
 
 def lot_identity(row):
-    """(channel, builder, lot_number) or None, and the places that can confirm a match."""
+    """(channel, builder, project, lot_number) or None, and the places that can confirm a
+    match. A row naming neither a builder nor a portal project is too weak to match: a
+    Proxima project whose developer the index never stated (off-index projects name none)
+    still scopes its own lots, but a pooled E-Agent list names nothing at all."""
     lot = _norm(_col(row, "lot_number"))
     builder = _norm(_col(row, "builder_name"))
-    if not lot or not builder:
+    project = _norm(_col(row, "source_project_id"))
+    if not lot or not (builder or project):
         return None, ()
     places = tuple(p for p in (("estate", _norm(_col(row, "estate_name"))),
                                ("suburb", _norm(_col(row, "suburb"))),
                                ("street", _street(_col(row, "lot_address")))) if p[1])
-    return (str(_col(row, "source_channel") or ""), builder, lot), places
+    return (str(_col(row, "source_channel") or ""), builder, project, lot), places
 
 
 def same_lot(a, b):
@@ -447,11 +458,9 @@ class Tonight:
     # --- E-Agent ----------------------------------------------------------------
     def link_builder(self, e):
         """The builder a stock link's rows name most often; blank for a pooled list."""
-        c = self._builders.get(str(e.get("stocklist_key") or ""))
-        if c:
-            name, _n = c.most_common(1)[0]
-            return name
-        return ""
+        c = collections.Counter(self._builders.get(str(e.get("stocklist_key") or "")) or {})
+        c.pop("", None)
+        return c.most_common(1)[0][0] if c else ""
 
     def link_entries(self, members):
         ents, fk = [], file_key_fn()
@@ -752,9 +761,16 @@ class Ledger:
             v, b = recorded
             return Verdict(**base, verdict=v, basis=b, vetoed=str(b).startswith(VETO),
                            proof=False, recorded=True)
-        # a) vetoes, from tonight's own record of the read
+        # a) vetoes. First the count itself, manifest or not: a Proxima read ending on a
+        #    render cap, or a portal read ending on its page length, was cut -- that is
+        #    main's hole (lots 81-85 behind an 80 cap retired after a fortnight), closed
+        #    even on a night the manifest is missing. Then tonight's own record of the read.
         veto = proof = None
-        if judged_tonight:
+        if ch == "Proxima" and seen in render_caps():
+            veto = "proxima read ends on a render cap (%d)" % seen
+        elif ch == PORTAL and seen and seen % PORTAL_PAGE_LENGTH == 0:
+            veto = "portal read ends on its page length (%d)" % seen
+        elif judged_tonight:
             veto, proof = tonight.veto_and_proof(key, members, seen)
         if veto:
             return Verdict(**base, verdict=PARTIAL, basis=VETO + veto, vetoed=True,
@@ -1236,8 +1252,24 @@ def explain(conn, row, key):
         if verdict == WHOLE and seen and d and d > seen:
             whole_after += 1
         out.append("  %s  %-7s %4s of %-4s  %s" % (rd, verdict, n, members, basis))
-    out.append("  whole reads since it was last seen: %d (a retirement needs %d)"
+    newest = conn.execute("SELECT MAX(read_date) FROM list_reads WHERE list_key=?",
+                          (lk,)).fetchone()[0]
+    nd = _from_iso(newest)
+    if seen and nd:
+        out.append("  absent from its list for %d day(s) at its newest recorded read "
+                   "(rule A needs %d)" % ((nd - seen).days, _ABSENT_DAYS))
+    out.append("  whole reads since it was last seen: %d (rule A needs %d)"
                % (whole_after, MIN_WHOLE_READS_ABSENT))
+    unit = row_unit(row, file_key_fn())
+    if unit:
+        ch = str(_col(row, "source_channel") or "")
+        recs = conn.execute("SELECT night, outcome FROM source_offers WHERE channel=? AND "
+                            "unit=? ORDER BY night", (ch, unit)).fetchall()
+        offered = [n for n, o in recs if o != UNOFFERED]
+        counted = [n for n, o in recs if o == UNOFFERED and (not offered or n > offered[-1])]
+        out.append("  rule B: unit [%s] last offered %s; %d night(s) counted since (it "
+                   "retires at %d)" % (unit, offered[-1] if offered else "never (since the "
+                                       "ledger began)", len(counted), UNOFFERED_NIGHTS))
     for stamp, rule, basis, before, undone_at, undone_by in conn.execute(
             "SELECT stamp, rule, basis, status_before, undone_at, undone_by FROM "
             "retirements WHERE row_id=? ORDER BY stamp", (row["id"],)):
