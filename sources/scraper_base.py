@@ -14,13 +14,16 @@ Design rules (from the code review + client requirements):
 Requires: playwright (pip install playwright && playwright install chromium).
 """
 
+import json
 import logging
 import os
 import re
 import time
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
+from urllib.parse import urlsplit
 
 import config
 
@@ -255,6 +258,144 @@ LOGGED_IN_JS = r"""
   return ctrls.some(l => markers.some(m => l.includes(m))) || markers.some(m => t.includes(m));
 }
 """
+
+# A sign-in challenge in the address bar: the same words LOGGED_IN_JS refuses on.
+_CHALLENGE_URL = re.compile(r"twofactor|two-factor|2fa|otp|mfa|customerauth|challenge|verify", re.I)
+
+
+def safe_url(url: Any) -> str:
+    """scheme://host/path of a URL -- never its query string or fragment.
+
+    The address a sign-in ended on is worth recording (it is how "redirected to /login"
+    is told from "a slow page"), and it is written to files the Settings tab publishes.
+    A query string is where a portal puts a return token, a SharePoint folder id or a
+    one-time code, so it is dropped before anything is kept.
+    """
+    try:
+        p = urlsplit(str(url or ""))
+    except ValueError:
+        return ""
+    if not p.scheme:
+        return ""
+    return "%s://%s%s" % (p.scheme, p.netloc, p.path)
+
+
+def signed_out_reason(page) -> str:
+    """Why a page reads as NOT signed in, in words a person can act on.
+
+    "expired" said nothing about what the page showed, so a session the portal had ended,
+    a login form that moved and a page that had not finished loading all looked the same
+    on the Settings tab (Hermitage, 23 Oct 2026: the harvest read 288 listings on the saved
+    session at 23:39 and the check called it expired at 00:40, with nothing to say why).
+    """
+    try:
+        path = urlsplit(page.url or "").path or "/"
+    except Exception:                                                 # noqa: BLE001
+        path = "?"
+    try:
+        if page.query_selector("input[type=password]") is not None:
+            return "password field at %s" % path
+    except Exception:                                                 # noqa: BLE001
+        pass
+    if _CHALLENGE_URL.search(path):
+        return "a sign-in challenge at %s" % path
+    return "no signed-in marker at %s" % path
+
+
+# ---------------------------------------------------------------------------------------
+# WHAT THE HARVEST FOUND WHEN IT SIGNED IN (23 Oct 2026).
+#
+# The Settings tab's Login column was measured by ONE thing: portal_login.py --check
+# reopening each saved session after the harvest. That is a second sign-in, made an hour
+# later with its own idea of "signed in", and on 23 Oct it was wrong in both directions:
+#
+#   * E-Agent and Hermitage read RE-LOGIN NEEDED on a night the harvest had signed in to
+#     both and read 5,069 and 288 listings. E-Agent's check looked for a stocklist link on
+#     a page that has not carried one since 24 Sep (18 of 18 nights "expired").
+#   * Proxima read NOT CHECKED through an 11-day sign-in outage (12 Oct 20:51 to
+#     23 Oct 11:31). The check never opens Proxima, rightly, and the harvest -- which
+#     tried every night and logged "signed in but still bounced ... the password may have
+#     changed" -- wrote its answer only into a log nobody reads.
+#
+# So each harvest now writes down what IT found, per session: the saved session was
+# accepted, it signed back in with the stored password, or it was bounced. That is the
+# fact the column exists to report -- did tonight's read actually get in -- and
+# portal_login.check_logins reads it first (eagent_stocklist.login_row already reported
+# the Stocklist this way). logs/ is gitignored and not synced to the bucket, so a record
+# can never be another machine's night posing as tonight's; HARVEST_LOGIN_FRESH_HOURS
+# bounds the laptop, where the file persists between runs.
+#
+# outcome -> the Settings tab's login state. "error" is no verdict: a sign-in form that
+# timed out says nothing about whether the password works, and calling it "expired" is
+# how a crash came to read as a dead login.
+HARVEST_LOGIN_STATES = {
+    "session": "ok",          # the saved session was accepted
+    "signed_in": "ok",        # the saved session had lapsed; signed back in with the password
+    "bounced": "expired",     # tried and was not let in: refused, 2FA, still on the login page
+    "missing": "missing",     # nothing to sign in with: no saved session, no stored password
+    "error": None,            # the attempt itself failed (timeout, crash): no verdict
+}
+# Within ONE harvest the best attempt stands -- a builder licensed in two states is read
+# twice, and one good sign-in is a sign-in (the same rule as the manifest's "one good read
+# is a read"). A later harvest replaces an earlier one outright.
+_HARVEST_LOGIN_RANK = {"session": 4, "signed_in": 4, "bounced": 2, "missing": 1, "error": 0}
+HARVEST_LOGIN_FRESH_HOURS = 36
+_HARVEST_RUN = "%d-%d" % (os.getpid(), int(time.time()))
+
+
+def harvest_logins_path() -> Path:
+    """logs/harvest_logins.json, resolved at call time so a test can move PROJECT_ROOT."""
+    return Path(config.PROJECT_ROOT) / "logs" / "harvest_logins.json"
+
+
+def record_harvest_login(session_name: str, outcome: str, reason: str = "", url: str = "",
+                         path: Optional[Path] = None) -> None:
+    """Write down how the harvest's sign-in to one portal went. Never fatal, never a secret:
+    the reason is the harvest's own words and an exception's class, the url has no query."""
+    if outcome not in HARVEST_LOGIN_STATES or not session_name:
+        logger.warning("harvest login record refused: %r for %r", outcome, session_name)
+        return
+    target = Path(path) if path else harvest_logins_path()
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, ValueError):
+        data = {}
+    old = data.get(session_name) if isinstance(data.get(session_name), dict) else None
+    if old and old.get("run") == _HARVEST_RUN and \
+            _HARVEST_LOGIN_RANK.get(old.get("outcome"), 0) > _HARVEST_LOGIN_RANK[outcome]:
+        return
+    data[session_name] = {"outcome": outcome, "reason": str(reason or "")[:240],
+                          "url": safe_url(url),
+                          "at": datetime.now().isoformat(timespec="seconds"),
+                          "run": _HARVEST_RUN}
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("could not record the %s sign-in in %s: %s", session_name, target, exc)
+
+
+def read_harvest_logins(path: Optional[Path] = None,
+                        now: Optional[datetime] = None) -> Dict[str, Dict[str, Any]]:
+    """{session: record} for every record young enough to describe the latest harvest."""
+    now = now or datetime.now()
+    try:
+        data = json.loads(Path(path or harvest_logins_path()).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for name, rec in (data.items() if isinstance(data, dict) else ()):
+        if not isinstance(rec, dict) or rec.get("outcome") not in HARVEST_LOGIN_STATES:
+            continue
+        try:
+            age_h = (now - datetime.fromisoformat(str(rec.get("at")))).total_seconds() / 3600
+        except ValueError:
+            continue
+        if -1 <= age_h <= HARVEST_LOGIN_FRESH_HOURS:
+            out[name] = rec
+    return out
 
 
 class PlaywrightScraper:

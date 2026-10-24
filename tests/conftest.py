@@ -37,6 +37,25 @@ def _harvest_files_are_put_back():
             (data / n).write_bytes(body)
 
 
+@pytest.fixture(autouse=True)
+def _harvest_logins_stay_out_of_logs(monkeypatch, tmp_path):
+    """NEVER THE REPO'S logs/harvest_logins.json (23 Oct 2026).
+
+    Every harvest sign-in now writes its outcome there (scraper_base.record_harvest_login),
+    and portal_login.py --check reads it as what tonight's harvest found. A test that drives
+    a source's search or _login on the laptop would otherwise leave a fake "signed in" in
+    D:/Coleen/app/logs for the next real check to report. Each test gets its own file,
+    under its own tmp_path -- where a test that sets PROJECT_ROOT to tmp_path looks too.
+    """
+    try:
+        from sources import scraper_base
+    except Exception:                                                   # noqa: BLE001
+        return
+    if hasattr(scraper_base, "harvest_logins_path"):
+        monkeypatch.setattr(scraper_base, "harvest_logins_path",
+                            lambda: tmp_path / "logs" / "harvest_logins.json")
+
+
 @pytest.fixture(scope="session")
 def _stocklist_scratch(tmp_path_factory):
     return tmp_path_factory.mktemp("eagent_stocklist")

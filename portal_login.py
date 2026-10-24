@@ -39,7 +39,8 @@ import config
 from builder_registry import BuilderRegistry
 from builder_names import is_withdrawn_builder
 from sources.scraper_base import (SESSION_DIR, PLAYWRIGHT_AVAILABLE, browser_user_agent,
-                                  LOGGED_IN_JS)
+                                  LOGGED_IN_JS, PlaywrightScraper, HARVEST_LOGIN_STATES,
+                                  read_harvest_logins, safe_url, signed_out_reason)
 
 try:
     from playwright.sync_api import sync_playwright
@@ -109,96 +110,85 @@ def _needs_no_login(name, url) -> bool:
     cfg = EAGENT_CONFIG if name == "e_agent" else config_for_url(url)
     return bool(getattr(cfg, "no_login_required", False))
 
-# SESSIONS THIS CHECKER CANNOT SEE. Proxima harvests from the persistent browser profile
-# .browser_profiles/portal_proxima, not from .sessions/portal_proxima.json, so whatever
-# that JSON says is about a store nothing uses -- red or green, it is noise. Reported as
-# unknown with its reason rather than guessed. NOT probed by launching the profile:
-# writing to it can destroy the device-trust cookie that is the only thing keeping
-# Proxima's 2FA from firing nightly (export_proxima_session.py).
-_ELSEWHERE = {"portal_proxima": "harvests from .browser_profiles, not this session file"}
+# NOT OPENED BY THIS CHECK: PROXIMA. Its Login cell comes from the harvest's own sign-in
+# (scraper_base.record_harvest_login) and never from a probe here, for two reasons:
+#
+#   * Its saved session lapses between runs by design. The runner signs back in with the
+#     stored password every night ("the saved sign-in has lapsed" / "signed back in") and
+#     save_session never writes Proxima's session back, so reopening
+#     .sessions/portal_proxima.json an hour later would read "expired" on every healthy
+#     night -- and Magento re-challenges 2FA in a fresh context anyway.
+#   * On the laptop the harvest uses .browser_profiles/portal_proxima, and writing to that
+#     profile can destroy the device-trust cookie that is the only thing keeping Proxima's
+#     2FA from firing nightly (export_proxima_session.py). It is never launched here.
+#
+# This used to read "harvests from .browser_profiles, not this session file", which stopped
+# being true on the runner, and with nothing else to go on the cell said NOT CHECKED through
+# an 11-day sign-in outage (12 Oct 20:51 to 23 Oct 11:31) while the harvest logged "still
+# bounced ... the password may have changed" every night. The text below is shown only on a
+# night the harvest did not try Proxima at all.
+_ELSEWHERE = {"portal_proxima": "only the nightly harvest signs in to Proxima (this check "
+                                "never opens it), and it did not try tonight"}
 
 
-def _eagent_signed_in(page) -> bool:
-    """E-Agent is signed in iff its stocklist files are reachable.
+def _probe_session(name, url) -> dict:
+    """Open the portal with its saved session, READ-ONLY, and say whether it is signed in.
 
-    NOT the marker check. E-Agent renders no "Log Out", "My Account" or "Dashboard"
-    anywhere, signed in or out, so the configured selector and the shared LOGGED_IN_JS
-    both match nothing on a perfectly authenticated page -- sources/e_agent.py
-    ::_authenticated says so at length and judges it functionally for exactly this reason.
-    Doing anything else here cost us the worst row on the tab: on 21 Sep the dashboard
-    told Coleen to re-authenticate E-Agent, ~4,500 listings and the one channel that was
-    actually working, because a marker that does not exist did not match.
+    {"signed_in": True | False | None, "reason": why not / why it could not look,
+     "url": where the page ended (scheme://host/path, never a query)}
 
-    Signed out, /access-projects is a Wix signup wall with no file links at all.
-    """
-    try:
-        return bool(page.evaluate(
-            """() => Array.from(document.querySelectorAll('a')).some(a => {
-                   const t = (a.innerText || '').trim();
-                   const h = (a.getAttribute('href') || '');
-                   return /live packages/i.test(t)
-                       || /\\.(pdf|xlsx|xls|csv)(\\?|$)|docs\\.google|onedrive|smartsheet/i.test(h);
-               })"""))
-    except Exception:                                                 # noqa: BLE001
-        return False
+    ONE DEFINITION OF "SIGNED IN" PER PORTAL, AND IT IS THE HARVEST'S. This used to load
+    the page its own way (no user agent, so "HeadlessChrome"; no viewport; domcontentloaded
+    and 1.5 s, no networkidle) and judge it its own way, and both drifted:
 
+      * E-Agent. Its own rule looked for a stocklist link on /access-projects. Since
+        24-26 Sep that page is a hub of three buttons with no stocklist link, signed in or
+        not, so the check said "expired" on 18 of 18 nights -- including 23 Oct, when the
+        harvest reused that very session and read 142 stocklist files from 12 members-only
+        pages. The harvest was fixed on 26 Sep (e52befe: follow ACCESS LISTINGS, then the
+        category pages); this copy never was. It now asks EAgentSource._authenticated.
+      * Hermitage. The harvest's gate passed at 23:39 and read 288 listings; this check
+        opened the same file at 00:40 and recorded "expired" with no reason, so a lapsed
+        session, a different page load and a swallowed exception all looked the same.
 
-def _session_logged_in(name, url, session_file):
-    """Open the portal with the saved session and look for its signed-in marker.
+    So the page is opened by PlaywrightScraper itself -- the harvest's user agent, viewport,
+    goto with its retries and networkidle wait -- and judged by scraper.is_logged_in or, for
+    E-Agent, by the harvest's own functional test. read_only: a check must never write the
+    session file it is checking. A saved browser PROFILE is never launched (see _ELSEWHERE).
 
-    The same check --verify prints, factored out so the nightly can record it. Returns
-    True, False, or None when Playwright is not installed and nothing was actually
-    tested -- None is NOT False, because "we could not look" and "the session is dead"
-    send a person to two different places.
+    None is NOT False: "we could not look" (no Playwright, a timeout, a crash) and "the
+    session is dead" send a person to two different places. A crash used to return False
+    and read "expired".
     """
     from sources.portal_config import EAGENT_CONFIG, config_for_url
-    if sync_playwright is None or not PLAYWRIGHT_AVAILABLE:
-        return None
+    if not PLAYWRIGHT_AVAILABLE:
+        return {"signed_in": None, "reason": "Playwright is not installed here", "url": ""}
+    scraper = PlaywrightScraper(session_name=name, headless=True, read_only=True)
+    if scraper.profile_dir.exists():
+        return {"signed_in": None, "url": "",
+                "reason": "the harvest signs in from a saved browser profile, which this "
+                          "check never opens"}
     cfg = EAGENT_CONFIG if name == "e_agent" else config_for_url(url)
+    where = ""
     try:
-        with sync_playwright() as pw:
-            br = pw.chromium.launch(headless=True)
-            ctx = br.new_context(storage_state=str(session_file))
-            pg = ctx.new_page()
-            pg.goto(cfg.listings_url or url, wait_until="domcontentloaded", timeout=30000)
-            pg.wait_for_timeout(1500)
-            # ONE DEFINITION OF "SIGNED IN", shared with the harvest. This used to carry
-            # its own split-and-any, which was right about the commas but missing the two
-            # guards scraper_base.is_logged_in has: the input[type=password] veto (without
-            # it Paramount's public "AGENT PORTAL" nav reads as authenticated) and the
-            # LOGGED_IN_JS fallback for a portal whose markers the config gets wrong.
-            # Three definitions of one fact is how the harvest and this tab came to
-            # disagree about Hermitage on the same runner 47 minutes apart.
-            ok = (_eagent_signed_in(pg) if name == "e_agent"
-                  else _page_is_logged_in(pg, cfg.logged_in_selector or ""))
-            br.close()
-            return bool(ok)
-    except Exception:                                                 # noqa: BLE001
-        return False
-
-
-def _page_is_logged_in(page, logged_in_selector: str) -> bool:
-    """scraper_base.is_logged_in's rule, against a bare Playwright page.
-
-    The helper hangs off PlaywrightScraper and this checker has no scraper, so the rule
-    lives in one place and is applied here rather than re-invented: password-field veto
-    first, then each comma-separated alternative, then the shared DOM heuristic.
-    """
-    try:
-        if page.query_selector("input[type=password]") is not None:
-            return False
-    except Exception:                                                 # noqa: BLE001
-        pass
-    for sel in [s.strip() for s in (logged_in_selector or "").split(",") if s.strip()]:
-        try:
-            if page.query_selector(sel) is not None:
-                return True
-        except Exception:                                             # noqa: BLE001
-            continue
-    try:
-        return bool(page.evaluate(LOGGED_IN_JS))
-    except Exception:                                                 # noqa: BLE001
-        return False
+        with scraper.session():
+            if name == "e_agent":
+                from sources.e_agent import EAgentSource
+                ok = bool(EAgentSource()._authenticated(scraper))
+                where = safe_url(scraper.page.url)
+                return {"signed_in": ok, "url": where,
+                        "reason": "" if ok else
+                        "no stocklist file on the members' pages it opened (last: %s)"
+                        % (where or "?")}
+            scraper.goto(cfg.listings_url or url)
+            ok = bool(scraper.is_logged_in(cfg.logged_in_selector or ""))
+            where = safe_url(scraper.page.url)
+            return {"signed_in": ok, "url": where,
+                    "reason": "" if ok else signed_out_reason(scraper.page)}
+    except Exception as exc:                                          # noqa: BLE001
+        # The class only: a Playwright message carries the URL it was loading, query and all.
+        return {"signed_in": None, "url": where,
+                "reason": "the check could not run: %s" % type(exc).__name__}
 
 
 # CAN THE BUTTON FIX THIS ONE? "Fetch stock now" dispatches the harvest, and the harvest
@@ -208,9 +198,12 @@ def _page_is_logged_in(page, logged_in_selector: str) -> bool:
 # hold: we hold a password for it, and signing in does not need a human in the loop.
 # Paramount's login carries an invisible reCAPTCHA and Proxima wants a 2FA code from an
 # inbox; no button signs those in, and a row that implied otherwise would send her to
-# press it and watch nothing change.
+# press it and watch nothing change. Proxima's other way to go red is the one that
+# actually happened (12-23 Oct): the stored password stopped working because it had been
+# changed, and the nightly retries the same one -- so it is not a button either.
 _NEEDS_A_PERSON = {"portal_paramount_living": "its login has an invisible reCAPTCHA",
-                   "portal_proxima": "its login needs a 2FA code from an inbox"}
+                   "portal_proxima": "a changed password must be stored again, or a 2FA "
+                                     "code entered from the account's inbox"}
 
 
 def _self_service(name) -> tuple:
@@ -236,8 +229,90 @@ def _self_service(name) -> tuple:
     return False, "no password is stored for it in the vendor sheet"
 
 
+def _when(iso) -> str:
+    try:
+        return datetime.fromisoformat(str(iso)).strftime("%d/%m %H:%M")
+    except ValueError:
+        return "?"
+
+
+# What the harvest's own sign-in outcome says on the Settings tab, in Coleen's words.
+_HARVEST_SAYS = {
+    "session": "signed in by the harvest at %s (its saved session was accepted)",
+    "signed_in": "signed in by the harvest at %s (with the stored password: the saved "
+                 "session was not enough)",
+    "bounced": "the harvest at %s could not sign in: %s",
+    "missing": "the harvest at %s had nothing to sign in with: %s",
+    "error": "the harvest's sign-in at %s did not finish (%s), so it says nothing either way",
+}
+
+
+def _harvest_note(ran) -> str:
+    outcome = ran.get("outcome")
+    text = _HARVEST_SAYS.get(outcome, "%s")
+    if HARVEST_LOGIN_STATES.get(outcome) == "ok":
+        return text % _when(ran.get("at"))
+    return text % (_when(ran.get("at")), ran.get("reason") or outcome)
+
+
+def _settle(entry: dict, name: str, has_file: bool, probe, ran) -> None:
+    """Set entry's state, and the basis, reason, url and note behind it.
+
+    TWO MEASUREMENTS, AND WHICH ONE DECIDES. `ran` is what tonight's harvest found when it
+    signed in (scraper_base.record_harvest_login); `probe` is this check reopening the saved
+    session afterwards. The column exists to answer "did the nightly get in", and the
+    harvest is the only thing that saw that happen, so its verdict stands. The check is
+    the fallback for a portal the harvest did not try, and it is kept alongside: where the
+    two disagree the note says so rather than hiding one of them. On 23 Oct the check said
+    Hermitage was signed out an hour after the harvest had read 288 listings on the same
+    session; whether Hermitage ends sessions after an hour is not known, and the row should
+    show both facts until it is.
+
+    A harvest "error" (a form that timed out, a crash) is no verdict, and is said as such.
+    """
+    verdict = HARVEST_LOGIN_STATES.get((ran or {}).get("outcome"))
+    if probe is not None:
+        entry["check"] = {"signed_in": probe.get("signed_in"),
+                          "reason": probe.get("reason", ""), "url": probe.get("url", "")}
+    if verdict:
+        entry.update(state=verdict, basis="harvest", reason=ran.get("reason", ""),
+                     url=ran.get("url", ""))
+        note = _harvest_note(ran)
+        seen = (probe or {}).get("signed_in")
+        if seen is not None and seen != (verdict == "ok"):
+            note += "; the check after it found the saved session %s" % (
+                "signed in" if seen else "signed out (%s)" % probe.get("reason", ""))
+        entry["note"] = note
+        return
+    error_note = _harvest_note(ran) if ran else ""
+    if probe is not None:
+        entry.update(basis="check", reason=probe.get("reason", ""), url=probe.get("url", ""))
+        if probe.get("signed_in") is None:
+            entry["state"] = "unknown"
+            notes = [probe.get("reason", "")]
+        elif probe["signed_in"]:
+            entry["state"] = "ok"
+            notes = []
+        else:
+            entry["state"] = "expired"
+            notes = ["the saved session is not signed in: %s" % probe.get("reason", "")]
+        notes.append(error_note)
+        if any(notes):
+            entry["note"] = "; ".join(n for n in notes if n)
+    elif name in _ELSEWHERE:
+        entry["state"] = "unknown"
+        entry["note"] = error_note or _ELSEWHERE[name]
+    elif not has_file:
+        entry["state"] = "missing"
+        if error_note:
+            entry["note"] = error_note
+    else:
+        entry["state"] = "unknown"
+
+
 def check_logins(write: bool = True):
-    """[{session, label, state, age_days, checked_at}] for every portal, and write it.
+    """[{session, label, state, age_days, checked_at, basis, reason, url, note}] for every
+    portal, and write it to .sessions/login_status.json for the Settings tab.
 
     WHY THE DASHBOARD CANNOT WORK THIS OUT FOR ITSELF. The Settings tab had one signal,
     "how much stock came back", and inferred a sign-in from it. Those are different
@@ -246,26 +321,28 @@ def check_logins(write: bool = True):
     Worse, a session FILE is written by an anonymous visit too, so `--status` said all
     three of that morning's sign-ins had worked when only one had.
 
-    So the state here is measured, never inferred: 'ok', 'expired' (a file that is not
-    signed in), 'missing' (no file), 'unknown' (no Playwright to look with).
+    So the state here is measured, never inferred: 'ok', 'expired' (not let in),
+    'missing' (nothing to sign in with), 'unknown' (nobody could look, or the look
+    crashed -- `reason` says which). `basis` says who measured it: "harvest" (tonight's
+    own sign-in, see _settle) or "check" (the saved session reopened here). `reason` and
+    `url` are what the page showed, so a dead session can be told from a crash.
     """
     out = []
+    ran_by_harvest = read_harvest_logins()
     for name, label, url in _targets():
         f = SESSION_DIR / f"{name}.json"
         entry = {"session": name, "label": label, "age_days": None,
                  "checked_at": datetime.now().strftime("%d/%m/%Y %H:%M")}
         if _needs_no_login(name, url):
             entry["state"] = "no_login_needed"
-        elif name in _ELSEWHERE:
-            entry["state"] = "unknown"
-            entry["note"] = _ELSEWHERE[name]
-        elif not f.exists():
-            entry["state"] = "missing"
         else:
-            age = datetime.now() - datetime.fromtimestamp(f.stat().st_mtime)
-            entry["age_days"] = age.days
-            ok = _session_logged_in(name, url, f)
-            entry["state"] = "unknown" if ok is None else ("ok" if ok else "expired")
+            probe = None
+            if f.exists():
+                age = datetime.now() - datetime.fromtimestamp(f.stat().st_mtime)
+                entry["age_days"] = age.days
+                if name not in _ELSEWHERE:
+                    probe = _probe_session(name, url)
+            _settle(entry, name, f.exists(), probe, ran_by_harvest.get(name))
         if entry["state"] in ("expired", "missing"):
             fixable, why = _self_service(name)
             entry["self_service"] = fixable
@@ -293,7 +370,6 @@ def check_logins(write: bool = True):
 def status(verify: bool = False):
     """List sessions. A session FILE can exist from an anonymous visit, so file
     presence alone does not mean 'logged in' — use --verify to actually check."""
-    from sources.portal_config import EAGENT_CONFIG, config_for_url
     print("Saved sessions in", SESSION_DIR)
     if not verify:
         print("(file presence only — run with --verify to confirm each is really logged in)\n")
@@ -307,22 +383,16 @@ def status(verify: bool = False):
         if not verify:
             print(f"  [FILE]       {label:<40} {stamp}")
             continue
-        cfg = EAGENT_CONFIG if name == "e_agent" else config_for_url(url)
-        ok = False
-        try:
-            with sync_playwright() as pw:
-                br = pw.chromium.launch(headless=True)
-                ctx = br.new_context(storage_state=str(f))
-                pg = ctx.new_page()
-                pg.goto(cfg.listings_url or url, wait_until="domcontentloaded", timeout=30000)
-                pg.wait_for_timeout(1500)
-                sel = cfg.logged_in_selector or ""
-                ok = any(pg.query_selector(s.strip()) for s in sel.split(",") if s.strip())
-                br.close()
-        except Exception:
-            ok = False
-        print(f"  [{'LOGGED IN' if ok else 'NOT LOGGED IN'}] {label:<40} {stamp}")
-        if not ok:
+        if name in _ELSEWHERE:
+            print(f"  [NOT OPENED] {label:<40} {stamp}  {_ELSEWHERE[name]}")
+            continue
+        # The same probe --check records: this used to be a third copy of "signed in",
+        # with neither the password veto nor E-Agent's functional test.
+        probe = _probe_session(name, url)
+        ok = probe["signed_in"]
+        tag = "LOGGED IN" if ok else ("NOT LOGGED IN" if ok is False else "COULD NOT LOOK")
+        print(f"  [{tag}] {label:<40} {stamp}  {probe['reason']}")
+        if ok is False:
             print(f"               → run: python portal_login.py {name}")
 
 
@@ -591,9 +661,14 @@ if __name__ == "__main__":
         # sign-in rather than one inferred from how much stock came back. Never fatal:
         # a portal that cannot be reached is worth a row saying so, not a failed harvest.
         for row in check_logins():
-            print("  [%-8s] %-42s %s" % (
+            # The reason and who measured it, so a red row in the log can be told from a
+            # crash without opening login_status.json (23 Oct: two "[expired ]" lines and
+            # nothing else).
+            print("  [%-8s] %-42s %s%s" % (
                 row["state"], row["label"],
-                "" if row["age_days"] is None else f"saved {row['age_days']}d ago"))
+                "" if row["age_days"] is None else f"saved {row['age_days']}d ago",
+                "  -- %s: %s" % (row.get("basis") or "?", row.get("note") or row.get("reason"))
+                if (row.get("note") or row.get("reason")) else ""))
         print(f"\nwritten to {LOGIN_STATUS_PATH}")
         raise SystemExit(0)
     if "--status" in args or "--verify" in args:

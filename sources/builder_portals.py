@@ -19,6 +19,7 @@ from typing import List, Dict, Any
 
 from sources.base import PropertySource
 from sources.scraper_base import PlaywrightScraper, parse_price, parse_int, PLAYWRIGHT_AVAILABLE, SESSION_DIR
+from sources.scraper_base import record_harvest_login, signed_out_reason
 from sources.portal_config import config_for_url
 from sources import adaptive_extract
 from sources.adaptive_extract import extract_listings
@@ -167,13 +168,20 @@ class BuilderPortalSource(PropertySource):
         return "Direct Builder Portal (live)"
 
     def _login(self, scraper: PlaywrightScraper, cfg, email: str, password: str) -> bool:
+        """Sign in, and leave in self._login_how / self._login_reason how it went: the
+        harvest's own sign-in outcome, which the Settings tab's Login column reports
+        (scraper_base.record_harvest_login)."""
         page = scraper.page
+        self._login_how, self._login_reason = "bounced", ""
         scraper.goto(cfg.login_url)
         if cfg.logged_in_selector and scraper.is_logged_in(cfg.logged_in_selector):
+            self._login_how = "session"
+            self._login_reason = "the saved session was accepted at the login page"
             return True  # reused a saved session (created by portal_login.py)
         if not (email and password):
             logger.error("[%s] no saved session and no credentials. Run: python portal_login.py \"%s\"",
                          cfg.name, cfg.name)
+            self._login_how, self._login_reason = "missing", "no password stored"
             return False
         try:
             if cfg.open_login_selector:
@@ -192,6 +200,8 @@ class BuilderPortalSource(PropertySource):
                     scraper.throttle()
                 except Exception as e:
                     logger.error("[%s] two-step login stalled after the identifier step: %s", cfg.name, e)
+                    self._login_reason = ("the password step never appeared after the "
+                                          "identifier (%s)" % type(e).__name__)
                     return False
             page.fill(cfg.password_selector, password, timeout=10000)
             page.click(cfg.submit_selector, timeout=10000)
@@ -199,10 +209,17 @@ class BuilderPortalSource(PropertySource):
             scraper.throttle()
         except Exception as e:
             logger.error("[%s] login interaction failed: %s", cfg.name, e)
+            # The form broke, not necessarily the login: no verdict either way.
+            self._login_how = "error"
+            self._login_reason = "the sign-in form failed: %s" % type(e).__name__
             return False
         if cfg.logged_in_selector and not scraper.is_logged_in(cfg.logged_in_selector):
             logger.error("[%s] login did not reach an authenticated state.", cfg.name)
+            self._login_reason = ("the stored password did not sign in: %s"
+                                  % signed_out_reason(page))
             return False
+        self._login_how = "signed_in"
+        self._login_reason = "signed in with the stored password"
         return True
 
     def _scrape_builder(self, builder: Dict[str, Any], filters: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -271,7 +288,7 @@ class BuilderPortalSource(PropertySource):
                 #
                 # So when we HAVE a session, it has to prove itself: if the logged-in
                 # marker is absent, that is a login trigger, not a result.
-                signed_in = True
+                signed_in, gate_measured = True, False
                 if getattr(cfg, "no_login_required", False):
                     # Nothing to be signed out OF. Asked the question anyway, this portal
                     # answered False for the honest reason that it has no Log Out marker,
@@ -280,6 +297,7 @@ class BuilderPortalSource(PropertySource):
                     pass
                 elif has_session and cfg.logged_in_selector:
                     try:
+                        gate_measured = True
                         # is_logged_in, NOT query_selector on the whole config string.
                         # Every logged_in_selector in portal_config starts with "text="
                         # and contains a comma, and a text= selector takes everything
@@ -301,12 +319,18 @@ class BuilderPortalSource(PropertySource):
                         # night because the forced re-auth finds no credentials to use.
                         signed_in = scraper.is_logged_in(cfg.logged_in_selector)
                     except Exception:                                   # noqa: BLE001
+                        gate_measured = False     # cannot tell, so nothing is recorded
                         signed_in = True          # cannot tell; do not throw away a read
                     if not signed_in:
                         logger.warning("[%s] a saved session exists but the page is not "
                                        "signed in — %d listing(s) visible are the public "
                                        "view, not the full stock. Re-authenticating.",
                                        cfg.name, len(probe or []))
+                    elif gate_measured:
+                        # The harvest's own answer for the Settings tab: this read is
+                        # signed in, on the saved session (record_harvest_login).
+                        self._note_sign_in(scraper, session_name, "session",
+                                           "the saved session was accepted")
 
                 if (not probe and not scraper.page.query_selector_all(cfg.listing_card_selector)) \
                         or not signed_in:
@@ -315,14 +339,23 @@ class BuilderPortalSource(PropertySource):
                                        "Sign in once: python portal_login.py \"%s\"",
                                        cfg.name, builder["builder_name"])
                         self._outcome = "no credentials"
+                        self._note_sign_in(
+                            scraper, session_name, "bounced" if has_session else "missing",
+                            "the saved session is not signed in (%s) and no password is "
+                            "stored" % signed_out_reason(scraper.page) if has_session
+                            else "no saved session and no password stored")
                         return []
                     if not self._login(scraper, cfg, email, password):
                         self._outcome = "login failed"
+                        self._note_sign_in(scraper, session_name, self._login_how,
+                                           self._login_reason)
                         if probe and not signed_in:
                             logger.error("[%s] could not sign in; refusing the %d public "
                                          "listing(s) rather than storing a teaser as the "
                                          "whole stock.", cfg.name, len(probe))
                         return []
+                    self._note_sign_in(scraper, session_name, self._login_how,
+                                       self._login_reason)
                     scraper.goto(cfg.listings_url)
                 # JS-rendered stock grids (e.g. Paramount's filter UI) finish painting
                 # well after networkidle — wait for the configured card selector before
@@ -410,8 +443,20 @@ class BuilderPortalSource(PropertySource):
         except Exception as e:
             logger.exception("[%s] scraper crashed: %s", cfg.name, e)
             self._outcome = "crashed"
+            # No verdict on the login, and never outranks one this run already recorded.
+            record_harvest_login(session_name, "error",
+                                 "the harvest crashed: %s" % type(e).__name__)
             return []
         return results
+
+    @staticmethod
+    def _note_sign_in(scraper, session_name: str, outcome: str, reason: str) -> None:
+        """The harvest's own sign-in outcome for one portal, with the page it ended on."""
+        try:
+            url = scraper.page.url
+        except Exception:                                             # noqa: BLE001
+            url = ""
+        record_harvest_login(session_name, outcome, reason, url)
 
     def search(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not PLAYWRIGHT_AVAILABLE:
