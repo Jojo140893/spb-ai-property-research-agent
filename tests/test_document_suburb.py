@@ -335,6 +335,61 @@ def test_the_atlas_rule_never_reaches_the_estate_of_the_same_name(monkeypatch):
         assert DS.suburb_for_row(row) == "", builder
 
 
+# ------------------------------------- 24 Oct 2026: three E-Agent lists that name no suburb
+# The VIC no_suburb parity bar: 'Pitt Street' (ids 17450-17454) and 'PV Price List'
+# (17465-17469) print a street and nothing else; their acknowledgement expired on 21 Oct.
+# The '1 Part & Under Construction' list heads one lot "Kayabram Vic, Victoria, 3620" -- a
+# typo for Kyabram, 3620 (id 31212). Each rule's evidence is in the rules file.
+_PITT = ("https://www.dropbox.com/scl/fo/9y6mzs8ntl7qe98daypqt/AKI0ynHRIvDIzFXiQVw-5Y4/"
+         "Pitt%20Street%20Price.pdf?rlkey=eqib19b9dvub57zchlas2arae&dl=1")
+_PV = ("https://www.dropbox.com/scl/fo/8hvkzyt3a6an8efvs9os6/AAgTjqWhCuJf0v7hKc52vAE/"
+       "PV%20Price%20List.pdf?rlkey=em8589uoih5nsxtwtk4cro7ur&dl=1")
+_ONE_PART = "https://www.e-agent.com.au/_files/ugd/069fe0_df942b47fc7d463d8ff940284c381cd0.pdf"
+
+
+def test_the_pitt_street_and_pv_lists_have_their_suburbs(monkeypatch):
+    monkeypatch.setattr(DS, "_RULES_CACHE", None)
+    monkeypatch.setattr(DS, "_MAP_CACHE", {})
+    pitt = {"builder_name": "Pitt Street", "state": "VIC", "source_url": _PITT,
+            "estate_name": "FIRB AnticipatedCompletion Primary Secondary CommissionRate&PaymentTerm"}
+    pv = {"builder_name": "", "estate_name": None, "state": "VIC", "source_url": _PV}
+    assert DS.suburb_for_row(pitt) == "Ringwood"
+    assert DS.suburb_for_row(pv) == "Pascoe Vale"
+    # The next re-issue lands in the same folder under a new link and a new name.
+    for row, want in ((pitt, "Ringwood"), (pv, "Pascoe Vale")):
+        folder = row["source_url"].split("/scl/fo/", 1)[1].split("/", 1)[0]
+        moved = dict(row, source_url="https://www.dropbox.com/scl/fo/" + folder +
+                     "/AZZZnewfileidZZZZZZZZZ/Price%20NEW.pdf")
+        assert DS.suburb_for_row(moved) == want
+
+
+def test_only_this_pitt_street_is_put_in_ringwood(monkeypatch):
+    """Pitt Street is a street in many suburbs and states, so the rule has no project key:
+    another development on one, here or in Sydney, keeps whatever its own list says."""
+    monkeypatch.setattr(DS, "_RULES_CACHE", None)
+    monkeypatch.setattr(DS, "_MAP_CACHE", {})
+    assert DS.suburb_for_row({"builder_name": "Pitt Street", "estate_name": "",
+                              "state": "VIC", "source_url": _PITT}) == "Ringwood"
+    other = "https://www.e-agent.com.au/_files/ugd/069fe0_0000000000000000000000000000000a.pdf"
+    for state in ("VIC", "NSW"):
+        row = {"builder_name": "Pitt Street", "estate_name": "12 Pitt Street",
+               "state": state, "source_url": other}
+        assert DS.suburb_for_row(row) == "", state
+
+
+def test_the_kayabram_typo_is_kyabram_and_no_other_town_on_its_list_is(monkeypatch):
+    """The rule keys on the typo in the lot's section header, never on the list: the list
+    covers about twenty towns."""
+    monkeypatch.setattr(DS, "_RULES_CACHE", None)
+    monkeypatch.setattr(DS, "_MAP_CACHE", {})
+    row = {"builder_name": "1 Part & Under Construction", "state": "VIC",
+           "estate_name": "KayabramVic,Victoria，3620", "source_url": _ONE_PART}
+    assert DS.suburb_for_row(row) == "Kyabram"
+    for estate in ("Echuca，Victoria，3564", "Tatura，Victoria，3616",
+                   "16 Marlboro Drive"):
+        assert DS.suburb_for_row(dict(row, estate_name=estate)) == "", estate
+
+
 # ------------------------------------------------ a failed refresh must not wipe the map
 def test_a_refresh_that_lost_most_of_its_answers_is_refused(tmp_path, monkeypatch):
     """The failure this stops is a GREEN one.
