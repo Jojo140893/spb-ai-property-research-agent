@@ -1,64 +1,73 @@
-"""Forgot password for the dashboard: the code, the store, the email and the reset.
+"""Forgot password for the dashboard: the code, the new password record, the email, the hand-off.
 
-Ahsan, 23 Oct 2026: "add a Forgot password: it sends a code to digital@smartpropertybuying.com.au
-and she (Coleen) can reset the password". This module is the server half. The sign-in half is
-middleware.js (build_web.py, MIDDLEWARE_JS), which reads what this module writes.
+Colin, 23 Oct 2026 call: people have left his team and he wants to change the dashboard password
+himself, without a developer. Ahsan: "it sends a code to digital@smartpropertybuying.com.au and she
+can reset the password". This module is the server half; middleware.js (build_web.py, MIDDLEWARE_JS)
+is the sign-in half. The owner's runbook is docs/password-reset-runbook.md.
 
-    browser -> GET  /forgot                       middleware.js: a page with one button, no email box
-    browser -> POST /api/auth/forgot   {}         api/auth/forgot.py -> forgot(): a 6-digit code is made,
-                                                  only a KEYED HASH of it is stored, the code is emailed
-    browser -> GET  /reset                        middleware.js: code + new password + confirm
-    browser -> POST /api/auth/reset {code,password,confirm}
-                                                  api/auth/reset.py -> reset_password(): code checked in
-                                                  constant time, burned, the new password stored as PBKDF2
-    browser -> POST /login                        middleware.js: checks the stored password when one exists
+    GET  /forgot                    middleware.js: one button, no email box
+    POST /api/reset_code    {}      api/reset_code.py -> forgot_endpoint(): emails a code + link
+    GET  /reset                     middleware.js: code + new password + confirm
+    POST /api/reset_password        api/reset_password.py -> reset_endpoint(): checks the code, makes
+         {code,password,confirm}    a signed, encrypted password record, hands it to GitHub (below)
+    GitHub Actions                  .github/workflows/apply-dashboard-password.yml stores the record
+                                    as the Vercel env var SPB_PW_RECORD and redeploys production
+    POST /login                     middleware.js: signs in against SPB_PW_RECORD when it is set
 
-THE ONE ADDRESS IS FIXED. There is no email field anywhere. The code goes to
-digital@smartpropertybuying.com.au (SPB_RESET_TO overrides it), so nobody can aim the email at
-themselves and nobody can learn which addresses exist.
+NO STORAGE AT ALL, ON PURPOSE (23 Oct 2026). The first build kept the code and the new password in
+Vercel Blob, and the sign-in check re-read Blob every 30 seconds. The team (digitalx-solutions-projects)
+is on Vercel Hobby: 10,000 Blob operations a month, shared with the hook's hot-leads store, and a
+30-day Blob lock-out when they run out. Normal use alone would have run them out, a stranger could
+have done it in minutes, and the lock-out would have taken sign-in down for everyone. So:
+  * the new password lives in an env var, which the middleware reads from memory: sign-in makes no
+    network call of any kind, exactly as before this feature;
+  * the code is STATELESS: HMAC(SPB_AUTH_SECRET, 5-minute time bucket + what signs in today). Nothing
+    is written when a code is asked for or tried, so nothing here can be exhausted or raced.
 
-TWO RECORDS in a PRIVATE Vercel Blob store (Blob is the only storage this project has; see the
-runbook, docs/password-reset-runbook.md):
+THE CODE. 10 characters of Crockford base32 (50 bits), e.g. "7KQ2M-XR4TD". Valid for the bucket it
+was made in and the three before the current one: 15 to 20 minutes. Bound to the current password
+(the record's mac, or a fingerprint of SITE_PASSWORD), so the moment a new password goes live, or the
+owner changes SITE_PASSWORD, every outstanding code dies. With 50 bits there is no attempt counter to
+keep: four live codes in 2^50 is a 1-in-280-trillion chance per guess. (The first build used 6 digits
+plus a counter; an independent review worked out that a patient stranger had about 1% a month, and the
+shared counter let anyone burn Coleen's code. Both are gone.)
 
-  site-auth/reset.json     the code in flight and the rate-limit history. Written by forgot() and
-                           reset_password(), read by nobody else.
-      {"v":1, "state":"open"|"burned", "nonce":..., "code_mac":..., "issued_at":..., "expires_at":...,
-       "attempts_left":5, "issued":[recent request times, for the rate limit]}
-      code_mac = HMAC(key derived from SPB_SERVICE_KEY, "reset-code|" + nonce + "|" + code). The code
-      itself is never stored, and the hash is KEYED and bound to a random NONCE, so a copy of the
-      store alone cannot be ground through the million possible codes, and a hash lifted from one
-      request cannot be replayed against another.
+THE RECORD (SPB_PW_RECORD). One shell-safe line:
+    v1.<epoch>.<unix time>.<fp>.<nonce>.<box>.<mac>
+  epoch   one more than the last record's, so the reset page and the workflow can tell when it is live,
+          and the workflow can refuse an older one (a re-run of an old run must not bring it back)
+  fp      16 hex of HMAC(K_fp, SITE_PASSWORD): change SITE_PASSWORD in Vercel and the record is
+          ignored on the spot, so the owner's value always wins (the break-glass)
+  box     the PBKDF2-HMAC-SHA256 iterations, salt and hash of the new password, ENCRYPTED: XOR with an
+          HMAC-SHA256 keystream (K_box, nonce). The record is a GitHub workflow input, and GitHub prints
+          inputs into its logs, readable by anyone who can read the repo for 90 days. Encrypted, they
+          see nothing to crack. (The stdlib has no AES, and this is the standard HMAC-in-counter-mode
+          construction, authenticated by the mac below: encrypt-then-MAC.)
+  mac     HMAC(K_record, everything before it). Checked FIRST, before fp: a record that does not verify
+          is refused, never "ignored". (Ignoring it would mean a changed SPB_AUTH_SECRET quietly brings
+          back the old SITE_PASSWORD, the one the people who left know. Review, 23 Oct 2026.)
+All keys come from SPB_AUTH_SECRET, a secret set only on this Vercel project. Not SPB_SERVICE_KEY: the
+hook holds that one and sends it on every research call.
 
-  site-auth/password.json  the password Coleen chose. Written by reset_password(), read by this module
-                           and by middleware.js.
-      {"v":1, "algo":"pbkdf2-sha256", "iter":N, "salt":..., "hash":..., "env_fp":..., "epoch":N,
-       "updated_at":"...Z", "mac":...}
-      env_fp = first 16 hex of HMAC(SPB_SERVICE_KEY, "sitepw|" + SITE_PASSWORD). If the owner later
-      changes SITE_PASSWORD (or rotates SPB_SERVICE_KEY) in Vercel, env_fp stops matching and the
-      stored password is IGNORED, so the owner's value in Vercel always wins: that is the break-glass.
-      mac covers every other field (key derived from SPB_SERVICE_KEY). Not in the brief; added because
-      without it anybody holding the Blob token could copy the real env_fp out of the record and write
-      their own hash next to it. With it they also need SPB_SERVICE_KEY.
+NO VERCEL TOKEN HERE. This function holds GITHUB_DISPATCH_TOKEN, already on the project for the
+Refresh button, which can start workflows and nothing else on Vercel. The token that writes the env var
+and redeploys is the VERCEL_TOKEN GitHub secret the nightly already uses; it never enters this runtime.
 
-EVERYTHING IS A COMPARE-AND-SWAP. Vercel Blob offers conditional writes (x-if-match with the ETag
-of what was read; 412 when somebody else wrote first) and create-only writes (x-allow-overwrite: 0).
-Every read-modify-write below uses them and retries on a conflict, so:
-  * two requests cannot both spend one code: the "burn" is the conditional write, and only one can
-    win it. A code is used at most once, whatever the interleaving.
-  * a wrong guess is counted BEFORE the answer is sent. If its decrement cannot be stored the
-    caller is told "busy", never "wrong", so a guess is never evaluated for free.
-  * the code is burned BEFORE the password is written. If the second write then fails the code is
-    gone and the person asks for another: the failure direction is always "nothing changed".
-Reads use ?cache=0: Blob serves reads through a CDN that may return the previous version of an
-overwritten blob for up to 60 seconds, and a stale read of reset.json would hand out a burned code.
+LIMITS, AND WHY THEY ARE PER CLIENT. Each Vercel instance keeps them in memory. By the client's IP
+(Vercel sets x-real-ip), so a stranger hammering the endpoints blocks only themselves, never Coleen:
+  * code emails: 1 a minute and 3 an hour per IP, and 20 an hour per instance in all (Gmail's sending
+    limit is the digital@ account's, which also sends the nightly's alerts);
+  * wrong codes: 20 a minute per IP (a right code is never refused by this);
+  * hand-offs to GitHub: 3 an hour per instance. Each one is a redeploy, Vercel Hobby allows 100 a day,
+    and running out would stop the nightly publishing. The workflow also refuses more than 10 a day,
+    counted from GitHub's own run history, which no instance can get around.
 
-FAIL-SAFE: with BLOB_READ_WRITE_TOKEN, SPB_SMTP_PASSWORD or SPB_SERVICE_KEY missing, configured() is
-False, the endpoints answer 503 "not set up yet" and middleware.js behaves exactly as it did before
-this feature existed.
+FAIL-SAFE: without SPB_AUTH_SECRET, SPB_SMTP_PASSWORD and GITHUB_DISPATCH_TOKEN, configured() is False,
+the endpoints answer 503 "not set up yet", and middleware.js serves the sign-in page exactly as it was.
 
 NO SECRET IS LOGGED. Log lines are fixed event names; an exception is logged by CLASS NAME only (an
-SMTP or HTTP error message can quote the request). The code, the password, the SMTP password, the Blob
-token, SPB_SERVICE_KEY and SITE_PASSWORD never reach a log, a response or an email.
+SMTP or HTTP error can quote the request). The code, the password, the record, the SMTP password, the
+dispatch token, SPB_AUTH_SECRET and SITE_PASSWORD never reach a log, a response or an email.
 """
 import base64
 import email.utils
@@ -71,6 +80,7 @@ import secrets
 import smtplib
 import ssl
 import sys
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -83,59 +93,79 @@ from http.server import BaseHTTPRequestHandler
 # ------------------------------------------------------------------ settings
 
 DEFAULT_USER = "digital@smartpropertybuying.com.au"
-DEFAULT_TO = DEFAULT_USER                    # where the code goes; SPB_RESET_TO overrides
-RESET_PATH = "site-auth/reset.json"
-PASSWORD_PATH = "site-auth/password.json"
+DEFAULT_TO = DEFAULT_USER                    # where codes go; SPB_RESET_TO overrides
+DEFAULT_SITE_URL = "https://app.smartpropertybuying.com.au"   # for the link in the email; never the Host header
 
-CODE_TTL = 15 * 60                           # seconds a code works
-ATTEMPTS = 5                                 # wrong tries before a code is burned
-MIN_GAP = 60                                 # seconds between two code requests
-PER_HOUR = 3                                 # code requests in any rolling hour
-MIN_FORGOT_SECONDS = 1.2                     # floor on the forgot answer, see forgot_endpoint
-CAS_TRIES = 6                                # re-reads after a conflicting write
+# Where the record is handed over. Hard-coded like api/refresh.py: a caller-supplied repo or workflow
+# would make this a "dispatch anything as us" endpoint.
+GITHUB_API = "https://api.github.com"
+OWNER = os.environ.get("GITHUB_OWNER", "Jojo140893")
+REPO = os.environ.get("GITHUB_REPO", "spb-ai-property-research-agent")
+REF = os.environ.get("GITHUB_REF_NAME", "main")
+WORKFLOW = "apply-dashboard-password.yml"
 
-# 210,000 rounds of PBKDF2-HMAC-SHA256 measured 76 ms in Node's WebCrypto (the call middleware.js
-# makes on a login) and 92 ms here, 23 Oct 2026. OWASP's current figure for this PRF is 600,000
-# (243 ms in Node); the cost lands on every login POST, right or wrong, so it was set where one
-# login stays near a tenth of a second on a slow vCPU. Stored per record, so raising it later is a
-# one-line change here and the next reset. middleware.js refuses a record outside MIN..MAX.
+CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"   # Crockford base32: no I, L, O, U
+CODE_LEN = 10
+BUCKET = 300                                 # seconds per code bucket
+BUCKETS = 4                                  # the current bucket and the three before it: 15-20 min
+
+IP_GAP = 60                                  # per IP: seconds between two code emails
+IP_PER_HOUR = 3                              # per IP: code emails in any rolling hour
+SENDS_PER_HOUR = 20                          # per instance: code emails in all, any rolling hour
+WRONG_PER_MINUTE = 20                        # per IP: wrong codes before that IP gets a 429
+HANDOFFS_PER_HOUR = 3                        # per instance: records handed to GitHub (each is a redeploy)
+MIN_FORGOT_SECONDS = 2.0                     # floor on the forgot answer, see forgot_endpoint
+RECORD_MAX_AGE = 30 * 60                     # check-record refuses a record older than this
+
+# 210,000 rounds of PBKDF2-HMAC-SHA256 measured 76 ms in Node's WebCrypto (the call middleware.js makes
+# on every login POST, right or wrong) and 92 ms here, 23 Oct 2026. The middleware runs on Vercel's
+# Node.js runtime (the live deployment's lambdaRuntimeStats say nodejs:1 beside the Python functions),
+# not an edge isolate that caps PBKDF2 at 100,000, and the workflow proves it after every reset by
+# POSTing a wrong password to /login and requiring 401. OWASP's figure for this PRF is 600,000 (243 ms);
+# a login near a tenth of a second was preferred. Stored in the record, so raising it is a one-line
+# change here that takes effect at the next reset. middleware.js refuses a record outside MIN..MAX.
 PBKDF2_ITER = 210000
 MIN_ITER = 100000
 MAX_ITER = 1000000
 
 MIN_PASSWORD = 12
 MAX_PASSWORD = 128
+MIN_SECRET = 32                              # SPB_AUTH_SECRET shorter than this is treated as unset
 
 MAX_BODY = 4096                              # a code and a password, not a document
-MAX_RECORD = 16384
-BLOB_TIMEOUT = 8
 SMTP_TIMEOUT = 15
-# What we call ourselves in EHLO. smtplib otherwise asks the network for this machine's fully
-# qualified name (a reverse DNS lookup that the socket timeout does not cover and that took 2 s on
-# the test laptop); a fixed name costs nothing and Gmail does not care what it is.
+NOTICE_TIMEOUT = 6                           # the "changed" notice must not push a done reset past maxDuration
+GITHUB_TIMEOUT = 15
+# What we call ourselves in EHLO. smtplib otherwise asks the network for this machine's fully qualified
+# name (a reverse DNS lookup the socket timeout does not cover); Gmail does not care what it is.
 EHLO_NAME = "app.smartpropertybuying.com.au"
 
-SUBJECT_CODE = "Smart Property Buying dashboard password code"
+SUBJECT_CODE = "Smart Property Buying dashboard reset code"
 SUBJECT_CHANGED = "Smart Property Buying dashboard password changed"
 
 GENERIC_FORGOT = "If this site is set up for it, a code has been emailed."
 NOT_SET_UP = "Password reset is not set up yet - ask the person who runs the dashboard."
-CODE_INVALID = ("That code is not right, or it has expired or already been used. "
+CODE_INVALID = ("That code is not right, or it has expired. "
                 "Ask for a new code if you are not sure.")
+SAVED = ("Saved. Your new password starts working in about 2 minutes. "
+         "Until then, keep using the old one.")
 
-# Seams for the tests. Production leaves all of them alone; tests/authkit sets them so the clock,
-# the network and the mail server are fakes and nothing real is ever called.
+# Seams for the tests. Production leaves all of them alone; the tests set them so the clock, GitHub and
+# the mail server are fakes and nothing real is ever called.
 clock = time.time
 sleep = time.sleep
-TRANSPORT = None                             # (method, url, headers, body, timeout) -> (status, headers, body)
+TRANSPORT = None                             # (method, url, headers, body, timeout) -> HTTP status
 SMTP_FACTORY = None                          # (host, port, timeout) -> an smtplib.SMTP-like object
 
-_TOKEN_RE = re.compile(r"^vercel_blob_rw_([A-Za-z0-9]+)_\S+$")
+RECORD_RE = re.compile(
+    r"^v1\.([0-9]{1,9})\.([0-9]{10})\.([0-9a-f]{16})\.([A-Za-z0-9_-]{22})\.([A-Za-z0-9_-]{70})"
+    r"\.([A-Za-z0-9_-]{43})$")
+BOX_LEN = 4 + 16 + 32                        # iterations (big-endian), salt, hash
+ID_LEN = 12                                  # how much of the mac names a record in x-spb-auth-id
 _EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$")
-_B64_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+_SITE_URL_RE = re.compile(r"^https://[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
-_CODE_RE = re.compile(r"^[0-9]{6}$")
+_IP_RE = re.compile(r"^[0-9A-Fa-f:.]{2,45}$")
 
 
 def log(event):
@@ -144,12 +174,8 @@ def log(event):
     sys.stderr.flush()
 
 
-class StoreError(Exception):
-    """The store could not be read or written. The text is a status or a class name only."""
-
-
-class Conflict(Exception):
-    """A conditional write lost to somebody else's write."""
+class ConfigError(Exception):
+    """SPB_PW_RECORD is set but cannot be trusted. middleware.js answers 503 for the same record."""
 
 
 # ------------------------------------------------------------------ configuration
@@ -162,12 +188,6 @@ def site_username():
     return _env("SITE_USERNAME") or DEFAULT_USER
 
 
-def blob_token():
-    """BLOB_READ_WRITE_TOKEN, or "" when it is missing or cannot be a Blob token."""
-    token = _env("BLOB_READ_WRITE_TOKEN")
-    return token if _TOKEN_RE.match(token) else ""
-
-
 def smtp_user():
     return _env("SPB_SMTP_USER") or DEFAULT_USER
 
@@ -176,12 +196,18 @@ def reset_to():
     return _env("SPB_RESET_TO") or DEFAULT_TO
 
 
+def site_url():
+    return _env("SPB_SITE_URL") or DEFAULT_SITE_URL
+
+
 def configured():
-    """True only when the whole feature can work. Mirrors resetConfigured() in middleware.js; a
-    test compares the two. Anything short of this and the dashboard behaves as it always did."""
+    """True only when the whole feature can work. Mirrors resetConfigured() in middleware.js; a test
+    compares the two. Anything short of this and the dashboard behaves as it always did."""
     return bool(
-        blob_token() and _env("SPB_SMTP_PASSWORD") and _env("SPB_SERVICE_KEY")
-        and _EMAIL_RE.match(reset_to()) and _EMAIL_RE.match(smtp_user()))
+        len(_env("SPB_AUTH_SECRET")) >= MIN_SECRET and _env("SPB_SMTP_PASSWORD")
+        and _env("GITHUB_DISPATCH_TOKEN") and _env("SITE_PASSWORD")
+        and _EMAIL_RE.match(reset_to()) and _EMAIL_RE.match(smtp_user())
+        and _SITE_URL_RE.match(site_url()))
 
 
 def mask_email(address):
@@ -197,8 +223,6 @@ def b64url(raw):
 
 
 def b64url_decode(text):
-    if not isinstance(text, str) or not _B64_RE.match(text):
-        raise ValueError("not base64url")
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
@@ -206,30 +230,15 @@ def _hmac(key, data):
     return hmac.new(key, data.encode("utf-8"), hashlib.sha256).digest()
 
 
-def _service_key():
-    return _env("SPB_SERVICE_KEY").encode("utf-8")
+def _key(label):
+    """One key per purpose, all from SPB_AUTH_SECRET. Same derivation as authKey() in middleware.js."""
+    return _hmac(_env("SPB_AUTH_SECRET").encode("utf-8"), "spb-auth|" + label + "|v1")
 
 
-def _reset_key():
-    return _hmac(_service_key(), "spb-auth|reset-code-key|v1")
-
-
-def _record_key():
-    return _hmac(_service_key(), "spb-auth|record-mac|v1")
-
-
-def env_fp():
-    """What the stored password was written against. 64 bits of a keyed hash: enough that a changed
-    SITE_PASSWORD never collides, and too little to be worth grinding for the password."""
-    return _hmac(_service_key(), "sitepw|" + _env("SITE_PASSWORD")).hex()[:16]
-
-
-def code_mac(key, nonce, code):
-    return b64url(_hmac(key, "reset-code|" + nonce + "|" + code))
-
-
-def pbkdf2(password, salt, iterations):
-    return hashlib.pbkdf2_hmac("sha256", normalise(password).encode("utf-8"), salt, iterations)
+def env_fp(site_password=None):
+    """What a record was written against. 64 bits of a keyed hash of SITE_PASSWORD."""
+    pw = _env("SITE_PASSWORD") if site_password is None else site_password
+    return _hmac(_key("env-fp"), pw).hex()[:16]
 
 
 def normalise(password):
@@ -237,344 +246,204 @@ def normalise(password):
     return unicodedata.normalize("NFC", password)
 
 
-def record_mac(rec):
-    """Covers every field but itself. Same canonical string as middleware.js."""
-    canon = "|".join(str(rec[k]) for k in
-                     ("v", "algo", "iter", "salt", "hash", "env_fp", "epoch", "updated_at"))
-    return b64url(_hmac(_record_key(), "spb-pw-record|" + canon))
+def pbkdf2(password, salt, iterations):
+    return hashlib.pbkdf2_hmac("sha256", normalise(password).encode("utf-8"), salt, iterations)
 
 
-def iso(now):
-    return datetime.fromtimestamp(int(now), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def _keystream(nonce):
+    """64 bytes of HMAC-SHA256(K_box, "spb-pw-box|" + nonce + "|" + n) for n = 0, 1. Same as boxStream()."""
+    key = _key("box")
+    return _hmac(key, "spb-pw-box|%s|0" % nonce) + _hmac(key, "spb-pw-box|%s|1" % nonce)
 
 
-# ------------------------------------------------------------------ the Blob store
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *args, **kwargs):
-        return None                          # the Authorization header must never follow a redirect
+def _xor(data, stream):
+    return bytes(a ^ b for a, b in zip(data, stream))
 
 
-_OPENER = urllib.request.build_opener(_NoRedirect)
+# ------------------------------------------------------------------ the record
+
+def parse_record(text):
+    """The record's visible fields by shape alone (no secret needed), or None. Used by the GitHub
+    workflow before it writes anything to Vercel, so a mangled value can never reach the env."""
+    m = RECORD_RE.fullmatch(text or "")      # fullmatch: "$" alone would let a trailing newline in
+    if not m:
+        return None
+    epoch, at, fp, nonce, box, mac = m.groups()
+    if int(epoch) < 1:
+        return None
+    return {"epoch": int(epoch), "at": int(at), "fp": fp, "nonce": nonce, "box": box, "mac": mac,
+            "id": mac[:ID_LEN], "body": text[:text.rindex(".")]}
 
 
-def _urllib_transport(method, url, headers, body, timeout):
-    req = urllib.request.Request(url, data=body, method=method, headers=headers)
-    try:
-        with _OPENER.open(req, timeout=timeout) as resp:
-            return resp.status, {k.lower(): v for k, v in resp.getheaders()}, resp.read(MAX_RECORD + 1)
-    except urllib.error.HTTPError as e:      # 3xx (not followed), 4xx, 5xx
-        try:
-            data = e.read(MAX_RECORD + 1)
-        except Exception:                                              # noqa: BLE001
-            data = b""
-        return e.code, {k.lower(): v for k, v in e.headers.items()}, data
-    except Exception as e:                                             # noqa: BLE001
-        raise StoreError(type(e).__name__)
+def record_mac(body):
+    return b64url(_hmac(_key("record"), body))
 
 
-class BlobStore:
-    """The two calls this feature needs against a PRIVATE Vercel Blob store, over the REST API the
-    official SDK (@vercel/blob 2.x) speaks:
+def active_record():
+    """The record that signs people in right now, or None for "SITE_PASSWORD, as before".
 
-      read  GET https://<storeId>.private.blob.vercel-storage.com/<pathname>?cache=0
-            Authorization: Bearer <token>.  200 + ETag header, or 404 when there is no such blob.
-      write PUT https://vercel.com/api/blob/?pathname=<pathname>
-            Authorization, x-api-version, x-vercel-blob-store-id, x-vercel-blob-access: private,
-            x-add-random-suffix: 0, x-content-type, and one of
-              x-if-match: <etag>      overwrite only if the blob still has this ETag (412 if not)
-              x-allow-overwrite: 0    create only (an error if the blob already exists)
-            200 + JSON {url, downloadUrl, pathname, contentType, contentDisposition, etag}.
+    Same decision, in the same order, as evaluateRecord() in middleware.js:
+      unset                         -> None
+      malformed, or no secret       -> ConfigError (the middleware answers 503: it will not guess)
+      mac fails                     -> ConfigError (so a changed SPB_AUTH_SECRET is refused, not ignored)
+      fp is not today's             -> None (the owner changed SITE_PASSWORD; the owner wins)
+      iterations out of range       -> ConfigError
     """
-
-    API = "https://vercel.com/api/blob"
-    API_VERSION = "12"
-
-    def __init__(self, token=None):
-        self.token = token or blob_token()
-        m = _TOKEN_RE.match(self.token)
-        if not m:
-            raise StoreError("no usable Blob token")
-        self.store_id = m.group(1)
-
-    def _send(self, method, url, headers, body=None):
-        send = TRANSPORT or _urllib_transport
-        return send(method, url, headers, body, BLOB_TIMEOUT)
-
-    def read(self, pathname):
-        """(text, etag), or (None, None) when the blob does not exist. StoreError on anything else."""
-        url = "https://%s.private.blob.vercel-storage.com/%s?cache=0" % (
-            self.store_id.lower(), urllib.parse.quote(pathname, safe="/"))
-        status, headers, body = self._send("GET", url, {"authorization": "Bearer " + self.token})
-        if status == 404:
-            return None, None
-        if status != 200:
-            raise StoreError("read answered %d" % status)
-        if len(body) > MAX_RECORD:
-            raise StoreError("record too large")
-        etag = headers.get("etag") or ""
-        if not etag:
-            raise StoreError("read carried no ETag")
-        return body.decode("utf-8", "replace"), etag
-
-    def write(self, pathname, text, if_match=None, create_only=False):
-        """Store `text` and return its ETag. Exactly one of if_match / create_only must be given:
-        an unconditional overwrite is something this feature never does."""
-        if bool(if_match) == bool(create_only):
-            raise ValueError("a write is either conditional on an ETag or create-only")
-        headers = {
-            "authorization": "Bearer " + self.token,
-            "x-api-version": self.API_VERSION,
-            "x-vercel-blob-store-id": self.store_id,
-            "x-vercel-blob-access": "private",
-            "x-add-random-suffix": "0",
-            "x-content-type": "application/json",
-            "x-allow-overwrite": "1" if if_match else "0",
-        }
-        if if_match:
-            headers["x-if-match"] = if_match
-        status, _hdrs, body = self._send(
-            "PUT", self.API + "/?" + urllib.parse.urlencode({"pathname": pathname}),
-            headers, text.encode("utf-8"))
-        if status == 412 or (create_only and status in (400, 409)):
-            raise Conflict()
-        if status != 200:
-            raise StoreError("write answered %d" % status)
-        try:
-            meta = json.loads(body.decode("utf-8"))
-            etag, url, name = meta["etag"], meta["url"], meta["pathname"]
-        except Exception:                                              # noqa: BLE001
-            raise StoreError("write answer was not understood")
-        # A record that landed anywhere but this exact private pathname would be unreadable or,
-        # worse, public. Refuse to carry on as if it had worked.
-        if name != pathname or ".private.blob." not in str(url):
-            raise StoreError("blob landed somewhere unexpected")
-        return etag
-
-
-def default_store():
-    return BlobStore()
-
-
-def _load(text):
-    if text is None:
+    raw = _env("SPB_PW_RECORD")
+    if not raw:
         return None
-    try:
-        obj = json.loads(text)
-    except ValueError:
+    rec = parse_record(raw)
+    if rec is None:
+        raise ConfigError("SPB_PW_RECORD is not a record this version understands")
+    if not _env("SPB_AUTH_SECRET"):
+        raise ConfigError("SPB_PW_RECORD is set but SPB_AUTH_SECRET is not")
+    if not hmac.compare_digest(rec["mac"], record_mac(rec["body"])):
+        raise ConfigError("SPB_PW_RECORD failed its check")
+    if not hmac.compare_digest(rec["fp"], env_fp()):
         return None
-    return obj if isinstance(obj, dict) else None
-
-
-# ------------------------------------------------------------------ the stored password
-
-def valid_override(rec):
-    """The password record, if it is one this deployment wrote and still stands behind; else None.
-
-    None for: a record written against another SITE_PASSWORD / SPB_SERVICE_KEY (the owner changed
-    one in Vercel, so the owner's value wins), and for anything malformed or whose mac fails."""
-    if not isinstance(rec, dict) or type(rec.get("v")) is not int or rec["v"] != 1:
-        return None
-    if not isinstance(rec.get("env_fp"), str):
-        return None
-    if not hmac.compare_digest(rec["env_fp"].encode("utf-8"), env_fp().encode("ascii")):
-        return None
-    try:
-        if rec.get("algo") != "pbkdf2-sha256":
-            return None
-        # type() is int, not isinstance: True is an int in Python and must not pass for 1.
-        if not (type(rec.get("iter")) is int and MIN_ITER <= rec["iter"] <= MAX_ITER):
-            return None
-        if not (type(rec.get("epoch")) is int and rec["epoch"] >= 1):
-            return None
-        if len(b64url_decode(rec.get("salt"))) < 8 or len(b64url_decode(rec.get("hash"))) != 32:
-            return None
-        if not (isinstance(rec.get("updated_at"), str) and _ISO_RE.match(rec["updated_at"])):
-            return None
-        mac = rec.get("mac")
-        if not isinstance(mac, str) or not _B64_RE.match(mac):
-            return None
-        if not hmac.compare_digest(mac.encode("ascii"), record_mac(rec).encode("ascii")):
-            return None
-    except (ValueError, KeyError, TypeError):
-        return None
+    plain = _xor(b64url_decode(rec["box"]), _keystream(rec["nonce"]))
+    rec["iter"] = int.from_bytes(plain[:4], "big")
+    if not (MIN_ITER <= rec["iter"] <= MAX_ITER):
+        raise ConfigError("SPB_PW_RECORD is out of range")
+    rec["salt"], rec["hash"] = plain[4:20], b64url(plain[20:52])
     return rec
 
 
-def is_current_password(store, password):
-    """Is `password` what signs Coleen in right now? Either the value in Vercel or the stored one."""
-    site = _env("SITE_PASSWORD")
-    same = hmac.compare_digest(normalise(password).encode("utf-8"), site.encode("utf-8"))
-    text, _etag = store.read(PASSWORD_PATH)
-    rec = valid_override(_load(text))
-    if rec is not None:
-        got = b64url(pbkdf2(password, b64url_decode(rec["salt"]), rec["iter"]))
-        same = hmac.compare_digest(got.encode("ascii"), rec["hash"].encode("ascii")) or same
-    return same
+def next_epoch():
+    """One more than the last record's epoch, even an ignored one, so epochs never repeat."""
+    rec = parse_record(_env("SPB_PW_RECORD"))
+    return (rec["epoch"] if rec else 0) + 1
 
 
-def _new_password_record(password, epoch, now):
+def build_record(password, epoch, now):
     salt = secrets.token_bytes(16)
-    rec = {
-        "v": 1, "algo": "pbkdf2-sha256", "iter": PBKDF2_ITER,
-        "salt": b64url(salt), "hash": b64url(pbkdf2(password, salt, PBKDF2_ITER)),
-        "env_fp": env_fp(), "epoch": epoch, "updated_at": iso(now),
-    }
-    rec["mac"] = record_mac(rec)
-    return rec
+    nonce = b64url(secrets.token_bytes(16))
+    plain = PBKDF2_ITER.to_bytes(4, "big") + salt + pbkdf2(password, salt, PBKDF2_ITER)
+    body = "v1.%d.%d.%s.%s.%s" % (epoch, int(now), env_fp(), nonce, b64url(_xor(plain, _keystream(nonce))))
+    return body + "." + record_mac(body)
+
+
+def is_current_password(password, rec):
+    """Would this password change nothing? True for the password that signs in now, and for
+    SITE_PASSWORD even after a reset: going back to the password the leavers knew is no change."""
+    same = hmac.compare_digest(normalise(password).encode("utf-8"), _env("SITE_PASSWORD").encode("utf-8"))
+    if rec is not None:
+        got = b64url(pbkdf2(password, rec["salt"], rec["iter"]))
+        same = hmac.compare_digest(got, rec["hash"]) or same
+    return same
 
 
 # ------------------------------------------------------------------ the code
 
-def _active(rec, now):
-    try:
-        return (rec.get("v") == 1 and rec.get("state") == "open"
-                and isinstance(rec.get("nonce"), str) and isinstance(rec.get("code_mac"), str)
-                and rec["expires_at"] > now and int(rec["attempts_left"]) > 0)
-    except (KeyError, TypeError, ValueError):
-        return False
+def verifier_id(rec):
+    """What the code is bound to: the live record, else SITE_PASSWORD's fingerprint."""
+    return ("rec|" + rec["mac"]) if rec is not None else ("site|" + env_fp())
 
 
-def _burned(rec, now):
-    """The same record with no code left in it. `issued` stays, or a success would reset the rate limit."""
-    return {"v": 1, "state": "burned", "burned_at": int(now), "attempts_left": 0,
-            "issued": list(rec.get("issued") or [])}
+def code_for(bucket, vid):
+    digest = _hmac(_key("code"), "code|%d|%s" % (bucket, vid))
+    n = int.from_bytes(digest[:8], "big") >> (64 - 5 * CODE_LEN)
+    return "".join(CODE_ALPHABET[(n >> (5 * (CODE_LEN - 1 - i))) & 31] for i in range(CODE_LEN))
 
 
-def _recent(issued, now):
-    out = []
-    for t in issued if isinstance(issued, list) else []:
-        if isinstance(t, (int, float)) and not isinstance(t, bool) and now - 3600 < t <= now + 300:
-            out.append(t)
-    return out
+def show_code(code):
+    return code[:5] + "-" + code[5:]
 
 
-def rate_limited(issued, now):
-    """At most 1 code per 60 s and 3 per rolling hour."""
-    recent = _recent(issued, now)
-    return any(now - t < MIN_GAP for t in recent) or len(recent) >= PER_HOUR
+def normalise_code(text):
+    """What the person typed, as the 10 canonical characters, or None. Case, spaces and the hyphen do
+    not matter, and the letters people mistake for digits (O, I, L) are read as the digits."""
+    if not isinstance(text, str) or len(text) > 40:
+        return None
+    t = text.upper().replace(" ", "").replace("-", "")
+    t = t.replace("O", "0").replace("I", "1").replace("L", "1")
+    if len(t) != CODE_LEN or any(c not in CODE_ALPHABET for c in t):
+        return None
+    return t
 
 
-def forgot(store=None):
-    """Make a code, store its keyed hash, email it. Returns "sent", "limited" or "failed".
-
-    The HTTP answer is the same generic sentence for all three: what happened is for the log."""
-    store = store or default_store()
-    key = _reset_key()
-    for _ in range(CAS_TRIES):
-        text, etag = store.read(RESET_PATH)
-        old = _load(text)
-        now = clock()
-        issued = _recent(old.get("issued") if old else [], now)
-        if rate_limited(issued, now):
-            log("forgot: limited")
-            return "limited"
-        code = "%06d" % secrets.randbelow(1000000)
-        nonce = b64url(secrets.token_bytes(16))
-        rec = {"v": 1, "state": "open", "nonce": nonce, "code_mac": code_mac(key, nonce, code),
-               "issued_at": int(now), "expires_at": int(now) + CODE_TTL, "attempts_left": ATTEMPTS,
-               "issued": (issued + [int(now)])[-10:]}
-        try:
-            if etag:
-                store.write(RESET_PATH, json.dumps(rec), if_match=etag)
-            else:
-                store.write(RESET_PATH, json.dumps(rec), create_only=True)
-        except Conflict:
-            continue
-        # Stored first: a code that is emailed but cannot be checked is worse than one that is
-        # stored and lost. If the mail fails the person asks again after a minute.
-        try:
-            send_mail(SUBJECT_CODE, code_mail_body(code))
-        except Exception as e:                                         # noqa: BLE001
-            log("forgot: mail failed (%s)" % _why(e))
-            return "failed"
-        log("forgot: code sent")
-        return "sent"
-    log("forgot: store was busy")
-    return "failed"
+def code_ok(code, now, vid):
+    """Every live bucket is compared, in constant time, whatever matched first."""
+    bucket = int(now // BUCKET)
+    ok = False
+    for k in range(BUCKETS):
+        ok = hmac.compare_digest(code_for(bucket - k, vid), code) | ok
+    return ok
 
 
-def reset_password(code, password, store=None):
-    """Spend a code on a new password. Returns one of:
-        "ok"       changed
-        "code"     the code is wrong, expired, burned or was never asked for (all look the same)
-        "same"     the code was right but the password is what already signs people in (code kept)
-        "busy"     could not settle it against concurrent writers; nothing was decided
-    Raises StoreError when the store cannot be read or written (nothing was decided)."""
-    store = store or default_store()
-    key = _reset_key()
-    for _ in range(CAS_TRIES):
-        text, etag = store.read(RESET_PATH)
-        rec = _load(text)
-        now = clock()
-        if rec is None or not _active(rec, now):
-            return "code"
-        if not _matches(key, rec, code):
-            nxt = dict(rec)
-            nxt["attempts_left"] = int(rec["attempts_left"]) - 1
-            burned = nxt["attempts_left"] <= 0
-            if burned:
-                nxt = _burned(rec, now)
-            try:
-                store.write(RESET_PATH, json.dumps(nxt), if_match=etag)
-            except Conflict:
-                continue
-            log("reset: wrong code" + (", code burned" if burned else ""))
-            return "code"
-        # Right code. Only now is it safe to say anything about the password.
-        if is_current_password(store, password):
-            return "same"
-        try:
-            store.write(RESET_PATH, json.dumps(_burned(rec, now)), if_match=etag)
-        except Conflict:
-            continue                         # somebody changed the record under us: judge it afresh
-        break
-    else:
-        log("reset: store was busy")
-        return "busy"
-    # The code is spent and is ours alone. Store the password.
-    for _ in range(CAS_TRIES):
-        text, etag = store.read(PASSWORD_PATH)
-        prev = _load(text)
-        epoch = prev["epoch"] + 1 if prev and isinstance(prev.get("epoch"), int) and prev["epoch"] >= 1 else 1
-        rec = _new_password_record(password, epoch, clock())
-        try:
-            if etag:
-                store.write(PASSWORD_PATH, json.dumps(rec), if_match=etag)
-            else:
-                store.write(PASSWORD_PATH, json.dumps(rec), create_only=True)
-        except Conflict:
-            continue
-        log("reset: password changed")
-        try:
-            send_mail(SUBJECT_CHANGED, changed_mail_body(clock()))
-        except Exception as e:                                         # noqa: BLE001
-            log("reset: change notice not sent (%s)" % _why(e))
-        return "ok"
-    log("reset: could not store the password")
-    raise StoreError("password record stayed contended")
+class _Limiter(object):
+    """Per instance, in memory, keyed by client IP where it matters (module header: LIMITS). NOT what
+    makes the code safe (50 bits does that): it stops one client flooding the mailbox, running up
+    function time, or spending the day's Vercel deploys."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.clear()
+
+    def clear(self):
+        self.sends = []                      # (time, ip) of every code email this instance sent
+        self.wrong = {}                      # ip -> times of wrong codes
+        self.handoffs = []                   # times of records handed to GitHub
+        self.used = {}                       # code -> when it was spent here, so a double-click is refused
+
+    def may_send(self, ip, now):
+        with self.lock:
+            self.sends = [(t, i) for t, i in self.sends if now - t < 3600]
+            mine = [t for t, i in self.sends if i == ip]
+            if (mine and now - mine[-1] < IP_GAP) or len(mine) >= IP_PER_HOUR \
+                    or len(self.sends) >= SENDS_PER_HOUR:
+                return False
+            self.sends.append((now, ip))
+            return True
+
+    def too_many_wrong(self, ip, now):
+        with self.lock:
+            times = [t for t in self.wrong.get(ip, []) if now - t < 60]
+            self.wrong[ip] = times
+            return len(times) >= WRONG_PER_MINUTE
+
+    def wrong_code(self, ip, now):
+        with self.lock:
+            self.wrong.setdefault(ip, []).append(now)
+
+    def may_hand_off(self, now):
+        with self.lock:
+            self.handoffs = [t for t in self.handoffs if now - t < 3600]
+            return len(self.handoffs) < HANDOFFS_PER_HOUR
+
+    def handed_off(self, code, now):
+        with self.lock:
+            self.handoffs.append(now)
+            self.used[code] = now
+
+    def spent(self, code, now):
+        with self.lock:
+            self.used = {c: t for c, t in self.used.items() if now - t < BUCKET * (BUCKETS + 1)}
+            return code in self.used
 
 
-def _matches(key, rec, code):
-    expect = code_mac(key, rec["nonce"], code)
-    try:
-        return hmac.compare_digest(expect.encode("ascii"), rec["code_mac"].encode("ascii"))
-    except (UnicodeEncodeError, AttributeError):
-        return False
+LIMITS = _Limiter()
 
 
-def _why(exc):
-    """The class name and, for SMTP, the numeric reply code. Never the message: it can quote input."""
-    code = getattr(exc, "smtp_code", None)
-    return type(exc).__name__ + (" %s" % code if isinstance(code, int) else "")
+def client_ip(headers):
+    """The caller's IP as Vercel reports it (it sets x-real-ip and overwrites x-forwarded-for, so a
+    client cannot choose its own). Anything that does not look like an IP becomes one shared bucket."""
+    for name in ("x-real-ip", "x-forwarded-for"):
+        value = (headers.get(name) or "").split(",")[0].strip()
+        if _IP_RE.match(value):
+            return value
+    return "unknown"
 
 
 # ------------------------------------------------------------------ the email
 
 def code_mail_body(code):
-    return ("Your Smart Property Buying dashboard password code is %s.\n\n"
+    return ("Your Smart Property Buying dashboard reset code is:\n\n"
+            "    %s\n\n"
+            "Or open this link to choose a new password:\n"
+            "%s/reset#code=%s\n\n"
             "It works for 15 minutes. If you did not ask for it, ignore this email and "
-            "nothing changes.\n" % code)
+            "nothing changes.\n" % (show_code(code), site_url(), code))
 
 
 def changed_mail_body(now):
@@ -587,10 +456,11 @@ def changed_mail_body(now):
                                 stamp.strftime("%H:%M UTC"))
     except Exception:                                                  # noqa: BLE001
         pass                                 # no tz database on this host: UTC alone is still right
-    return ("Your Smart Property Buying dashboard password was changed at %s.\n\n"
-            "If that was you there is nothing to do. If it was not, ask the person who runs the "
-            "dashboard to change SITE_PASSWORD in Vercel: that cancels this change and signs "
-            "everyone out.\n" % when)
+    return ("A new password for the Smart Property Buying dashboard was set at %s.\n"
+            "It starts working within a few minutes; until then the old password still works,\n"
+            "and once it does, everyone who was signed in is signed out.\n\n"
+            "If that was you there is nothing to do. If it was not, tell the person who runs the\n"
+            "dashboard straight away (docs/password-reset-runbook.md, section 5).\n" % when)
 
 
 def build_message(subject, body):
@@ -609,16 +479,16 @@ def build_message(subject, body):
     return msg
 
 
-def send_mail(subject, body):
+def send_mail(subject, body, timeout=SMTP_TIMEOUT):
     password = _env("SPB_SMTP_PASSWORD")
     if not password:
         raise RuntimeError("no SMTP password")
     msg = build_message(subject, body)
     host, port = "smtp.gmail.com", 465
     if SMTP_FACTORY is not None:
-        server = SMTP_FACTORY(host, port, SMTP_TIMEOUT)
+        server = SMTP_FACTORY(host, port, timeout)
     else:
-        server = smtplib.SMTP_SSL(host, port, local_hostname=EHLO_NAME, timeout=SMTP_TIMEOUT,
+        server = smtplib.SMTP_SSL(host, port, local_hostname=EHLO_NAME, timeout=timeout,
                                   context=ssl.create_default_context())
     try:
         server.login(smtp_user(), password)
@@ -630,12 +500,56 @@ def send_mail(subject, body):
             pass
 
 
+def _why(exc):
+    """The class name and, for SMTP, the numeric reply code. Never the message: it can quote input."""
+    code = getattr(exc, "smtp_code", None)
+    return type(exc).__name__ + (" %s" % code if isinstance(code, int) else "")
+
+
+# ------------------------------------------------------------------ the hand-off to GitHub
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None                          # the token must never follow a redirect
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _urllib_transport(method, url, headers, body, timeout):
+    req = urllib.request.Request(url, data=body, method=method, headers=headers)
+    try:
+        with _OPENER.open(req, timeout=timeout) as resp:
+            return resp.status
+    except urllib.error.HTTPError as e:      # 3xx (not followed), 4xx, 5xx: the status is enough
+        return e.code
+    except Exception:                                                  # noqa: BLE001
+        return 0
+
+
+def dispatch(record):
+    """Start apply-dashboard-password.yml with the record. True when GitHub accepted it (204)."""
+    url = "%s/repos/%s/%s/actions/workflows/%s/dispatches" % (GITHUB_API, OWNER, REPO, WORKFLOW)
+    body = json.dumps({"ref": REF, "inputs": {"record": record}}).encode("utf-8")
+    headers = {
+        "Authorization": "Bearer " + _env("GITHUB_DISPATCH_TOKEN"),
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "Content-Type": "application/json",
+        "User-Agent": "spb-dashboard",
+    }
+    status = (TRANSPORT or _urllib_transport)("POST", url, headers, body, GITHUB_TIMEOUT)
+    if status != 204:
+        log("reset: GitHub did not accept the hand-off (%d)" % status)
+    return status == 204
+
+
 # ------------------------------------------------------------------ the request
 
 def same_origin(headers):
     """A browser POST from our own page carries Origin: https://<our host>. Refuse anything else,
     including no Origin at all: both endpoints are only ever called by fetch() from /forgot and
-    /reset, and a cross-site page must not be able to start a code or spend one."""
+    /reset, and a cross-site page must not be able to send a code or spend one."""
     origin = (headers.get("Origin") or "").strip()
     if not origin or origin == "null":
         return False
@@ -709,46 +623,75 @@ def _refuse(status, message, **extra):
     return Reply(status, payload)
 
 
-def forgot_endpoint(body):
-    """POST /api/auth/forgot after the request checks. Always the same answer once configured."""
+def forgot_endpoint(body, ip="unknown"):
+    """POST /api/reset_code after the request checks. Always the same answer once configured."""
     started = time.monotonic()
     if body:
         return _refuse(400, "Send an empty JSON object: {}.")
     try:
-        forgot()
+        now = clock()
+        if LIMITS.may_send(ip, now):
+            code = code_for(int(now // BUCKET), verifier_id(active_record()))
+            send_mail(SUBJECT_CODE, code_mail_body(code))
+            log("forgot: code sent")
+        else:
+            log("forgot: limited")
     except Exception as e:                                             # noqa: BLE001
-        log("forgot: store failed (%s)" % _why(e))
-    # A floor on the time taken, so "limited" (instant) cannot be told from "sent" (a second or two
-    # of SMTP) by a stopwatch.
+        log("forgot: not sent (%s)" % _why(e))
+    # A floor on the time taken, so "limited" (instant) and "sent" (a Gmail session, usually under
+    # two seconds) are hard to tell apart by stopwatch. The answer is the same sentence either way.
     sleep(max(0.0, MIN_FORGOT_SECONDS - (time.monotonic() - started)))
     return Reply(200, {"ok": True, "message": GENERIC_FORGOT})
 
 
-def reset_endpoint(body):
-    """POST /api/auth/reset after the request checks."""
+def reset_endpoint(body, ip="unknown"):
+    """POST /api/reset_password after the request checks. The order is the design:
+      1. the request's shape and the rules the password breaks BY ITSELF (no secret involved);
+      2. the code, in constant time against every live bucket (a wrong one counts against this IP);
+      3. only with the right code: is the new password one that changes nothing?
+      4. the record is made and handed to GitHub; only when GitHub takes it is anything promised."""
     if set(body) != {"code", "password", "confirm"}:
         return _refuse(400, "Send the code, the new password and its confirmation.")
-    code = body["code"]
-    if not (isinstance(code, str) and _CODE_RE.match(code)):
-        return _refuse(400, "The code is 6 digits.", error="bad_code_format")
+    now = clock()
+    if LIMITS.too_many_wrong(ip, now):
+        return _refuse(429, "Too many wrong codes. Wait a minute and try again.", error="busy")
+    code = normalise_code(body["code"])
+    if code is None:
+        LIMITS.wrong_code(ip, now)
+        return _refuse(400, "The code is the 10 letters and digits from the email.",
+                       error="bad_code_format")
     problem = password_problem(body["password"], body["confirm"])
     if problem:
         return _refuse(400, problem, error="weak_password")
     try:
-        verdict = reset_password(code, body["password"])
-    except Exception as e:                                             # noqa: BLE001
-        log("reset: store failed (%s)" % _why(e))
-        return _refuse(503, "Could not save that just now. Wait a minute and try again.",
-                       error="unavailable")
-    if verdict == "ok":
-        return Reply(200, {"ok": True, "message": "Password changed."})
-    if verdict == "same":
+        rec = active_record()
+    except ConfigError:
+        log("reset: SPB_PW_RECORD cannot be trusted")
+        return _refuse(503, "Password reset is not working right now. Tell the person who runs the "
+                            "dashboard.", error="unavailable")
+    if not code_ok(code, now, verifier_id(rec)) or LIMITS.spent(code, now):
+        LIMITS.wrong_code(ip, now)
+        log("reset: wrong or expired code")
+        return _refuse(400, CODE_INVALID, error="code_invalid")
+    if is_current_password(body["password"], rec):
         return _refuse(400, "Use a password that is different from the current one.",
                        error="weak_password")
-    if verdict == "busy":
-        return _refuse(503, "That is busy right now. Wait a few seconds and try again.",
-                       error="busy")
-    return _refuse(400, CODE_INVALID, error="code_invalid")
+    if not LIMITS.may_hand_off(now):
+        log("reset: hand-off limit reached")
+        return _refuse(429, "The password has been changed several times in the last hour. "
+                            "Wait an hour and try again.", error="busy")
+    epoch = next_epoch()
+    record = build_record(body["password"], epoch, now)
+    if not dispatch(record):
+        return _refuse(503, "Could not save that just now. Wait a minute and try again.",
+                       error="unavailable")
+    LIMITS.handed_off(code, now)
+    log("reset: new password handed to GitHub")
+    try:
+        send_mail(SUBJECT_CHANGED, changed_mail_body(now), timeout=NOTICE_TIMEOUT)
+    except Exception as e:                                             # noqa: BLE001
+        log("reset: change notice not sent (%s)" % _why(e))
+    return Reply(200, {"ok": True, "message": SAVED, "epoch": epoch, "id": parse_record(record)["id"]})
 
 
 def respond(headers, rfile, endpoint):
@@ -774,14 +717,14 @@ def respond(headers, rfile, endpoint):
         body = parse_json(rfile.read(length))
     except (ValueError, RecursionError):
         return _refuse(400, "That request is not valid JSON.")
-    return endpoint(body)
+    return endpoint(body, client_ip(headers))
 
 
 class AuthHandler(BaseHTTPRequestHandler):
     """Vercel Python runtime entrypoint base. Subclasses set `endpoint`.
 
-    Reachable without a session ONLY because middleware.js lets exactly POST /api/auth/forgot and
-    POST /api/auth/reset through; everything else under /api answers 401 there."""
+    Reachable without a session ONLY because middleware.js lets exactly POST /api/reset_code and
+    POST /api/reset_password through, and only while the feature is configured."""
 
     endpoint = None
     server_version = "spb"
@@ -818,3 +761,34 @@ class AuthHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         # Request line and status: no body, no header. The code and the password ride in the body.
         sys.stderr.write("[auth] " + (fmt % args) + "\n")
+
+
+def _main(argv):
+    """`python api/_spb_auth.py check-record`: the GitHub workflow's gate before it writes anything to
+    Vercel. Reads the record from the RECORD env var (not argv, which the process list shows) and checks:
+      * its SHAPE (the mac needs SPB_AUTH_SECRET, which is deliberately not on GitHub; the middleware
+        checks it, and answers 503 rather than accept a record it cannot verify);
+      * its AGE: made in the last 30 minutes. A re-run of an old workflow run, or a record copied out of
+        an old log, must not be able to put an older password back. (The workflow also refuses an epoch
+        below the live one.)
+    Prints "<epoch> <id>" for the workflow."""
+    if argv[1:] != ["check-record"]:
+        sys.stderr.write("usage: RECORD=... python api/_spb_auth.py check-record\n")
+        return 2
+    # Not stripped: the workflow stores RECORD exactly as given, so a value with any whitespace in it
+    # is refused here rather than written to Vercel.
+    rec = parse_record(os.environ.get("RECORD", ""))
+    if rec is None:
+        sys.stderr.write("not a password record: refusing to apply it\n")
+        return 1
+    age = time.time() - rec["at"]
+    if not (-300 <= age <= RECORD_MAX_AGE):
+        sys.stderr.write("this record was made %d minutes ago, not just now: refusing to apply it. A new "
+                         "password needs a new reset from the dashboard, not a re-run.\n" % (age // 60))
+        return 1
+    print("%d %s" % (rec["epoch"], rec["id"]))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_main(sys.argv))

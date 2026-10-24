@@ -39,6 +39,7 @@ class FakeSMTP:
         class Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
             daemon_threads = True
             allow_reuse_address = True
+            request_queue_size = 64          # default 5 refuses a concurrent burst on Windows
 
         self.server = Server(("127.0.0.1", 0), Handler)
         threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()

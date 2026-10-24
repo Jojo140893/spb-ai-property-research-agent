@@ -1,287 +1,158 @@
-"""Can the forgot-password tests FAIL? Take one safeguard out at a time and see that they do.
+"""Forgot password: prove the important checks can FAIL.
 
-A security test that has never been seen to fail proves nothing: it may be asserting something that is
-true whatever the code does. So for each safeguard below this takes a COPY of the code (never the real
-files), removes exactly that safeguard, runs the test that is meant to guard it and requires that test
-to go red, having first required it to be green on the unmutated copy.
+A security test that cannot go red reads exactly like one that passes. So each safeguard below is
+removed, one at a time, from a copy of the code (never the real file), and the check written for it
+must go red. A mutant that survives means the test is not testing what its name says.
 
-    node mutants   run tests/forgot_password_checks.mjs, limited to the sections that should notice
-                   (SPB_ONLY), against the mutated middleware.js and/or mutated api/ copy. The named
-                   check(s) must be among the FAIL lines.
-    python mutants run the named tests of tests/test_forgot_password.py against the mutated api/ copy.
-
-Each mutation is a text replacement that must match exactly once, so if the code under test is
-refactored this fails loudly ("anchor not found") instead of quietly testing nothing.
-
-SPB_AUTH_API_DIR (read by tests/authkit/backend.py) and SPB_MW_PATH (read by the Node suite) point the
-suites at the copies.
+Two kinds:
+  * the middleware (build_web.MIDDLEWARE_JS): the text is edited and tests/forgot_password_checks.mjs
+    runs against it under Node, with records from the real reset flow;
+  * the Python half (api/_spb_auth.py): one function or setting is swapped in memory, and the test in
+    tests/test_forgot_password.py written for it is run against that.
 """
-import os
-import re
-import shutil
-import subprocess
-import sys
-from pathlib import Path
+import inspect
 
 import pytest
 
-APP = Path(__file__).resolve().parent.parent
-NODE = shutil.which("node")
-CHECKS = APP / "tests" / "forgot_password_checks.mjs"
+import tests.test_forgot_password as T
 
-# --------------------------------------------------------------------------------- the mutants
-# (id, what is removed, target, edits, how it is caught)
-#   target "auth": api/_spb_auth.py      target "mw": the generated middleware.js
-#   caught ("node", SPB_ONLY words, [check-name fragments that must FAIL])
-#   caught ("py", pytest -k expression, [test names that must FAIL])
-M = []
-
-
-def mutant(id, removed, target, edits, caught):
-    M.append(pytest.param(id, removed, target, edits, caught, id=id))
-
-
-# ---- the code and its attempts
-mutant("no-attempts-decrement", "the stored decrement of attempts_left on a wrong code", "auth",
-       [('nxt["attempts_left"] = int(rec["attempts_left"]) - 1', 'nxt["attempts_left"] = int(rec["attempts_left"]) - 0')],
-       ("node", "WRONG CODES", ["the fifth wrong try burned the code in the store",
-                                "the RIGHT code is refused after five wrong tries"]))
-mutant("no-nonce-binding", "the nonce from the stored code hash", "auth",
-       [('return b64url(_hmac(key, "reset-code|" + nonce + "|" + code))',
-         'return b64url(_hmac(key, "reset-code|" + code))')],
-       ("py", "bound_to_its_nonce", ["test_the_code_hash_is_bound_to_its_nonce"]))
-mutant("no-server-key-in-code-hash", "the server secret from the code hash", "auth",
-       [('def _reset_key():\n    return _hmac(_service_key(), "spb-auth|reset-code-key|v1")',
-         'def _reset_key():\n    return b"public"')],
-       ("py", "keyed_by_a_server_secret", ["test_the_code_hash_is_keyed_by_a_server_secret"]))
-mutant("code-compared-with-equals", "constant-time comparison of the emailed code (Python)", "auth",
-       [('return hmac.compare_digest(expect.encode("ascii"), rec["code_mac"].encode("ascii"))',
-         'return expect == rec["code_mac"]')],
-       ("py", "compared_with_compare_digest", ["test_the_code_is_compared_with_compare_digest"]))
-mutant("stored-password-compared-with-equals", "constant-time comparison of the stored env_fp / mac / hash (Python)", "auth",
-       [('if not hmac.compare_digest(rec["env_fp"].encode("utf-8"), env_fp().encode("ascii")):',
-         'if rec["env_fp"] != env_fp():')],
-       ("py", "stored_password_checks_use_compare_digest", ["test_the_stored_password_checks_use_compare_digest"]))
-mutant("no-burn-on-success", "burning the code when it is used", "auth",
-       [('            store.write(RESET_PATH, json.dumps(_burned(rec, now)), if_match=etag)\n        except Conflict:\n            continue                         # somebody changed',
-         '            pass\n        except Conflict:\n            continue                         # somebody changed')],
-       ("node", "REPLAY", ["the same code used again is refused"]))
-mutant("no-conditional-write", "the ETag condition on a write (no compare-and-swap)", "auth",
-       [('        if if_match:\n            headers["x-if-match"] = if_match', '        if if_match:\n            pass')],
-       ("node", "CONCURRENCY", ["exactly one wins"]))
-mutant("no-expiry", "the 15 minute expiry", "auth",
-       [('and rec["expires_at"] > now and', 'and True and')],
-       ("node", "EXPIRY", ["at 15 minutes the code has expired"]))
-mutant("no-rate-limit", "the rate limit on code requests", "auth",
-       [('        if rate_limited(issued, now):', '        if False:')],
-       ("node", "RATE LIMITS", ["two requests inside 60 s: still one email"]))
-mutant("no-timing-floor", "the minimum time /forgot takes to answer", "auth",
-       [('    sleep(max(0.0, MIN_FORGOT_SECONDS - (time.monotonic() - started)))', '    pass')],
-       ("node", "TIMING", ["both take at least the floor"]))
-mutant("forgot-takes-an-email-field", "the refusal of a body on /forgot (no email field)", "auth",
-       [('    if body:\n        return _refuse(400, "Send an empty JSON object: {}.")', '    if False:\n        return _refuse(400, "Send an empty JSON object: {}.")')],
-       ("node", "SAME-ORIGIN", ["forgot with a body is refused"]))
-
-# ---- the request
-mutant("no-origin-check", "the same-origin check on both POSTs", "auth",
-       [('    if not same_origin(headers):\n        return _refuse(403', '    if False:\n        return _refuse(403')],
-       ("node", "SAME-ORIGIN", ["POST /api/auth/forgot with a foreign Origin -> 403",
-                                "POST /api/auth/reset with a foreign Origin -> 403"]))
-mutant("no-origin-check-direct", "the same-origin check (function called directly)", "auth",
-       [('    if not same_origin(headers):\n        return _refuse(403', '    if False:\n        return _refuse(403')],
-       ("py", "checks_the_origin_itself", ["test_the_function_checks_the_origin_itself"]))
-mutant("no-content-type-check", "the JSON content-type requirement", "auth",
-       [('    if ctype != "application/json":', '    if False:')],
-       ("node", "SAME-ORIGIN", ["reset with Content-Type text/plain -> 415"]))
-mutant("no-password-length-rule", "the 12 character minimum", "auth",
-       [('    if len(pw) < MIN_PASSWORD:', '    if False:')],
-       ("node", "PASSWORD RULES", ["password rule: 11 characters -> 400 weak_password"]))
-mutant("a-code-in-the-log", "keeping the code out of the log", "auth",
-       [('log("forgot: code sent")', 'log("forgot: code sent " + code)')],
-       ("node", "HAPPY,LOGS", ["none of "]))
-mutant("a-code-in-the-log-static", "keeping the code out of the log (source scan)", "auth",
-       [('log("forgot: code sent")', 'log("forgot: code sent " + code)')],
-       ("py-source", "no_log_line_can_carry_a_secret", ["test_no_log_line_can_carry_a_secret"]))
-
-# ---- reads and writes
-mutant("python-reads-may-be-cached", "?cache=0 on the functions' reads", "auth",
-       [('"https://%s.private.blob.vercel-storage.com/%s?cache=0"', '"https://%s.private.blob.vercel-storage.com/%s"')],
-       ("node", "WRONG CODES,TWO RESETS", ["every read the middleware and the functions made asked for ?cache=0"]))
-
-# ---- the middleware
-mutant("no-env-fp-check-edge", "the env_fp check that retires a record when SITE_PASSWORD changes (middleware)", "mw",
-       [('  if (!timingSafeEqual(rec.env_fp, fp)) return { mode: "site", key: password };',
-         '  if (false) return { mode: "site", key: password };')],
-       ("node", "SITE_PASSWORD CHANGED", ["the owner's new SITE_PASSWORD signs in at once"]))
-mutant("no-env-fp-check-python", "the env_fp check (Python)", "auth",
-       [('    if not hmac.compare_digest(rec["env_fp"].encode("utf-8"), env_fp().encode("ascii")):\n        return None',
-         '    if False:\n        return None')],
-       ("py", "only_good_for_the_deployment", ["test_a_record_is_only_good_for_the_deployment_that_wrote_it"]))
-mutant("no-record-mac-edge", "the record mac (middleware)", "mw",
-       [('  if (!timingSafeEqual(rec.mac, b64url(await hmacRaw(macKey, canon)))) throw bad();', '')],
-       ("node", "TAMPERED", ["does NOT get in (the mac)"]))
-mutant("no-record-mac-python", "the record mac (Python)", "auth",
-       [('        if not hmac.compare_digest(mac.encode("ascii"), record_mac(rec).encode("ascii")):\n            return None', '')],
-       ("py", "mac_stops_a_writer", ["test_the_mac_stops_a_writer_who_copied_the_real_env_fp"]))
-mutant("session-key-is-the-stored-hash", "the server secret in the session key", "mw",
-       [('  const key = b64url(await hmacRaw(keyBytes, "spb-session-key|v1|" + rec.hash + "|" + rec.epoch));',
-         '  const key = rec.hash;')],
-       ("node", "HAPPY", ["a cookie forged from the stored hash is rejected"]))
-mutant("old-sessions-survive-a-reset", "the new session key (old sessions die at a reset)", "mw",
-       [('  return { mode: "override", rec: rec, salt: salt, key: key };', '  return { mode: "override", rec: rec, salt: salt, key: password };')],
-       ("node", "HAPPY", ["the old session cookie is rejected once the instance has re-read the store",
-                          "the new cookie is NOT signed with SITE_PASSWORD"]))
-mutant("edge-reads-may-be-cached", "?cache=0 on the middleware's read", "mw",
-       [('RESET_PW_PATH + "?cache=0"', 'RESET_PW_PATH')],
-       ("node", "TWO RESETS,CONFIGURED", ["the second password signs in straight away",
-                                           "and ?cache=0"]))
-mutant("falls-back-to-site-password-on-error", "failing closed when the store errors", "mw",
-       [('    if (standIn) return storeCache.text;\n    throw e;\n  }\n}', '    if (standIn) return storeCache.text;\n    return null;\n  }\n}')],
-       ("node", "STORAGE OUTAGE", ["cold instance + store down: the old password is NOT accepted"]))
-mutant("no-stale-if-error", "serving the last good read through a short outage", "mw",
-       [('  const standIn = storeCache && storeCache.key === key && now - storeCache.at <= STORE_STALE_MS;',
-         '  const standIn = false;')],
-       ("node", "STORAGE OUTAGE", ["store down, cache 31 s old: the session still works"]))
-mutant("a-record-that-fails-its-checks-is-ignored", "failing closed on an unreadable record", "mw",
-       [('    throw new StoreError("the saved password record cannot be read");',
-         '    return { mode: "site", key: password };')],
-       ("node", "TAMPERED", ["record garbled (not JSON) -> 503 for everyone"]))
-mutant("login-reads-may-use-the-cache", "the fresh read at a login (cache would hold the old password for 30 s)", "mw",
-       [('  const auth = await resolveAuth(password, true);\n  const given = body.get("password") || "";',
-         '  const auth = await resolveAuth(password);\n  const given = body.get("password") || "";')],
-       ("node", "HAPPY,TWO RESETS,PASSWORD RULES", ["the old password is refused at once"]))
-mutant("no-read-floor-on-forced-reads", "the 2 second floor on forced reads (a login flood becomes a read flood)", "mw",
-       [('  const window = force ? STORE_MIN_REFRESH_MS : STORE_FRESH_MS;', '  const window = force ? 0 : STORE_FRESH_MS;')],
-       ("node", "LOGIN FLOODS", ["at most 2 reads of the store"]))
-mutant("forgot-prefix-match", "exact matching of /forgot (a prefix would open more)", "mw",
-       [('request.method === "GET" && path === "/forgot"', 'request.method === "GET" && path.startsWith("/forgot")')],
-       ("node", "ROUTE TABLE", ["nothing is open that should not be"]))
-mutant("api-any-method", "the POST-only rule on the two API routes", "mw",
-       [('request.method === "POST" && (path === "/api/auth/forgot" || path === "/api/auth/reset")', '(path === "/api/auth/forgot" || path === "/api/auth/reset")')],
-       ("node", "ROUTE TABLE", ["nothing is open that should not be"]))
-mutant("js-compare-with-equals", "constant-time comparison inside timingSafeEqual", "mw",
-       [("function timingSafeEqual(a, b) {\n  const A = enc.encode(a), B = enc.encode(b);", "function timingSafeEqual(a, b) {\n  return a === b;\n  const A = enc.encode(a), B = enc.encode(b);")],
-       ("node", "CONSTANT-TIME", ["the helper reads every byte whether the difference is first or last"]))
-mutant("js-mac-compared-with-equals", "using the constant-time helper on the record mac", "mw",
-       [('timingSafeEqual(rec.mac, b64url(await hmacRaw(macKey, canon)))', '(rec.mac === b64url(await hmacRaw(macKey, canon)))')],
-       ("node", "CONSTANT-TIME", ["compared in constant time: timingSafeEqual(rec.mac"]))
-mutant("inline-script-allowed", "the CSP nonce on the page script", "mw",
-       [("script-src 'nonce-\" + nonce + \"'; ", "script-src 'unsafe-inline'; ")],
-       ("node", "PAGES", ["CSP forbids framing, other hosts and inline script without the nonce"]))
+# (what is removed, (original text, mutated text), section to run, check that must go red)
+MW_MUTANTS = [
+    ("the SITE_PASSWORD fingerprint check",
+     ('  if (!timingSafeEqual(m[3], fp)) return { mode: "site", key: password, epoch: 0, id: "none" };\n', "\n"),
+     "owner", "owner changed SITE_PASSWORD: the new SITE_PASSWORD signs in"),
+    ("checking the mac before the fingerprint",
+     ('  const body = raw.slice(0, raw.lastIndexOf("."));\n',
+      '  const fp0 = bytesToHex(await hmacRaw(await authKey(secret, "env-fp"), password)).slice(0, 16);\n'
+      '  if (!timingSafeEqual(m[3], fp0)) return { mode: "site", key: password, epoch: 0, id: "none" };\n'
+      '  const body = raw.slice(0, raw.lastIndexOf("."));\n'),
+     "cannot be trusted", "untrusted record (secret changed): SITE_PASSWORD gets 503, not a session"),
+    # (A tampered box is also caught by decryption: garbage iterations are out of range. A record signed
+    # under another secret is caught only by the mac.)
+    ("the record's mac check",
+     ('    throw new AuthConfigError("SPB_PW_RECORD failed its check");', "    ;"),
+     "cannot be trusted", "untrusted record (signed elsewhere): SITE_PASSWORD gets 503, not a session"),
+    ("failing closed on a malformed record",
+     ('  if (!m) throw new AuthConfigError("SPB_PW_RECORD is not a record this version understands");',
+      '  if (!m) return { mode: "site", key: password, epoch: 0 };'),
+     "cannot be trusted", "untrusted record (malformed): SITE_PASSWORD gets 503, not a session"),
+    ("the session key derived from the record",
+     ("id: m[6].slice(0, ID_LEN), key: key };", "id: m[6].slice(0, ID_LEN), key: password };"),
+     "reset is live", "after a reset: a session from before it is dead"),
+    ("keeping the routes shut while unconfigured",
+     ("  if (resetOn) {\n    if (request.method", "  if (true) {\n    if (request.method"),
+     "off", "OFF: /forgot is gated like any page"),
+    ("exact matching of the endpoint paths",
+     ('(path === "/api/reset_code" || path === "/api/reset_password")', '(path.startsWith("/api/reset"))'),
+     "on, no reset", "ON: /api/reset_codex still needs a login"),
+]
 
 
-# ---------------------------------------------------------------------------------- the machinery
+def _fingerprint_first(A):
+    real = A.active_record
 
-def _copy_auth(dest):
-    api = dest / "api"
-    (api / "auth").mkdir(parents=True)
-    shutil.copyfile(APP / "api" / "_spb_auth.py", api / "_spb_auth.py")
-    for name in ("forgot.py", "reset.py"):
-        shutil.copyfile(APP / "api" / "auth" / name, api / "auth" / name)
-    return api
-
-
-def _apply(text, edits, where):
-    for old, new in edits:
-        n = text.count(old)
-        assert n == 1, "anchor %r found %d times in %s: the code changed, update the mutation" % (old[:70], n, where)
-        text = text.replace(old, new)
-    return text
+    def active_record():                    # the order before the 23 Oct review: fp, then mac
+        rec = A.parse_record(A._env("SPB_PW_RECORD"))
+        if rec is not None and A._env("SPB_AUTH_SECRET") and rec["fp"] != A.env_fp():
+            return None
+        return real()
+    return active_record
 
 
-def _build(tmp, target, edits):
-    """(api_dir, middleware_path) for a copy with `edits` applied to the chosen target."""
-    import build_web
-
-    api = _copy_auth(tmp)
-    mw_text = build_web.MIDDLEWARE_JS
-    if target == "auth":
-        p = api / "_spb_auth.py"
-        p.write_bytes(_apply(p.read_text(encoding="utf-8"), edits, "_spb_auth.py").encode("utf-8"))
-    else:
-        mw_text = _apply(mw_text, edits, "middleware.js")
-    mw = tmp / "middleware.mjs"
-    mw.write_bytes(mw_text.encode("utf-8"))
-    return api, mw
+def _early_code_ok(A):
+    def code_ok(code, now, vid):            # stops at the first match: no longer constant-time
+        bucket = int(now // A.BUCKET)
+        return any(A.hmac.compare_digest(A.code_for(bucket - k, vid), code) for k in range(A.BUCKETS))
+    return code_ok
 
 
-def _node(api, mw, only):
-    env = dict(os.environ, SPB_MW_PATH=str(mw), SPB_AUTH_API_DIR=str(api), PYTHONIOENCODING="utf-8")
-    if only:
-        env["SPB_ONLY"] = only
-    else:
-        env.pop("SPB_ONLY", None)
-    p = subprocess.run([NODE, str(CHECKS)], cwd=str(APP), env=env, capture_output=True, text=True,
-                       encoding="utf-8", timeout=600)
-    lines = p.stdout.splitlines()
-    return p.returncode, [l.strip()[6:].strip() for l in lines if l.strip().startswith("PASS")], \
-        [l.strip()[6:].strip() for l in lines if l.strip().startswith("FAIL")], p
-
-
-def _pytest(api, expr, source_dir=None):
-    env = dict(os.environ, SPB_AUTH_API_DIR=str(api), PYTHONIOENCODING="utf-8")
-    p = subprocess.run([sys.executable, "-m", "pytest", "tests/test_forgot_password.py", "-k", expr, "-q",
-                        "-p", "no:cacheprovider", "--no-header", "-rf"],
-                       cwd=str(APP), env=env, capture_output=True, text=True, encoding="utf-8", timeout=600)
-    return p.returncode, p.stdout
+# (what is removed, how, the test that must go red)
+PY_MUTANTS = [
+    ("the 20-minute limit on a code",
+     lambda A, mp: mp.setattr(A, "BUCKETS", 5), "test_a_code_lives_fifteen_to_twenty_minutes"),
+    ("the constant-time compare across buckets",
+     lambda A, mp: mp.setattr(A, "code_ok", _early_code_ok(A)),
+     "test_a_code_is_compared_against_every_live_bucket_in_constant_time"),
+    ("binding the code to the live password",
+     lambda A, mp: mp.setattr(A, "verifier_id", lambda rec: "site|" + A.env_fp()),
+     "test_after_a_reset_goes_live_the_old_code_is_dead"),
+    ("the same-origin check",
+     lambda A, mp: mp.setattr(A, "same_origin", lambda headers: True),
+     "test_respond_refuses_everything_but_small_same_origin_json"),
+    ("waiting for GitHub to accept the record",
+     lambda A, mp: mp.setattr(A, "dispatch", lambda record: True),
+     "test_when_github_refuses_nothing_is_promised_and_the_code_still_works"),
+    ("refusing SITE_PASSWORD as the new password after a reset",
+     lambda A, mp: mp.setattr(A, "is_current_password", lambda pw, rec: rec is None and pw == T.FAKE_SITE),
+     "test_a_password_that_changes_nothing_is_refused_after_the_code"),
+    ("the double-click guard",
+     lambda A, mp: mp.setattr(A.LIMITS, "spent", lambda code, now: False),
+     "test_a_double_click_does_not_hand_over_twice"),
+    ("keying the wrong-code limit by client",
+     lambda A, mp: mp.setattr(A.LIMITS, "too_many_wrong",
+                              lambda ip, now, real=A.LIMITS.too_many_wrong: real("everyone", now))
+     or mp.setattr(A.LIMITS, "wrong_code", lambda ip, now, real=A.LIMITS.wrong_code: real("everyone", now)),
+     "test_wrong_codes_block_only_the_client_sending_them"),
+    ("the cap on hand-offs (Vercel deploys)",
+     lambda A, mp: mp.setattr(A.LIMITS, "may_hand_off", lambda now: True),
+     "test_hand_offs_are_capped_so_the_days_deploys_last"),
+    ("checking the mac before the fingerprint",
+     lambda A, mp: mp.setattr(A, "active_record", _fingerprint_first(A)),
+     "test_a_changed_secret_is_refused_not_ignored"),
+]
 
 
 @pytest.fixture(scope="module")
-def control(tmp_path_factory):
-    """The suite on UNMUTATED copies: every check a mutant is expected to break must pass here."""
-    if not NODE:
-        pytest.skip("node is not installed")
-    tmp = tmp_path_factory.mktemp("control")
-    api, mw = _build(tmp, "auth", [])
-    rc, passed, failed, p = _node(api, mw, "")
-    assert rc == 0 and not failed, "the control run is not green:\n" + "\n".join(failed) + p.stderr[-1500:]
-    return {"passed": passed}
+def fixtures(tmp_path_factory):
+    with pytest.MonkeyPatch.context() as mp:
+        w = T.World(mp)
+        try:
+            return T._fixtures(w)
+        finally:
+            w.close()
 
 
-@pytest.mark.parametrize("id,removed,target,edits,caught", M)
-def test_removing_a_safeguard_turns_a_test_red(id, removed, target, edits, caught, control, tmp_path):
-    how, selector, expected = caught
-    work = tmp_path / "mutant"
-    work.mkdir()
-    api, mw = _build(work, target, edits)
-    if how == "node":
-        for fragment in expected:
-            assert any(fragment in name for name in control["passed"]), (
-                "the control run has no PASS line containing %r: rename the check or the mutant" % fragment)
-        rc, passed, failed, p = _node(api, mw, selector)
-        assert rc != 0, "MUTANT SURVIVED: with %s removed every check in [%s] still passed" % (removed, selector)
-        for fragment in expected:
-            assert any(fragment in name for name in failed), (
-                "with %s removed, the check %r did not fail. Failed instead: %s" % (removed, fragment, failed[:6]))
-        return
-    # Python tests: green on an untouched copy first, then red on the mutant.
-    clean = tmp_path / "clean"
-    clean.mkdir()
-    clean_api, _ = _build(clean, "auth", [])
-    rc0, out0 = _pytest(clean_api, selector)
-    assert rc0 == 0, "the guarding test is not green on the unmutated copy:\n" + out0[-1500:]
-    if how == "py-source":
-        src = (APP / "api" / "_spb_auth.py").read_text(encoding="utf-8")
-        rc, out = _scan_mutated_source(_apply(src, edits, "_spb_auth.py"), selector)
-    else:
-        rc, out = _pytest(api, selector)
-    assert rc != 0, "MUTANT SURVIVED: with %s removed the tests [%s] still passed" % (removed, selector)
-    for name in expected:
-        assert name in out, "with %s removed, %s did not fail:\n%s" % (removed, name, out[-1500:])
+@pytest.fixture(scope="module")
+def control(fixtures, tmp_path_factory):
+    """The suite on the UNMUTATED middleware: every check a mutant must break has to pass here."""
+    p = T.run_checks(tmp_path_factory.mktemp("control"), fixtures)
+    assert p.returncode == 0, "the control run is not green:\n" + p.stdout[-3000:] + p.stderr[-1000:]
+    return [ln.strip()[6:].strip() for ln in p.stdout.splitlines() if ln.strip().startswith("PASS")]
 
 
-def _scan_mutated_source(mutated, selector):
-    """Run the source-scanning test against mutated text without touching the real file: the test reads
-    api/<name> through _module_source, which the child process is told to read from a copy."""
-    import tempfile
+@pytest.mark.parametrize("removed,edit,section,expected", MW_MUTANTS, ids=[m[0] for m in MW_MUTANTS])
+def test_removing_a_middleware_safeguard_turns_its_check_red(removed, edit, section, expected,
+                                                             fixtures, control, tmp_path):
+    import build_web
+    assert expected in control, "the control run has no check named %r" % expected
+    original, mutated = edit
+    text = build_web.MIDDLEWARE_JS.replace("\r\n", "\n")
+    assert text.count(original) == 1, "the mutant no longer matches the code: %r" % original
+    p = T.run_checks(tmp_path, fixtures, mw_text=text.replace(original, mutated), only=section)
+    failed = [ln.strip()[6:].strip() for ln in p.stdout.splitlines() if ln.strip().startswith("FAIL")]
+    assert "NO CHECKS RAN" not in p.stdout, "section filter %r matches no section" % section
+    assert p.returncode != 0, "MUTANT SURVIVED: with %s removed, every check in [%s] passed" % (removed, section)
+    assert any(f.startswith(expected) for f in failed), (
+        "with %s removed, %r did not fail. Failed instead: %s" % (removed, expected, failed[:6]))
 
-    tmp = Path(tempfile.mkdtemp(prefix="spb_mut_"))
+
+def _run(test_name, monkeypatch, mutate=None):
+    w = T.World(monkeypatch)
     try:
-        (tmp / "_spb_auth.py").write_bytes(mutated.encode("utf-8"))
-        env = dict(os.environ, SPB_SOURCE_DIR=str(tmp), PYTHONIOENCODING="utf-8")
-        p = subprocess.run([sys.executable, "-m", "pytest", "tests/test_forgot_password.py", "-k", selector, "-q",
-                            "-p", "no:cacheprovider", "--no-header", "-rf"],
-                           cwd=str(APP), env=env, capture_output=True, text=True, encoding="utf-8", timeout=300)
-        return p.returncode, p.stdout
+        if mutate:
+            mutate(w.A, monkeypatch)
+        fn = getattr(T, test_name)
+        kwargs = {"world": w, "monkeypatch": monkeypatch}
+        fn(**{k: kwargs[k] for k in inspect.signature(fn).parameters})
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        w.close()
+
+
+@pytest.mark.parametrize("removed,mutate,test_name", PY_MUTANTS, ids=[m[0] for m in PY_MUTANTS])
+def test_removing_a_python_safeguard_turns_its_test_red(removed, mutate, test_name):
+    with pytest.MonkeyPatch.context() as mp:
+        _run(test_name, mp)                  # green on the real code first
+    with pytest.MonkeyPatch.context() as mp:
+        # A failed assert, or pytest.raises reporting "DID NOT RAISE": both mean the test went red.
+        with pytest.raises((AssertionError, pytest.fail.Exception)):
+            _run(test_name, mp, mutate)

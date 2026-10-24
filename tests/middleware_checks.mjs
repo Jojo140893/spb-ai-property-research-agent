@@ -340,44 +340,26 @@ console.log("\n--- /r is public, and NOTHING else is ---");
         stock && stock.status === 401, "CATALOGUE EXPOSED");
 }
 
-console.log("\n--- the forgot-password routes: four exact matches, and the login page links to them ---");
+console.log("\n--- the forgot-password routes stay shut while the feature is not set up ---");
 {
-  // 23 Oct 2026. The person using them has lost the password, so they cannot hold a session; that
-  // makes them the only other public routes besides /r, and their scope must stay exactly this size.
-  // (tests/forgot_password_checks.mjs probes every route and method; this is the part that belongs
-  // beside the /r checks, and runs with the feature UNCONFIGURED: no Blob token, no SMTP password.)
+  // 23 Oct 2026. Until the owner sets SPB_AUTH_SECRET, SPB_SMTP_PASSWORD and GITHUB_DISPATCH_TOKEN,
+  // the reset routes are paths like any other and the login page offers nothing new: a link to a
+  // feature that cannot work would be a dead end for Coleen. (tests/forgot_password_checks.mjs
+  // covers the feature switched on; this is the part that belongs beside the /r checks.)
   for (const p of ["/forgot", "/reset"]) {
     const res = await call(req(p, { accept: "text/html" }));
-    check(`GET ${p} is served without a login`, res && res.status === 200 &&
-          (await res.text()).includes("Password reset is not set up yet"), res && "status " + res.status);
+    check(`GET ${p} -> the login redirect, like any page`, res && res.status === 302,
+          res ? "status " + res.status : "SERVED WITHOUT AUTH");
   }
-  for (const p of ["/api/auth/forgot", "/api/auth/reset"]) {
+  for (const p of ["/api/reset_code", "/api/reset_password"]) {
     const res = await call(req(p, { method: "POST" }));
-    check(`POST ${p} reaches its function without a login`, res === undefined, res && "status " + res.status);
-    const get = await call(req(p));
-    check(`GET ${p} still requires a login`, get && get.status === 401, get ? "status " + get.status : "SERVED");
+    check(`POST ${p} -> 401, not passed to its function`, res && res.status === 401,
+          res ? "status " + res.status : "PASSED THROUGH WITHOUT AUTH");
   }
-  for (const m of ["POST", "PUT", "DELETE", "PATCH"]) {
-    for (const p of ["/forgot", "/reset"]) {
-      const res = await call(req(p, { method: m }));
-      check(`${m} ${p} still requires a login`, res && res.status === 401, res ? "status " + res.status : "SERVED");
-    }
-  }
-  // A prefix test would open every one of these.
-  for (const p of ["/forgot/", "/reset/", "/forgot.html", "/reset.html", "/forgotten", "/resets", "/forgot-password",
-                   "/api/auth", "/api/auth/", "/api/auth/other", "/api/auth/forgot/", "/api/auth/reset/",
-                   "/api/auth/forgot.py", "/api/auth/reset.py", "/api/auth/forgotx", "/API/auth/forgot", "/Forgot"]) {
-    const res = await call(req(p, { method: p.startsWith("/api") ? "POST" : "GET" }));
-    check(`${p} still requires a login`, res && res.status === 401, res ? "status " + res.status : "SERVED WITHOUT AUTH");
-  }
-  const login = await (await call(req("/login", { accept: "text/html" }))).text();
-  check("the login page links to /forgot", login.includes('<a href="/forgot">Forgot password?</a>'));
-  const done = await (await call(req("/login?reset=1", { accept: "text/html" }))).text();
-  check("/login?reset=1 says the password was changed", /Password changed[^<]*sign in with the new password/.test(done));
-  check("  ...and an ordinary /login does not", !/Password changed/.test(login));
-  const unconfigured = await call(req("/forgot", { accept: "text/html" }));
-  check("unconfigured, the forgot page never offers a button", !(await unconfigured.text()).includes("Email me a code"));
-  delete process.env.SPB_SMTP_PASSWORD;
+  const page = await call(req("/login", { accept: "text/html" }));
+  const login = await page.text();
+  check("the login page has no Forgot password link", !login.includes("/forgot"));
+  check("  ...and no password-epoch header", page.headers.get("x-spb-auth-epoch") === null);
 }
 
 console.log("\n--- signing out ---");
