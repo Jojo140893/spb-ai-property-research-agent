@@ -13,7 +13,9 @@ built, so the last six projects -- 288 lots -- carried 24/10 and the other ~8,07
     of their obvious sets -- NSW fell by 250 -- and no bar moved.
 
 Each test whose docstring says what happened "before the fix" fails against main e12236b
-and passes after it; the others pin what the fix must not weaken.
+and passes after it; one that says "before review" failed against this fix's first cut
+(4762906, a fixed 12-hour window for the Settings tab) and passes on main and after it; the
+others pin what the fix must not weaken.
 """
 import ast
 import sqlite3
@@ -276,13 +278,63 @@ def test_a_channel_read_across_midnight_reads_as_fully_refreshed(tmp_path, monke
 
 def test_last_nights_rows_are_not_tonights(tmp_path, monkeypatch):
     """The rule the tab exists for still fires: a run that hands back 40 of 100, the other
-    60 last seen by the previous night's run, is partial -- the window is one run wide,
+    60 last seen by the previous night's run, is partial -- the count is one run wide,
     not one day plus a run."""
     midnight = datetime.combine(date.today(), time())
     rows = (_read("Proxima", "", midnight + timedelta(hours=9), 40)
             + _read("Proxima", "", midnight - timedelta(hours=15), 60))
     proxima = _health(tmp_path, monkeypatch, rows)[0]["Proxima"]
     assert (proxima["refreshed"], proxima["state"]) == (40, "partial")
+
+
+def _summary(c):
+    return (c["live"], c["refreshed"], c["refreshed_pct"], c["state"])
+
+
+def test_a_whole_late_read_then_a_thin_morning_read_is_partial(tmp_path, monkeypatch):
+    """A manual run dispatched late the evening before reads all 1,000 lots from 23:40 to
+    00:00:48, dated the day it started; the scheduled run nine hours later hands back 16 of
+    them. The morning read is the one to judge, and 16 of 1,000 is the 17 Aug collapse
+    (16 lots against a stored 1,396). Before review, the first cut of the run rule (every
+    stamp within 12 hours of the newest) counted both reads and said 100% "ok". Main's
+    day rule says "partial" here, and the run rule must not lose what it caught."""
+    midnight = datetime.combine(date.today(), time())
+    evening = (midnight - timedelta(days=1)).strftime("%d/%m/%Y")
+    start = midnight - timedelta(minutes=20)
+    night = [("Proxima", "", None, evening,
+              (start + timedelta(seconds=1.25 * i)).isoformat(timespec="seconds"))
+             for i in range(1000)]
+    morning = _read("Proxima", "", midnight + timedelta(hours=9, minutes=40), 16, step_s=5)
+    proxima = _health(tmp_path, monkeypatch, morning + night[16:])[0]["Proxima"]
+    assert _summary(proxima) == (1000, 16, 2, "partial")
+
+
+def test_a_thin_rerun_the_same_afternoon_is_partial(tmp_path, monkeypatch):
+    """Two runs on one date: a manual run stores all 1,000 lots from 14:03, and a re-run
+    two and a half hours later hands back 16. Both carry today's date, so before the fix
+    the day rule counted 1,000 and said "ok", as does any fixed window of three hours or more --
+    the length of a run is no help when two runs fit inside it. The pause between the
+    two bursts is what says they are two runs. The long burst (1,000 rows a second apart,
+    16 minutes in all) is one run, not cut by its own length."""
+    midnight = datetime.combine(date.today(), time())
+    whole = _read("Proxima", "", midnight + timedelta(hours=14, minutes=3), 1000, step_s=1)
+    thin = _read("Proxima", "", midnight + timedelta(hours=16, minutes=33), 16, step_s=1)
+    proxima = _health(tmp_path, monkeypatch, thin + whole[16:])[0]["Proxima"]
+    assert _summary(proxima) == (1000, 16, 2, "partial")
+
+
+def test_a_run_is_never_longer_than_the_job(tmp_path, monkeypatch):
+    """Reads repeated by hand every 11 minutes for over five hours never pause long enough
+    to part, but the harvest job is killed at 150 minutes, so nothing more than three hours
+    older than the newest stamp is the same run: of 30 bursts of 10 lots, the 17 within
+    three hours count (the 17th is 176 minutes back, the 18th 187). Before the fix every
+    burst counted, on the day rule and on the 12-hour window alike."""
+    newest = datetime.combine(date.today(), time(18, 0))
+    rows = []
+    for k in range(30):
+        rows += _read("Proxima", "", newest - timedelta(minutes=11 * k), 10, step_s=0)
+    proxima = _health(tmp_path, monkeypatch, rows)[0]["Proxima"]
+    assert (proxima["live"], proxima["refreshed"]) == (300, 170)
 
 
 def test_a_channel_with_no_timestamps_keeps_the_day_rule(tmp_path, monkeypatch):

@@ -415,7 +415,14 @@ AEST = timezone(timedelta(hours=10))
 def _days_old(seen, today):
     """Whole days from `seen` (a parsed date_checked) to `today`, where a date exactly ONE
     day ahead is 0 -- the daylight-saving hour, see AEST. Two days ahead stays negative:
-    that is a wrong date, not a clock, and is still never fresh."""
+    that is a wrong date, not a clock, and is still never fresh.
+
+    The rule holds at any hour, not only 13:00 to 14:00 UTC, and that is safe only
+    because every date_checked is the harvest's own clock (sources.base.read_date), and
+    the runner keeps Melbourne's (TZ=Australia/Melbourne), never more than an hour ahead
+    of this one. A writer on a clock further east -- or one that dated a row from a
+    document rather than from the read -- would have its one-day-ahead rows taken as
+    today's all day, and the hour would then need checking here."""
     age = (today - seen).days
     return 0 if age == -1 else age
 
