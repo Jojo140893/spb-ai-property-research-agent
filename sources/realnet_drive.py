@@ -64,6 +64,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from database import building_content_hash
 
+try:
+    # ONE DATE PER HARVEST (branch fix-proxima-day, unmerged on 24 Oct 2026): every row a
+    # run reads carries the day the run started. Until that lands, today's date.
+    from sources.base import read_date
+except ImportError:                                                     # pragma: no cover
+    def read_date() -> str:
+        return datetime.now().strftime("%d/%m/%Y")
+
 logger = logging.getLogger("spb.realnet")
 
 try:
@@ -726,7 +734,7 @@ class RealNetDriveSource:
             logger.warning("RealNet: %s", self.why)
             return []
         self.listed = len(entries)
-        today = datetime.now().strftime("%d/%m/%Y")
+        today = read_date()
         named_files = []
         for e in entries:
             if e["kind"] != "file":
