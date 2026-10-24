@@ -1689,10 +1689,21 @@
         // filenames that were cut to a fixed length — so two of the 57 threw, the render
         // died mid-way, and the whole Data Sources panel sat on "Loading..." forever.
         // The name is decoration; the panel is not.
+        /* PRICE-LIST-LINES-BEGIN */
         const prettyFile = f => {
             const name = String(f || '').split('/').pop().split('?')[0];
             try { return decodeURIComponent(name); } catch (e) { return name; }
         };
+        // Ahsan, 24 Oct 2026: an unreadable price list opens, so he can check it himself.
+        // Never through the file's own link -- most are Dropbox folder shares that hand the
+        // whole folder to anyone holding them -- but through /api/price_list, which turns
+        // the build's opaque id into the link on the server, behind the sign-in. No id, or
+        // not one the build makes: the name alone, as before.
+        const priceListLine = (f, id) => /^[0-9a-f]{16}$/.test(String(id || ''))
+            ? `<div><a href="/api/price_list?id=${id}" target="_blank" rel="noopener noreferrer"
+                   style="color:var(--accent-blue);">${esc(prettyFile(f))}</a></div>`
+            : `<div>${esc(prettyFile(f))}</div>`;
+        /* PRICE-LIST-LINES-END */
         const pill = s => s === 'ok'
             ? '<span class="pill pill-recommend">sending stock</span>'
             : s === 'partial'
@@ -1879,9 +1890,11 @@
               projects are missing from the catalogue. Nearly all are price lists saved as
               a picture rather than text &mdash; there is nothing in the file to read. Ask
               the builder for the spreadsheet or a text PDF and they will come straight in.
+              Click a name to open the file, or its folder where there is no one file.
             </p>
             <div style="font-size:0.78rem; color:var(--text-muted); max-height:11rem; overflow:auto;">
-              ${CHANNELS.unreadable_stocklists.files.map(f => `<div>${esc(prettyFile(f))}</div>`).join('')}
+              ${CHANNELS.unreadable_stocklists.files.map((f, i) =>
+                  priceListLine(f, (CHANNELS.unreadable_stocklists.open || [])[i])).join('')}
             </div>
           </div>` : ''}
           ${bad.length ? `
