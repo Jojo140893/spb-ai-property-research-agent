@@ -279,6 +279,13 @@
    "project": "westwood hattan",
    "folder": "2zmq210wctd1k0u50mbo2",
    "evidence": "Westwood estate, 235 Beattys Road, Fraser Rise VIC 3336 - townhomes (apartments.com.au/new-townhouses/westwood-235-beattys-road-fraser-rise-vic-3336; Dahua's Westwood, Fraser Rise). The rows' own text names it too: 'AvailableFraserRise Q4 Townhouse 1053 ...' -- glued to 'Available', which is why the reader misses it."
+  },
+  {
+   "suburb": "Melbourne",
+   "state": "VIC",
+   "url": "https://www.dropbox.com/scl/fo/3aknetazpoxl0ri7nv8i8/AKlDGtoVlS0NZ8YZ_RKSA1E/Atlas%20Price%20New.pdf?rlkey=qglardqsjmcus36xtgwsk30il&dl=1",
+   "folder": "3aknetazpoxl0ri7nv8i8",
+   "evidence": "Atlas Melbourne by S P Setia, 383 La Trobe Street, Melbourne VIC 3000 (apartments.com.au/new-apartments/atlas-melbourne-383-la-trobe-street-vic-3000: 71 floors, 797 residences; urban.com.au: Garden levels 1-7, Horizon 9-49, Sky Crown 50-70; studios 29.2-40.2 sqm). The price list's studios are 29.7-31.3 sqm. Until 21 Oct 2026 the nightly front-page read named Melbourne itself ('282 rows -> Melbourne (VIC) Atlas Price New.pdf'). The copy re-issued on 21 Oct (Word export, 7 pages) is image-only and, read by OCR, names no place on any page -- it opens on its column header -- so 206 apartments lost their suburb. No `project` key on purpose: Aldrich Homes and Goldstate Homes lists carry a house-and-land estate also called 'Atlas'. The folder held only this list on 26 Sep and 12 Oct 2026."
   }
  ]
 }

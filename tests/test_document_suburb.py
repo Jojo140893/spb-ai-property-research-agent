@@ -302,6 +302,39 @@ def test_every_shipped_rule_names_a_real_place_in_its_own_state():
     assert not bad, bad
 
 
+# --------------------------------------- 24 Oct 2026: a price list re-issued as pictures
+# Until 21 Oct the nightly front-page read named the Atlas list itself: '282 rows ->
+# Melbourne (VIC) Atlas Price New.pdf'. The copy re-issued that day at the same link is a
+# Word export whose seven pages are each one image, so front_page_text reads nothing, and
+# even read by OCR it opens on its column header and names no place anywhere. 206 VIC
+# apartments dropped out of every suburb search and turned seven parity bars red.
+_ATLAS = ("https://www.dropbox.com/scl/fo/3aknetazpoxl0ri7nv8i8/AKlDGtoVlS0NZ8YZ_RKSA1E/"
+          "Atlas%20Price%20New.pdf")
+
+
+def test_the_atlas_list_keeps_its_suburb_now_that_it_names_none(monkeypatch):
+    monkeypatch.setattr(DS, "_RULES_CACHE", None)
+    monkeypatch.setattr(DS, "_MAP_CACHE", {})        # the runner's map since 22 Oct
+    row = {"builder_name": "Atlas", "estate_name": "", "state": "VIC", "source_url": _ATLAS}
+    assert DS.suburb_for_row(row) == "Melbourne"
+    # The next re-issue lands in the same folder under a new link.
+    moved = dict(row, source_url=_ATLAS.replace(
+        "AKlDGtoVlS0NZ8YZ_RKSA1E/Atlas%20Price%20New", "AZZZnewfileidZZZZZZZZZ/Atlas%20Nov"))
+    assert DS.suburb_for_row(moved) == "Melbourne"
+
+
+def test_the_atlas_rule_never_reaches_the_estate_of_the_same_name(monkeypatch):
+    """Aldrich Homes and Goldstate Homes sell house-and-land in an estate called 'Atlas'.
+    A `project: "atlas"` key would have moved those lots to the CBD."""
+    monkeypatch.setattr(DS, "_RULES_CACHE", None)
+    monkeypatch.setattr(DS, "_MAP_CACHE", {})
+    for builder in ("Aldrich Homes", "Goldstate Homes"):
+        row = {"builder_name": builder, "estate_name": "Atlas", "state": "VIC",
+               "source_url": "https://www.e-agent.com.au/_files/ugd/"
+                             "069fe0_3ddff6ad014e4285bfe789927d39d1a2.pdf"}
+        assert DS.suburb_for_row(row) == "", builder
+
+
 # ------------------------------------------------ a failed refresh must not wipe the map
 def test_a_refresh_that_lost_most_of_its_answers_is_refused(tmp_path, monkeypatch):
     """The failure this stops is a GREEN one.
