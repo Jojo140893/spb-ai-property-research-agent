@@ -217,8 +217,9 @@ from urllib.parse import unquote
 import config
 from database import ResearchDatabase
 from geo import SuburbGeoIndex
-from state_resolver import (ADDRESS_OVER_PAGE_SOURCE, TEXT_LOCALITY_SOURCE, _estate_key,
-                            address_over_page, disagreement,
+from state_resolver import (ADDRESS_OVER_PAGE_SOURCE, DOCUMENT_LOCATION_SOURCE,
+                            TEXT_LOCALITY_SOURCE, _estate_key, address_over_page,
+                            disagreement, document_location_state, location_column_reading,
                             file_is_national, label_tail_is_the_pair, label_tail_partner,
                             longer_name_of_the_line, normalise_state, own_state,
                             places_after_a_lot_number, places_after_a_street,
@@ -241,7 +242,8 @@ DEGRADED_EXIT = 70
 # Hudson error was already written to the column, so a pass that only filled blanks would
 # never have corrected it — and would not correct it after the next harvest either.
 HINT_ONLY_SIGNALS = ("e-agent page", "e-agent page (conflicting signals)",
-                     "stocklist file name")
+                     "stocklist file name", DOCUMENT_LOCATION_SOURCE,
+                     DOCUMENT_LOCATION_SOURCE + " (conflicting signals)")
 STATE_WORDS = {
     "victoria": "VIC", "new south wales": "NSW", "queensland": "QLD",
     "south australia": "SA", "western australia": "WA", "tasmania": "TAS",
@@ -483,6 +485,26 @@ def file_of(row) -> str:
         if k in keys and (row[k] or "").strip():
             return (row[k] or "").strip()
     return ""
+
+
+def document_states(rows, geo) -> Dict[str, str]:
+    """{file: state} for each file no row of which carries a page, whose own Location column
+    agrees on one state (24 Oct 2026, state_resolver.document_location_state): Verv's [VG]
+    email, VIC. Every row reads, superseded or not, as every row votes on a file's being
+    national."""
+    by_file: Dict[str, list] = {}
+    for r in rows:
+        by_file.setdefault(file_of(r), []).append(r)
+    out = {}
+    for f, rs in by_file.items():
+        if not f or any(normalise_state(r["source_state_hint"] if "source_state_hint" in r.keys()
+                                        else "") for r in rs):
+            continue
+        state = document_location_state([location_column_reading(row_text(r), geo)
+                                         for r in rs], len(rs))
+        if state:
+            out[f] = state
+    return out
 
 
 def rests_on_a_suburb_match(signal, suburb_from_column: bool) -> bool:
@@ -1103,6 +1125,9 @@ def main(argv=None, _gone=frozenset(), _geo=None, _depth=0):
             print(f"  ROLLBACK: {n} row(s) held a state from '{TEXT_LOCALITY_SOURCE}' -- "
                   f"cleared, and re-resolved below with that check switched off")
     rows = [dict(r) for r in conn.execute("SELECT * FROM buildings").fetchall()]
+    # A file with no page is read with the state its own Location column agrees on, as a
+    # page would be (24 Oct 2026, document_states): read once, from the rows' own text.
+    document_state = document_states(rows, geo)
     # THE POSTCODES TONIGHT CLEARS ARE GONE FOR ALL OF TONIGHT (29 Sep 2026, round 3's
     # review). A postcode that contradicts both the page and the state a row is given is
     # cleared below ("never a postcode"); it had already voted on its file, though, and the
@@ -1298,13 +1323,17 @@ def main(argv=None, _gone=frozenset(), _geo=None, _depth=0):
                 # re-opened row came out 'e-agent page' on that state alone -- a signal
                 # page_of does not carry forward -- and went blank the next night (round 3).
                 page = r["source_state_hint"] if "source_state_hint" in r.keys() else ""
+                source = "e-agent page"
+                if not normalise_state(page) and document_state.get(file_of(r)):
+                    page, source = document_state[file_of(r)], DOCUMENT_LOCATION_SOURCE
                 new_state, signal = resolve_state(postcode=r["postcode"], suburb=suburb,
                                                   page_state=page, geo=geo,
                                                   listing_state=mine,
                                                   lot_number=r["lot_number"],
                                                   row_text=row_text(r),
                                                   estate=r["estate_name"],
-                                                  read_the_address=True)
+                                                  read_the_address=True,
+                                                  hint_source=source)
                 hit = check(r, suburb, new_state, signal)
                 if hit:
                     hit = tuple(hit) + (new_state, signal)
@@ -1680,6 +1709,10 @@ def main(argv=None, _gone=frozenset(), _geo=None, _depth=0):
             new_state, signal, hit = hit[4] or "", hit[5], None
         allowed = bound(r, origin_answer[0] or "", longer[rid], geo)
         allowed.add(address_bound(r, suburb, geo))
+        # and, in a file that is not national, the state its own Location column agrees on
+        # (document_states, 24 Oct 2026), as its page's would be
+        if file_of(r) not in national:
+            allowed.add(document_state.get(file_of(r), ""))
         origin_next = origin_main_state(r, cleared=True)
         if origin_next:
             allowed.add(origin_next[0] or "")
@@ -1954,6 +1987,15 @@ def main(argv=None, _gone=frozenset(), _geo=None, _depth=0):
     if len(held_rows) > 25:
         print(f"            ... and {len(held_rows) - 25} more (state_source "
               f"'{PAGE_HELD_SIGNAL}')")
+    # Each a decision to read a whole file by its own Location column (24 Oct 2026), printed
+    # so a human can check it against the document.
+    print(f"  state   read off a page-less file's own Location column: {len(document_state)}"
+          f" file(s)")
+    for f, st in sorted(document_state.items()):
+        its = [r for r in rows if file_of(r) == f]
+        given = sum(1 for r in its if final_state.get(r["id"]) == st)
+        print(f"            {st:<3} {given:>4} of {len(its):>4} row(s)"
+              f"{' (national tonight: not used)' if f in national else ''}   {f[-58:]}")
     if national:
         # The file, not the row, is what was wrong. Printed in full because each one is a
         # decision to stop trusting a whole file, and a human should be able to check it.

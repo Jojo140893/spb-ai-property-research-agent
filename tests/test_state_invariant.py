@@ -266,12 +266,63 @@ def _address_state(r, geo):
     return other
 
 
-def _allowed(r, old_state, geo, truth=None):
+_TITLE_WORD = re.compile(r"^(?:titled|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)"
+                         r"-\d\d)$", re.IGNORECASE)
+
+
+def _location_states(r, geo):
+    """The states of the place the row writes in a Location column -- straight before a title
+    date ("Titled", "Oct-26", "Q1 2027"), with a lot number no more than four words before
+    it and no price between -- or None."""
+    for text in (r["source_text"], r["lot_address"]):
+        words = re.findall(r"\$[\d,.]+|\d+[A-Za-z]?|[A-Za-z][\w'\-]*", str(text or ""))
+        for t, w in enumerate(words):
+            if not (_TITLE_WORD.match(w) or (re.fullmatch(r"Q[1-4]", w) and t + 1 < len(words)
+                                             and re.fullmatch(r"20\d\d", words[t + 1]))):
+                continue
+            for size in (3, 2, 1):
+                span = words[t - size:t] if t > size else []
+                if not span or not all(re.fullmatch(r"[A-Za-z][A-Za-z'\-]*", x) for x in span):
+                    continue
+                states = geo.states_for_suburb(" ".join(span))
+                if not states:
+                    continue
+                head = words[max(0, t - size - 4):t - size]
+                if (any(re.fullmatch(r"\d{1,5}[A-Za-z]?", x) for x in head)
+                        and not any(x.startswith("$") for x in head)):
+                    return states
+                break
+    return None
+
+
+def _document_states(rows, geo):
+    """(vi), 24 Oct 2026: {file: state} for each file no row of which has a page, where at
+    least five rows -- and half of them -- write a place in a Location column, every one a
+    place of one same state and of no other they all share, and one a place of that state
+    alone: Verv's [VG] email, VIC."""
+    files = {}
+    for r in rows:
+        files.setdefault(r["stocklist_file"] or r["source_url"], []).append(r)
+    out = {}
+    for f, rs in files.items():
+        if any(sr.normalise_state(r["source_state_hint"]) for r in rs):
+            continue
+        got = [s for s in (_location_states(r, geo) for r in rs) if s]
+        if len(got) < 5 or 2 * len(got) < len(rs):
+            continue
+        common = set.intersection(*(set(s) for s in got))
+        if len(common) == 1 and any(len(s) == 1 for s in got):
+            out[f] = next(iter(common))
+    return out
+
+
+def _allowed(r, old_state, geo, truth=None, document=""):
     """The states a row may be given that origin/main does not give it: (i) its page's
     (_page) or its file name's, (ii) its stated postcode's, (iii) round 1's longer name --
     only where origin/main's answer is blank, (v) its address's over its page
-    (_address_state) -- and, for (iii) and (v), on a generated row whose true state is known,
-    only that one."""
+    (_address_state), (vi) its page-less file's Location column's (`document`,
+    _document_states) -- and, for (iii), (v) and (vi), on a generated row whose true state
+    is known, only that one."""
     page = _page(r)
     file_state = origin.state_from_filename(r["source_url"] or "")
     ok = {old_state or "", "", page, file_state, _stated_postcode(r, geo)}
@@ -283,6 +334,8 @@ def _allowed(r, old_state, geo, truth=None):
     address = _address_state(r, geo)
     if address and (not truth or address == truth):
         ok.add(address)
+    if document and (not truth or document == truth):
+        ok.add(document)
     return ok
 
 
@@ -347,13 +400,15 @@ def _violations(rows, got, geo):
                 if (pc or None) != (next(r for r in rows if r["id"] == i)["postcode"] or None)}
     after_pc = (origin.old_enrich([dict(r, postcode=written[r["id"]]) if r["id"] in moved_pc
                                    else r for r in rows], geo) if moved_pc else before)
+    documents = _document_states(rows, geo)
     out, changed = [], 0
     for r in rows:
         new, old = got[r["id"]][0] or "", before[r["id"]][0] or ""
         changed += new != old
         if new != old and new == (after_pc[r["id"]][0] or "") and r["id"] in moved_pc:
             continue
-        if new != old and new not in _allowed(r, old, geo, r.get("_truth")):
+        document = documents.get(r["stocklist_file"] or r["source_url"], "")
+        if new != old and new not in _allowed(r, old, geo, r.get("_truth"), document):
             out.append((r["id"], old, new, got[r["id"]][1], r["lot_address"],
                         r["source_state_hint"], r["suburb"], r["state"], r["state_source"]))
     return out, changed
@@ -436,6 +491,45 @@ def test_the_address_over_the_page_is_inside_the_bound(tmp_path, monkeypatch, ge
     assert len(moved) > 10, len(moved)
     assert [(r["lot_address"], got[r["id"]][0], r["_truth"]) for r in moved
             if got[r["id"]][0] != r["_truth"]] == []
+
+
+def _sheet_rows(geo, sheets, seed):
+    rows = []
+    for k, rec in enumerate(corpus.generate_document_sheets(geo, sheets, seed=seed)):
+        row = {c: rec.get(c) for c in _COLS}
+        row.update(id=k + 1, source_channel="Generated", content_hash=f"v2:sheet{seed}-{k}",
+                   stocklist_file=rec["sheet"], source_url=rec["sheet"], superseded_by=None,
+                   price=500000.0, last_seen="24/10/2026", _truth=rec["truth"])
+        rows.append(row)
+    return rows
+
+
+def test_a_location_column_is_inside_the_bound(tmp_path, monkeypatch, geo):
+    """24 Oct 2026, (vi): sheets in Verv's [VG] layout (corpus.generate_document_sheets), one
+    state's or two, on no page or on any. A page-less sheet's Location column gives rows a
+    state, and only ever their true one; nothing leaves origin/main's answer otherwise."""
+    rows = _sheet_rows(geo, 60, 24102027)
+    got = _enrich(tmp_path, monkeypatch, rows)
+    bad, _changed = _violations(rows, got, geo)
+    assert bad == [], f"{len(bad)} rows in a state origin/main would not give: {bad[:10]}"
+    read = [r for r in rows if (got[r["id"]][1] or "").startswith(sr.DOCUMENT_LOCATION_SOURCE)
+            or (got[r["id"]][1] or "").endswith(" + " + sr.DOCUMENT_LOCATION_SOURCE)]
+    assert len(read) > 50, len(read)
+    assert [(r["lot_address"][:60], got[r["id"]][0], r["_truth"]) for r in read
+            if got[r["id"]][0] != r["_truth"]] == []
+
+
+def test_the_harness_sees_a_location_column_read_by_its_majority(tmp_path, monkeypatch, geo):
+    """A silent check reads as a pass: read a sheet by the state most of its Location column
+    names, not the one all of it agrees on, and the harness sees the mixed sheets' other
+    state's lots moved."""
+    def majority(readings, rows):
+        got = [s for _n, s in (x for x in readings if x) if len(s) == 1]
+        return max(set(x[0] for x in got), key=[x[0] for x in got].count) if got else ""
+    monkeypatch.setattr(enrich_buildings, "document_location_state", majority)
+    rows = _sheet_rows(geo, 60, 24102027)
+    bad, _changed = _violations(rows, _enrich(tmp_path, monkeypatch, rows), geo)
+    assert len(bad) > 5, bad
 
 
 def test_the_harness_sees_the_briefs_first_rule(tmp_path, monkeypatch, geo):

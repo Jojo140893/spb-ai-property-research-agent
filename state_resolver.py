@@ -148,6 +148,7 @@ def postcode_is_lot_number(postcode: Any, lot_number: Any, row_text: Any = None,
 
     `row_text`: the row's own line(s). A postcode that is the number OPENING one of them is
     the lot as well, with or without a lot number to compare (postcode_opens_the_row). So is
+    one written straight after the lot's aspect (postcode_after_an_aspect). So is
     one they write only as part of another number or as a land area
     (postcode_written_as_another_number): no postcode at all, whatever the name says.
     """
@@ -157,6 +158,7 @@ def postcode_is_lot_number(postcode: Any, lot_number: Any, row_text: Any = None,
     if _number(pc) in {_number(n) for n in re.findall(r"\d+", str(lot_number or ""))}:
         return True
     return (postcode_opens_the_row(pc, row_text, geo)
+            or postcode_after_an_aspect(pc, row_text, geo)
             or postcode_written_as_another_number(pc, row_text, geo))
 
 
@@ -317,6 +319,56 @@ def postcode_opens_the_row(postcode: Any, row_text: Any, geo: Any = None) -> boo
         if _locality_of_state_follows(str(text)[m.end():], state_from_postcode(pc), geo):
             continue
         return True
+    return False
+
+
+# --- the number after the lot's aspect is its lot ------------------------------------
+#
+# 24 Oct 2026. Verv's master stocklist, emailed to digital@ as "[VG] - Projects | House &
+# Land | Dual Key Packages", lays every lot out as
+#
+#     "2-Part Detached SS West 4327 Jubilee Wyndhamvale Titled 263 $338,000 Enzo 10.5 ..."
+#
+# -- contract, product, storey, region, LOT, estate, location: the 28 Sep Jubilee line
+# again, from the email channel this time. Its rows carry no lot number (stocklist_reparse
+# has no rule for builderless email rows, and a lot number filled in would change every
+# row's identity), so the comparison above had nothing to compare and 4327 stood as a
+# Queensland postcode. The four Jubilee lots proved QLD by "suburb + postcode", the email
+# read as national, and its other lots -- Lara, Mernda, Tarneit, Donnybrook, Diggers Rest,
+# every one in VIC -- had no state for the search to borrow: 45 obvious lots hidden as
+# state_unknown on the 24 Oct nightly.
+#
+# sources/feature_extract.parse_postcode refuses a number after an aspect word only at the
+# start of the row, because aspect words also end suburb names: "Shepparton North 3631",
+# "Clyde North 3978", "BRISBANE NORTH 4514". So here the number after one is the lot only
+# when neither the word nor what stands before it ends a place of the postcode's own
+# state. Measured on the 30 Sep copy with the [VG] email stored in it: 40 stored postcodes
+# follow an aspect word. The 32 after Shepparton North and Clyde North are postcodes and
+# stay; the 8 after "SS West" and "SS North" are all Verv lots (4327, 4328, 4316, 4317,
+# 4543, 4544, 2632, and E-Agent's 2103 whose lot number already said so).
+_ASPECT_THEN_NUMBER = re.compile(
+    r"(?i)\b(north|south|east|west|northeast|northwest|southeast|southwest)\s+(\d{4})(?!\d)")
+
+
+def postcode_after_an_aspect(postcode: Any, row_text: Any, geo: Any = None) -> bool:
+    """True when the row's own text writes the postcode straight after an aspect word that
+    ends no place of the postcode's state ("SS West 4327 Jubilee"): the lot, not a postcode.
+    Never after "Shepparton North" or "Brisbane North", where it is the postcode.
+    """
+    pc = re.sub(r"\D", "", str(postcode or ""))
+    if len(pc) != 4:
+        return False
+    state = state_from_postcode(pc)
+    texts = row_text if isinstance(row_text, (list, tuple)) else [row_text]
+    for text in texts:
+        text = str(text or "")
+        for m in _ASPECT_THEN_NUMBER.finditer(text):
+            if _number(m.group(2)) != _number(pc):
+                continue
+            if (_locality_of_state_ends(text[:m.end(1)], state, geo)
+                    or _locality_of_state_ends(text[:m.start(1)].rstrip(" ,"), state, geo)):
+                continue
+            return True
     return False
 
 
@@ -586,7 +638,8 @@ def file_is_national(proven_states: Any) -> bool:
 def resolve_state(postcode: Any = None, suburb: str = "", page_state: Any = "",
                   geo: Any = None, listing_state: Any = "",
                   lot_number: Any = None, row_text: Any = None, estate: Any = "",
-                  read_the_address: bool = False) -> Tuple[str, str]:
+                  read_the_address: bool = False,
+                  hint_source: str = "e-agent page") -> Tuple[str, str]:
     """Return (state, signal). Both empty when nothing reliable is available.
 
     Decided by AGREEMENT, not by a fixed ranking, because cross-checking the signals
@@ -617,6 +670,9 @@ def resolve_state(postcode: Any = None, suburb: str = "", page_state: Any = "",
     `read_the_address` (24 Oct 2026, enrich's own decisions; origin/main's answer is asked
     without it): where the page and a one-state suburb conflict, the row's own address can
     take the suburb's side -- address_over_page, which reads `row_text` and `estate`.
+    `hint_source` names what `page_state` is: E-Agent's page, or the state a file's own
+    Location column agrees on (DOCUMENT_LOCATION_SOURCE, 24 Oct 2026), so a state is never
+    recorded as the page's that no page gave.
     """
     postcode = _unless_lot_number(postcode, lot_number, row_text, geo)
     votes: Dict[str, List[str]] = {}
@@ -644,7 +700,7 @@ def resolve_state(postcode: Any = None, suburb: str = "", page_state: Any = "",
 
     hint = normalise_state(page_state)
     if hint:
-        votes.setdefault(hint, []).append("e-agent page")
+        votes.setdefault(hint, []).append(hint_source)
 
     corroborated = [s for s, sigs in votes.items() if len(sigs) >= 2]
     if len(corroborated) == 1:
@@ -653,7 +709,7 @@ def resolve_state(postcode: Any = None, suburb: str = "", page_state: Any = "",
     # A shared locality name casts no vote of its own, but the page can pick which of its
     # states is meant: "Denman" is in NSW and QLD, and a row off the NSW page is the NSW one.
     if len(candidates) > 1 and hint in candidates:
-        return hint, "suburb + e-agent page"
+        return hint, "suburb + " + hint_source
 
     if len(votes) == 1:
         only = next(iter(votes))
@@ -664,12 +720,13 @@ def resolve_state(postcode: Any = None, suburb: str = "", page_state: Any = "",
     # so the export shows the answer was contested. Unless the row's address says where it
     # is (address_over_page).
     if hint:
-        if read_the_address and len(candidates) == 1 and candidates[0] != hint:
+        if (read_the_address and hint_source == "e-agent page" and len(candidates) == 1
+                and candidates[0] != hint):
             moved = address_over_page(row_text if row_text is not None else (), estate,
                                       suburb, hint, geo)
             if moved:
                 return moved, ADDRESS_OVER_PAGE_SOURCE
-        return hint, "e-agent page (conflicting signals)"
+        return hint, hint_source + " (conflicting signals)"
     return "", ""
 
 
@@ -1554,6 +1611,88 @@ def _names_after_a_street(texts: Any, geo: Any) -> List[Tuple[str, str]]:
                 out.append((" ".join(toks[j + 1:k]), states[0]))
                 break
     return out
+
+
+# --- the document's own Location column ----------------------------------------------------
+#
+# 24 Oct 2026. Verv's master stocklist, emailed as "[VG] - Projects | House & Land | Dual Key
+# Packages", is three PDFs with no page, no postcode and no state written anywhere. Its
+# columns are Product, Contract, Region, Lot #, Estate, Location, Title Date ..., so every
+# line reads
+#
+#     "2-Part Dual Key SS Geelong 1730 Austin Lara Oct-26 400 $390,800 ..."
+#     "2-Part Townhome North 25 Havenwood Mernda Q1 2027 143 $307,000 ..."
+#     "2-Part Detached SS West 4327 Jubilee Wyndhamvale Titled 263 $338,000 ..."
+#
+# -- the lot, its estate, its LOCATION, then its title date. A one-word location proves
+# nothing on its own ("Lara" in a guessed suburb never does), Armstrong Creek and Donnybrook
+# are in other states too, and with no page the email's 114 lots had nothing to go on: 92
+# blank, so no state search reached them. But the document answers for itself: its
+# Location column names Lara, Armstrong Creek, Wollert, Tarneit, Mernda, Donnybrook,
+# Officer, Warragul, Clyde North, Fraser Rise and Diggers Rest, and Victoria is the one
+# state every one of them is a place of. So a file with no page is read with the state its
+# own Location column agrees on, as a page would be (enrich_buildings.document_states).
+#
+# The column is read only in that layout: a place straight before a title date ("Titled",
+# "Oct-26", "Q1 2027") with the lot number at most four words before it. Measured on the 30
+# Sep copy with the [VG] email stored in it: of every file with no page, only that email
+# has any such reading -- 100 of its 114 rows. Its Jubilee lots read nothing ("Wyndhamvale",
+# Wyndham Vale written as one word, is in no gazetteer), so their estate, a Queensland
+# place name, is never taken for their location.
+DOCUMENT_LOCATION_SOURCE = "document locations"
+_LOCATION_TOKEN = re.compile(r"\$[\d,]+(?:\.\d+)?|\d+(?:\.\d+)?[A-Za-z]?|"
+                             r"[A-Za-z][A-Za-z0-9']*(?:-[A-Za-z0-9']+)*|\S")
+_TITLE_DATE = re.compile(r"^(?:titled|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)"
+                         r"-\d{2})$", re.IGNORECASE)
+_LOCATION_WORD = re.compile(r"[A-Za-z][A-Za-z'\-]*")
+_LOT_OR_WORD = re.compile(r"\d{1,5}[A-Za-z]?|[A-Za-z][A-Za-z'\-]*")
+
+
+def _title_date_at(toks: List[str], i: int) -> bool:
+    return bool(_TITLE_DATE.match(toks[i])) or bool(
+        re.fullmatch(r"Q[1-4]", toks[i]) and i + 1 < len(toks)
+        and re.fullmatch(r"20\d\d", toks[i + 1]))
+
+
+def location_column_reading(row_text: Any, geo: Any) -> Optional[Tuple[str, List[str]]]:
+    """(place, its states) the row writes in a Location column -- straight before its title
+    date, its lot number at most four words before -- or None (see above)."""
+    if geo is None:
+        return None
+    texts = row_text if isinstance(row_text, (list, tuple)) else [row_text]
+    for text in texts:
+        toks = _LOCATION_TOKEN.findall(str(text or ""))
+        for t in range(1, len(toks)):
+            if not _title_date_at(toks, t):
+                continue
+            for size in (3, 2, 1):
+                s = t - size
+                span = toks[s:t]
+                if s < 1 or not all(_LOCATION_WORD.fullmatch(w) for w in span):
+                    continue
+                states = [st for st in _places(" ".join(span), geo) if st in VALID_STATES]
+                if not states:
+                    continue
+                before = toks[max(0, s - 4):s]
+                if (any(re.fullmatch(r"\d{1,5}[A-Za-z]?", w) for w in before)
+                        and all(_LOT_OR_WORD.fullmatch(w) for w in before)):
+                    return " ".join(span), states
+                break
+    return None
+
+
+def document_location_state(readings: Any, rows: int) -> str:
+    """The one state a file's Location column agrees on, or ''. `readings` are its rows'
+    location_column_reading, `rows` how many rows it has: at least five readings, covering
+    at least half the rows, every one a place of that state and of no other state all the
+    rest are places of, and one of them a place of that state alone."""
+    got = [states for _name, states in (x for x in readings if x)]
+    if len(got) < 5 or 2 * len(got) < rows:
+        return ""
+    common = set.intersection(*(set(s) for s in got))
+    if len(common) != 1 or not any(len(s) == 1 for s in got):
+        return ""
+    return next(iter(common))
 
 
 # --- the address over the page ------------------------------------------------------------

@@ -361,6 +361,62 @@ def generate(geo, n, seed=29092026, vocab=None):
     return [g.record() for _ in range(n)]
 
 
+VERV_REGIONS = ("Geelong", "North", "West", "Southeast")
+
+
+def generate_document_sheets(geo, sheets, seed=24102027, vocab=None):
+    """24 Oct 2026: sheets in the layout of Verv's [VG] master stocklist --
+    "<n>-Part <product> SS <Region> <lot> <estate> <Location> <title date> <m2> $..." --
+    for enrich_buildings.document_states. Each sheet is one file of 8 to 14 rows: most with
+    no page, some on a page of any state; most with every Location in one state, a quarter
+    mixing a second state's; estates drawn from place-like names of any state (Jubilee,
+    Mandalay ...); in a one-state sheet a few rows with a Location no gazetteer knows
+    ("Wyndhamvale") or none at all (a split line); now and then the lot read as the postcode.
+    `truth` is the state of the row's Location -- the sheet's own, for a row that names none.
+    Each record carries `sheet`, its file."""
+    g = Gen(geo, _vocab(vocab), seed)
+    rng = g.rng
+    by_state = {}
+    for name, st in g.suburbs:
+        if st in _places(geo, name):
+            by_state.setdefault(st, set()).add(name)
+    by_state = {st: sorted(v) for st, v in by_state.items() if len(v) >= 8}
+    out = []
+    for s in range(sheets):
+        st = g.pick(sorted(by_state))
+        mixed = rng.random() < 0.25
+        other = g.pick([x for x in sorted(by_state) if x != st])
+        page = g.pick(STATES) if rng.random() < 0.3 else None
+        for k in range(rng.randint(8, 14)):
+            lot = str(rng.randint(100, 4999))
+            region = g.pick(VERV_REGIONS)
+            estate = g.pick(PLACE_ESTATES + tuple(g.other_places))
+            title = g.pick(("Titled", "%s-%d" % (g.pick(("Oct", "Nov", "Dec", "Mar", "Sep")),
+                                                  rng.randint(25, 28)),
+                            "Q%d %d" % (rng.randint(1, 4), rng.randint(2026, 2028))))
+            r = rng.random()
+            truth = other if (mixed and rng.random() < 0.4) else st
+            if not mixed and r < 0.08:
+                location = "Wyndhamvale"
+            else:
+                location = g.pick(by_state[truth])
+            head = f"2-Part {g.pick(('Detached', 'Dual Key', 'Townhome'))} SS {region} {lot}"
+            if not mixed and r > 0.94:
+                line = f"{head} {_money(rng)} {_money(rng)} Brochure Masterplan Stage 3 - POS"
+            else:
+                line = (f"{head} {estate} {location} {title} {rng.randint(150, 700)} "
+                        f"{_money(rng)} {g.design()} 20 4 / 2 / 2 {_money(rng)} "
+                        f"{_money(rng)} Brochure Masterplan Stage 4 - POS Available")
+            pc = lot if (len(lot) == 4 and rng.random() < 0.3) else None
+            out.append(dict(lot_address=line[:110], source_text=line, suburb=None,
+                            estate_name=None, source_state_hint=page, postcode=pc,
+                            lot_number=None, state=None, state_source=None,
+                            builder_name="Gen Builder", truth=truth, tmpl=45,
+                            words={"T": location, "E": estate}, named=True, pc_real=False,
+                            sheet=f"generated:sheet:{seed}:{s}"))
+    return out
+
+
 def generate_address_rows(geo, n, seed=24102026, vocab=None):
     """24 Oct 2026: the shapes around state_resolver.address_over_page, kept apart from
     generate() so its corpora stay as they are. Half APLACE's -- "<no> <street>, <PLACE>
