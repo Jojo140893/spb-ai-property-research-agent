@@ -691,6 +691,36 @@ class ResearchDatabase:
             if str(was_superseded or "") == WITHDRAWN_FROM_SOURCE:
                 upd["superseded_by"] = None
                 upd["superseded_at"] = None
+                # AND WHAT IT SAID COMES BACK WITH IT (24 Oct 2026). The retirement wrote
+                # "Sold" into availability_status, and the loop below rewrites that only
+                # when tonight's read states one -- so a lot re-listed by a sheet with no
+                # status column came back live and still saying Sold: out of every search,
+                # and counted as held on the Settings tab. What it said before it was
+                # retired is in repair_rows' retirement ledger; a retirement older than the
+                # ledger has only status_previous, which is no evidence when it is "Sold"
+                # (the old nightly re-retirement wrote Sold over Sold: 367 of 369 retired
+                # rows on 30 Sep). Inline SQL and no import: the API bundle copies this file.
+                if not status:
+                    try:
+                        got = conn.execute(
+                            "SELECT status_before FROM retirements WHERE row_id=? AND "
+                            "undone_at IS NULL ORDER BY stamp DESC LIMIT 1", (rid,)).fetchone()
+                    except sqlite3.OperationalError:            # no ledger table yet
+                        got = None
+                    if got is not None:
+                        back = got[0] or None                    # NULL stays NULL
+                    else:
+                        prev = conn.execute("SELECT status_previous FROM buildings "
+                                            "WHERE id=?", (rid,)).fetchone()
+                        prev = str((prev[0] if prev else "") or "").strip()
+                        back = None if not prev or prev.lower() == "sold" else prev
+                    upd["availability_status"] = back
+                    upd["status_previous"] = old_status
+                try:
+                    conn.execute("UPDATE retirements SET undone_at=?, undone_by='source' "
+                                 "WHERE row_id=? AND undone_at IS NULL", (now_ts, rid))
+                except sqlite3.OperationalError:
+                    pass
                 logger.info("buildings: %r is back on its source's list — un-retired",
                             b.get("lot_address"))
             # A run that could not read a field must not erase what is stored. Writing
