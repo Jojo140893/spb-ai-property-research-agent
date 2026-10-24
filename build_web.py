@@ -1876,6 +1876,55 @@ CHANNEL_PUSH_SOURCES = frozenset({"digital email"})
 # A small source that dies outright still goes stale on age.
 CHANNEL_PARTIAL_MIN_LIVE = 25
 
+# "REFRESHED" IS ONE RUN, NOT ONE CALENDAR DAY (23 Oct 2026). It counted the live rows
+# dated a channel's newest day, so a read that crossed midnight was cut in two: a run
+# dispatched at 23:04 read Proxima from 23:40 to 00:00:44, the 288 lots read after midnight
+# made up the newest day on their own, and this tab said 3% -- "ONLY PART OF ITS STOCK" --
+# of a read that was whole (8,363 lots, 109 of 109 projects). The harvest now stamps one
+# date per run (sources.base.read_date), but a date is still the wrong unit for "what did
+# the last read see", so the tab measures the run itself: the live rows whose checked_at
+# (the moment, see _newest_ts) belongs to the same run as the channel's newest one.
+#
+# A RUN IS ONE BURST OF WRITES, found by walking back from the newest checked_at until the
+# stamps stop. record_building is the only writer of checked_at, and the harvest stores a
+# channel's rows straight after that channel's read returns -- one burst each for E-Agent,
+# the Stocklist, Proxima and the inbox, one per state for the direct portals -- so the
+# stamps of one run sit seconds apart and a pause of CHANNEL_RUN_GAP_MINUTES is the end
+# of an earlier run. Measured on run 39950641008 (23 Oct): Proxima stored its 8,363 rows
+# in 13 seconds (13:00:44Z, when its read returned, to 13:00:57Z, when the inbox sweep
+# connected), and the direct portals read state after state 10 to 40 seconds apart.
+# Against that, two nightly runs leave the same channel at least 33 minutes apart: runs
+# are queued one at a time (the spb-daily-harvest concurrency group), and a re-run
+# dispatched the moment a job fails only reaches its first store, E-Agent's, 33 minutes in
+# (12:04:47Z to 12:37:45Z); two runs that both finish are over an hour and a half apart
+# (Proxima stored 56 minutes after dispatch, and the run went on 49 minutes after that).
+# Two Proxima reads by hand (harvest_buildings.py --proxima-only) cannot store closer
+# than the 20 minutes one read takes (12:40:16Z to 13:00:44Z). Fifteen minutes sits
+# between: twenty times the longest pause inside a run, short of the quickest gap between
+# two. Only a quick channel read twice by hand -- the portals or the inbox, a minute or
+# two each -- still blends, as two runs on one date always did. The other way round, a
+# state's portal read that hung for a quarter of an hour would cut that night's portal
+# rows in two and could flag them "partial": a loud error to look at, not a quiet "ok".
+#
+# And no stamp more than CHANNEL_RUN_SPAN_HOURS older than the newest is the same run,
+# however the bursts chain: the harvest job is killed at 150 minutes (daily-harvest.yml),
+# so the cap never cuts a real run and only bites on reads repeated by hand.
+#
+# WHY NOT A FIXED WINDOW. The first cut of this (same day, before review) took every stamp
+# within 12 hours of the newest, on the reasoning that 12 is half the gap between two
+# scheduled nights, so last night's rows never count as tonight's. Runs are not only
+# scheduled: 23 Oct had the 09:00 run and manual ones dispatched at 13:08 and 23:04, and
+# that window took the 13:08 run's Proxima read (stored at 14:03) into the 23:04 run's
+# (stored from 00:00:44). Worse, a full read by a late manual run followed by a 09:00 run
+# that hands back 16 of 1,000 read as 100% "ok" -- the 17 Aug failure (16 lots against a
+# stored 1,396) this tab exists to catch, and one the day rule did catch. The day rule
+# had its own version: two runs on one date blend, so a thin re-run the same afternoon
+# read as whole. The gap separates both.
+#
+# A channel whose rows carry no checked_at (stored before 18 Aug 2026) keeps the day rule.
+CHANNEL_RUN_GAP_MINUTES = 15
+CHANNEL_RUN_SPAN_HOURS = 3
+
 
 def _trimmed_url(value, limit=120):
     """A URL cut to `limit` characters without leaving a half-written %-escape behind."""
@@ -2151,7 +2200,7 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
     "Rows arrived" is the only claim worth making, and it is the one a consultant cares
     about. Session files are never published: they are live credentials.
     """
-    from datetime import date, datetime as _dt
+    from datetime import date, datetime as _dt, timedelta
 
     today = date.today()
     now_ts = _dt.now()
@@ -2193,6 +2242,46 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
                 out[str(name or "").strip() or "(unnamed)"] = ts
         return out
 
+    def _moment(ts):
+        """checked_at as a naive datetime, or None. The first 19 characters only, as
+        supersede_duplicates._read_time reads it, so an offset or a fraction a future
+        writer adds can neither fail to parse nor refuse to compare with a naive stamp."""
+        try:
+            return _dt.strptime(str(ts or "").strip()[:19].replace(" ", "T"),
+                                "%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            return None
+
+    def _run_counts(group_sql, where_sql, params=()):
+        """{name: live rows read by its LATEST RUN} -- walking back from that name's newest
+        checked_at for as long as the stamps keep coming (no pause of
+        CHANNEL_RUN_GAP_MINUTES) and no further than CHANNEL_RUN_SPAN_HOURS. A name none
+        of whose rows carries a readable checked_at is absent, and _health keeps the day
+        rule."""
+        stamps = {}
+        for name, ts, n in conn.execute(
+                f"SELECT {group_sql} AS g, checked_at, COUNT(*) FROM buildings "
+                f"WHERE {LIVE} AND checked_at IS NOT NULL{where_sql} "
+                f"GROUP BY g, checked_at", params):
+            moment = _moment(ts)
+            if moment is not None:
+                key = str(name or "").strip() or "(unnamed)"
+                stamps.setdefault(key, []).append((moment, n))
+        gap = timedelta(minutes=CHANNEL_RUN_GAP_MINUTES)
+        span = timedelta(hours=CHANNEL_RUN_SPAN_HOURS)
+        out = {}
+        for key, seen in stamps.items():
+            seen.sort(key=lambda s: s[0], reverse=True)
+            newest = later = seen[0][0]
+            total = 0
+            for moment, n in seen:
+                if later - moment > gap or newest - moment > span:
+                    break
+                total += n
+                later = moment
+            out[key] = total
+        return out
+
     def _hours_since(ts):
         if not ts:
             return None
@@ -2204,7 +2293,7 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
         # future; report 0 rather than a negative age.
         return max(0, round(delta.total_seconds() / 3600))
 
-    def _health(name, by_iso, ts_map=None):
+    def _health(name, by_iso, ts_map=None, runs=None):
         """One row of the Settings table.
 
         REPORTS VOLUME AS WELL AS RECENCY, and the second one was the gap. The first cut
@@ -2213,10 +2302,12 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
         shown as healthy, on the very tab built to stop exactly this being invisible. The
         harvest's own partial-read guard caught it; the tab flattered it.
 
-        `refreshed` is how many of the live rows carry the newest date — i.e. how much of
-        what we hold was actually seen on the last successful read. A source that returns
-        a fraction of its stock is stamping that fraction as today's and letting the rest
-        go quietly stale, which is the same harm as not running at all, minus the warning.
+        `refreshed` is how many of the live rows the last successful READ saw — i.e. how
+        much of what we hold it actually handed back. A source that returns a fraction of
+        its stock is stamping that fraction as today's and letting the rest go quietly
+        stale, which is the same harm as not running at all, minus the warning. Counted
+        per run from checked_at (`runs`, see CHANNEL_RUN_GAP_MINUTES), and from the
+        newest date only where no row of the source carries one.
         """
         newest, live = None, sum(by_iso.values())
         for iso in by_iso:
@@ -2228,7 +2319,12 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
                 if newest is None or d > newest:
                     newest = d
         age = (today - newest).days if newest else None
-        refreshed = by_iso.get(newest.strftime("%Y%m%d"), 0) if newest else 0
+        if name in (runs or {}):
+            # Never more than is held: _tally keys a NULL and a blank name alike, and the
+            # later of the two overwrites the earlier's counts where this one adds them.
+            refreshed = min(runs[name], live)
+        else:
+            refreshed = by_iso.get(newest.strftime("%Y%m%d"), 0) if newest else 0
         pct = round(100.0 * refreshed / live) if live else 0
         if age is None:
             state = "unknown"
@@ -2255,7 +2351,9 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
 
     logins = _login_status()
     chan_ts = _newest_ts("source_channel", "")
-    channels = [_health(n, t, chan_ts) for n, t in _tally("source_channel", "").items()]
+    chan_runs = _run_counts("source_channel", "")
+    channels = [_health(n, t, chan_ts, chan_runs)
+                for n, t in _tally("source_channel", "").items()]
     channels.sort(key=lambda c: (-(c["days_ago"] or 0), -c["live"]))
     for c in channels:
         # An inbox has no sign-in to break, so it says so rather than reading as a
@@ -2284,7 +2382,9 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
     # that broke, which is the one thing a person needs in order to fix it.
     portal_ts = _newest_ts("builder_name", " AND source_channel LIKE ?",
                           ("Direct Builder Portal%",))
-    portals = [_health(n, t, portal_ts) for n, t in
+    portal_runs = _run_counts("builder_name", " AND source_channel LIKE ?",
+                              ("Direct Builder Portal%",))
+    portals = [_health(n, t, portal_ts, portal_runs) for n, t in
                _tally("builder_name", " AND source_channel LIKE ?",
                       ("Direct Builder Portal%",)).items()]
     # A withdrawn builder's portal is no longer read, so its row would only age into a
