@@ -15,6 +15,7 @@ from typing import Dict, Any, List, Optional
 import config
 from brief_parser import coerce_number
 from state_resolver import postcode_is_lot_number
+from sources.base import read_date
 
 logger = logging.getLogger("spb.db")
 
@@ -478,7 +479,9 @@ class ResearchDatabase:
         NOTE: callers that count "new" rows must compare against the string, not
         truthiness — every return value here is truthy.
         """
-        now_date = b.get("date_checked") or datetime.now().strftime("%d/%m/%Y")
+        # The RUN's day where the source gave none, never this row's own: a harvest that
+        # crosses midnight must not store one read under two dates (sources.base).
+        now_date = b.get("date_checked") or read_date()
         # Stamped HERE rather than in the eight sources, so a source that predates the
         # column still gets one and no harvest path can forget.
         now_ts = b.get("checked_at") or datetime.now().isoformat(timespec="seconds")

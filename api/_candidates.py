@@ -44,7 +44,11 @@ from _bootstrap import HERE, ROOT
 import suburb_quality
 from address_label import clean_display_address, display_suburb
 from provenance import primary_source_link
-from builder_names import is_withdrawn_builder
+# parity_check and search_regressions take the withdrawn rules from this module, the way
+# they take snapshot_build_cells, so what they leave out is what the shipped search leaves
+# out. Nothing here calls is_withdrawn_builder any more; it stays for them.
+from builder_names import (is_withdrawn_builder, is_withdrawn_row,  # noqa: F401
+                           project_key, withdrawn_captures, withdrawn_projects)
 
 # Exactly the fields build_web.py exports to stock.json, so both readers agree and
 # neither can reach an internal column (content_hash, dedup_key, source_text).
@@ -392,7 +396,39 @@ EXCEPTIONS_LIST_MODE = os.environ.get("SPB_EXCEPTIONS_LIST_MODE", "available").s
 # 11:41 on a run that started 01:07Z), and Vercel's clock is UTC, so between midnight and
 # 10am AEST a search aged every row one day younger than it is. Queensland keeps no
 # daylight saving, and neither does the runner's date.
+#
+# THAT LAST CLAUSE WAS TRUE WHEN IT WAS WRITTEN AND NOT AFTER (23 Oct 2026). It went in on
+# 17 Sep, before daylight saving began on 4 Oct, and the runner's clock is Melbourne's
+# (TZ=Australia/Melbourne in daily-harvest.yml), which DOES keep it. From October to April
+# a row stamped in the hour after Melbourne's midnight -- 13:00 to 14:00 UTC -- carries a
+# date one day AHEAD of this clock's today, and _fresh's "0 <= age" called it unverified:
+# on 23 Oct the 288 Proxima lots read after midnight went to Needs confirming for that hour,
+# and parity, on the same clock, left them out of its obvious set.
+#
+# The clock stays a fixed offset on purpose. The function bundle ships no time-zone data
+# (build_web._bundle_research_function copies no requirements, so no tzdata package, and
+# Windows has no zone database at all -- the laptop's test venv needed tzdata installed
+# for zoneinfo to know Melbourne), and a hand-written daylight-saving rule would be a
+# second copy of a law that changes. A date can only be one day ahead of AEST by
+# coming from that hour, so _days_old reads exactly one day ahead as today, and
+# search_regressions._age and parity_check.obvious_lots read it the same way, so the
+# search and both checks agree on what is fresh.
 AEST = timezone(timedelta(hours=10))
+
+
+def _days_old(seen, today):
+    """Whole days from `seen` (a parsed date_checked) to `today`, where a date exactly ONE
+    day ahead is 0 -- the daylight-saving hour, see AEST. Two days ahead stays negative:
+    that is a wrong date, not a clock, and is still never fresh.
+
+    The rule holds at any hour, not only 13:00 to 14:00 UTC, and that is safe only
+    because every date_checked is the harvest's own clock (sources.base.read_date), and
+    the runner keeps Melbourne's (TZ=Australia/Melbourne), never more than an hour ahead
+    of this one. A writer on a clock further east -- or one that dated a row from a
+    document rather than from the read -- would have its one-day-ahead rows taken as
+    today's all day, and the hour would then need checking here."""
+    age = (today - seen).days
+    return 0 if age == -1 else age
 
 
 def _utc_now():
@@ -502,25 +538,50 @@ def load_snapshot():
         tried.append(str(path))
         if not path.exists():
             continue
-        rows = _read_json(path) if kind == "json" else _read_sqlite(path)
-        # A withdrawn builder is never a candidate, whichever reader found the row.
-        # build_web already leaves it out of stock.json; this also holds for a snapshot
-        # built before it was withdrawn, and for a database read directly.
-        return [r for r in rows if not is_withdrawn_builder(r.get("builder_name"))], str(path)
+        if kind == "json":
+            rows, published, published_captures = _read_json_payload(path)
+        else:
+            rows, published, published_captures = _read_sqlite(path), frozenset(), frozenset()
+        # A withdrawn builder is never a candidate, whichever reader found the row, and
+        # neither is a blank-builder lot in one of its projects, or a blank-builder capture
+        # superseded_by joins to one of its rows (builder_names). build_web already leaves
+        # all three out of stock.json, and writes the projects and captures beside the rows
+        # because the rows that named the builder are no longer there to find them by.
+        # What the rows themselves show covers a snapshot built before these rules, and a
+        # database read directly.
+        projects = withdrawn_projects(rows) | published
+        captures = withdrawn_captures(rows, projects) | published_captures
+        return [r for r in rows if not is_withdrawn_row(r, projects, captures)], str(path)
     raise FileNotFoundError(
         "no stock snapshot found (looked at: %s). Deploy stock.json alongside the "
         "function, or set SPB_SNAPSHOT_JSON / SPB_SNAPSHOT_DB." % ", ".join(tried))
 
 
 def _read_json(path):
+    return _read_json_payload(path)[0]
+
+
+def _read_json_payload(path):
+    """(rows, the withdrawn projects and the withdrawn captures' content hashes build_web
+    published beside them; each empty for a snapshot written before it published them)."""
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
+    published = set()
+    for pair in data.get("withdrawn_projects") or ():
+        if isinstance(pair, (list, tuple)) and len(pair) == 2:
+            # Through project_key, so a published key is spelled as a row's key is.
+            key = project_key({"source_channel": pair[0], "source_project_id": pair[1]})
+            if key is not None:
+                published.add(key)
+    # Stripped as builder_names strips a row's hash, and a blank one dropped: it joins nothing.
+    captures = frozenset(str(h).strip() for h in data.get("withdrawn_captures") or ()
+                         if isinstance(h, str) and h.strip())
     # build_web.py writes a columnar payload; index.html also accepts a row-of-objects
     # shape from the live API, so accept both here too.
     if isinstance(data.get("rows"), list) and isinstance(data.get("keys"), list):
         keys = data["keys"]
-        return [dict(zip(keys, row)) for row in data["rows"]]
-    return list(data.get("buildings") or [])
+        return [dict(zip(keys, row)) for row in data["rows"]], frozenset(published), captures
+    return list(data.get("buildings") or []), frozenset(published), captures
 
 
 def _read_sqlite(path):
@@ -973,7 +1034,7 @@ def _fresh(row, today=None):
     seen = _parse_day(raw)
     if seen is None:
         return False, None, raw
-    age = ((today or _now_aest()) - seen).days
+    age = _days_old(seen, today or _now_aest())
     return (0 <= age <= FRESH_DAYS), seen, raw
 
 
@@ -2094,11 +2155,11 @@ def _confirm_age_days(row, today):
     ages = []
     seen = _parse_day(row.get("date_checked"))
     if seen is not None:
-        ages.append((today - seen).days)
+        ages.append(_days_old(seen, today))
     if _is_email(row):
         first = _parse_day(row.get("email_first_seen"))
         if first is not None:
-            ages.append((today - first).days)
+            ages.append(_days_old(first, today))
     return max(ages) if ages else None
 
 
@@ -2882,7 +2943,7 @@ def _age_days(row, today=None):
     _verified, seen, _raw = _fresh(row, today)
     if seen is None:
         return None
-    return (today - seen).days
+    return _days_old(seen, today)
 
 
 # A state written out in full, spaces optional ("SouthAustralia", "New South Wales"), then a
@@ -3382,7 +3443,7 @@ def _gate(ctx, row, prepared, today, gate_cache=None):
 
     verified, seen_at, seen_on = _fresh(row, today)
     # _age_days, without parsing the date a second time for every package.
-    age_days = (today - seen_at).days if seen_at is not None else None
+    age_days = _days_old(seen_at, today) if seen_at is not None else None
     # WHAT A CONSULTANT WOULD HAVE TO CONFIRM, and whether the catalogue already says the
     # answer is no. The main path is unchanged by any of this except the last branch: a
     # stale row is still sent unverified and becomes Pending, and confirm/confirm_guard
@@ -3559,7 +3620,8 @@ def _gate(ctx, row, prepared, today, gate_cache=None):
         # read <email_first_seen>, <list_age_days> days ago. Blank / None on every row
         # that did not arrive by email.
         "email_first_seen": email_first_seen,
-        "list_age_days": (today - first_seen_on).days if first_seen_on is not None else None,
+        "list_age_days": (_days_old(first_seen_on, today) if first_seen_on is not None
+                          else None),
     }
     if confirm:
         # What a consultant must confirm before this can be sent: 'stale' (not read within

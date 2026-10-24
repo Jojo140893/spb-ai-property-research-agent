@@ -160,16 +160,25 @@ def test_a_link_with_no_filename_still_says_something_useful():
     assert got and "1abcDEF" not in got
 
 
-def test_the_guard_reads_every_published_file():
+def test_the_guard_reads_every_published_file(tmp_path):
     """It was written for stock.json and only ever read stock.json. A guard that checks
-    one of five files reads, from its passing, as though it checked all five."""
+    one of five files reads, from its passing, as though it checked all five. Since 24 Oct
+    2026 it reads every static file in the build, so a new one cannot be left off a list
+    (suburbs.json had been). The function bundle under api/ is not served and is skipped."""
     import inspect
     src = inspect.getsource(build_web)
-    call = src[src.index("for _published in ("):]
-    call = call[:call.index("_assert_no_folder_capability_urls(where / _published)") + 60]
-    for name in ("stock.json", "channels.json", "builders.json", "vendor-assets.json",
-                 "benchmarks.json"):
-        assert name in call, f"{name} is published but not checked for capability URLs"
+    call = src[src.index("for _published in _static_files(where):"):]
+    assert "_assert_no_folder_capability_urls(_published)" in call[:200]
+    names = ("stock.json", "channels.json", "builders.json", "vendor-assets.json",
+             "benchmarks.json", "parity_report.json", "suburbs.json", "index.html", "r.html")
+    for name in names:
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+    (tmp_path / "api" / "_data").mkdir(parents=True)
+    (tmp_path / "api" / "_data" / "price_list_links.json").write_text("{}", encoding="utf-8")
+    seen = {p.name for p in build_web._static_files(tmp_path)}
+    for name in names:
+        assert name in seen, f"{name} is published but not checked for capability URLs"
+    assert "price_list_links.json" not in seen, "the function bundle is not static content"
 
 
 def test_no_module_in_the_request_path_carries_a_mangled_escape():

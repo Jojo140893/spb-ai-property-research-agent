@@ -96,7 +96,7 @@ import time
 import traceback
 import urllib.parse
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 # Harness code from the app, imported before the child narrows sys.path to the bundle.
@@ -172,6 +172,9 @@ READ_STORED_MIN = 0.98
 # Where Proxima's accordion stops rendering (memory: proxima-render-cap): a project that
 # ends at exactly one of these was cut, not read to its end.
 PROXIMA_RENDER_CAPS = (80, 83, 160)
+# Whole reads, tonight's included, on consecutive recorded nights before an old Proxima
+# counter is re-based on the project's own reads (see _rebased_on_own_reads).
+PROXIMA_REBASE_READS = 2
 NAME_FIRST = 20
 # Cards asked for per page when the server pages. The dashboard's pages are 100 cards and
 # every page is a whole search again (VIC ~3-6 s), so the check asks for as many as the
@@ -369,11 +372,18 @@ def obvious_lots(catalogue, today, build_cells, overseas, left_out=None, blank_s
     'EOI' lines, a status column the parser missed -- and a 100% read against a set that
     leaves them out says nothing about them, so the report names how many and where.
 
-    withdrawn(builder_name) -> True drops a builder the client has withdrawn: the search
-    leaves it out on purpose, and Proxima listing its lots tonight does not make them lots
-    the app should show."""
-    nights = {today - timedelta(days=i) for i in range(RECENT_NIGHTS)}
-    live = [r for r in catalogue.db.values() if not r.get("superseded_by")]
+    withdrawn(rec) -> True drops a row of a builder the client has withdrawn (SR.withdrawn_rule:
+    the builder named, or no builder named in one of its projects or on a capture of one of
+    its lots): the search leaves it out on purpose, and Proxima listing its lots tonight does
+    not make them lots the app should show.
+
+    "The last RECENT_NIGHTS nights" are counted by search_regressions._age, the replay's
+    own clock, which reads a date exactly one day ahead of today as today: the runner
+    stamps Melbourne's date and `today` is a fixed UTC+10, so from October to April a lot
+    read in the hour after Melbourne's midnight is dated tomorrow until 14:00 UTC. On 23
+    Oct 2026 this ran at 13:46 UTC and left out all 288 Proxima lots read after midnight
+    (NSW fell by 250) while every bar passed."""
+    live =[r for r in catalogue.db.values() if not r.get("superseded_by")]
     docs = {}
     # A LIST THAT SAYS "AVAILABLE" BESIDE ITS OTHER LOTS: a blank there is a gap, not a
     # statement, and the search rightly refuses it. Any other list's blank is obvious.
@@ -385,7 +395,8 @@ def obvious_lots(catalogue, today, build_cells, overseas, left_out=None, blank_s
             states_available.add(docs[h])
     out = []
     for rec in live:
-        if SR._day(rec.get("date_checked")) not in nights:
+        age = SR._age(rec.get("date_checked"), today)
+        if age is None or not 0 <= age < RECENT_NIGHTS:
             continue
         status = str(rec.get("availability_status") or "").strip().lower()
         if status and status not in SR.IS_AVAILABLE:
@@ -397,7 +408,7 @@ def obvious_lots(catalogue, today, build_cells, overseas, left_out=None, blank_s
             continue
         if left_out is not None and left_out(rec, doc):
             continue
-        if withdrawn is not None and withdrawn(rec.get("builder_name")):
+        if withdrawn is not None and withdrawn(rec):
             continue
         if not SR.priced_as_a_home(rec, build_cells(dict(rec))):
             continue
@@ -846,11 +857,14 @@ def measure(args):
         return read_left_it_out(rec, doc, latest_read, reads, cut_short, full)
 
     blank_stating = {}
-    # The bundle's own rule, so parity drops exactly what the shipped search drops. An
-    # older bundle without it still shows the builder, and parity then counts it.
+    # The bundle's own rule, so parity drops exactly what the shipped search drops: by
+    # name, and a blank-builder lot in a withdrawn builder's project or joined by
+    # superseded_by to one of its rows, with the projects and captures found in the
+    # database. An older bundle without it still shows the builder, and parity then
+    # counts it.
     lots = obvious_lots(catalogue, today, C.snapshot_build_cells, overseas, left_out,
                         blank_stating=blank_stating,
-                        withdrawn=getattr(C, "is_withdrawn_builder", None))
+                        withdrawn=SR.withdrawn_rule(C, catalogue))
     by_group = defaultdict(list)
     for lot in lots:
         by_group[lot["group"]].append(lot)
@@ -1940,6 +1954,41 @@ def _is_proxima(entry):
     return "proxima" in text.lower()
 
 
+def _rebased_on_own_reads(key, count, earlier):
+    """([(night, lots)] oldest first, tonight last, "") when a Proxima project's own whole
+    reads re-base its old counter, else (None, why not).
+
+    24 Oct 2026. The CARLING's counter is 79 from 27 Sep, the last night the project was on
+    Proxima's index. Its whole reads since: 72 on 8-12 Oct, then, after the 12-22 Oct
+    outage, 69 and 70 on 23 Oct and 70 on 24 Oct, each "N lot(s) of N". It sold two lots
+    and the bar failed it every night, because only the gap to the frozen 79 was measured.
+    A counter that old says less than the project's own reads do.
+
+    What tells selling down from a narrowed list is the STEP, not the total: no recorded
+    read in the history (HISTORY_KEEP nights) may fall below the one before it by more than
+    old_counter_gap_ok allows, tonight's included -- so a drop from 70 to 30 fails, and
+    keeps failing while 70 is in the history. And PROXIMA_REBASE_READS consecutive
+    recorded nights, tonight's included, must have read it whole, so one read is never
+    its own evidence. A night recorded before 24 Oct holds only the lots stored, which
+    stands in for that night's read; a night recorded since holds its whole reads only."""
+    reads = []
+    for n in earlier:                                  # most recent first
+        whole = n.get("proxima_whole")
+        lots = SR._num((whole if isinstance(whole, dict) else n.get("manifest") or {})
+                       .get(key))
+        reads.append((n.get("night"), int(lots or 0)))
+    recent = reads[:PROXIMA_REBASE_READS - 1]
+    if len(recent) < PROXIMA_REBASE_READS - 1 or any(lots <= 0 for _n, lots in recent):
+        return None, "no whole read on the night before"
+    chain = [(night, lots) for night, lots in reversed(reads) if lots > 0]
+    chain.append(("tonight", int(count)))
+    for (_was_on, was), (night, now) in zip(chain, chain[1:]):
+        if now < was and not HM.old_counter_gap_ok(now, was):
+            return None, "it fell from %s to %s %s" % (
+                _n(was), _n(now), night if night == "tonight" else "on " + str(night)[:5])
+    return chain, ""
+
+
 def read_bar(manifest, history, night, required=False, facts=None):
     """[failure], {summary}, [note] from data/harvest_manifest.json (None: none written).
 
@@ -2016,7 +2065,8 @@ def read_bar(manifest, history, night, required=False, facts=None):
         notes.append("read: %d Proxima project(s) printed lots stored once under another "
                      "project, or twice in their own list -- counted as stored: %s"
                      % (len(elsewhere_notes), "; ".join(elsewhere_notes[:NAME_FIRST])))
-    capped, stale, overseas = [], [], []
+    capped, stale, overseas, rebased, whole_reads = [], [], [], [], {}
+    every_earlier = _earlier_nights(history, night)
     for e in entries:
         if not _is_proxima(e):
             continue
@@ -2050,17 +2100,30 @@ def read_bar(manifest, history, night, required=False, facts=None):
         # for a read under the render cap says only that the list ended there, and a
         # narrowed list ends there too -- 2 against an old 79 is short, as it always was.
         excused = bool(old_counter and whole and HM.old_counter_gap_ok(count, counter))
+        if whole and count > 0:
+            whole_reads[_manifest_key(e)] = int(count)
+        chain, not_rebased = None, ""
+        if below and not excused and not cut and old_counter and whole and count > 0:
+            chain, not_rebased = _rebased_on_own_reads(_manifest_key(e), count, every_earlier)
         if cut:
             capped.append("%s ends at exactly %d%s" % (
                 _manifest_label(e), int(count),
                 " of its %s available" % _n(counter) if counter else ""))
+        elif chain:
+            rebased.append("%s read %s, whole (%s), against the %s stated%s; its own reads: %s"
+                           % (_manifest_label(e), _n(count), whole, _n(counter),
+                              " on %s" % e["stated_on"] if e.get("stated_on") else "",
+                              ", ".join("%s (%s)" % (_n(lots), on if on == "tonight"
+                                                               else str(on)[:5])
+                                        for on, lots in chain[-6:])))
         elif below and not excused:
             why = ""
             if old_counter and whole:
                 why = (" (nothing read, which an old counter never excuses)" if count <= 0
                        else " (read whole, but more under its old counter than lots leave a "
-                            "list: at most %d or %d%% may)"
-                       % (HM.OLD_COUNTER_GAP_LOTS, round(HM.OLD_COUNTER_GAP_SHARE * 100)))
+                            "list: at most %d or %d%% may; not re-based: %s)"
+                       % (HM.OLD_COUNTER_GAP_LOTS, round(HM.OLD_COUNTER_GAP_SHARE * 100),
+                          not_rebased))
             capped.append("%s read %s of its %s available%s" % (
                 _manifest_label(e), _n(count), _n(counter), why))
         elif below:
@@ -2078,6 +2141,11 @@ def read_bar(manifest, history, night, required=False, facts=None):
     if stale:
         notes.append("read: %d Proxima project(s) hold fewer lots than an old counter, each "
                      "read whole tonight: %s" % (len(stale), "; ".join(stale[:NAME_FIRST])))
+    if rebased:
+        notes.append("read: %d Proxima project(s) are further under an old counter than lots "
+                     "leave a list in a night, but their own whole reads fell no faster than "
+                     "that, so the counter is re-based on them: %s"
+                     % (len(rebased), "; ".join(rebased[:NAME_FIRST])))
     if overseas:
         notes.append("read: %d overseas Proxima project(s) read short -- not Australian stock, "
                      "not judged: %s" % (len(overseas), "; ".join(overseas[:NAME_FIRST])))
@@ -2134,7 +2202,10 @@ def read_bar(manifest, history, night, required=False, facts=None):
                "vanished": len(vanished), "manifest": tonight, "labels": labels,
                # 8 Oct 2026: what the two Proxima rules above now say instead of failing.
                "proxima_old_counter": len(stale), "proxima_overseas_short": len(overseas),
-               "stored_elsewhere": len(elsewhere_notes)}
+               "stored_elsewhere": len(elsewhere_notes),
+               # 24 Oct 2026: old counters re-based on the project's own reads, and tonight's
+               # whole reads, which the history keeps for the next nights to re-base on.
+               "proxima_rebased": len(rebased), "proxima_whole": whole_reads}
     return failures, summary, notes
 
 
@@ -2164,6 +2235,7 @@ def history_entry(measured, read_summary):
     if read_summary and not read_summary.get("skipped"):
         entry["manifest"] = read_summary.get("manifest") or {}
         entry["manifest_labels"] = read_summary.get("labels") or {}
+        entry["proxima_whole"] = read_summary.get("proxima_whole") or {}
     return entry
 
 
@@ -2249,7 +2321,8 @@ def evaluate(measured, history, manifest, nightly=False, acknowledged=None):
     return {"verdict": verdict, "failures": failures, "notes": notes,
             "shown_rows": shown_rows, "over_cells": over_cells, "drift_cells": drift_cells,
             "dup_cells": dup_cells,
-            "read": {k: v for k, v in read_summary.items() if k not in ("manifest", "labels")},
+            "read": {k: v for k, v in read_summary.items()
+                     if k not in ("manifest", "labels", "proxima_whole")},
             "read_summary": read_summary}
 
 

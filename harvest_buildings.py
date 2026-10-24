@@ -9,8 +9,10 @@ budget/suburb), this pulls the full current stock list from:
   - the direct builder portals (Paramount, FRD, Torsion, Hermitage, Bathla, Proxima)
 
   - the digital@ inbox, where the nine builders with no portal send their stock
+  - RealNet's "RealNet Stocklist" Google Drive folder, WA and Tasmanian packages, one PDF
+    each (sources/realnet_drive.py; shared by link, so no login)
 
-Google-Drive weekly PDFs are still out of scope here (no website stock list to scrape).
+Other Google-Drive PDFs (Shape Homes' weekly list) are still out of scope here.
 
 Credentials are read from the vendor CSV in drive_input/ (gitignored) via the
 builder registry. Nothing is fabricated: a source that returns nothing records
@@ -53,6 +55,8 @@ from sources.builder_portals import BuilderPortalSource
 from sources.email_inbox import EmailStocklistSource
 from sources.proxima import ProximaSource
 from sources.realestate import RealestateSource
+from sources.realnet_drive import RealNetDriveSource, CHANNEL as REALNET_CHANNEL
+from sources.base import one_read_date
 from database import ResearchDatabase
 
 # Permissive filters => return the full stock list, not a client-filtered subset.
@@ -96,7 +100,28 @@ def _require_readers():
 
 
 def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
-            email_days=90, eagent_stocklist=None):
+            email_days=90, eagent_stocklist=None, realnet=False):
+    # realnet defaults OFF here and ON from the command line (__main__, which the nightly
+    # runs): several tests call harvest() directly and switch off only the channels that
+    # existed when they were written, and a default-on folder read would put Google
+    # Drive's answer into every one of them.
+    #
+    # ONE DATE FOR THE WHOLE RUN, fixed before the first channel reads. Every channel
+    # below stamped date_checked per row from the clock, so on 23 Oct 2026 a run
+    # dispatched at 23:04 stored Proxima's last six projects (288 lots) under 24/10 and
+    # its other 8,075 under 23/10, and swept the inbox entirely on 24/10 while E-Agent
+    # sat on 23/10. The Settings tab, the search and parity then each read one run as
+    # two days -- see sources.base. Every row read inside this block carries the day the
+    # run started; checked_at keeps each row's moment. RealNet's folder read is inside
+    # it too (sources.realnet_drive stamps sources.base.read_date()).
+    with one_read_date():
+        return _harvest(eagent=eagent, portals=portals, email=email, proxima=proxima,
+                        rea=rea, email_days=email_days, eagent_stocklist=eagent_stocklist,
+                        realnet=realnet)
+
+
+def _harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
+             email_days=90, eagent_stocklist=None, realnet=False):
     logging.basicConfig(level=logging.INFO, format='    %(levelname)s %(message)s')
     # The Stocklist is E-Agent's own stock, so it runs whenever E-Agent does unless asked
     # for separately (--eagent-stocklist-only).
@@ -193,6 +218,39 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
             if getattr(sl, "truncated", False):
                 print("    E-Agent Stocklist: the read STOPPED AT ITS CAP -- the list is "
                       "longer than what was stored tonight.")
+
+    if realnet:
+        # RealNet's WA packages (Coleen, 24 Oct 2026: "can we add these WA properties from
+        # E-Agent. They are all in the drive here"). E-Agent publishes no WA page, so the
+        # folder is the only copy. Shared by link: no login, nothing to skip for lack of
+        # one. Counted in `read` every night, so a folder whose sharing is tightened is a
+        # dead channel like any other (_dead_channels).
+        rn = RealNetDriveSource()
+        if rn.off:
+            skipped[REALNET_CHANNEL] = rn.why or "switched off (SPB_REALNET_FOLDER=off)"
+        else:
+            print("[+] RealNet Stocklist: reading the Google Drive folder...")
+            listings = rn.search(ALL_STOCK_FILTERS)
+            read[REALNET_CHANNEL] = len(listings)
+            rn_entry = harvest_manifest.entry(
+                REALNET_CHANNEL, "stock link", "folder", name="RealNet Stocklist (Google Drive)",
+                state=rn.state, stocklist_key=harvest_manifest.stocklist_key(rn.folder_url))
+            for name, outcome, printed, why in rn.files:
+                harvest_manifest.add_piece(rn_entry, name, outcome, printed, why)
+            if not rn.files:
+                rn_entry["outcome"] = ("fetch failed" if rn.state in ("unreachable", "not_shared",
+                                                                     "error") else "zero-yield")
+            harvest_manifest.tag(listings, rn_entry)
+            outcomes = [db.record_building(L) for L in listings]
+            harvest_manifest.count_outcomes(listings, outcomes)
+            rejected[REALNET_CHANNEL] = outcomes.count("rejected")
+            new, updated = outcomes.count("new"), outcomes.count("updated")
+            total_new += new
+            print(f"    RealNet Stocklist: {len(listings)} package(s), {new} new, {updated} "
+                  f"updated -- {rn.state}: {rn.why}")
+            for name, outcome, _printed, why in rn.files:
+                if outcome != "read" or why:
+                    print(f"      {outcome}: {name} -- {why}")
 
     if portals:
         bp = BuilderPortalSource(registry)
@@ -596,11 +654,14 @@ if __name__ == "__main__":
     ap.add_argument("--proxima-only", action="store_true")
     ap.add_argument("--rea-only", action="store_true",
                     help="only the realestate.com.au comparables (Benchmarks)")
+    ap.add_argument("--realnet-only", action="store_true",
+                    help="only RealNet's Google Drive folder (WA packages)")
     ap.add_argument("--email-days", type=int, default=90,
                     help="how far back to sweep the inbox (default 90)")
     args = ap.parse_args()
     only = (args.eagent_only or args.portals_only or args.email_only
-            or args.proxima_only or args.rea_only or args.eagent_stocklist_only)
+            or args.proxima_only or args.rea_only or args.eagent_stocklist_only
+            or args.realnet_only)
     # Non-zero when a channel that holds stock read nothing, OR read so much less than
     # usual that the run is a partial, so run_daily stops and the operator is told,
     # instead of publishing a stale snapshot as if it were fresh.
@@ -616,4 +677,5 @@ if __name__ == "__main__":
                      rea=args.rea_only or not only,
                      email_days=args.email_days,
                      eagent_stocklist=(args.eagent_stocklist_only or args.eagent_only
-                                       or not only)))
+                                       or not only),
+                     realnet=args.realnet_only or not only))
