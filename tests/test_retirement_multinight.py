@@ -798,3 +798,186 @@ def test_a_report_only_run_writes_nothing_ledger_included(tmp_path, monkeypatch)
     with contextlib.redirect_stdout(io.StringIO()):
         assert RR.main(False) == 0
     assert dump() == before
+
+
+# ------------------------------------------------------------------ 7. rule B: the source stopped offering it
+
+def _page(k, label="Price List"):
+    """Link k on one E-Agent category page: its own builder, two lots of its own."""
+    return (f"https://files.example/link-{k}", f"Builder {k}", [100 * k + 1, 100 * k + 2],
+            label)
+
+
+def _eagent_night(n, night, links, extra_lots=(), extra_entries=(), **kw):
+    """One night of an E-Agent page: every link's lots read, every link in the manifest.
+    `links` is [(doc, builder, lot numbers, label)] -- a link with no lot numbers is still
+    on the page (a dead link) and reads nothing."""
+    lots, entries = list(extra_lots), list(extra_entries)
+    for doc, builder, nums, label in links:
+        lots += [_lot(i, night, doc=doc, builder=builder) for i in nums]
+        entries.append(_link(doc, len(nums), heading=builder, label=label,
+                             outcome="read" if nums else "fetch failed"))
+    n.run(night, lots, entries=entries, **kw)
+
+
+def _lots_of(link):
+    return {str(i) for i in link[2]}
+
+
+def test_a_link_taken_down_retires_after_fourteen_healthy_nights(tmp_path, monkeypatch):
+    """E-Agent takes a link down (201 + 35 documents never read again, about 4,900 held
+    rows). Its list is never re-read, so the absence rule cannot see it: on 24 Oct's rule
+    its lots stay live for good. The link gone from a healthy page is the source's own
+    statement; 14 such nights retire what it carried."""
+    n = Nights(tmp_path, monkeypatch)
+    links = [_page(k) for k in range(12)]
+    for night in range(1, 20):
+        _eagent_night(n, night, links if night <= 5 else links[1:])
+        if night == 18:
+            assert not _lots_of(links[0]) & n.retired(), "retired before 14 counted nights"
+    assert _lots_of(links[0]) <= n.retired()
+    assert not (set().union(*map(_lots_of, links[1:])) & n.retired())
+
+
+def test_a_dead_link_still_on_the_page_never_retires(tmp_path, monkeypatch):
+    """A pure safety test (its twin is the one above). A link whose fetch fails is still on
+    E-Agent's page: the source still offers it, we simply cannot read it."""
+    n = Nights(tmp_path, monkeypatch)
+    links = [_page(k) for k in range(12)]
+    dead = (links[0][0], links[0][1], [], links[0][3])
+    for night in range(1, 26):
+        _eagent_night(n, night, links if night <= 5 else [dead] + links[1:])
+    assert not _lots_of(links[0]) & n.retired()
+
+
+def test_outage_nights_do_not_count(tmp_path, monkeypatch):
+    """Five nights the page offers two links of twelve -- an outage, not twelve links
+    taken down -- count for nothing, so the retirement comes five nights later."""
+    n = Nights(tmp_path, monkeypatch)
+    links = [_page(k) for k in range(12)]
+    for night in range(1, 25):
+        tonight = links if night <= 5 else links[1:3] if 8 <= night <= 12 else links[1:]
+        _eagent_night(n, night, tonight)
+        if night == 23:
+            assert not _lots_of(links[0]) & n.retired(), "an outage night was counted"
+    assert _lots_of(links[0]) <= n.retired()
+
+
+@pytest.mark.parametrize("half_read", [True, False])
+def test_a_builder_with_a_half_read_list_blocks_it(tmp_path, monkeypatch, half_read):
+    """A safety test with its twin. Builder 0's link leaves the page, but its other list
+    comes back with 1 row of 30 tonight: whatever is happening to that builder's stock, it
+    is not a night to count its absences on. Twin: its other list reads whole."""
+    n = Nights(tmp_path, monkeypatch)
+    links = [_page(k) for k in range(12)]
+    other = ("https://files.example/builder-0-second", "Builder 0",
+             list(range(5001, 5031)), "Second List")
+    for night in range(1, 21):
+        second = other if (night <= 5 or not half_read) else \
+            (other[0], other[1], other[2][:1], other[3])
+        _eagent_night(n, night, [second] + (links if night <= 5 else links[1:]))
+    assert (_lots_of(links[0]) & n.retired()) == (set() if half_read else _lots_of(links[0]))
+
+
+def test_a_mass_vanish_night_does_not_count(tmp_path, monkeypatch):
+    """Seven of twelve links replaced overnight by seven links nobody has seen, under other
+    headings: the count is the same but the page is not the page it was. That night counts
+    for nothing, so link 0's lots retire a night later than they would."""
+    n = Nights(tmp_path, monkeypatch)
+    links = [_page(k) for k in range(12)]
+    newcomers = [_page(k, label="New Release") for k in range(20, 27)]
+    for night in range(1, 21):
+        tonight = links if night <= 5 else (links[7:] + newcomers)
+        _eagent_night(n, night, tonight)
+        if night == 19:
+            assert not _lots_of(links[0]) & n.retired(), "the mass-vanish night counted"
+    assert _lots_of(links[0]) <= n.retired()
+
+
+def test_a_reuploaded_list_neither_resurrects_nor_strands_its_rows(tmp_path, monkeypatch):
+    """E-Agent re-uploads link 0's file under a new link in the same place (same page,
+    heading and label). Two of its three lots are on the new upload and keep being read
+    there -- they are never retired; the third is not, and retires 14 counted nights after
+    the old link left the page. Nothing retired comes back unless its source lists it."""
+    n = Nights(tmp_path, monkeypatch)
+    links = [_page(k) for k in range(12)]
+    old = (links[0][0], links[0][1], [1, 2, 3], links[0][3])
+    new = ("https://files.example/link-0-reuploaded", links[0][1], [1, 2], links[0][3])
+    for night in range(1, 21):
+        _eagent_night(n, night, ([old] + links[1:]) if night <= 5 else ([new] + links[1:]))
+        assert not {"1", "2"} & n.retired(), f"night {night}: a lot on the new upload retired"
+    assert "3" in n.retired(), "the lot the re-upload dropped is stranded under the old link"
+    for night in range(21, 24):
+        _eagent_night(n, night, [new] + links[1:])
+    assert "3" in n.retired() and not {"1", "2"} & n.retired()
+
+
+def test_a_proxima_project_gone_from_the_dropdown_retires(tmp_path, monkeypatch):
+    """Projects 821, 192, 637, 172, 119 and 120 left the account's dropdown after 12 Oct
+    and were never read again, so their ~100 lots never retired. Project 300 here was
+    already gone when the ledger began (never offered since): it counts on healthy nights
+    once its developer has another project read whole. Project 301, with no developer
+    named, is listed for a person instead -- nothing can prove it."""
+    n = Nights(tmp_path, monkeypatch)
+    projects = {str(p): f"Developer {p}" for p in range(200, 212)}
+    projects["200"] = "Damac Properties"
+    for night in range(1, 19):
+        lots, entries = [], []
+        for p, dev in projects.items():
+            lots += [_lot(int(p) * 10 + i, night, channel="Proxima", builder=dev,
+                          doc="https://proxima.example/projects", source_project_id=p)
+                     for i in (1, 2)]
+            entries.append(_project_entry(p, 2, stated=2, whole="uncapped"))
+        if night == 1:
+            lots += [_lot(3000 + i, -10, channel="Proxima", builder="Damac Properties",
+                          doc="https://proxima.example/projects", source_project_id="300")
+                     for i in (1, 2)]
+            lots += [_lot(3010 + i, -10, channel="Proxima", builder="",
+                          doc="https://proxima.example/projects", source_project_id="301")
+                     for i in (1, 2)]
+        n.run(night, lots, entries=entries)
+        if night == 16:
+            assert not {"3001", "3002"} & n.retired(), "retired before 14 counted nights"
+    assert {"3001", "3002"} <= n.retired()
+    assert not {"3011", "3012"} & n.retired(), "a project nothing can prove retired"
+    assert "listed for a person" in n.out
+
+
+@pytest.mark.parametrize("budget_bound", [False, True])
+def test_a_file_a_clean_folder_no_longer_serves_retires(tmp_path, monkeypatch, budget_bound):
+    """A Dropbox folder link read cleanly every night, whose second file is no longer in
+    it: its lots retire after 14 such nights. Twin, a safety test: the same folder whose
+    file budget bound every night never counts -- the file may simply not have been
+    downloaded."""
+    n = Nights(tmp_path, monkeypatch)
+    links = [_page(k) for k in range(1, 12)]
+    folder = "https://files.example/folder"
+    for night in range(1, 21):
+        files = [("https://files.example/folder/f1", [1, 2]),
+                 ("https://files.example/folder/f2", [3, 4])][:2 if night <= 5 else 1]
+        lots = [_lot(i, night, doc=url, stocklist_file=folder, builder="Builder F")
+                for url, nums in files for i in nums]
+        entry = _link(folder, len(lots), heading="Builder F", pieces=[
+            {"name": url.rsplit("/", 1)[-1], "outcome": "read", "printed": len(nums),
+             "why": ""} for url, nums in files])
+        notes = {harvest_manifest.stocklist_key(folder): {"truncated": True,
+                                                          "why": "file budget"}} \
+            if budget_bound else None
+        _eagent_night(n, night, links, extra_lots=lots, extra_entries=[entry],
+                      link_notes=notes)
+        assert not {"1", "2"} & n.retired()
+    assert ({"3", "4"} & n.retired()) == (set() if budget_bound else {"3", "4"})
+
+
+def test_rule_b_is_off_for_e_agent_without_the_file_key(tmp_path, monkeypatch):
+    """A pure safety test. Without sources.e_agent.stocklist_file_key two spellings of one
+    link cannot be told apart, so a link might look gone when it is merely spelt anew:
+    E-Agent's rule B is off that night, and the taken-down link of the test above stays."""
+    import list_ledger
+    monkeypatch.setattr(list_ledger, "file_key_fn", lambda: None)
+    n = Nights(tmp_path, monkeypatch)
+    links = [_page(k) for k in range(12)]
+    for night in range(1, 21):
+        _eagent_night(n, night, links if night <= 5 else links[1:])
+    assert not _lots_of(links[0]) & n.retired()
+    assert "stocklist_file_key cannot be imported" in n.out

@@ -216,12 +216,35 @@ def _fetch_google(url: str, label: str, sess: Any) -> List[Fetched]:
             who = (piece if not label.lower().startswith("http")
                    else f"sheet {sheet_id[:6]}... (tab {tab_name or gid or 'first'})")
             logger.info("google %s: served by %s, %d CSV row(s)", who, endpoint, rows)
+            _note_document(target, csv_rows=rows, endpoint=endpoint)
             return [Fetched(label=piece, kind=KIND_FILE, data=r.content, url=target,
                             meta={"tab": tab_name, "gid": gid, "endpoint": endpoint,
                                   "csv_rows": rows})]
     return [Fetched(label=piece, url=url, problem=(
         "every CSV endpoint refused (export and gviz) — the sheet's sharing was probably "
         "tightened. Ask the builder to keep it link-viewable."))]
+
+
+def _note_document(url: str, **fields: Any) -> None:
+    """Tell tonight's harvest manifest a document's own size (harvest_manifest.DOCUMENTS),
+    for the retirement ledger's whole-read proof. The webhook bundle ships this module
+    without harvest_manifest, and the sheet check runs in its own process: both skip it."""
+    try:
+        import harvest_manifest
+        harvest_manifest.note_document(url, **fields)
+    except Exception:                                                  # noqa: BLE001
+        pass
+
+
+def _note_truncated(url: str, why: str) -> None:
+    """Tell tonight's harvest manifest that this stock link's read was cut short by the
+    reader itself (harvest_manifest.LINK_NOTES): its lists are not whole tonight, whatever
+    they yield. Guarded like _note_document."""
+    try:
+        import harvest_manifest
+        harvest_manifest.note_link(url, truncated=True, why=why)
+    except Exception:                                                  # noqa: BLE001
+        pass
 
 
 def _csv_rows(body: bytes) -> int:
@@ -442,6 +465,7 @@ def _fetch_dropbox(url: str, label: str, sess: Any) -> List[Fetched]:
             "re-share it as a normal share link."))]
     entries = _dropbox_entries(sess, url)
     if not entries:
+        _note_truncated(url, "folder listing came back empty")
         return [Fetched(label=label, url=url,
                         problem="folder listing came back empty (layout change or dead link)")]
 
@@ -486,6 +510,7 @@ def _fetch_dropbox(url: str, label: str, sess: Any) -> List[Fetched]:
         except Exception as e:                                          # noqa: BLE001
             logger.warning("dropbox %s: subfolder %r could not be listed (%s) — its "
                            "price list is NOT in this harvest", label, name, e)
+            _note_truncated(url, "a subfolder could not be listed")
             continue
         price_named = bool(_DBX_PRICE_NAMED.search(name))
         for n, u in children:
@@ -503,6 +528,7 @@ def _fetch_dropbox(url: str, label: str, sess: Any) -> List[Fetched]:
                        "are NOT in this harvest: %s", label, len(folders),
                        _DBX_MAX_FOLDERS,
                        ", ".join(n for n, _u in folders[_DBX_MAX_FOLDERS:][:6]))
+        _note_truncated(url, "the folder budget bound")
 
     # NO FILE IS NAMED LIKE A PRICE LIST: TRY THE ONES THAT COULD BE ONE (7 Oct 2026).
     # Murcia's folder now holds "report_murcia-residences_2026-8-22_134434 (1)-2.pdf" -- a
@@ -534,6 +560,7 @@ def _fetch_dropbox(url: str, label: str, sess: Any) -> List[Fetched]:
         logger.warning("dropbox %s: %d price list(s) found, only %d downloaded — %s "
                        "are NOT in this harvest", label, len(picks), _DBX_MAX_FILES,
                        ", ".join(n for n, _u in picks[_DBX_MAX_FILES:][:6]))
+        _note_truncated(url, "the file budget bound")
     out: List[Fetched] = []
     for name, entry_url in picks[:_DBX_MAX_FILES]:
         target = re.sub(r"([?&])dl=0", r"\1dl=1", entry_url)

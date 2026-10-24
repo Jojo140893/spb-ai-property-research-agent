@@ -242,6 +242,13 @@ def label(key, members):
                                   ("project %s" % key[1]) if key[1] else "") if x)
 
 
+def main_builder(rows):
+    """The builder most of these rows name (normalised), or '' when none does."""
+    c = collections.Counter(_norm(_col(r, "builder_name")) for r in rows)
+    c.pop("", None)
+    return c.most_common(1)[0][0] if c else ""
+
+
 def _is_hash_mark(mark):
     return str(mark or "").startswith(HASH_RECIPE_VERSION + ":")
 
@@ -409,6 +416,10 @@ class Tonight:
         notes = self.m.get("link_notes")
         self.link_notes = notes if isinstance(notes, dict) else {}
         self.caps = render_caps()
+        if ledger is not None and self.night not in ledger.exclude_nights:
+            ledger.exclude_nights.add(self.night)
+            ledger._channels = None
+            ledger.__dict__.pop("_offers", None)
         # Rows stored from each document tonight, whatever supersede made of them since (a
         # duplicate superseded tonight was still on the read); repair's own marks aside.
         self.stored = collections.Counter()
@@ -572,9 +583,9 @@ def proxima_index_health(tonight, ledger):
     nothing, so the old rule's retirements are never delayed by a young ledger."""
     projects = list(tonight.projects.values())
     hist = ledger.channel_history("Proxima") if ledger is not None else []
-    hist = [h for h in hist if h["units"] > 0][-HEALTH_WINDOW_NIGHTS:]
-    if len(hist) < HEALTH_MIN_NIGHTS:
+    if len([h for h in hist if h["units"] > 0]) < HEALTH_MIN_NIGHTS:
         return None
+    hist = _baseline_nights(hist)
     on_now = sum(1 for e in projects if e.get("on_index"))
     on_med = statistics.median(int(h["pages"].get("on_index", 0)) for h in hist)
     all_med = statistics.median(h["units"] for h in hist)
@@ -592,7 +603,7 @@ class Verdict:
 
     __slots__ = ("key", "list_key", "newest", "verdict", "basis", "baseline", "seen",
                  "members", "accountable", "missing", "vetoed", "proof", "channel",
-                 "label", "recorded")
+                 "label", "recorded", "builder")
 
     def __init__(self, **kw):
         for k in self.__slots__:
@@ -624,6 +635,9 @@ class Ledger:
         self.nights = set()                            # recorded nights before tonight (iso)
         self.first_night = None
         self._channels = None
+        # Nights whose channel and offer records are tonight's own, never history: the
+        # repair's date and, once known, the manifest's (a run can cross midnight).
+        self.exclude_nights = {self.night}
         self.tonight = {}
         if self.present:
             self._load()
@@ -697,7 +711,7 @@ class Ledger:
                 for night, ch, units, pages, healthy in self.conn.execute(
                         "SELECT night, channel, units, pages_json, healthy FROM "
                         "channel_nights ORDER BY night"):
-                    if night == self.night:
+                    if night in self.exclude_nights:
                         continue
                     try:
                         pages = json.loads(pages or "{}")
@@ -707,6 +721,21 @@ class Ledger:
                                                "pages": pages, "healthy": bool(healthy)})
         return self._channels.get(channel, [])
 
+    def offers(self, channel):
+        """{unit: [(night, page, heading, label, builder, outcome)]} recorded before
+        tonight, oldest first (rule B)."""
+        if not hasattr(self, "_offers"):
+            self._offers = collections.defaultdict(lambda: collections.defaultdict(list))
+            if self.present:
+                for night, ch, unit, page, heading, lab, builder, outcome in self.conn.execute(
+                        "SELECT night, channel, unit, page, heading, label, builder, outcome "
+                        "FROM source_offers ORDER BY night"):
+                    if night not in self.exclude_nights:
+                        self._offers[ch][unit].append((night, page or "", heading or "",
+                                                       lab or "", builder or "",
+                                                       outcome or ""))
+        return self._offers[channel]
+
     # --- judging ------------------------------------------------------------------
     def judge(self, key, members, newest, tonight=None, is_gone=lambda r: False,
               partial_share=40, min_rows=10):
@@ -715,7 +744,7 @@ class Ledger:
         ch = str(_col(members[0], "source_channel") or "")
         seen = sum(1 for r in members if _as_date(_col(r, "date_checked")) == newest)
         base = dict(key=key, list_key=lk, newest=newest, seen=seen, members=len(members),
-                    channel=ch, label=label(key, members))
+                    channel=ch, label=label(key, members), builder=main_builder(members))
         recorded = self.recorded(lk, newest)
         judged_tonight = tonight is not None and _ddmmyyyy(newest) in tonight.read_dates
         accepted = bool(recorded) and str(recorded[1]).startswith(ACCEPTED)
@@ -779,12 +808,14 @@ class Ledger:
         if self.first_night is None:
             self.first_night = _day(self.today)
 
-    def commit(self, tonight=None):
-        """Write tonight's verdicts and channel nights (and prune). Nothing in a
+    def commit(self, tonight=None, rule_b=None):
+        """Write tonight's verdicts, channel nights and offers (and prune). Nothing in a
         report-only run."""
         if not self.write:
             return 0
         record_channels(self, tonight)
+        if rule_b is not None:
+            record_rule_b(self, tonight, rule_b)
         stamp = self.today.isoformat(timespec="seconds")
         for v in self.tonight.values():
             if v.recorded:
@@ -811,6 +842,18 @@ class Ledger:
              status_before))
 
 
+def _baseline_nights(hist):
+    """The recorded nights a channel's tonight is measured against: the last
+    HEALTH_WINDOW_NIGHTS HEALTHY ones, so a long partial outage never becomes the median
+    (5 nights of 2 links out of 12 would otherwise be "normal" by the fifth); while fewer
+    than HEALTH_MIN_NIGHTS are healthy -- the ledger's first nights -- every night that
+    offered anything. A real, lasting drop therefore stops rule B for that channel until a
+    person looks: it says so in the log every night, and it fails closed."""
+    hist = [h for h in hist if h["units"] > 0]
+    healthy = [h for h in hist if h.get("healthy")]
+    return (healthy if len(healthy) >= HEALTH_MIN_NIGHTS else hist)[-HEALTH_WINDOW_NIGHTS:]
+
+
 def channel_health(units, pages, hist):
     """(healthy, why) for one channel's night against its recorded nights.
 
@@ -819,10 +862,11 @@ def channel_health(units, pages, hist):
     nights is present tonight with at least PAGE_LINK_SHARE of its median link count. Fewer
     than HEALTH_MIN_NIGHTS recorded nights is NOT healthy: the rules that need a healthy
     night (rule B) fail closed until the ledger has seen enough of them."""
-    hist = [h for h in hist if h["units"] > 0][-HEALTH_WINDOW_NIGHTS:]
-    if len(hist) < HEALTH_MIN_NIGHTS:
-        return False, "%d recorded night(s), %d needed to judge" % (len(hist),
+    seen = [h for h in hist if h["units"] > 0]
+    if len(seen) < HEALTH_MIN_NIGHTS:
+        return False, "%d recorded night(s), %d needed to judge" % (len(seen),
                                                                    HEALTH_MIN_NIGHTS)
+    hist = _baseline_nights(hist)
     med = statistics.median(h["units"] for h in hist)
     if units < HEALTHY_SHARE * med:
         return False, "%d unit(s) against a median of %g" % (units, med)
@@ -872,6 +916,248 @@ def record_channels(ledger, tonight):
              1 if healthy else 0, why))
         out[ch] = (healthy, why)
     return out
+
+
+# ------------------------------------------------------------------ rule B
+
+# RULE B: THE SOURCE STOPPED OFFERING THE LIST (24 Oct 2026). A list nobody reads any more
+# retires nothing by absence -- its own newest read is old, so the 3-day window skips it --
+# and three things leave lists unread for good: E-Agent re-uploading a file under a new
+# link or taking a link down (201 + 35 documents, about 4,900 held rows, never read again),
+# Proxima projects leaving the account's dropdown (821, 192, 637, 172, 119, 120: about
+# 100 lots after 12 Oct), and a file no longer served inside a folder that is read cleanly.
+# Rule B counts the nights the SOURCE ITSELF stopped offering the unit -- a link gone from
+# its E-Agent page, a project gone from the dropdown -- and only on nights that can say so:
+# the channel healthy, no mass vanishing, the unit's page crawled, nothing of its builder
+# failed or half-read tonight. A dead or private link still on the page is still offered,
+# so it never counts. After UNOFFERED_NIGHTS counted nights the unit's live rows retire,
+# unless they were read within WITHDRAWN_AFTER_DAYS: a lot carried onto a new upload is
+# read nightly (record_building moves its source_url, never its stocklist_file), so
+# presence always wins. Direct portals are recorded but never retired this way: a portal
+# drops out of the manifest when OUR registry drops it, which says nothing about its stock.
+UNOFFERED_NIGHTS = 14
+NOT_SERVED_NIGHTS = 14
+MASS_VANISH_MIN = 5
+MASS_VANISH_SHARE = 0.05
+RULE_B_CHANNELS = ("E-Agent", "Proxima")
+FILE_CHANNEL = "E-Agent file"
+UNOFFERED, SERVED, NOT_SERVED = "unoffered", "served", "not served"
+_ABSENT_DAYS = 14                                  # repair_rows.WITHDRAWN_AFTER_DAYS
+
+
+def row_unit(row, fk=None):
+    """The unit rule B counts a row under: an E-Agent stock link (by its spelling-
+    normalised file key) or a Proxima project, or None."""
+    ch = str(_col(row, "source_channel") or "")
+    if ch == "E-Agent":
+        sf = str(_col(row, "stocklist_file") or _col(row, "source_url") or "").strip()
+        return sha16(fk(sf)) if (fk is not None and sf) else None
+    if ch == "Proxima":
+        pid = str(_col(row, "source_project_id") or "").strip()
+        return pid or None
+    return None
+
+
+def _clean_link(tonight, e):
+    """A stock link read cleanly tonight: every piece read, nothing truncated or refused."""
+    pieces = e.get("pieces") or []
+    note = tonight.link_notes.get(str(e.get("stocklist_key") or "")) or {}
+    return (e.get("outcome") == "read" and pieces
+            and all(p.get("outcome") == "read" for p in pieces)
+            and not e.get("truncated") and not note.get("truncated")
+            and int((e.get("stored") or {}).get("rejected") or 0) == 0)
+
+
+class RuleB:
+    """Tonight's rule B, decided but not written: the offers to record, the units counted,
+    the files counted, what retires, and why anything is held."""
+
+    def __init__(self):
+        self.offers = []          # (channel, unit, page, heading, label, builder, outcome)
+        self.counted = {}         # (channel, unit) -> (nights, page, builder, rows)
+        self.blocked = collections.Counter()
+        self.person = []          # (channel, unit, rows): a blank builder, nothing proves it
+        self.files = {}           # file unit -> (outcome, nights, rows)
+        self.retire = []          # (row, silent, rule, basis)
+        self.off = {}             # channel -> why rule B did not count tonight
+
+
+def plan_rule_b(ledger, tonight, rows, verdicts, today):
+    """RULE B for tonight (see the comment above). Pure: record_rule_b writes it."""
+    out = RuleB()
+    if tonight is None:
+        out.off = {ch: "no manifest tonight" for ch in RULE_B_CHANNELS}
+        return out
+    fk = file_key_fn()
+    day = _day(today)
+    links = [e for e in tonight.entries if e.get("kind") == "stock link"]
+    if fk is None:
+        out.off["E-Agent"] = "sources.e_agent.stocklist_file_key cannot be imported"
+    elif links and not all(e.get("unit") for e in links):
+        out.off["E-Agent"] = "tonight's manifest names no unit for its links"
+    proj_builders = collections.defaultdict(collections.Counter)
+    for r in rows:
+        if str(_col(r, "source_channel") or "") == "Proxima":
+            proj_builders[str(_col(r, "source_project_id") or "")][
+                _norm(_col(r, "builder_name"))] += 1
+    offered = {"E-Agent": {}, "Proxima": {}}
+    for e in links:
+        if e.get("unit"):
+            offered["E-Agent"][str(e["unit"])] = (
+                str(e.get("page") or ""), str(e.get("heading") or ""),
+                str(e.get("label") or ""), _norm(tonight.link_builder(e)),
+                str(e.get("outcome") or ""))
+    for pid, e in tonight.projects.items():
+        c = proj_builders.get(pid) or collections.Counter()
+        c.pop("", None)
+        offered["Proxima"][pid] = ("on_index" if e.get("on_index") else "off_index",
+                                   str(e.get("name") or ""), "",
+                                   c.most_common(1)[0][0] if c else "",
+                                   str(e.get("outcome") or ""))
+    for ch, units in offered.items():
+        out.offers.extend((ch, u) + v for u, v in units.items())
+    for (ch, name), e in tonight.portals.items():
+        out.offers.append((ch, name, str(e.get("host") or ""), str(e.get("name") or ""), "",
+                           name, str(e.get("outcome") or "")))
+
+    live = {ch: collections.defaultdict(list) for ch in RULE_B_CHANNELS}
+    for r in rows:
+        ch = str(_col(r, "source_channel") or "")
+        if ch in live and not _col(r, "superseded_by"):
+            u = row_unit(r, fk)
+            if u:
+                live[ch][u].append(r)
+    partial_b, whole_b = collections.defaultdict(set), collections.defaultdict(set)
+    for v in verdicts.values():
+        if _ddmmyyyy(v.newest) in tonight.read_dates and v.builder:
+            (whole_b if v.whole else partial_b)[v.channel].add(v.builder)
+    units_now = night_units(tonight)
+
+    for ch in RULE_B_CHANNELS:
+        if ch in out.off:
+            continue
+        n_units, pages, failed = units_now.get(ch, (0, {}, []))
+        healthy, why = channel_health(n_units, pages, ledger.channel_history(ch))
+        if not healthy:
+            out.off[ch] = "night not counted: " + why
+            continue
+        history = ledger.offers(ch)
+        offered_before = {u: [x for x in recs if x[5] != UNOFFERED]
+                          for u, recs in history.items()}
+        nights = sorted({x[0] for recs in offered_before.values() for x in recs})
+        prev = {u for u, recs in offered_before.items() if nights and recs
+                and recs[-1][0] == nights[-1]}
+        now = offered[ch]
+        new_slots = {now[u][:3] for u in set(now) - prev}
+        vanished = [u for u in prev - set(now)
+                    if offered_before[u][-1][1:4] not in new_slots]
+        limit = max(MASS_VANISH_MIN, int(MASS_VANISH_SHARE * n_units))
+        if len(vanished) > limit:
+            out.off[ch] = "mass vanish: %d unit(s) gone unexplained (limit %d)" % (
+                len(vanished), limit)
+            continue
+        tonight_pages = {v[0] for v in now.values()}
+        failed_b = {_norm(b) for b in failed}
+        for u, members in live[ch].items():
+            if u in now:
+                continue
+            builder = main_builder(members)
+            if not builder:
+                out.person.append((ch, u, len(members)))
+                continue
+            last = offered_before.get(u, [])
+            last = last[-1] if last else None
+            if last is not None and last[1] not in tonight_pages:
+                out.blocked["its page was not crawled tonight"] += 1
+                continue
+            if last is None and builder not in whole_b[ch]:
+                out.blocked["never offered since the ledger began, and no list of its "
+                            "builder read whole tonight"] += 1
+                continue
+            if builder in failed_b:
+                out.blocked["its builder had a failed read tonight"] += 1
+                continue
+            if builder in partial_b[ch]:
+                out.blocked["its builder has a half-read list tonight"] += 1
+                continue
+            since = last[0] if last else ""
+            counted = 1 + sum(1 for x in history.get(u, ())
+                              if x[5] == UNOFFERED and x[0] > since)
+            out.counted[(ch, u)] = (counted, last[1] if last else "", builder, len(members))
+            if counted < UNOFFERED_NIGHTS:
+                continue
+            for r in members:
+                seen = _as_date(_col(r, "date_checked"))
+                if seen and (day - seen).days >= _ABSENT_DAYS:
+                    out.retire.append((r, (day - seen).days, RULE_UNOFFERED,
+                                       "%s offered no more for %d counted night(s)" % (
+                                           "link" if ch == "E-Agent" else "project",
+                                           counted)))
+
+    if "E-Agent" not in out.off:
+        _plan_files(out, ledger, tonight, rows, links, day)
+    return out
+
+
+def _plan_files(out, ledger, tonight, rows, links, day):
+    """File level: a file a cleanly read folder no longer serves. Counted only under a
+    link read clean tonight (every piece read, no budget bound, nothing refused) that
+    still yielded rows from its other files."""
+    by_link = collections.defaultdict(list)
+    for r in rows:
+        if str(_col(r, "source_channel") or "") == "E-Agent" and _col(r, "stocklist_file"):
+            by_link[sha16(_col(r, "stocklist_file"))].append(r)
+    history = ledger.offers(FILE_CHANNEL)
+    for e in links:
+        if not _clean_link(tonight, e):
+            continue
+        under = by_link.get(str(e.get("stocklist_key") or ""), [])
+        files = collections.defaultdict(list)
+        for r in under:
+            mark = str(_col(r, "superseded_by") or "")
+            if mark and not _is_hash_mark(mark) and mark != WITHDRAWN_FROM_SOURCE:
+                continue
+            files[str(_col(r, "source_url") or "")].append(r)
+        files.pop("", None)
+        served = {s for s, rs in files.items()
+                  if any(str(_col(r, "date_checked") or "") in tonight.read_dates for r in rs)}
+        if not served:
+            continue
+        for s, rs in files.items():
+            fu = sha16(s)
+            if s in served:
+                out.files[fu] = (SERVED, 0, 0)
+                continue
+            liv = [r for r in rs if not _col(r, "superseded_by")]
+            if not liv:
+                continue
+            recs = history.get(fu, [])
+            since = max((x[0] for x in recs if x[5] == SERVED), default="")
+            counted = 1 + sum(1 for x in recs if x[5] == NOT_SERVED and x[0] > since)
+            out.files[fu] = (NOT_SERVED, counted, len(liv))
+            if counted < NOT_SERVED_NIGHTS:
+                continue
+            for r in liv:
+                seen = _as_date(_col(r, "date_checked"))
+                if seen and (day - seen).days >= _ABSENT_DAYS:
+                    out.retire.append((r, (day - seen).days, RULE_NOT_SERVED,
+                                       "file not served by its cleanly read folder for %d "
+                                       "night(s)" % counted))
+
+
+def record_rule_b(ledger, tonight, plan):
+    """source_offers for tonight: every unit offered, every counted absence, every file
+    served or not. Written only under --apply."""
+    if not ledger.write or tonight is None:
+        return
+    rows = [(tonight.night,) + tuple(o) for o in plan.offers]
+    rows += [(tonight.night, ch, u, page, "", "", builder, UNOFFERED)
+             for (ch, u), (_n, page, builder, _r) in plan.counted.items()]
+    rows += [(tonight.night, FILE_CHANNEL, fu, "", "", "", "", outcome)
+             for fu, (outcome, _n, _r) in plan.files.items()]
+    ledger.conn.executemany(
+        "INSERT OR REPLACE INTO source_offers (night, channel, unit, page, heading, label, "
+        "builder, outcome) VALUES (?,?,?,?,?,?,?,?)", rows)
 
 
 def prune(conn, today):

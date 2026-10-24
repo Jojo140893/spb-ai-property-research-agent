@@ -1675,13 +1675,14 @@ def _older_identity_of(rows, today):
     return find
 
 
-def plan_retirements(rows, today, ledger, verdicts):
+def plan_retirements(rows, today, ledger, verdicts, tonight=None):
     """Tonight's retirements under the ledger, decided but not written.
 
-    {"apply": [item], "would": [item], "deferred": [item], "vetoed": n, "undone": n}, an
-    item being {row, silent, rule, main, key, older}. MAIN PARITY applies from night 1
-    with no 2-read rule and no cap; RULE A (and, from commit 3, rule B) is printed as
-    "would retire" while the ledger is calibrating, and capped after."""
+    {"apply": [item], "would": [item], "deferred": [item], "vetoed": n, "undone": n,
+    "rule_b": list_ledger.RuleB}, an item being {row, silent, rule, main, key, older,
+    basis}. MAIN PARITY applies from night 1 with no 2-read rule and no cap; RULE A and
+    RULE B (the source stopped offering the list) are printed as "would retire" while the
+    ledger is calibrating, and capped after."""
     import list_ledger
     plan = {"apply": [], "would": [], "deferred": [], "vetoed": 0, "undone": 0}
     items, taken = [], set()
@@ -1706,6 +1707,13 @@ def plan_retirements(rows, today, ledger, verdicts):
             new.append({"row": r, "silent": silent, "rule": list_ledger.RULE_ABSENT,
                         "main": False, "key": _doc_key(r, True), "older": None})
             taken.add(r["id"])
+    plan["rule_b"] = list_ledger.plan_rule_b(ledger, tonight, rows, verdicts, today)
+    for r, silent, rule, basis in plan["rule_b"].retire:
+        if r["id"] in taken or ledger.undone_since(r["id"], _as_date(r["date_checked"])):
+            continue
+        new.append({"row": r, "silent": silent, "rule": rule, "main": False,
+                    "key": _doc_key(r, True), "older": None, "basis": basis})
+        taken.add(r["id"])
     if ledger.calibrating:
         plan["would"] = new
         new = []
@@ -1766,6 +1774,42 @@ def _report_plan(plan, ledger, tonight, verdicts):
     if plan["vetoed"] or plan["undone"]:
         print(f"       the old rule's retirements held back: {plan['vetoed']} on a read "
               f"tonight's manifest vetoes, {plan['undone']} a person put back")
+    _report_rule_b(plan.get("rule_b"))
+
+
+def _report_rule_b(rb):
+    """Section 9b: rule B -- why a channel was not counted tonight, every unit no longer
+    offered with its counted nights, what blocked the rest, what only a person can
+    settle, and the files a cleanly read folder stopped serving. Units are a Proxima
+    project id or a sha16, never a link."""
+    import list_ledger
+    if rb is None:
+        return
+    for ch in list_ledger.RULE_B_CHANNELS:
+        if ch in rb.off:
+            print(f"   9b. rule B, {ch}: not counted tonight -- {rb.off[ch]}")
+    counted = sorted(rb.counted.items(), key=lambda kv: (-kv[1][0], kv[0]))
+    if counted:
+        print(f"   9b. rule B: {len(counted)} unit(s) their source no longer offers, nights "
+              f"counted (they retire at {list_ledger.UNOFFERED_NIGHTS}):")
+        for (ch, unit), (nights, page, builder, held) in counted[:10]:
+            print(f"         {nights:>3} night(s)  {ch} | {builder[:28] or '?'} | page "
+                  f"{page or '(never offered since the ledger began)'} | {held} live "
+                  f"row(s) [{unit}]")
+    if rb.blocked:
+        print("       not counted tonight: " + "; ".join(
+            f"{n} unit(s): {why}" for why, n in rb.blocked.most_common()))
+    if rb.person:
+        print(f"       {len(rb.person)} unit(s) naming no builder, "
+              f"{sum(x[2] for x in rb.person)} live row(s), listed for a person -- nothing "
+              f"can prove them gone: " + ", ".join(f"{ch} [{u}]" for ch, u, _n in
+                                                 rb.person[:6]))
+    files = sorted(((x[1], x[2], fu) for fu, x in rb.files.items()
+                    if x[0] == list_ledger.NOT_SERVED), reverse=True)
+    if files:
+        print(f"       {len(files)} file(s) a cleanly read folder no longer serves, nights "
+              f"counted (they retire at {list_ledger.NOT_SERVED_NIGHTS}): " + ", ".join(
+                  f"{n} [{fu}] {held} row(s)" for n, held, fu in files[:6]))
 
 
 def main(apply_changes):
@@ -1862,7 +1906,7 @@ def main(apply_changes):
         manifest = list_ledger.read_manifest(now=today)
         tonight = list_ledger.Tonight(manifest, rows, ledger) if manifest else None
         verdicts = list_verdicts(rows, today, ledger, tonight)
-        plan = plan_retirements(rows, today, ledger, verdicts)
+        plan = plan_retirements(rows, today, ledger, verdicts, tonight)
         withdrawn = [(it["row"], it["silent"]) for it in plan["apply"] if not it["older"]]
         older_moves = [it for it in plan["apply"] if it["older"]]
         half_read = partial_reads(rows, today, verdicts=verdicts)
@@ -2045,9 +2089,10 @@ def main(apply_changes):
             # that is a "Sold" an earlier repair wrote -- the one before, or nothing.
             before = prev if str(prev or "").strip().lower() != "sold" else None
             ledger.log_retirement(r, now, it.get("rule") or list_ledger.RULE_ABSENT,
-                                  verdicts.get(it.get("key")), _silent, status_before=before)
+                                  verdicts.get(it.get("key")), _silent,
+                                  basis=it.get("basis"), status_before=before)
     if ledger is not None:
-        ledger.commit(tonight)
+        ledger.commit(tonight, plan.get("rule_b"))
     for r, suburb in reread:
         # The stored content_hash goes stale here, exactly as it does for every other
         # correction above. That is the documented trade: the identity is recomputed at

@@ -76,6 +76,16 @@ SCHEMA (version 1)
                gate_refused | error
       short    true when the read stopped at its page or record cap
 
+  Every entry also carries (24 Oct 2026, additive; the schema stays 1):
+      unit     stocklist_key of the entry's own key (for a stock link the spelling-
+               normalised file key), the retirement ledger's name for it
+
+  And the file (24 Oct 2026, additive) -- both dicts keyed by stocklist_key, never a link:
+      "documents"   {key of a document url: {"csv_rows", "endpoint"}}: a Google tab's
+                    whole-export CSV row count and the endpoint that served it
+      "link_notes"  {key of a stock link: {"truncated", "why"}}: a folder whose file or
+                    folder budget bound, or whose listing came back empty
+
 OUTCOMES
       read                     at least one lot came out of it
       zero-yield               fetched and parsed, and no lot came out
@@ -139,12 +149,45 @@ def old_counter_gap_ok(read: Any, stated: Any) -> bool:
 ENTRIES: List[Dict[str, Any]] = []
 _BY_KEY: Dict[tuple, Dict[str, Any]] = {}
 _BY_ID: Dict[int, Dict[str, Any]] = {}
+# WHAT A READER LEARNED ABOUT ONE DOCUMENT'S OWN SIZE (24 Oct 2026), for repair_rows'
+# retirement ledger (list_ledger), which accepts a read as whole only on evidence like this.
+#   DOCUMENTS   {stocklist_key(document url): {"csv_rows", "endpoint"}} -- a Google tab's
+#               whole-export row count and which endpoint served it, said by
+#               remote_stocklist the moment it fetched the tab. Keyed by the hash of the url
+#               the rows store as source_url, never the url.
+#   LINK_NOTES  {stocklist_key(stock link): {"truncated", "why"}} -- a Dropbox folder whose
+#               file or folder budget bound, or whose listing came back empty: whatever its
+#               lists yield tonight, they were not read whole.
+DOCUMENTS: Dict[str, Dict[str, Any]] = {}
+LINK_NOTES: Dict[str, Dict[str, Any]] = {}
 
 
 def reset() -> None:
     ENTRIES.clear()
     _BY_KEY.clear()
     _BY_ID.clear()
+    DOCUMENTS.clear()
+    LINK_NOTES.clear()
+
+
+def note_document(url: str, csv_rows: Any = None, endpoint: Any = None) -> None:
+    """A document's own size, as its reader saw it. Never fatal, never a link."""
+    if not url:
+        return
+    fields = {"csv_rows": csv_rows, "endpoint": endpoint}
+    DOCUMENTS.setdefault(stocklist_key(url), {}).update(
+        {k: v for k, v in fields.items() if v is not None})
+
+
+def note_link(href: str, truncated: bool = True, why: str = "") -> None:
+    """A stock link whose read was cut short by the reader itself. Never fatal, never a
+    link: `why` loses any url it holds."""
+    if not href:
+        return
+    n = LINK_NOTES.setdefault(stocklist_key(href), {"truncated": False, "why": ""})
+    n["truncated"] = bool(n["truncated"] or truncated)
+    if why:
+        n["why"] = _no_links(why)[:200]
 
 
 def stocklist_key(stocklist_file: str) -> str:
@@ -162,7 +205,11 @@ def entry(channel: str, kind: str, key: str, **fields: Any) -> Dict[str, Any]:
     e = _BY_KEY.get(k)
     if e is None:
         e = {"id": len(ENTRIES) + 1, "channel": channel, "kind": kind, "name": "",
-             "outcome": "", "printed": 0, "stored": {s: 0 for s in _STORED}}
+             "outcome": "", "printed": 0, "stored": {s: 0 for s in _STORED},
+             # The entry's own key, hashed (24 Oct 2026): for a stock link that is the
+             # spelling-normalised file key, so two spellings of one link are one unit to
+             # the retirement ledger's rule B as they are one entry here.
+             "unit": stocklist_key(str(key))}
         if kind == "stock link":
             e["pieces"] = []
         ENTRIES.append(e)
@@ -247,6 +294,8 @@ def snapshot() -> Dict[str, Any]:
     return {"schema": SCHEMA,
             "generated": datetime.now().strftime("%d/%m/%Y %H:%M"),
             "entries": ENTRIES,
+            "documents": DOCUMENTS,
+            "link_notes": LINK_NOTES,
             "totals": {"by_channel": by_channel, "by_outcome": by_outcome}}
 
 
