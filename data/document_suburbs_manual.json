@@ -286,6 +286,26 @@
    "url": "https://www.dropbox.com/scl/fo/3aknetazpoxl0ri7nv8i8/AKlDGtoVlS0NZ8YZ_RKSA1E/Atlas%20Price%20New.pdf?rlkey=qglardqsjmcus36xtgwsk30il&dl=1",
    "folder": "3aknetazpoxl0ri7nv8i8",
    "evidence": "Atlas Melbourne by S P Setia, 383 La Trobe Street, Melbourne VIC 3000 (apartments.com.au/new-apartments/atlas-melbourne-383-la-trobe-street-vic-3000: 71 floors, 797 residences; urban.com.au: Garden levels 1-7, Horizon 9-49, Sky Crown 50-70; studios 29.2-40.2 sqm). The price list's studios are 29.7-31.3 sqm. Until 21 Oct 2026 the nightly front-page read named Melbourne itself ('282 rows -> Melbourne (VIC) Atlas Price New.pdf'). The copy re-issued on 21 Oct (Word export, 7 pages) is image-only and, read by OCR, names no place on any page -- it opens on its column header -- so 206 apartments lost their suburb. No `project` key on purpose: Aldrich Homes and Goldstate Homes lists carry a house-and-land estate also called 'Atlas'. The folder held only this list on 26 Sep and 12 Oct 2026."
+  },
+  {
+   "suburb": "Ringwood",
+   "state": "VIC",
+   "url": "https://www.dropbox.com/scl/fo/9y6mzs8ntl7qe98daypqt/AKI0ynHRIvDIzFXiQVw-5Y4/Pitt%20Street%20Price.pdf?rlkey=eqib19b9dvub57zchlas2arae&dl=1",
+   "folder": "9y6mzs8ntl7qe98daypqt",
+   "evidence": "Pitt Street, Ringwood VIC 3134. E-Agent's 'Pitt Street' price list (one image-only page, Word export of 26 Aug 2026: Lots 1-7, 3 bed + study townhouses of 154.9 sqm, completion Q3 2026) prints no suburb, estate or postcode, but its header names the lots' zoned schools: Primary 'Great Ryrie Primary School', Secondary 'Ringwood Secondary College'. Great Ryrie PS is at 51A Great Ryrie Street, Heathmont VIC 3135 (vic.gov.au school 5478), and Pitt Street, Ringwood 3134 is zoned for exactly that pair (fletchers.net.au/15383/1-13-pitt-street-ringwood: 'zoned for Great Ryrie Primary School' and Ringwood Secondary College). Maroondah City Council's permit M/2021/954 covers a site at 1-7 Pitt Street, Ringwood (planningalerts.org.au/applications/3226209; its text does not give a dwelling count, so it is support, not proof). The rows' builder is 'Pitt Street'. No `project` key on purpose: Pitt Street is a street in many suburbs and states, and the key would put any other development on one in Ringwood."
+  },
+  {
+   "suburb": "Pascoe Vale",
+   "state": "VIC",
+   "url": "https://www.dropbox.com/scl/fo/8hvkzyt3a6an8efvs9os6/AAgTjqWhCuJf0v7hKc52vAE/PV%20Price%20List.pdf?rlkey=em8589uoih5nsxtwtk4cro7ur&dl=1",
+   "folder": "8hvkzyt3a6an8efvs9os6",
+   "evidence": "1 Northumberland Road, Pascoe Vale VIC 3044. E-Agent's 'PV Price List' (one image-only page, Word export of 22 Jul 2026) prints only 'Address: 1 Northumberland Rd' over units 1-5 (2 and 3+1 bedrooms, 135-170 sqm, all 'Complete'). townly.au/project/townhouses/1-northumberland-road-pascoe-vale-victoria-3044: a townhouse project at 1 Northumberland Road, Pascoe Vale VIC 3044, City of Merri-bek, 6 residences of 2-4 bedrooms by Wardle Design, completion late 2025. Northumberland Road, Pascoe Vale 3044 is the street every listing site files it under (allhomes.com.au/research/northumberland-road-pascoe-vale-vic-3044). 'PV' is Pascoe Vale: the same author's lists in this E-Agent group are named for their suburb (Reservoir, Bayswater, Burwood, Altona Haven, Bellfield). These are ids 17465-17469, which the 7 Oct acknowledgement filed under 'Pitt Street'; they are a separate list. Their rows carry no builder or estate, so there is no `project` key."
+  },
+  {
+   "suburb": "Kyabram",
+   "state": "VIC",
+   "project": "kayabram",
+   "evidence": "E-Agent's '1 Part & Under Construction' list (e-agent.com.au/_files/ugd/069fe0_df942b47fc7d463d8ff940284c381cd0.pdf, 23 Oct 2026, page 3, Dual Key) heads one lot 'Kayabram Vic, Victoria, 3620': 9 Sunset Court, $733,445, 737 sqm. 'Kayabram' is no place -- the list's own typo, printed, not an OCR misread. 3620 is Kyabram's postcode (auspost.com.au/postcode/kyabram), the page's next two sections read 'Kyabram, Victoria, 3620' and 'Kyabram, Vic, Victoria, 3620', and Sunset Court is a Kyabram street (ratemyagent.com.au/property/14-sunset-court-kyabram-vic-3620-4wvh2: a 740 sqm block). The extractor files the header as estate 'KayabramVic,Victoria，3620', which this key matches. A project key only: the list covers about twenty towns, so a url or folder key would put all of them in Kyabram."
   }
  ]
 }
