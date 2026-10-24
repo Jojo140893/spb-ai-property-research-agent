@@ -2364,6 +2364,11 @@ python state_sync.py push</pre>
             return;
         }
         STOCK = asBuildings(data);
+        STOCK.forEach(b => {
+            if (!b.lot_page_gone) return;
+            b.availability_listed = b.availability_status;
+            b.availability_status = soldByLotPage(b);
+        });
         // The headline figures describe CURRENT stock, so they count the same rows the
         // table shows by default — superseded captures excluded. Counting all 6,480 while
         // the table listed 5,703 made the summary and the grid disagree on screen.
@@ -5049,8 +5054,17 @@ python state_sync.py push</pre>
         'on hold', 'withdrawn', 'not available', 'unavailable', 'not avail',
         'no longer available', 'off market', 'settled', 'deposit taken',
         'contract pending']);
-    const unpurchasable = b => NOT_PURCHASABLE.has(
+    const unpurchasable = b => Boolean(b.lot_page_gone) || NOT_PURCHASABLE.has(
         String(b.availability_status || '').trim().toLowerCase());
+    /* A LOT WHOSE OWN PAGE IS GONE IS SOLD (Ahsan, 24 Oct 2026: "if they are gone mark them
+       sold"). link_check.py marks a page gone only on the site's own 404/410 or the page's
+       own Sold / Under offer -- never for a site that answered 404 all at once, which it
+       holds back -- and the search already leaves these lots out. So the table says so
+       wherever it reads a status: the pill, the Availability filter and breakdown, the
+       sold/unavailable switch and the export. What the price list printed is kept in
+       availability_listed. */
+    const soldByLotPage = b => (b.lot_page_status && b.lot_page_status !== 'gone'
+        ? `${b.lot_page_status} (lot page)` : 'Sold (lot page gone)');
 
     let COMPARISONS = {};
 

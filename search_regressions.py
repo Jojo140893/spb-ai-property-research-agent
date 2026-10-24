@@ -1456,6 +1456,22 @@ def withdrawn_rule(C, catalogue):
     return None
 
 
+def lot_page_says_sold(snapshot_row):
+    """True when the snapshot marks the lot's own page gone: a lot that is no longer for
+    sale, read the same as a price list stating Sold.
+
+    Ahsan, 24 Oct 2026: "if they are gone mark them sold". link_check.py calls a page gone
+    only on the site's own 404 or 410, or on the page's own Sold / Under offer, and never
+    for a site that answered 404 at once for most of the pages that were fine the night
+    before (a moved site or an outage: it holds those back as unknown). build_web.py writes
+    what it found into the snapshot as lot_page_gone, the date it was first found. The
+    database carries no such column, so this reads the SNAPSHOT row (Catalogue.row).
+
+    Until then such a lot stayed "obvious" and was counted as hidden for an allowed reason,
+    and nine SA lots sold through Kenekt over four nights put SA over the 3% ceiling."""
+    return bool(str((snapshot_row or {}).get("lot_page_gone") or "").strip())
+
+
 def obvious_candidates(catalogue, state, low, high, today, build_cells, withdrawn=None):
     """The obvious rows for a state and price range, picked from the DATABASE: live, in
     the state, priced in range, stated available, at most OBVIOUS_MAX_DAYS old, and not a
@@ -1488,6 +1504,8 @@ def obvious_candidates(catalogue, state, low, high, today, build_cells, withdraw
         if not price or price <= 0 or price < low or (high and price > high):
             continue
         if str(rec.get("availability_status") or "").strip().lower() not in IS_AVAILABLE:
+            continue
+        if lot_page_says_sold(catalogue.row(_hash(rec))):
             continue
         age = _age(rec.get("date_checked"), today)
         if age is None or age < 0 or age > OBVIOUS_MAX_DAYS:

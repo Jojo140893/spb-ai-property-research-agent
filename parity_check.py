@@ -402,6 +402,9 @@ def obvious_lots(catalogue, today, build_cells, overseas, left_out=None, blank_s
         if status and status not in SR.IS_AVAILABLE:
             continue
         h = SR._hash(rec)
+        # Its own lot page is gone: sold, as a stated Sold is (SR.lot_page_says_sold).
+        if SR.lot_page_says_sold(catalogue.row(h)):
+            continue
         doc = docs[h]
         blank_beside_stated = not status and doc in states_available
         if blank_beside_stated and blank_stating is None:

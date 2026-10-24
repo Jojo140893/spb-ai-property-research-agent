@@ -257,8 +257,11 @@ def test_a_sold_stock_guard_a_dead_page_and_a_shown_twin_are_allowed(bundle, tmp
     code, out, body = _check(bundle, tmp_path, F.clean_catalogue() + _allowed())
     assert code == 0, out
     allowed = " ".join(n for n in body["notes"] if "allowed reason" in n)
-    for reason in ("newer_capture_disagrees", "lot_page_gone", "collapsed_into_shown_twin"):
+    for reason in ("newer_capture_disagrees", "collapsed_into_shown_twin"):
         assert reason in allowed, (reason, body["notes"])
+    # A DEAD LOT PAGE IS SOLD (24 Oct 2026): not an obvious lot hidden for a reason, but
+    # no obvious lot at all -- see tests/test_lot_page_gone_sold.py.
+    assert "lot_page_gone" not in allowed, body["notes"]
 
 
 # ------------------------------------------------------------------ NOT OVER-SERVED
@@ -320,14 +323,24 @@ def test_a_lot_its_list_dropped_since_is_not_obvious():
 def test_an_excuse_has_a_ceiling(bundle, tmp_path):
     """Repair round 1 (parity verifier, probe S4): a lot-page 404 storm hid 74 of SA's 113
     lots and SA read '39/39 100.0%' -- excused lots leave the denominator. More than 3% of
-    a state's obvious lots (and more than 10) hidden for an allowed reason fails."""
-    dead = [F.lot(600 + n, estate="Parity Gone %d" % (n // 4), doc="doc-gone-%d" % (n // 4),
-                  lot_page_gone="05/10/2026", lot_page_status="gone") for n in range(20)]
-    code, out, body = _check(bundle, tmp_path, F.clean_catalogue() + dead)
+    a state's obvious lots (and more than 10) hidden for an allowed reason fails.
+
+    24 Oct 2026: a gone lot page is now sold, no obvious lot at all, so a 404 storm is
+    link_check.py's to hold back (tests/test_lot_page_gone_sold.py). The ceiling still
+    guards every excuse the search makes, shown here with sold-stock guards: twenty lots
+    each sold on a later capture elsewhere."""
+    sold = []
+    for n in range(20):
+        estate, number = "Parity Sold %d" % n, str(7700 + n)
+        sold.append(F.lot(600 + n, estate=estate, doc="doc-sold-%d" % n, day="05/10/2026",
+                          lot_number=number))
+        sold.append(F.lot(650 + n, estate=estate, doc="doc-sold-elsewhere-%d" % n,
+                          lot_number=number, status="Sold", line_key="line-%d-sold" % n))
+    code, out, body = _check(bundle, tmp_path, F.clean_catalogue() + sold)
     assert code == 1, out
     texts = [f["text"] for f in body["failures"]]
     assert any("20 of 100 obvious lots are hidden for an allowed reason" in t
-               and "lot_page_gone 20" in t for t in texts), texts
+               and "newer_capture_disagrees 20" in t for t in texts), texts
     row = {r["state"]: r for r in body["rows"]}["VIC"]
     assert row["excused_lots"] == 20 and row["lots"] == [80, 80]
     assert " excused " in out and "20/100" in out, out
