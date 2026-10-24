@@ -2201,14 +2201,24 @@ def _login_for(name, logins):
     # Whether "Fetch stock now" can fix this row, and when it cannot, why. Carried
     # through rather than recomputed in the browser: the answer depends on whether a
     # password is stored in the vendor sheet, which the page must never see.
-    for k in ("self_service", "blocked_by", "note"):
+    #
+    # And who measured it and what the page showed (23 Oct 2026): "basis" is "harvest"
+    # when tonight's own sign-in decided the row and "check" when the saved session was
+    # reopened afterwards; "reason" tells a dead session from a crash. The row's "url"
+    # stays in login_status.json and is not published; a reason or note names a PATH at
+    # most ("password field at /login"), never a host or a query string.
+    for k in ("self_service", "blocked_by", "note", "basis", "reason"):
         if k in hit:
             out[k] = hit[k]
     return out
 
 
 # Worst first: one dead sign-in inside a group is what the group should report.
-_LOGIN_RANK = {"missing": 0, "expired": 1, "unknown": 2, "not_applicable": 3, "ok": 4}
+# "no_login_needed" sits ABOVE ok: a public stocklist can never be the group's problem.
+# Missing from this map it took the default 2, so once Hermitage read ok the "Direct
+# Builder Portal" group would have said "no sign-in needed" over a portal that has one.
+_LOGIN_RANK = {"missing": 0, "expired": 1, "unknown": 2, "not_applicable": 3, "ok": 4,
+               "no_login_needed": 5}
 
 
 def _export_channel_health(out_dir: Path, conn) -> dict:
@@ -2481,9 +2491,11 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
         # which is the cause and names the command that fixes it.
         "needs_login": [p["channel"] for p in portals + channels
                         if p.get("login", {}).get("state") in ("expired", "missing")],
-        # A source the checker cannot speak for: a public stocklist with no sign-in, or a
-        # session store it does not read (Proxima harvests from .browser_profiles). Kept
-        # out of needs_login so nobody is sent to fix something that is not broken.
+        # A source nobody could speak for tonight: a public stocklist with no sign-in, a
+        # check that could not run (its reason says why), or Proxima on a night the harvest
+        # did not try it -- the check never opens Proxima, and its cell otherwise comes from
+        # the harvest's own sign-in. Kept out of needs_login so nobody is sent to fix
+        # something that is not broken.
         "login_not_assessed": [p["channel"] for p in portals + channels
                                if p.get("login", {}).get("state")
                                in ("no_login_needed", "unknown")],

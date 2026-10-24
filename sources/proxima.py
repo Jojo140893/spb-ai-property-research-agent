@@ -43,7 +43,7 @@ import urllib.parse
 from typing import Any, Dict, List, Optional, Tuple
 
 from sources.base import PropertySource, read_date
-from sources.scraper_base import PlaywrightScraper, PLAYWRIGHT_AVAILABLE
+from sources.scraper_base import PlaywrightScraper, PLAYWRIGHT_AVAILABLE, record_harvest_login
 from builder_names import is_not_a_builder_name
 
 logger = logging.getLogger("spb.scraper.proxima")
@@ -1502,10 +1502,19 @@ class ProximaSource(PropertySource):
 
         cfg = config_for_url(PROJECTS_URL)
         user, password, src = get_credentials(self.SESSION)
+        # EVERY ENDING IS WRITTEN DOWN (record_harvest_login), because this is the only
+        # place Proxima's sign-in is ever measured. portal_login --check never opens it, so
+        # from 12 Oct 20:51 to 23 Oct 11:31 the line below -- "signed in but still bounced
+        # ... the password may have changed" -- was logged on 11 of the 12 runs (on 21 Oct
+        # the form's click timed out instead, the "error" ending), and the Settings tab's
+        # Login cell said NOT CHECKED for all eleven days.
         if not (user and password):
             logger.error("Proxima bounced to %s and no stored credentials are available "
                          "to sign back in. Run: python portal_login.py portal_proxima "
                          "--profile", scraper.page.url)
+            record_harvest_login(self.SESSION, "bounced",
+                                 "the saved sign-in has lapsed and no password is stored "
+                                 "to sign back in with", scraper.page.url)
             return False
 
         logger.info("Proxima: the saved sign-in has lapsed — signing back in "
@@ -1519,6 +1528,10 @@ class ProximaSource(PropertySource):
             scraper.page.wait_for_load_state("networkidle", timeout=25000)
         except Exception as e:                                        # noqa: BLE001
             logger.error("Proxima: sign-in attempt failed (%s).", e)
+            # The form broke, not necessarily the password: no verdict either way.
+            record_harvest_login(self.SESSION, "error",
+                                 "the sign-in form failed: %s" % type(e).__name__,
+                                 scraper.page.url)
             return False
 
         if "twofactor" in scraper.page.url:
@@ -1527,14 +1540,24 @@ class ProximaSource(PropertySource):
                 "Proxima asked for a TWO-FACTOR CODE, so this device is no longer "
                 "trusted. No automation can pass that. Someone with the account's inbox "
                 "must sign in once: python portal_login.py portal_proxima --profile")
+            record_harvest_login(self.SESSION, "bounced",
+                                 "Proxima asked for a two-factor code: someone with the "
+                                 "account's inbox must sign in once", scraper.page.url)
             return False
 
         scraper.goto(PROJECTS_URL)
         if "/login" in scraper.page.url or "twofactor" in scraper.page.url:
             logger.error("Proxima: signed in but still bounced to %s — the password may "
                          "have changed.", scraper.page.url)
+            record_harvest_login(self.SESSION, "bounced",
+                                 "the stored password did not sign in (still bounced to "
+                                 "the login page): it may have changed",
+                                 scraper.page.url)
             return False
         logger.info("Proxima: signed back in.")
+        record_harvest_login(self.SESSION, "signed_in",
+                             "the saved sign-in had lapsed; signed back in with the stored "
+                             "password", scraper.page.url)
         return True
 
     def search(self, filters: Dict[str, Any] = None) -> List[Dict[str, Any]]:
@@ -1546,6 +1569,7 @@ class ProximaSource(PropertySource):
         if not (scraper.profile_dir.exists() or scraper.session_file.exists()):
             logger.error("Proxima has no saved sign-in. Run once, in a real browser: "
                          "python portal_login.py portal_proxima --profile")
+            record_harvest_login(self.SESSION, "missing", "no saved sign-in on this machine")
             return []
 
         # ONE DATE FOR THE WHOLE READ, taken before the first project is opened. Inside a
@@ -1565,6 +1589,9 @@ class ProximaSource(PropertySource):
                 if "twofactor" in scraper.page.url or "/login" in scraper.page.url:
                     if not self._reauthenticate(scraper):
                         return []
+                else:
+                    record_harvest_login(self.SESSION, "session",
+                                         "the saved sign-in was accepted", scraper.page.url)
 
                 # BEFORE enumerating anything. A filtered page does not look broken —
                 # it looks like a smaller portfolio — so the count has to be taken from
@@ -1759,6 +1786,9 @@ class ProximaSource(PropertySource):
                     self.projects_seen += len(extra)
         except Exception as e:
             logger.exception("Proxima harvest crashed: %s", e)
+            # No verdict on the login, and never outranks one this run already recorded.
+            record_harvest_login(self.SESSION, "error",
+                                 "the harvest crashed: %s" % type(e).__name__)
             return results
 
         results = self._collapse_cross_listed(results)
