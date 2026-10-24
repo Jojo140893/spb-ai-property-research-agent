@@ -719,7 +719,7 @@ class EAgentSource(PropertySource):
                     href, timeout=config.SCRAPER_NAV_TIMEOUT_MS).body()
             except Exception as e:
                 logger.warning("E-Agent: could not download stocklist %s: %s", label, e)
-                self._note_problem(entry, label, f"download failed: {e}")
+                self._note_problem(entry, label, f"download failed: {e}", link=href)
                 return []
             got = extract_stocklist(data, source_label=href, builder_hint=builder_hint)
             self._name_from_banner(got, builder_hint, allow_banner)
@@ -736,7 +736,8 @@ class EAgentSource(PropertySource):
                     guessed_empty += 1
                     manifest.add_piece(entry, piece.label, "no price list", 0, piece.problem)
                     continue
-                self._note_problem(entry, piece.label, piece.problem)
+                self._note_problem(entry, piece.label, piece.problem,
+                                   link=piece.url or href)
                 continue
             if piece.kind == remote.KIND_HTML:
                 got = self._scrape_html_stocklist(scraper, piece.url, builder_hint,
@@ -777,18 +778,20 @@ class EAgentSource(PropertySource):
         if guessed and guessed_empty == guessed and not out:
             self._note_problem(entry, label, f"no price list in this folder ({guessed} "
                                              f"other document(s) tried, none is one)",
-                               piece=False)
+                               piece=False, link=href)
         return out
 
     def _note_problem(self, entry: Dict[str, Any], piece_label: str, problem: str,
-                      piece: bool = True) -> None:
-        """One fetch problem: into the manifest, and into the Settings tab's list."""
+                      piece: bool = True, link: str = "") -> None:
+        """One fetch problem: into the manifest, and into the Settings tab's list, with the
+        link a person opens to look for themselves: the file where there is one, else the
+        folder. The manifest never gets the link (harvest_manifest strips share links)."""
         outcome = manifest.problem_outcome(problem)
         if piece:
             manifest.add_piece(entry, piece_label, outcome, 0, problem)
         else:
             entry["outcome"] = outcome
-        SE.note_unreadable("remote", _settings_label(entry, outcome), problem)
+        SE.note_unreadable("remote", _settings_label(entry, outcome), problem, link=link)
 
     def _parse_stocklist(self, scraper: PlaywrightScraper, link: Dict[str, str],
                          builder_hint: str, scope: str, state_hint: str = "",
