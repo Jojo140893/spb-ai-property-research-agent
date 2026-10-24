@@ -32,7 +32,7 @@ from datetime import datetime, timedelta
 from email.header import decode_header
 from typing import Any, Dict, List, Optional, Tuple
 
-from sources.base import PropertySource
+from sources.base import PropertySource, read_date
 from sources.spreadsheet_extract import extract_stocklist
 from sources.adaptive_extract import parse_fields, _clean
 from secrets_store import get_credentials
@@ -329,7 +329,8 @@ class EmailStocklistSource(PropertySource):
         for l in listings:
             l["source_channel"] = self.channel_name
             l["source_url_or_ref"] = f"email:{subject[:70]}"
-            l["date_checked"] = datetime.now().strftime("%d/%m/%Y")
+            # The run's day, not this row's moment: see sources.base.read_date.
+            l["date_checked"] = read_date()
             # A document is a point-in-time snapshot — confirm before presenting.
             l["verified"] = False
         return listings

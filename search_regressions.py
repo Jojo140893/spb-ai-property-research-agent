@@ -211,8 +211,20 @@ def _day(value):
 
 
 def _age(value, today):
+    """Whole days from a stored date to `today` (the AEST day), or None without a date.
+
+    EXACTLY ONE DAY AHEAD IS 0, as the search's own _candidates._days_old reads it. The
+    runner stamps Melbourne's date and this clock is a fixed UTC+10, so from October to
+    April a row read in the hour after Melbourne's midnight is dated tomorrow until 14:00
+    UTC. On 23 Oct 2026 this replay ran at 13:44 UTC, and obvious_candidates' "age < 0"
+    dropped every Proxima lot read after midnight from the briefs it checks -- while
+    parity, at 13:46, left all 288 out of its obvious set. Neither said so. A silent
+    check reads as a pass; parity now counts its nights through here too."""
     seen = _day(value)
-    return None if seen is None else (today - seen).days
+    if seen is None:
+        return None
+    age = (today - seen).days
+    return 0 if age == -1 else age
 
 
 def _read_time(value):

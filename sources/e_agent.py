@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse
 
 import config
-from sources.base import PropertySource
+from sources.base import PropertySource, read_date
 from sources.scraper_base import PlaywrightScraper, ScraperError, parse_price, parse_int, PLAYWRIGHT_AVAILABLE, SESSION_DIR
 from sources.portal_config import EAGENT_CONFIG, CategoryPage
 from sources.adaptive_extract import extract_listings
@@ -801,7 +801,8 @@ class EAgentSource(PropertySource):
         manifest.tag(got, entry)
         for g in got:
             g["source_channel"] = self.channel_name
-            g["date_checked"] = datetime.now().strftime("%d/%m/%Y")
+            # The run's day, not this row's moment: see sources.base.read_date.
+            g["date_checked"] = read_date()
             g["verified"] = True
             g.setdefault("stocklist", link.get("label", ""))
             g["stocklist_file"] = href
@@ -1073,7 +1074,7 @@ class EAgentSource(PropertySource):
                 logger.info("E-Agent: adaptive extractor found %d listing(s).", len(adaptive))
                 for a in adaptive:
                     a["source_channel"] = self.channel_name
-                    a["date_checked"] = datetime.now().strftime("%d/%m/%Y")
+                    a["date_checked"] = read_date()
                     a["verified"] = True
                 return adaptive
             logger.warning("E-Agent: no listings found on %s (page may need a different stock-list URL).",
@@ -1098,7 +1099,7 @@ class EAgentSource(PropertySource):
                 "car_spaces": parse_int(scraper.text_or_none(card, fs.get("cars", ".cars"))),
                 "source_channel": self.channel_name,
                 "source_url_or_ref": href,
-                "date_checked": datetime.now().strftime("%d/%m/%Y"),
+                "date_checked": read_date(),
                 "verified": True,  # scraped live from the portal this run
             })
         logger.info("E-Agent: captured %d live listing(s).", len(results))

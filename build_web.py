@@ -1876,6 +1876,22 @@ CHANNEL_PUSH_SOURCES = frozenset({"digital email"})
 # A small source that dies outright still goes stale on age.
 CHANNEL_PARTIAL_MIN_LIVE = 25
 
+# "REFRESHED" IS ONE RUN, NOT ONE CALENDAR DAY (23 Oct 2026). It counted the live rows
+# dated a channel's newest day, so a read that crossed midnight was cut in two: a run
+# dispatched at 23:04 read Proxima from 23:40 to 00:00:44, the 288 lots read after midnight
+# made up the newest day on their own, and this tab said 3% -- "ONLY PART OF ITS STOCK" --
+# of a read that was whole (8,363 lots, 109 of 109 projects). The harvest now stamps one
+# date per run (sources.base.read_date), but a date is still the wrong unit for "what did
+# the last read see", so the tab measures the run itself: the live rows whose checked_at
+# (the moment, see _newest_ts) falls within this many hours of the channel's newest one.
+#
+# Twelve is far longer than any harvest -- the whole nightly job times out at 150 minutes
+# and the harvest step took 55 that night -- and half the gap between two scheduled
+# nights, so last night's rows never count as tonight's. A second run on the same day does
+# blend with the first, exactly as two runs on one date always did under the day rule.
+# A channel whose rows carry no checked_at (stored before 18 Aug 2026) keeps the day rule.
+CHANNEL_RUN_WINDOW_HOURS = 12
+
 
 def _trimmed_url(value, limit=120):
     """A URL cut to `limit` characters without leaving a half-written %-escape behind."""
@@ -2151,7 +2167,7 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
     "Rows arrived" is the only claim worth making, and it is the one a consultant cares
     about. Session files are never published: they are live credentials.
     """
-    from datetime import date, datetime as _dt
+    from datetime import date, datetime as _dt, timedelta
 
     today = date.today()
     now_ts = _dt.now()
@@ -2193,6 +2209,35 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
                 out[str(name or "").strip() or "(unnamed)"] = ts
         return out
 
+    def _moment(ts):
+        """checked_at as a naive datetime, or None. The first 19 characters only, as
+        supersede_duplicates._read_time reads it, so an offset or a fraction a future
+        writer adds can neither fail to parse nor refuse to compare with a naive stamp."""
+        try:
+            return _dt.strptime(str(ts or "").strip()[:19].replace(" ", "T"),
+                                "%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            return None
+
+    def _run_counts(group_sql, where_sql, params=()):
+        """{name: live rows read by its LATEST RUN} -- checked_at within
+        CHANNEL_RUN_WINDOW_HOURS of that name's newest checked_at. A name none of whose
+        rows carries a readable checked_at is absent, and _health keeps the day rule."""
+        stamps = {}
+        for name, ts, n in conn.execute(
+                f"SELECT {group_sql} AS g, checked_at, COUNT(*) FROM buildings "
+                f"WHERE {LIVE} AND checked_at IS NOT NULL{where_sql} "
+                f"GROUP BY g, checked_at", params):
+            moment = _moment(ts)
+            if moment is not None:
+                key = str(name or "").strip() or "(unnamed)"
+                stamps.setdefault(key, []).append((moment, n))
+        out = {}
+        for key, seen in stamps.items():
+            since = max(m for m, _n in seen) - timedelta(hours=CHANNEL_RUN_WINDOW_HOURS)
+            out[key] = sum(n for m, n in seen if m >= since)
+        return out
+
     def _hours_since(ts):
         if not ts:
             return None
@@ -2204,7 +2249,7 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
         # future; report 0 rather than a negative age.
         return max(0, round(delta.total_seconds() / 3600))
 
-    def _health(name, by_iso, ts_map=None):
+    def _health(name, by_iso, ts_map=None, runs=None):
         """One row of the Settings table.
 
         REPORTS VOLUME AS WELL AS RECENCY, and the second one was the gap. The first cut
@@ -2213,10 +2258,12 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
         shown as healthy, on the very tab built to stop exactly this being invisible. The
         harvest's own partial-read guard caught it; the tab flattered it.
 
-        `refreshed` is how many of the live rows carry the newest date — i.e. how much of
-        what we hold was actually seen on the last successful read. A source that returns
-        a fraction of its stock is stamping that fraction as today's and letting the rest
-        go quietly stale, which is the same harm as not running at all, minus the warning.
+        `refreshed` is how many of the live rows the last successful READ saw — i.e. how
+        much of what we hold it actually handed back. A source that returns a fraction of
+        its stock is stamping that fraction as today's and letting the rest go quietly
+        stale, which is the same harm as not running at all, minus the warning. Counted
+        per run from checked_at (`runs`, see CHANNEL_RUN_WINDOW_HOURS), and from the
+        newest date only where no row of the source carries one.
         """
         newest, live = None, sum(by_iso.values())
         for iso in by_iso:
@@ -2228,7 +2275,12 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
                 if newest is None or d > newest:
                     newest = d
         age = (today - newest).days if newest else None
-        refreshed = by_iso.get(newest.strftime("%Y%m%d"), 0) if newest else 0
+        if name in (runs or {}):
+            # Never more than is held: _tally keys a NULL and a blank name alike, and the
+            # later of the two overwrites the earlier's counts where this one adds them.
+            refreshed = min(runs[name], live)
+        else:
+            refreshed = by_iso.get(newest.strftime("%Y%m%d"), 0) if newest else 0
         pct = round(100.0 * refreshed / live) if live else 0
         if age is None:
             state = "unknown"
@@ -2255,7 +2307,9 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
 
     logins = _login_status()
     chan_ts = _newest_ts("source_channel", "")
-    channels = [_health(n, t, chan_ts) for n, t in _tally("source_channel", "").items()]
+    chan_runs = _run_counts("source_channel", "")
+    channels = [_health(n, t, chan_ts, chan_runs)
+                for n, t in _tally("source_channel", "").items()]
     channels.sort(key=lambda c: (-(c["days_ago"] or 0), -c["live"]))
     for c in channels:
         # An inbox has no sign-in to break, so it says so rather than reading as a
@@ -2284,7 +2338,9 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
     # that broke, which is the one thing a person needs in order to fix it.
     portal_ts = _newest_ts("builder_name", " AND source_channel LIKE ?",
                           ("Direct Builder Portal%",))
-    portals = [_health(n, t, portal_ts) for n, t in
+    portal_runs = _run_counts("builder_name", " AND source_channel LIKE ?",
+                              ("Direct Builder Portal%",))
+    portals = [_health(n, t, portal_ts, portal_runs) for n, t in
                _tally("builder_name", " AND source_channel LIKE ?",
                       ("Direct Builder Portal%",)).items()]
     # A withdrawn builder's portal is no longer read, so its row would only age into a

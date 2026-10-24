@@ -96,7 +96,7 @@ import time
 import traceback
 import urllib.parse
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 # Harness code from the app, imported before the child narrows sys.path to the bundle.
@@ -371,8 +371,14 @@ def obvious_lots(catalogue, today, build_cells, overseas, left_out=None, blank_s
 
     withdrawn(builder_name) -> True drops a builder the client has withdrawn: the search
     leaves it out on purpose, and Proxima listing its lots tonight does not make them lots
-    the app should show."""
-    nights = {today - timedelta(days=i) for i in range(RECENT_NIGHTS)}
+    the app should show.
+
+    "The last RECENT_NIGHTS nights" are counted by search_regressions._age, the replay's
+    own clock, which reads a date exactly one day ahead of today as today: the runner
+    stamps Melbourne's date and `today` is a fixed UTC+10, so from October to April a lot
+    read in the hour after Melbourne's midnight is dated tomorrow until 14:00 UTC. On 23
+    Oct 2026 this ran at 13:46 UTC and left out all 288 Proxima lots read after midnight
+    (NSW fell by 250) while every bar passed."""
     live = [r for r in catalogue.db.values() if not r.get("superseded_by")]
     docs = {}
     # A LIST THAT SAYS "AVAILABLE" BESIDE ITS OTHER LOTS: a blank there is a gap, not a
@@ -385,7 +391,8 @@ def obvious_lots(catalogue, today, build_cells, overseas, left_out=None, blank_s
             states_available.add(docs[h])
     out = []
     for rec in live:
-        if SR._day(rec.get("date_checked")) not in nights:
+        age = SR._age(rec.get("date_checked"), today)
+        if age is None or not 0 <= age < RECENT_NIGHTS:
             continue
         status = str(rec.get("availability_status") or "").strip().lower()
         if status and status not in SR.IS_AVAILABLE:

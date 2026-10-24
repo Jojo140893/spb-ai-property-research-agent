@@ -40,10 +40,9 @@ import json
 import logging
 import re
 import urllib.parse
-from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from sources.base import PropertySource
+from sources.base import PropertySource, read_date
 from sources.scraper_base import PlaywrightScraper, PLAYWRIGHT_AVAILABLE
 from builder_names import is_not_a_builder_name
 
@@ -700,6 +699,10 @@ class ProximaSource(PropertySource):
     """Every lot Proxima publishes to this agent account."""
 
     SESSION = "portal_proxima"
+    # The date every lot of one search() carries, taken when the search starts. A class
+    # default so a row built outside a search (the tests build them one at a time) still
+    # gets today's date. See _row and sources.base.read_date.
+    read_on: Optional[str] = None
 
     def __init__(self, registry=None, stored_counters: Optional[Dict[str, int]] = None):
         self.registry = registry
@@ -1463,7 +1466,12 @@ class ProximaSource(PropertySource):
             "source_project_id": str(project_id or "").strip(),
             "source_url_or_ref": PROJECTS_URL,
             "source_text": name,
-            "date_checked": datetime.now().strftime("%d/%m/%Y"),
+            # THE DAY THE READ STARTED, not the moment this lot was built. This was
+            # datetime.now() per lot, and on 23 Oct 2026 a read from 23:40 to 00:00:44
+            # stamped its last six projects 24/10 and the rest 23/10 -- one read the
+            # Settings tab then called 3% refreshed. See sources.base.read_date; the
+            # moment itself is checked_at.
+            "date_checked": self.read_on or read_date(),
             "extraction_confidence": 1.0,   # typed attributes, nothing parsed out of prose
             "verified": True,
         }
@@ -1540,6 +1548,10 @@ class ProximaSource(PropertySource):
                          "python portal_login.py portal_proxima --profile")
             return []
 
+        # ONE DATE FOR THE WHOLE READ, taken before the first project is opened. Inside a
+        # harvest this is the harvest's own day (sources.base.one_read_date); on its own it
+        # is today, and still one day however long the read runs past midnight.
+        self.read_on = read_date()
         results: List[Dict[str, Any]] = []
         if self.stored_counters is None:
             details = stored_project_counter_details()

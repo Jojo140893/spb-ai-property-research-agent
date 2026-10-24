@@ -53,6 +53,7 @@ from sources.builder_portals import BuilderPortalSource
 from sources.email_inbox import EmailStocklistSource
 from sources.proxima import ProximaSource
 from sources.realestate import RealestateSource
+from sources.base import one_read_date
 from database import ResearchDatabase
 
 # Permissive filters => return the full stock list, not a client-filtered subset.
@@ -97,6 +98,20 @@ def _require_readers():
 
 def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
             email_days=90, eagent_stocklist=None):
+    # ONE DATE FOR THE WHOLE RUN, fixed before the first channel reads. Every channel
+    # below stamped date_checked per row from the clock, so on 23 Oct 2026 a run
+    # dispatched at 23:04 stored Proxima's last six projects (288 lots) under 24/10 and
+    # its other 8,075 under 23/10, and swept the inbox entirely on 24/10 while E-Agent
+    # sat on 23/10. The Settings tab, the search and parity then each read one run as
+    # two days -- see sources.base. Every row read inside this block carries the day the
+    # run started; checked_at keeps each row's moment.
+    with one_read_date():
+        return _harvest(eagent=eagent, portals=portals, email=email, proxima=proxima,
+                        rea=rea, email_days=email_days, eagent_stocklist=eagent_stocklist)
+
+
+def _harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
+             email_days=90, eagent_stocklist=None):
     logging.basicConfig(level=logging.INFO, format='    %(levelname)s %(message)s')
     # The Stocklist is E-Agent's own stock, so it runs whenever E-Agent does unless asked
     # for separately (--eagent-stocklist-only).

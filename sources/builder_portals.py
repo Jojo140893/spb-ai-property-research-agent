@@ -14,10 +14,9 @@ fabricated — a failed portal contributes zero listings, not fake ones.
 
 import logging
 import re
-from datetime import datetime
 from typing import List, Dict, Any
 
-from sources.base import PropertySource
+from sources.base import PropertySource, read_date
 from sources.scraper_base import PlaywrightScraper, parse_price, parse_int, PLAYWRIGHT_AVAILABLE, SESSION_DIR
 from sources.portal_config import config_for_url
 from sources import adaptive_extract
@@ -365,7 +364,9 @@ class BuilderPortalSource(PropertySource):
                         "car_spaces": parse_int(scraper.text_or_none(card, fs.get("cars", ".cars"))),
                         "source_channel": channel,
                         "source_url_or_ref": href,
-                        "date_checked": datetime.now().strftime("%d/%m/%Y"),
+                        # The run's day, not this row's moment: see
+                        # sources.base.read_date.
+                        "date_checked": read_date(),
                         "verified": True,
                     })
                 # Some portals split inventory across several pages (e.g. Bathla
@@ -399,7 +400,7 @@ class BuilderPortalSource(PropertySource):
                 if len(adaptive) > len(results):
                     for a in adaptive:
                         a["source_channel"] = channel
-                        a["date_checked"] = datetime.now().strftime("%d/%m/%Y")
+                        a["date_checked"] = read_date()
                         a["verified"] = True
                     logger.info("[%s] captured %d live listing(s) (adaptive).", cfg.name, len(adaptive))
                     return adaptive
