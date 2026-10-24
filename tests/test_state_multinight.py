@@ -210,6 +210,28 @@ _NAMED = [
      None),
     ("2-Part Detached SS North 9 Tambo Crossing Balah 283 $412,179 Eildon 190m2 3 / 2 / 2",
      None, None, None, None, None, None, None, None, "tambo", None),
+    # 24 Oct 2026, APLACE's lists (tests/test_aplace_sections.py): its two Queensland lots,
+    # live VIC on the page alone, QLD on their address from the first night; a Victorian lot
+    # the harvest stored QLD with no signal, VIC on its own words; and pages that are right
+    # against a bare place word -- Goldstate's Mandalay estate, Verv 19094's Jubilee (43-47)
+    ("1524 Gilchrist Street, BRISBANE WEST", "Dawn 1524 Gilchrist Street Dawn Nov-26 392 "
+     "Rectangular $485,000 Murray A 3 200.63 4 | 2 | 2 $373,520 $858,520 EOI Received", None,
+     "VIC", "VIC", "e-agent page (conflicting signals)", "BRISBANE WEST", None, None,
+     "aplace-gilchrist", {"QLD"}),
+    ("10 New Road, BRISBANE NORTH", "Joyner 10 New Road Park Lane Dec-26 199 Rectangular "
+     "$380,000 TERRACE Type C 239.31 4 | 3.5 | 2 $510,000 $890,000 EOI Received", None, "VIC",
+     "VIC", "e-agent page (conflicting signals)", "BRISBANE NORTH", None, None, "aplace-joyner",
+     {"QLD"}),
+    ("143 Hadar Way, VIC", "Clyde North 143 Hadar Way Alma Jun-27 294 10.5 x 28 $397,000 Mackay "
+     "01 167.08 4 | 2.5 | 2 $344,300 $716,300 Aplace Exclusive", "Bundaberg", "VIC", "QLD", None,
+     "VIC", None, None, "aplace-hadar", {"VIC"}),
+    ("5708 Piebald St, Mandalay", "Mar-27 5708 Piebald St North West 12.5 28 350 $334,000 Turin "
+     "23 Panorama 4 Single 210 $372,000 $706,000 Available", None, "VIC", "VIC",
+     "e-agent page (conflicting signals)", "Mandalay", None, "5708", "mandalay", {"VIC"}),
+    ("2-Part Detached SS West 4327 Jubilee Wyndhamvale 263 $338,000 Enzo 10.5 3 / 2 / 2",
+     "2-Part Detached SS West 4327 Jubilee Wyndhamvale 263 $338,000 Enzo 10.5 3 / 2 / 2 "
+     "$347,050 $685,050 Brochure Masterplan Stage 43 - POS Available", None, "VIC", "VIC",
+     "e-agent page (conflicting signals)", None, None, "4327", "jubilee", {"VIC"}),
 ]
 _ENDS = {13: "SA"}          # and where they stand after night 8
 _EXEMPT = {14: {4}}         # the night the Crestwood sheet has no hint
