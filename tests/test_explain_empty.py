@@ -229,8 +229,9 @@ def test_the_funnel_accounts_for_colins_search(colin_by_mode, mode):
     funnel = out["search_help"]["funnel"]
     # 8,694 rows in the 17 Sep fixture. Bathla's 198 no longer load since it was withdrawn
     # (builder_names, 23 Oct 2026), nor the 16 blank-builder lots of its Proxima projects
-    # 499 and 591 (24 Oct); all 214 are NSW, so nothing below this QLD search moves.
-    assert funnel["snapshot_rows"] == 8694 - 198 - 16
+    # 499 and 591, nor the 2 blank captures of its project-593 lots filed under 724 (24
+    # Oct); all 216 are NSW, so nothing below this QLD search moves.
+    assert funnel["snapshot_rows"] == 8694 - 198 - 16 - 2
     assert (funnel["snapshot_rows"] - sum(funnel["out_of_scope"].values())
             == funnel["in_state_rows"] == out["in_state_rows"])
     assert funnel["shortlisted"] == out["shortlist_count"] == 2

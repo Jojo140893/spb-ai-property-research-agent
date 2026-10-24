@@ -15,6 +15,11 @@ only on nights it reads as a company, so project 499 named Bathla on 9 Sep and n
 lot in one of a withdrawn builder's projects is withdrawn with it (builder_names), and the
 tests at the bottom follow it through publish, search, Settings, parity and the replay.
 
+The third, found on review of the second: two of Bathla's Box Hill lots came back blank
+under ANOTHER project (593 -> 724), which no row naming Bathla is filed under. Only
+superseded_by still joined them to the rows that named it, so a blank-builder capture
+joined to a withdrawn row goes too, and the last section follows that the same way.
+
 Each test first shows the same input WITHOUT the rule reaching the place it guards, so a
 pass means the rule did the work and not that the input never got there.
 """
@@ -110,7 +115,7 @@ def research(tmp_path_factory):
     mp.undo()
 
 
-def _never_row(_row, _projects=frozenset()):
+def _never_row(_row, _projects=frozenset(), _captures=frozenset()):
     return False
 
 
@@ -278,14 +283,18 @@ def test_parity_names_a_withdrawn_portal_it_stopped_reading_instead_of_failing(m
 
 def test_parity_gets_the_rule_from_the_search_bundle():
     """measure() and the replay's obvious-rows check ask the bundle's _candidates for
-    is_withdrawn_row and withdrawn_projects (search_regressions.withdrawn_rule), and fall
-    back to is_withdrawn_builder for an older bundle. A rename there would quietly switch
-    the checkers' half of the project rule off."""
+    is_withdrawn_row, withdrawn_projects and withdrawn_captures
+    (search_regressions.withdrawn_rule), and fall back to is_withdrawn_builder for an older
+    bundle. A rename there would quietly switch the checkers' half of the rule off."""
     assert C.is_withdrawn_builder("Bathla Group")
     projects = C.withdrawn_projects([{"builder_name": "Bathla Group",
                                       "source_channel": "Proxima", "source_project_id": "499"}])
     assert C.is_withdrawn_row({"builder_name": "", "source_channel": "Proxima",
                                "source_project_id": "499"}, projects)
+    rows = [{"builder_name": "Bathla Group", "content_hash": "v2:named",
+             "superseded_by": "v2:capture"}, {"builder_name": "", "content_hash": "v2:capture"}]
+    captures = C.withdrawn_captures(rows, C.withdrawn_projects(rows))
+    assert C.is_withdrawn_row(rows[1], frozenset(), captures)
 
 
 def test_the_search_function_bundle_ships_the_rule():
@@ -393,7 +402,12 @@ def _hashes(resp):
 
 @pytest.fixture
 def kensington_search(tmp_path, monkeypatch):
-    path = S.write(tmp_path, _kensington_stock())
+    return _search_over(_kensington_stock(), tmp_path, monkeypatch)
+
+
+def _search_over(rows, tmp_path, monkeypatch):
+    """The research module, searching a snapshot of `rows`."""
+    path = S.write(tmp_path, rows)
     monkeypatch.setenv("SPB_SNAPSHOT_JSON", str(path))
     monkeypatch.delenv("SPB_SNAPSHOT_DB", raising=False)
     monkeypatch.delenv("SPB_MAX_CANDIDATES", raising=False)
@@ -407,7 +421,7 @@ def kensington_search(tmp_path, monkeypatch):
 
 def test_no_caller_of_the_search_is_offered_a_blank_lot_of_a_withdrawn_project(
         kensington_search, monkeypatch):
-    def by_name_only(row, _projects=frozenset()):
+    def by_name_only(row, _projects=frozenset(), _captures=frozenset()):
         return is_withdrawn_builder(row.get("builder_name"))
 
     # raising=False: on a tree with no project rule this patches nothing, and the premise
@@ -648,12 +662,14 @@ def _parity_lots():
     read tonight."""
     from tests import _parity_fixture as F
 
-    def kensington(owner):
+    def kensington(owner, blank_project="499"):
+        # blank_project="724": the blank captures filed under another project, as Bathla's
+        # Box Hill lots were, so only superseded_by joins them to the rows naming the owner.
         named = [F.lot(500 + n, state="NSW", estate="Kensington Lot1", channel=PROXIMA,
                        builder_name=owner, source_project_id="499", day="09/09/2026",
                        superseded_by="v2:%064x" % (0xA11CE000 + 510 + n)) for n in range(3)]
         blank = [F.lot(510 + n, state="NSW", estate="Kensington Lot1", channel=PROXIMA,
-                       builder_name="", source_project_id="499") for n in range(3)]
+                       builder_name="", source_project_id=blank_project) for n in range(3)]
         return named + blank
     return F, F.clean_catalogue(), kensington
 
@@ -673,9 +689,9 @@ def parity_bundle(tmp_path_factory):
     return site / "api"
 
 
-def _parity_night(bundle, base, db_rows, snapshot_rows, published=()):
+def _parity_night(bundle, base, db_rows, snapshot_rows, published=(), captures=()):
     """parity_check.py over a database and the stock.json build_web would publish from it:
-    the rows the publish keeps, and the withdrawn projects beside them."""
+    the rows the publish keeps, and the withdrawn projects and captures beside them."""
     F, _clean, _k = _parity_lots()
     snapshot, db = F.write(base, db_rows)
     data = json.loads(snapshot.read_text(encoding="utf-8"))
@@ -683,6 +699,7 @@ def _parity_night(bundle, base, db_rows, snapshot_rows, published=()):
     at = data["keys"].index("content_hash")
     data["rows"] = [row for row in data["rows"] if row[at] in keep]
     data["withdrawn_projects"] = [list(k) for k in published]
+    data["withdrawn_captures"] = sorted(captures)
     snapshot.write_text(json.dumps(data), encoding="utf-8")
     report = base / "parity_report.json"
     done = subprocess.run(
@@ -714,6 +731,305 @@ def test_a_night_that_publishes_without_a_withdrawn_project_passes_parity(parity
     code, out, body = _parity_night(parity_bundle, tmp_path / "withdrawn",
                                     clean + kensington("Bathla Development"), clean,
                                     published=[(PROXIMA, "499")])
+    assert code == 0, out
+    nsw = next(r for r in body["rows"] if r["state"] == "NSW")
+    assert nsw["lots"] == [12, 12], nsw
+
+
+# ------------------------------- a withdrawn row's lot, captured blank under another project
+#
+# Bathla's project 593 "124 Old Pitt Town Road Box Hill Land Only" listed Lot 128, 65
+# Futurity Street and Lot 119, 27 Mount Carmel Drive at $819,990 on 30 Aug. The captures
+# that superseded those rows carry the same lots at the same price with no builder, filed
+# under project 724 "Lindfield House - Lindfield", which no row naming Bathla is filed
+# under, so every test above passed while they stayed live. On the 12 Oct snapshot the
+# Research tab put them first and second under Needs confirming for Box Hill.
+
+def _by_project_only(row, projects=frozenset(), _captures=frozenset()):
+    """The rule before captures: by name, or a blank builder in a withdrawn project."""
+    return builder_names.is_withdrawn_row(row, projects)
+
+
+def _box_hill():
+    """Project 593's two lots naming Bathla and the blank captures under 724 that replaced
+    them, as the 26 Sep database holds them, plus a lot of 724 nothing joins to Bathla."""
+    return [_rec("Bathla Development", "593", content_hash="v2:named-128",
+                 superseded_by="v2:lindfield-128"),
+            _rec("Bathla Development", "593", content_hash="v2:named-119",
+                 superseded_by="v2:lindfield-119"),
+            _rec("", "724", content_hash="v2:lindfield-128"),
+            _rec("", "724", content_hash="v2:lindfield-119"),
+            _rec("", "724", content_hash="v2:lindfield-130")]
+
+
+def test_a_blank_capture_of_a_withdrawn_lot_under_another_project_is_withdrawn():
+    rows = _box_hill()
+    projects = builder_names.withdrawn_projects(rows)
+    assert projects == {(PROXIMA, "593")}
+    assert not any(_by_project_only(r, projects) for r in rows if not r["builder_name"]), (
+        "premise: the project rule keeps every lot of 724")
+    captures = builder_names.withdrawn_captures(rows, projects)
+    assert captures == {"v2:lindfield-128", "v2:lindfield-119"}
+    kept = {r["content_hash"] for r in rows
+            if not builder_names.is_withdrawn_row(r, projects, captures)}
+    # A capture withdraws its lot, not its project: 724's other lot stays.
+    assert kept == {"v2:lindfield-130"}
+
+
+def test_the_capture_rule_follows_superseded_by_both_ways_through_blank_rows_only():
+    """481 rows of the 26 Sep database point at a row that is itself superseded, so the
+    end of a chain is reached as well as its first link, and an older blank capture that a
+    Bathla row replaced is the same lot too. A row naming another builder is that
+    builder's lot: never withdrawn, and nothing is reached through it."""
+    rows = [_rec("", "724", content_hash="v2:older-128", superseded_by="v2:named-128"),
+            _rec("Bathla Development", "593", content_hash="v2:named-128",
+                 superseded_by="v2:blank-128a"),
+            _rec("", "724", content_hash="v2:blank-128a", superseded_by="v2:blank-128b"),
+            _rec("", "724", content_hash="v2:blank-128b"),
+            _rec("Bathla Development", "593", content_hash="v2:named-119",
+                 superseded_by="v2:hermitage-119"),
+            _rec("Hermitage Homes", "724", content_hash="v2:hermitage-119",
+                 superseded_by="v2:after-hermitage"),
+            _rec("", "724", content_hash="v2:after-hermitage"),
+            _rec("", "724", content_hash="v2:before-hermitage",
+                 superseded_by="v2:hermitage-119"),
+            # A blank lot withdrawn by its project joins its own captures in turn.
+            _rec("", "593", content_hash="v2:blank-593-121", superseded_by="v2:blank-121"),
+            _rec("", "724", content_hash="v2:blank-121")]
+    projects = builder_names.withdrawn_projects(rows)
+    captures = builder_names.withdrawn_captures(rows, projects)
+    assert captures == {"v2:older-128", "v2:blank-128a", "v2:blank-128b", "v2:blank-121"}
+    kept = {r["content_hash"] for r in rows
+            if not builder_names.is_withdrawn_row(r, projects, captures)}
+    assert kept == {"v2:hermitage-119", "v2:after-hermitage", "v2:before-hermitage"}
+
+
+def test_a_blank_hash_never_joins_anything():
+    """The capture rule's version of the blank project id: a Bathla row that names no newer
+    capture must not withdraw every blank-builder row that has no hash of its own."""
+    named = _rec("Bathla Development", "593", content_hash="v2:named-120", superseded_by="  ")
+    unhashed = [_rec("", "724", content_hash=h) for h in (None, "", "  ")]
+    projects = builder_names.withdrawn_projects([named] + unhashed)
+    captures = builder_names.withdrawn_captures([named] + unhashed, projects)
+    assert captures == frozenset()
+    assert not any(builder_names.is_withdrawn_row(r, projects, captures) for r in unhashed)
+    # Nor can a published blank hash stand in for one (see load_snapshot).
+    assert not any(builder_names.is_withdrawn_row(r, projects, frozenset({"", "  "}))
+                   for r in unhashed)
+
+
+BOX_HILL_CAPTURES = ("v2:fresh-00002", "v2:fresh-00003")
+BOX_HILL_KEPT = ("v2:fresh-00004",)    # a lot of 724 that nothing joins to Bathla
+
+
+def _box_hill_stock():
+    """40 synthetic lots; five are on Proxima. Lots 0-1 name Bathla in project 593 and are
+    superseded by lots 2-3, blank-builder captures filed under 724; lot 4 is another blank
+    lot of 724."""
+    rows = S.stock(fresh=40, estates=4)
+    for i, r in enumerate(rows[:5]):
+        r.update(source_channel=PROXIMA, source_project_id="593" if i < 2 else "724",
+                 builder_name="Bathla Development" if i < 2 else "")
+        if i < 2:
+            r.update(superseded_by=rows[i + 2]["content_hash"], date_checked="30/08/2026")
+    return rows
+
+
+@pytest.fixture
+def box_hill_search(tmp_path, monkeypatch):
+    return _search_over(_box_hill_stock(), tmp_path, monkeypatch)
+
+
+def test_no_caller_of_the_search_is_offered_a_blank_capture_of_a_withdrawn_lot(
+        box_hill_search):
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(C, "is_withdrawn_row", _by_project_only)
+        before = S.run(box_hill_search)
+    assert set(BOX_HILL_CAPTURES) <= _hashes(before), "premise: the project rule offers them"
+    unpaged = S.run(box_hill_search)                                         # Clare's hook
+    paged = S.run(box_hill_search, explain=True, offset=0, limit=100)       # Research tab
+    for name, resp in (("unpaged (Clare's hook)", unpaged), ("paged (Research tab)", paged)):
+        assert not _hashes(resp) & set(BOX_HILL_CAPTURES), name
+        assert set(BOX_HILL_KEPT) <= _hashes(resp), name
+        # 40 lots: 2 superseded captures naming Bathla, 2 blank captures of its lots.
+        assert resp["shortlist_count"] == before["shortlist_count"] - 2 == 36, name
+
+
+def test_load_snapshot_applies_the_captures_build_web_published(tmp_path, monkeypatch):
+    """build_web leaves the rows naming Bathla out of stock.json, and with them the
+    superseded_by that joined 724's two lots to Bathla: the captures published beside the
+    rows have to say so."""
+    published = [r for r in _box_hill_stock() if not is_withdrawn_builder(r["builder_name"])]
+    path = tmp_path / "stock.json"
+    monkeypatch.setenv("SPB_SNAPSHOT_JSON", str(path))
+    monkeypatch.delenv("SPB_SNAPSHOT_DB", raising=False)
+    _write_columnar(path, published, withdrawn_projects=[[PROXIMA, "593"]])
+    loaded = {r["content_hash"] for r in C.load_snapshot()[0]}
+    assert set(BOX_HILL_CAPTURES) <= loaded, (
+        "premise: the rows and the projects alone do not withdraw them")
+    _write_columnar(path, published, withdrawn_projects=[[PROXIMA, "593"]],
+                    withdrawn_captures=list(BOX_HILL_CAPTURES))
+    loaded = {r["content_hash"] for r in C.load_snapshot()[0]}
+    assert not loaded & set(BOX_HILL_CAPTURES)
+    assert set(BOX_HILL_KEPT) <= loaded
+    assert len(loaded) == len(published) - len(BOX_HILL_CAPTURES)
+
+
+@pytest.mark.parametrize("reader", ["json", "sqlite"])
+def test_either_reader_finds_the_captures_in_rows_that_still_name_the_builder(
+        reader, tmp_path, monkeypatch):
+    """A snapshot built before 24 Oct, or a database read directly, still holds the rows
+    naming Bathla and their superseded_by, so the reader joins the captures itself."""
+    rows = _box_hill_stock()
+    monkeypatch.delenv("SPB_SNAPSHOT_JSON", raising=False)
+    monkeypatch.delenv("SPB_SNAPSHOT_DB", raising=False)
+    if reader == "json":
+        monkeypatch.setenv("SPB_SNAPSHOT_JSON", str(S.write(tmp_path, rows)))
+    else:
+        monkeypatch.setenv("SPB_SNAPSHOT_DB", str(_snapshot_db(tmp_path / "snap.db", rows)))
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(C, "is_withdrawn_row", _by_project_only)
+        before = {r["content_hash"] for r in C.load_snapshot()[0]}
+    assert set(BOX_HILL_CAPTURES) <= before, "premise: the project rule keeps them"
+    loaded = {r["content_hash"] for r in C.load_snapshot()[0]}
+    assert not loaded & set(BOX_HILL_CAPTURES)
+    assert not loaded & {"v2:fresh-00000", "v2:fresh-00001"}           # named, by name
+    assert set(BOX_HILL_KEPT) <= loaded and len(loaded) == len(rows) - 4
+
+
+def _harvested_box_hill():
+    """Project 593's two lots naming Bathla in a harvest database, superseded by blank
+    captures under 724, and a third lot of 724 that nothing joins to Bathla."""
+    out = []
+    for i, (h, builder, project, sup) in enumerate((
+            ("v2:named-128", "Bathla Development", "593", "v2:lindfield-128"),
+            ("v2:named-119", "Bathla Development", "593", "v2:lindfield-119"),
+            ("v2:lindfield-128", "", "724", None),
+            ("v2:lindfield-119", "", "724", None),
+            ("v2:lindfield-130", "", "724", None))):
+        out.append({"content_hash": h, "dedup_key": h, "builder_name": builder,
+                    "source_channel": PROXIMA, "source_project_id": project,
+                    "superseded_by": sup, "lot_number": str(110 + i),
+                    "lot_address": "Lot %d, 65 Futurity Street, Box Hill NSW 2765" % (110 + i),
+                    "suburb": "Box Hill", "state": "NSW", "availability_status": "For Sale",
+                    "price": 819990.0, "bedrooms": 3,
+                    "date_checked": datetime.now().strftime("%d/%m/%Y")})
+    return out
+
+
+def _published_hashes(out):
+    stock = json.loads((out / "stock.json").read_text(encoding="utf-8"))
+    return stock, {r[stock["keys"].index("content_hash")] for r in stock["rows"]}
+
+
+def test_the_build_leaves_a_blank_capture_out_and_publishes_it(tmp_path, monkeypatch):
+    import build_web
+    import config
+    monkeypatch.setattr(config, "DATABASE_PATH",
+                        _harvest_db(tmp_path / "harvest.db", _harvested_box_hill()))
+    monkeypatch.setattr(build_web, "_login_status", lambda: {})
+    # raising=False: on a tree with no capture rule this adds a name nothing reads, and the
+    # premise is simply what that tree builds.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(builder_names, "withdrawn_captures",
+                   lambda rows, projects=frozenset(): frozenset(), raising=False)
+        build_web.build(tmp_path / "before", with_assets=False)
+    _stock, before = _published_hashes(tmp_path / "before")
+    assert {"v2:lindfield-128", "v2:lindfield-119"} <= before, "premise: published"
+    out = tmp_path / "site"
+    build_web.build(out, with_assets=False)
+    stock, hashes = _published_hashes(out)
+    assert hashes == {"v2:lindfield-130"}, hashes
+    assert stock["withdrawn_projects"] == [[PROXIMA, "593"]]
+    assert stock["withdrawn_captures"] == ["v2:lindfield-119", "v2:lindfield-128"]
+    # And the search, reading what was published, offers exactly that one.
+    monkeypatch.setenv("SPB_SNAPSHOT_JSON", str(out / "stock.json"))
+    monkeypatch.delenv("SPB_SNAPSHOT_DB", raising=False)
+    assert {r["content_hash"] for r in C.load_snapshot()[0]} == hashes
+    # The Settings tab counts the same one of Proxima's three live lots.
+    channels = json.loads((out / "channels.json").read_text(encoding="utf-8"))
+    proxima = next(c for c in channels["channels"] if c["channel"] == PROXIMA)
+    assert proxima["live"] == 1
+
+
+def _capture_db(rows):
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE buildings (content_hash TEXT, source_channel TEXT, "
+                 "builder_name TEXT, source_project_id TEXT, superseded_by TEXT, "
+                 "date_checked TEXT, checked_at TEXT)")
+    conn.executemany("INSERT INTO buildings VALUES (?,?,?,?,?,?,?)", rows)
+    return conn
+
+
+def _capture_channel_rows():
+    today = datetime.now().strftime("%d/%m/%Y")
+    return ([("v2:named-%d" % n, PROXIMA, "Bathla Development", "593", "v2:lindfield-%d" % n,
+              "30/08/2026", None) for n in range(10)]
+            # their blank captures under 724, read once on 30 Aug and not since
+            + [("v2:lindfield-%d" % n, PROXIMA, "", "724", None, "30/08/2026", None)
+               for n in range(10)]
+            + [("v2:other-%d" % n, PROXIMA, "", "724", None, today, None) for n in range(30)])
+
+
+def test_the_settings_counts_leave_a_withdrawn_lots_blank_captures_out(tmp_path, monkeypatch):
+    import build_web
+    monkeypatch.setattr(build_web, "_login_status", lambda: {})
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(builder_names, "withdrawn_captures",
+                   lambda rows, projects=frozenset(): frozenset(), raising=False)
+        before = build_web._export_channel_health(tmp_path, _capture_db(_capture_channel_rows()))
+    assert _held(before, PROXIMA) == (40, 75), "premise: the captures are counted"
+    payload = build_web._export_channel_health(tmp_path, _capture_db(_capture_channel_rows()))
+    assert _held(payload, PROXIMA) == (30, 100)
+
+
+def _capture_catalogue():
+    rows = [_obvious("v2:named-28", "Bathla Development", "593", superseded="v2:capture-28"),
+            _obvious("v2:capture-28", "", "724"), _obvious("v2:other-30", "", "724"),
+            _obvious("v2:hermitage-31", "Hermitage Homes", "724")]
+    return SimpleNamespace(db={r["content_hash"]: r for r in rows}, row=lambda h: None)
+
+
+def test_parity_and_the_replay_check_skip_the_same_captures():
+    import parity_check as P
+    import search_regressions as SR
+    catalogue = _capture_catalogue()
+    today = date(2026, 10, 23)
+
+    def parity(rule):
+        return {lot["hash"] for lot in P.obvious_lots(catalogue, today, _cells, _not_overseas,
+                                                      withdrawn=rule)}
+
+    def replay(rule):
+        return {SR._hash(r) for r in SR.obvious_candidates(catalogue, "NSW", 0, None, today,
+                                                           _cells, withdrawn=rule)}
+
+    project_only = SR.withdrawn_rule(SimpleNamespace(
+        is_withdrawn_row=builder_names.is_withdrawn_row,
+        withdrawn_projects=builder_names.withdrawn_projects), catalogue)
+    assert "v2:capture-28" in parity(project_only), "premise"
+    assert "v2:capture-28" in replay(project_only), "premise"
+    rule = SR.withdrawn_rule(C, catalogue)
+    assert parity(rule) == replay(rule) == {"v2:other-30", "v2:hermitage-31"}
+
+
+def test_a_night_that_publishes_without_a_withdrawn_capture_passes_parity(parity_bundle,
+                                                                        tmp_path):
+    """End to end, as for project 499 above, with the blank captures filed under 724 so
+    only superseded_by joins them to the rows naming the owner."""
+    _F, clean, kensington = _parity_lots()
+    # PREMISE: the same shape for a builder nobody withdrew, missing from the snapshot the
+    # same way, fails NSW.
+    code, out, body = _parity_night(parity_bundle, tmp_path / "control",
+                                    clean + kensington("Hermitage Homes", "724"), clean)
+    assert code == 1, out
+    nsw = next(r for r in body["rows"] if r["state"] == "NSW")
+    assert nsw["lots"] == [15, 12], nsw                      # [obvious, shown]
+    rows = kensington("Bathla Development", "724")
+    code, out, body = _parity_night(parity_bundle, tmp_path / "withdrawn", clean + rows, clean,
+                                    published=[(PROXIMA, "499")],
+                                    captures={r["content_hash"] for r in rows
+                                              if not r["builder_name"]})
     assert code == 0, out
     nsw = next(r for r in body["rows"] if r["state"] == "NSW")
     assert nsw["lots"] == [12, 12], nsw

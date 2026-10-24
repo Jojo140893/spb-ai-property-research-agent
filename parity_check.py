@@ -370,9 +370,9 @@ def obvious_lots(catalogue, today, build_cells, overseas, left_out=None, blank_s
     leaves them out says nothing about them, so the report names how many and where.
 
     withdrawn(rec) -> True drops a row of a builder the client has withdrawn (SR.withdrawn_rule:
-    the builder named, or no builder named in one of its projects): the search leaves it out
-    on purpose, and Proxima listing its lots tonight does not make them lots the app should
-    show."""
+    the builder named, or no builder named in one of its projects or on a capture of one of
+    its lots): the search leaves it out on purpose, and Proxima listing its lots tonight does
+    not make them lots the app should show."""
     nights = {today - timedelta(days=i) for i in range(RECENT_NIGHTS)}
     live = [r for r in catalogue.db.values() if not r.get("superseded_by")]
     docs = {}
@@ -848,9 +848,10 @@ def measure(args):
 
     blank_stating = {}
     # The bundle's own rule, so parity drops exactly what the shipped search drops: by
-    # name, and a blank-builder lot in a withdrawn builder's project, with the projects
-    # found in the database. An older bundle without it still shows the builder, and
-    # parity then counts it.
+    # name, and a blank-builder lot in a withdrawn builder's project or joined by
+    # superseded_by to one of its rows, with the projects and captures found in the
+    # database. An older bundle without it still shows the builder, and parity then
+    # counts it.
     lots = obvious_lots(catalogue, today, C.snapshot_build_cells, overseas, left_out,
                         blank_stating=blank_stating,
                         withdrawn=SR.withdrawn_rule(C, catalogue))

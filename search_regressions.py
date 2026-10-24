@@ -1420,17 +1420,24 @@ def withdrawn_rule(C, catalogue):
     withdrew its builder; None for a bundle with no such rule.
 
     By the bundle's own definition (builder_names.is_withdrawn_row through _candidates):
-    the builder named, or no builder named in one of that builder's projects. The projects
-    are found in the DATABASE, every row of it including superseded captures -- project
-    499's rows naming Bathla were all superseded by the night its blank-builder rows were
-    on the live NSW answer. A bundle from before projects were withdrawn still drops the
+    the builder named, or no builder named in one of that builder's projects, or no
+    builder named on a capture superseded_by joins to one of its rows. The projects and
+    captures are found in the DATABASE, every row of it including superseded captures --
+    project 499's rows naming Bathla were all superseded by the night its blank-builder
+    rows were on the live NSW answer, and so were the two project-593 rows naming Bathla
+    whose blank captures sat under project 724. A bundle from before captures were
+    withdrawn still drops the named rows and the projects; one from before projects, the
     named rows; one from before builders were withdrawn drops nothing, and the checks then
     count the builder's lots like anyone's."""
     by_row = getattr(C, "is_withdrawn_row", None)
     projects_of = getattr(C, "withdrawn_projects", None)
+    captures_of = getattr(C, "withdrawn_captures", None)
     if by_row is not None and projects_of is not None:
         projects = projects_of(catalogue.db.values())
-        return lambda rec: by_row(rec, projects)
+        if captures_of is None:
+            return lambda rec: by_row(rec, projects)
+        captures = captures_of(catalogue.db.values(), projects)
+        return lambda rec: by_row(rec, projects, captures)
     by_name = getattr(C, "is_withdrawn_builder", None)
     if by_name is not None:
         return lambda rec: by_name(rec.get("builder_name"))
