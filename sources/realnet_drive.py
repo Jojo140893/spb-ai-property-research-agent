@@ -669,6 +669,11 @@ class RealNetDriveSource:
         self.state, self.why = "", ""
         self.files: List[Tuple[str, str, int, str]] = []
         self.listed = 0
+        # Drive's id of every file the folder listing returned (merged 24 Oct 2026 with the
+        # retirement ledger): a package whose file is still here was not sold, whatever its
+        # download or its brochure did tonight. harvest_buildings writes them to the
+        # manifest hashed (harvest_manifest.note_listed) -- an id opens the file.
+        self.file_ids: List[str] = []
 
     # -- network -------------------------------------------------------------------------
     def _session(self):
@@ -734,6 +739,7 @@ class RealNetDriveSource:
             logger.warning("RealNet: %s", self.why)
             return []
         self.listed = len(entries)
+        self.file_ids = [e["id"] for e in entries if e["kind"] == "file"]
         today = read_date()
         named_files = []
         for e in entries:

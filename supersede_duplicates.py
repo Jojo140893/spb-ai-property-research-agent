@@ -82,11 +82,122 @@ from collections import Counter, defaultdict
 from urllib.parse import urlsplit
 
 from sources.scraper_base import normalise_money_spacing
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import config
 
 FIELDS = ("superseded_by", "superseded_at")
+
+# MARKS THIS STEP DOES NOT OWN (24 Oct 2026). Ahsan: "if the stock is retired in the portals
+# it should retire in our agent too". The nightly reset below cleared EVERY superseded_by
+# mark before repair_rows ran, so a retirement held only while its list still qualified on
+# the night: Proxima read nothing on 11 runs (12-23 Oct) and about 280 of its proven
+# retirements were undone on every one of them, the lots left live with "Sold". A
+# retirement is a judgement repair_rows made on evidence of a night that does not come
+# back, so this step neither clears it nor writes over it. It is undone by the one thing
+# that disproves it -- the source listing the lot again (database.record_building) -- or by
+# a person (repair_rows.py --undo-retirements). Every mark this step or repair_rows
+# re-derives (duplicate hashes, filter rows, fragments, email sentences) is still cleared.
+from database import WITHDRAWN_FROM_SOURCE  # noqa: E402
+
+PERSISTENT_MARKS = (WITHDRAWN_FROM_SOURCE,)
+# The rollback: SPB_RETIREMENT_RULE=old clears every mark again, as before 24 Oct 2026, and
+# drops the hidden-behind guard. repair_rows reads the same switch.
+RETIREMENT_RULE_ENV = "SPB_RETIREMENT_RULE"
+
+
+def persistent_marks(environ=None):
+    """The marks the nightly reset keeps: PERSISTENT_MARKS, or () under the old rule."""
+    env = os.environ if environ is None else environ
+    if str(env.get(RETIREMENT_RULE_ENV, "") or "").strip().lower() == "old":
+        return ()
+    return PERSISTENT_MARKS
+
+
+# No rule retires a lot sooner than this many days after its last sighting
+# (repair_rows.WITHDRAWN_AFTER_DAYS; a test pins the two together). A retirement with no
+# stamp of its own is dated no earlier than that.
+RETIRED_AFTER_DAYS = 14
+
+
+def _day_of(stamp):
+    """The day of an ISO stamp ("2026-10-24T01:10:00"), or None."""
+    return _parsed_date(str(stamp or "").strip()[:10])
+
+
+def retired_on(winner, retired_at=None):
+    """The day a retired copy was retired: its own superseded_at (repair_rows writes it with
+    every retirement), else the ledger's stamp for it (`retired_at`, {row id: stamp}), else
+    the earliest day any rule could have retired it -- its last sighting plus
+    RETIRED_AFTER_DAYS. None when not even that is known."""
+    d = _day_of(winner.get("superseded_at"))
+    if d is None and retired_at:
+        d = _day_of(retired_at.get(winner.get("id")))
+    if d is None:
+        seen = _parsed_date(winner.get("date_checked"))
+        d = seen + timedelta(days=RETIRED_AFTER_DAYS) if seen is not None else None
+    return d
+
+
+# The channels that re-list their whole stock on every read (repair_rows.RELISTING_CHANNELS;
+# a test pins the two together): a read of one of them that carries a lot says its source
+# lists the lot that night. Every other channel's read does not -- see
+# not_hidden_behind_a_retired_copy.
+RELISTING_CHANNELS = frozenset({"E-Agent", "Proxima", "Direct Builder Portal (live)",
+                                "E-Agent Stocklist", "RealNet Stocklist"})
+
+
+def not_hidden_behind_a_retired_copy(pairs, persistent, retired_at=None):
+    """(kept pairs, dropped pairs). A pair is dropped when its winner carries a persistent
+    retirement and the loser is a RE-LISTING channel's capture (RELISTING_CHANNELS) read on
+    a LATER DAY THAN THE WINNER WAS RETIRED.
+
+    A retired copy must never hide a lot a source has listed since it retired. Across
+    channels the survivor is the better-described capture (_detail), not the newest, so a
+    lot a portal retired can win against the copy an E-Agent list carried tonight; until
+    24 Oct the reset made that last one night at most, and with retirements kept it would
+    last for good. The loser stays live and the winner stays retired.
+
+    SINCE IT RETIRED, NOT SINCE IT WAS LAST SEEN (second review, 24 Oct 2026). Measured from
+    the winner's last sighting, an email that carried the lot a day after its list stopped
+    listing it went live the night after the list copy retired -- and the inbox never
+    retires by absence, so the sold lot stayed offered for good. A copy read before the
+    retirement is no evidence the lot is for sale since: it stays hidden, as on main.
+
+    AND ONLY A RE-LISTING READ IS A LISTING (repair, 25 Oct 2026). The nightly sweeps the
+    inbox's last 7 days (run_daily --email-days) every night, so an email that arrived four
+    days before the list copy retired is read again on the three nights after it, and its
+    copy's date_checked passes the retirement although nothing new was sent: by the read
+    date alone the sold lot came back for good all the same. A pushed copy (an email, a
+    file someone dropped in) says what its sender held when it was sent, not tonight, and
+    the inbox never retires by absence; a re-listing list re-read tonight that carries the
+    lot does say it is listed tonight, and its own list retires it when it leaves. So only
+    the second un-hides a lot; every other copy stays hidden behind the retired one, as it
+    always is on main."""
+    if not persistent:
+        return list(pairs), []
+    kept, dropped = [], []
+    for loser, winner in pairs:
+        l_seen = _parsed_date(loser.get("date_checked"))
+        if (str(winner.get("superseded_by") or "") in persistent and l_seen is not None
+                and str(loser.get("source_channel") or "") in RELISTING_CHANNELS):
+            when = retired_on(winner, retired_at)
+            if when is not None and l_seen > when:
+                dropped.append((loser, winner))
+                continue
+        kept.append((loser, winner))
+    return kept, dropped
+
+
+def ledger_retirements(conn):
+    """{row id: the stamp of its latest retirement still in place} from the retirement
+    ledger's table, or {} when it has none yet."""
+    try:
+        return {rid: stamp for rid, stamp in conn.execute(
+            "SELECT row_id, MAX(stamp) FROM retirements WHERE undone_at IS NULL "
+            "GROUP BY row_id")}
+    except sqlite3.Error:
+        return {}
 
 # The switch for the fourth pass. OFF unless it is explicitly turned on (critique #4: the
 # gate is the reviewed list, and merging to main runs the nightly on main). A value that is
@@ -939,14 +1050,36 @@ def main(argv=None):
                 print(f"        {n:>5}  retired from {name}")
 
     all_pairs = list(pairs) + list(status_pairs)
+    persistent = list(persistent_marks())
+    all_pairs, behind = not_hidden_behind_a_retired_copy(
+        all_pairs, persistent, ledger_retirements(conn) if persistent else None)
+    if behind:
+        print(f"\n    {len(behind)} capture(s) left live: read after the retired copy that "
+              f"would have hidden them was retired")
     if not args.dry_run and all_pairs:
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         # Clear first: a row that is no longer a duplicate (because the row that beat
         # it was itself removed, or the spec changed) must not stay flagged.
-        conn.execute("UPDATE buildings SET superseded_by=NULL, superseded_at=NULL")
-        conn.executemany(
-            "UPDATE buildings SET superseded_by=?, superseded_at=? WHERE id=?",
-            [(w["content_hash"], stamp, l["id"]) for l, w in all_pairs])
+        #
+        # BUT ONLY THE MARKS THIS STEP AND repair_rows RE-DERIVE (24 Oct 2026): a
+        # retirement is kept (PERSISTENT_MARKS, at the top), and so is its "Sold".
+        if persistent:
+            marks = ",".join("?" for _ in persistent)
+            conn.execute("UPDATE buildings SET superseded_by=NULL, superseded_at=NULL "
+                         f"WHERE superseded_by IS NULL OR superseded_by NOT IN ({marks})",
+                         persistent)
+            # ...and never written over: a retired lot that also loses a duplicate group
+            # keeps the mark that says why it is gone, and stays retired if its group
+            # splits.
+            conn.executemany(
+                "UPDATE buildings SET superseded_by=?, superseded_at=? WHERE id=? "
+                f"AND (superseded_by IS NULL OR superseded_by NOT IN ({marks}))",
+                [(w["content_hash"], stamp, l["id"], *persistent) for l, w in all_pairs])
+        else:
+            conn.execute("UPDATE buildings SET superseded_by=NULL, superseded_at=NULL")
+            conn.executemany(
+                "UPDATE buildings SET superseded_by=?, superseded_at=? WHERE id=?",
+                [(w["content_hash"], stamp, l["id"]) for l, w in all_pairs])
         conn.commit()
         print(f"\n    marked. Superseded rows keep their price and history; they are")
         print(f"    excluded from the benchmark and hidden from the stock table by default.")
