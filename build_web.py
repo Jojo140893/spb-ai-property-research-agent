@@ -1109,11 +1109,22 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     # after every pass above has read its rows as evidence for their neighbours, so no
     # other row's suburb or state differs from a build without this. stock.json, the
     # coverage floor and our side of the benchmarks below then never see it.
-    from builder_names import is_withdrawn_builder
-    _kept = [b for b in buildings if not is_withdrawn_builder(b.get("builder_name"))]
+    #
+    # AND SO DOES A BLANK-BUILDER LOT IN ONE OF ITS PROJECTS (builder_names.is_withdrawn_row):
+    # Proxima named Bathla on project 499 one night and nobody on the next, and the rule
+    # keyed on the name let the blank nights through to the live NSW answer. The projects
+    # are found here, from every row the database holds, live or superseded, because this
+    # is the last point that still holds the rows naming the builder. They are written
+    # into stock.json beside the rows for _candidates.load_snapshot, which no longer has
+    # those rows to find them by.
+    from builder_names import is_withdrawn_builder, is_withdrawn_row, withdrawn_projects
+    _withdrawn_projects = withdrawn_projects(buildings)
+    _kept = [b for b in buildings if not is_withdrawn_row(b, _withdrawn_projects)]
     if len(_kept) != len(buildings):
-        print(f"    {len(buildings) - len(_kept)} listing(s) left out: their builder "
-              f"is withdrawn")
+        _by_name = sum(1 for b in buildings if is_withdrawn_builder(b.get("builder_name")))
+        print(f"    {len(buildings) - len(_kept)} listing(s) left out: {_by_name} name a "
+              f"withdrawn builder, {len(buildings) - len(_kept) - _by_name} name no builder "
+              f"in one of its {len(_withdrawn_projects)} project(s)")
     buildings = _kept
     # WHAT THE APP WILL ACTUALLY RESOLVE, measured here because this is the only place
     # that holds both the graded rows and the sibling maps at once. The stored grade
@@ -1151,6 +1162,10 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         "keys": BUILDING_FIELDS + BUILDING_DERIVED_FIELDS,
         "rows": [[b.get(f) for f in BUILDING_FIELDS + BUILDING_DERIVED_FIELDS]
                  for b in buildings],
+        # [source_channel, source_project_id] of each withdrawn project (see above), so
+        # the search drops a blank-builder lot in one even from a snapshot whose rows no
+        # longer show who the project belongs to.
+        "withdrawn_projects": [list(k) for k in sorted(_withdrawn_projects)],
     }, separators=(",", ":"), default=str), encoding="utf-8")
 
     # BENCHMARKS — market comparables, written UNCONDITIONALLY, including with zero rows.
@@ -2163,6 +2178,24 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
     ISO = ("substr(date_checked, 7, 4) || substr(date_checked, 4, 2) "
            "|| substr(date_checked, 1, 2)")
     LIVE = "(superseded_by IS NULL OR superseded_by = '')"
+    # NOT A WITHDRAWN BUILDER'S ROWS, by name or by project (builder_names.is_withdrawn_row,
+    # the rule stock.json is built with). They stay in the database but the app cannot
+    # offer them, so counting them told Settings on 23 Oct that "Direct Builder Portal
+    # (live)" held 453 lots and refreshed 46% of them, when 14 of the 453 were Bathla's
+    # and its portal is no longer read at all. The same Python rule runs inside the
+    # query as a function, so Held and Refreshed below are counted from the rows the app
+    # can offer and no second, SQL spelling of the rule can drift from the first.
+    from builder_names import is_withdrawn_row, withdrawn_projects
+    _have = {r[1] for r in conn.execute("PRAGMA table_info(buildings)")}
+    _project = "source_project_id" if "source_project_id" in _have else "NULL"
+    _projects = withdrawn_projects(
+        {"builder_name": n, "source_channel": c, "source_project_id": p}
+        for n, c, p in conn.execute(
+            f"SELECT builder_name, source_channel, {_project} FROM buildings"))
+    conn.create_function(
+        "spb_withdrawn", 3, lambda n, c, p: int(is_withdrawn_row(
+            {"builder_name": n, "source_channel": c, "source_project_id": p}, _projects)))
+    LIVE += f" AND NOT spb_withdrawn(builder_name, source_channel, {_project})"
 
     def _tally(group_sql, where_sql, params=()):
         """{name: {iso: live_rows}} for one grouping."""

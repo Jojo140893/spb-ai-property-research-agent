@@ -369,9 +369,10 @@ def obvious_lots(catalogue, today, build_cells, overseas, left_out=None, blank_s
     'EOI' lines, a status column the parser missed -- and a 100% read against a set that
     leaves them out says nothing about them, so the report names how many and where.
 
-    withdrawn(builder_name) -> True drops a builder the client has withdrawn: the search
-    leaves it out on purpose, and Proxima listing its lots tonight does not make them lots
-    the app should show."""
+    withdrawn(rec) -> True drops a row of a builder the client has withdrawn (SR.withdrawn_rule:
+    the builder named, or no builder named in one of its projects): the search leaves it out
+    on purpose, and Proxima listing its lots tonight does not make them lots the app should
+    show."""
     nights = {today - timedelta(days=i) for i in range(RECENT_NIGHTS)}
     live = [r for r in catalogue.db.values() if not r.get("superseded_by")]
     docs = {}
@@ -397,7 +398,7 @@ def obvious_lots(catalogue, today, build_cells, overseas, left_out=None, blank_s
             continue
         if left_out is not None and left_out(rec, doc):
             continue
-        if withdrawn is not None and withdrawn(rec.get("builder_name")):
+        if withdrawn is not None and withdrawn(rec):
             continue
         if not SR.priced_as_a_home(rec, build_cells(dict(rec))):
             continue
@@ -846,11 +847,13 @@ def measure(args):
         return read_left_it_out(rec, doc, latest_read, reads, cut_short, full)
 
     blank_stating = {}
-    # The bundle's own rule, so parity drops exactly what the shipped search drops. An
-    # older bundle without it still shows the builder, and parity then counts it.
+    # The bundle's own rule, so parity drops exactly what the shipped search drops: by
+    # name, and a blank-builder lot in a withdrawn builder's project, with the projects
+    # found in the database. An older bundle without it still shows the builder, and
+    # parity then counts it.
     lots = obvious_lots(catalogue, today, C.snapshot_build_cells, overseas, left_out,
                         blank_stating=blank_stating,
-                        withdrawn=getattr(C, "is_withdrawn_builder", None))
+                        withdrawn=SR.withdrawn_rule(C, catalogue))
     by_group = defaultdict(list)
     for lot in lots:
         by_group[lot["group"]].append(lot)

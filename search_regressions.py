@@ -1415,13 +1415,35 @@ def _email_lot_key(rec, catalogue):
     return doc, lot, int(round(price))
 
 
+def withdrawn_rule(C, catalogue):
+    """rec -> True for a database row the bundle's search never offers because the client
+    withdrew its builder; None for a bundle with no such rule.
+
+    By the bundle's own definition (builder_names.is_withdrawn_row through _candidates):
+    the builder named, or no builder named in one of that builder's projects. The projects
+    are found in the DATABASE, every row of it including superseded captures -- project
+    499's rows naming Bathla were all superseded by the night its blank-builder rows were
+    on the live NSW answer. A bundle from before projects were withdrawn still drops the
+    named rows; one from before builders were withdrawn drops nothing, and the checks then
+    count the builder's lots like anyone's."""
+    by_row = getattr(C, "is_withdrawn_row", None)
+    projects_of = getattr(C, "withdrawn_projects", None)
+    if by_row is not None and projects_of is not None:
+        projects = projects_of(catalogue.db.values())
+        return lambda rec: by_row(rec, projects)
+    by_name = getattr(C, "is_withdrawn_builder", None)
+    if by_name is not None:
+        return lambda rec: by_name(rec.get("builder_name"))
+    return None
+
+
 def obvious_candidates(catalogue, state, low, high, today, build_cells, withdrawn=None):
     """The obvious rows for a state and price range, picked from the DATABASE: live, in
     the state, priced in range, stated available, at most OBVIOUS_MAX_DAYS old, and not a
     Build Only / Land Only price (by its text, or by its own land and build columns), one
     part of a bigger printed total, or a price-list line that does not print its price
-    (build_cells is the bundle's snapshot_build_cells), nor a builder the client has
-    withdrawn (withdrawn is the bundle's is_withdrawn_builder; None for an older bundle).
+    (build_cells is the bundle's snapshot_build_cells), nor a row of a builder the client
+    has withdrawn (withdrawn is withdrawn_rule(C, catalogue): rec -> bool, or None).
 
     An emailed row ages from the list's FIRST read (critique #27), and a lot's first read
     is the earliest of its live twins on that list: a re-parse stamps its rows with a later
@@ -1441,7 +1463,7 @@ def obvious_candidates(catalogue, state, low, high, today, build_cells, withdraw
     for rec in live_db:
         if str(rec.get("state") or "").strip().upper() != state:
             continue
-        if withdrawn is not None and withdrawn(rec.get("builder_name")):
+        if withdrawn is not None and withdrawn(rec):
             continue
         price = _num(rec.get("price"))
         if not price or price <= 0 or price < low or (high and price > high):
@@ -1511,10 +1533,11 @@ _FRAGMENT_MONEY = re.compile(
 
 def obvious_rows_check(C, research, bootstrap, catalogue, snapshot_path):
     """The independent obvious-rows check, as a Run hook. See the module docstring."""
+    withdrawn = withdrawn_rule(C, catalogue)
 
     def picked(state, low, high, today):
         return obvious_candidates(catalogue, state, low, high, today, C.snapshot_build_cells,
-                                  withdrawn=getattr(C, "is_withdrawn_builder", None))
+                                  withdrawn=withdrawn)
 
     def hook(run, where, brief, body, resp):
         used = resp.get("brief_used") or {}

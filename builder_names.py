@@ -32,7 +32,7 @@ name, beats a plausible guess.
 """
 
 import re
-from typing import Dict, Iterable, Optional
+from typing import Dict, FrozenSet, Iterable, Optional, Tuple
 
 # Looks like a bare domain: no spaces, at least one dot, a plausible TLD tail.
 _DOMAIN = re.compile(r"^[a-z0-9][a-z0-9\-]*(?:\.[a-z0-9\-]+)+$", re.I)
@@ -99,6 +99,59 @@ def is_withdrawn_builder(name: str) -> bool:
     if not raw:
         return False
     return CLIENT_CONFIRMED_ALIASES.get(_squash(raw), raw) in WITHDRAWN_BUILDERS
+
+
+# A WITHDRAWN BUILDER'S PROJECT, ON THE NIGHTS ITS DEVELOPER FIELD COMES BACK BLANK (23 Oct
+# 2026, the night the name rule above went live). Proxima files every lot under a project
+# and reads the developer off that project's header, and the harvest stores a header only
+# when it reads as a company. So one project can name its developer on one night and
+# nobody on the next: project 499 "Kensington Lot1 Townhouse" (Riverstone) said "Bathla
+# Development" on 9 Sep, and from 22 Sep returned the SAME lot numbers at the SAME prices
+# with a blank builder. Those rows passed every rule keyed on the name, and that night six
+# of them were on the live NSW answer, one ranked #2 for Riverstone as "Builder not
+# identified in source". Project 591 "Futurity Street Box Hill" has the same shape.
+#
+# So a project that ANY row, live or superseded, files under a withdrawn builder is a
+# withdrawn project, and a row that names no builder in it goes with it. Two limits keep
+# this a rule about the withdrawn builder's own projects:
+#   * a row that names a different builder is never withdrawn by its project, whatever
+#     else shares it -- a blank is the only thing the project is allowed to fill in;
+#   * a blank project id is never a key. 18 of Bathla's Proxima rows and all 28 of its
+#     portal rows carried none on 12 Oct, and (channel, blank) names a channel, not a project:
+#     the first such row on E-Agent, where no row has a project id, would take all 1,699
+#     of E-Agent's blank-builder rows (12 Oct snapshot) with it.
+#
+# Like the name rule, nothing is deleted: the rows stay in the database, and taking the
+# builder off WITHDRAWN_BUILDERS brings its projects back with it.
+def project_key(row) -> Optional[Tuple[str, str]]:
+    """(source_channel, source_project_id) of a row, or None when it names no project."""
+    project = str(row.get("source_project_id") or "").strip()
+    if not project:
+        return None
+    return str(row.get("source_channel") or "").strip(), project
+
+
+def withdrawn_projects(rows: Iterable[dict]) -> FrozenSet[Tuple[str, str]]:
+    """Every project_key that one of `rows` files under a withdrawn builder.
+
+    Pass EVERY row, superseded ones included: by 23 Oct every row of project 499 that
+    named Bathla was superseded, and only its blank-builder captures were live."""
+    keys = set()
+    for row in rows:
+        if is_withdrawn_builder(row.get("builder_name")):
+            key = project_key(row)
+            if key is not None:
+                keys.add(key)
+    return frozenset(keys)
+
+
+def is_withdrawn_row(row, projects: FrozenSet[Tuple[str, str]] = frozenset()) -> bool:
+    """True when nothing may offer this row: its builder is withdrawn, or it names no
+    builder and sits in one of `projects` (withdrawn_projects of every row)."""
+    if str(row.get("builder_name") or "").strip():
+        return is_withdrawn_builder(row.get("builder_name"))
+    key = project_key(row)
+    return key is not None and key in projects
 
 
 # Values that cannot be a company, whatever field they arrived in. A floor, a stage or a

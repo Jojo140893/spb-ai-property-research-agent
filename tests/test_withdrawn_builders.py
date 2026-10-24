@@ -9,10 +9,20 @@ The trap these tests exist for: most of Bathla's stock came through PROXIMA (198
 would have left those 198 recommendable. So the rule is about the builder, and the search
 test puts Bathla lots on Proxima as well as on the portal.
 
+The second trap, found the night the rule went live: Proxima stores a project's developer
+only on nights it reads as a company, so project 499 named Bathla on 9 Sep and nobody from
+22 Sep, and its blank-builder lots were still on the live NSW answer. So a blank-builder
+lot in one of a withdrawn builder's projects is withdrawn with it (builder_names), and the
+tests at the bottom follow it through publish, search, Settings, parity and the replay.
+
 Each test first shows the same input WITHOUT the rule reaching the place it guards, so a
 pass means the rule did the work and not that the input never got there.
 """
 
+import json
+import os
+import sqlite3
+import subprocess
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -100,8 +110,12 @@ def research(tmp_path_factory):
     mp.undo()
 
 
+def _never_row(_row, _projects=frozenset()):
+    return False
+
+
 def test_without_the_rule_the_search_would_offer_bathla(research, monkeypatch):
-    monkeypatch.setattr(C, "is_withdrawn_builder", _never)
+    monkeypatch.setattr(C, "is_withdrawn_row", _never_row)
     assert _bathla_cards(S.run(research)), "premise: the Bathla lots reach the shortlist"
 
 
@@ -218,10 +232,12 @@ def test_parity_does_not_count_a_withdrawn_builders_lots_as_missing():
     def overseas(rec, snap):
         return False
 
+    import search_regressions as SR
     today = date(2026, 10, 23)
     every = P.obvious_lots(catalogue, today, cells, overseas)
     assert {lot["hash"] for lot in every} == {"h1", "h2"}, "premise"
-    kept = P.obvious_lots(catalogue, today, cells, overseas, withdrawn=is_withdrawn_builder)
+    kept = P.obvious_lots(catalogue, today, cells, overseas,
+                          withdrawn=SR.withdrawn_rule(C, catalogue))
     assert {lot["hash"] for lot in kept} == {"h2"}
 
 
@@ -261,9 +277,15 @@ def test_parity_names_a_withdrawn_portal_it_stopped_reading_instead_of_failing(m
 
 
 def test_parity_gets_the_rule_from_the_search_bundle():
-    """measure() asks the bundle's _candidates for is_withdrawn_builder and treats its
-    absence as an older bundle. A rename there would quietly switch parity's half off."""
+    """measure() and the replay's obvious-rows check ask the bundle's _candidates for
+    is_withdrawn_row and withdrawn_projects (search_regressions.withdrawn_rule), and fall
+    back to is_withdrawn_builder for an older bundle. A rename there would quietly switch
+    the checkers' half of the project rule off."""
     assert C.is_withdrawn_builder("Bathla Group")
+    projects = C.withdrawn_projects([{"builder_name": "Bathla Group",
+                                      "source_channel": "Proxima", "source_project_id": "499"}])
+    assert C.is_withdrawn_row({"builder_name": "", "source_channel": "Proxima",
+                               "source_project_id": "499"}, projects)
 
 
 def test_the_search_function_bundle_ships_the_rule():
@@ -271,3 +293,427 @@ def test_the_search_function_bundle_ships_the_rule():
     deployed search would 500 (the build's import probe refuses that before it ships)."""
     import build_web
     assert "builder_names.py" in build_web._FUNCTION_ROOT_MODULES
+
+
+# ------------------------------------------- a withdrawn builder's project, named blank
+#
+# Proxima's project 499 "Kensington Lot1 Townhouse" (Riverstone) named "Bathla Development"
+# on 9 Sep. From 22 Sep it returned the same lots at the same prices with NO builder, and on
+# the night the name rule went live six of them were on the live NSW answer, one ranked #2
+# for Riverstone. Every test above keys on the name, so none of them could see those lots.
+# The new names are reached through their modules inside each test, so on a tree without
+# them each test fails on its own rather than the whole file failing to import.
+
+PROXIMA = "Proxima"
+PORTAL = "Direct Builder Portal (live)"
+
+
+def _rec(builder, project, channel=PROXIMA, **kw):
+    return dict({"builder_name": builder, "source_channel": channel,
+                 "source_project_id": project, "superseded_by": None}, **kw)
+
+
+def _kensington():
+    """Project 499 as the database held it on 23 Oct: the 9 Sep captures naming Bathla are
+    all superseded, and the blank-builder captures of the same lots are what is live."""
+    return [_rec("Bathla Development", "499", lot_number="53", superseded_by="v2:blank-53"),
+            _rec("Bathla Development", "499", lot_number="64", superseded_by="v2:blank-64"),
+            _rec("", "499", lot_number="53"),
+            _rec("", "499", lot_number="64")]
+
+
+def test_a_blank_builder_lot_in_a_withdrawn_builders_project_is_withdrawn():
+    rows = _kensington()
+    live = [r for r in rows if not r["superseded_by"]]
+    assert not any(is_withdrawn_builder(r["builder_name"]) for r in live), (
+        "premise: the name rule lets every live lot of the project through")
+    projects = builder_names.withdrawn_projects(rows)
+    assert projects == {(PROXIMA, "499")}
+    assert all(builder_names.is_withdrawn_row(r, projects) for r in rows)
+    # Found only by reading the superseded captures: the live rows name nobody.
+    assert builder_names.withdrawn_projects(live) == frozenset()
+
+
+def test_a_blank_builder_lot_in_a_project_nobody_withdrew_is_kept():
+    projects = builder_names.withdrawn_projects(_kensington())
+    for rec in (_rec("", "172"),                      # another Proxima project
+                _rec("", "499", channel="E-Agent"),   # the same number on another channel
+                _rec("", None)):                      # no project at all
+        assert not builder_names.is_withdrawn_row(rec, projects), rec
+
+
+def test_a_lot_naming_another_builder_in_a_withdrawn_project_is_kept():
+    """The project only fills in a BLANK builder; a row that names someone else is that
+    builder's lot, whatever project it shares."""
+    other = _rec("Hermitage Homes", "499")
+    projects = builder_names.withdrawn_projects(_kensington() + [other])
+    assert (PROXIMA, "499") in projects, "premise: 499 is a withdrawn project"
+    assert not builder_names.is_withdrawn_row(other, projects)
+
+
+def test_a_blank_project_id_never_withdraws_anything():
+    """18 of Bathla's Proxima rows and all 28 of its portal rows had no project id on 12 Oct.
+    Keyed on (channel, blank) they would withdraw every blank-builder row on the channel
+    that names no project either."""
+    named = [_rec("Bathla", None, channel=PORTAL), _rec("Bathla Development", ""),
+             _rec("Bathla Group", "   ")]
+    blank = [_rec("", None, channel=PORTAL), _rec("", ""), _rec("", "   "), _rec("", None)]
+    projects = builder_names.withdrawn_projects(named + blank)
+    assert projects == frozenset()
+    assert all(builder_names.is_withdrawn_row(r, projects) for r in named)   # by name, still
+    assert not any(builder_names.is_withdrawn_row(r, projects) for r in blank)
+    # Nor can a published pair with a blank id stand in for one (see load_snapshot).
+    assert builder_names.project_key({"source_channel": PROXIMA, "source_project_id": " "}) \
+        is None
+
+
+# ------------------------------------- the search: Clare's hook, Agent 2, the Research tab
+
+KENSINGTON_BLANK = ("v2:fresh-00002", "v2:fresh-00003", "v2:fresh-00004", "v2:fresh-00005")
+KEPT_IN_PROJECTS = ("v2:fresh-00006", "v2:fresh-00007")   # Hermitage in 499; blank in 172
+
+
+def _kensington_stock():
+    """40 synthetic lots; eight are on Proxima. Lots 0-1 name Bathla in project 499 and are
+    superseded; lots 2-5 are 499's blank-builder lots; lot 6 is Hermitage's in 499; lot 7
+    is a blank-builder lot in project 172, which nobody withdrew."""
+    rows = S.stock(fresh=40, estates=4)
+    for i, r in enumerate(rows[:8]):
+        r.update(source_channel=PROXIMA, source_project_id="172" if i == 7 else "499",
+                 builder_name="Bathla Development" if i < 2 else
+                 "Hermitage Homes" if i == 6 else "")
+        if i < 2:
+            r.update(superseded_by=rows[i + 2]["content_hash"], date_checked="09/09/2026")
+    return rows
+
+
+def _hashes(resp):
+    return {str(c.get("content_hash") or "") for c in _cards(resp)}
+
+
+@pytest.fixture
+def kensington_search(tmp_path, monkeypatch):
+    path = S.write(tmp_path, _kensington_stock())
+    monkeypatch.setenv("SPB_SNAPSHOT_JSON", str(path))
+    monkeypatch.delenv("SPB_SNAPSHOT_DB", raising=False)
+    monkeypatch.delenv("SPB_MAX_CANDIDATES", raising=False)
+    monkeypatch.delenv("SPB_SHORTLIST_MAX", raising=False)
+    monkeypatch.setattr(C, "datetime", S.Sep16)
+    import research as module
+    monkeypatch.setattr(module, "EXPLAIN_BUDGET_MS", 120000)
+    monkeypatch.setattr(module, "REQUEST_DEADLINE_MS", 600000)
+    return module
+
+
+def test_no_caller_of_the_search_is_offered_a_blank_lot_of_a_withdrawn_project(
+        kensington_search, monkeypatch):
+    def by_name_only(row, _projects=frozenset()):
+        return is_withdrawn_builder(row.get("builder_name"))
+
+    # raising=False: on a tree with no project rule this patches nothing, and the premise
+    # is simply what that tree does.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(C, "is_withdrawn_row", by_name_only, raising=False)
+        before = S.run(kensington_search)
+    assert set(KENSINGTON_BLANK) <= _hashes(before), "premise: the name rule offers them"
+    unpaged = S.run(kensington_search)                                       # Clare's hook
+    paged = S.run(kensington_search, explain=True, offset=0, limit=100)     # Research tab
+    for name, resp in (("unpaged (Clare's hook)", unpaged), ("paged (Research tab)", paged)):
+        assert not _hashes(resp) & set(KENSINGTON_BLANK), name
+        assert set(KEPT_IN_PROJECTS) <= _hashes(resp), name
+        # 40 lots: 2 superseded captures, 4 blank lots of the withdrawn project.
+        assert resp["shortlist_count"] == before["shortlist_count"] - 4 == 34, name
+
+
+def _write_columnar(path, rows, **top):
+    """stock.json in build_web's columnar shape, with any top-level keys given."""
+    keys = list(rows[0])
+    path.write_text(json.dumps(dict({"keys": keys, "rows": [[r.get(k) for k in keys]
+                                                           for r in rows]}, **top)),
+                    encoding="utf-8")
+    return path
+
+
+def test_load_snapshot_applies_the_projects_build_web_published(tmp_path, monkeypatch):
+    """build_web now leaves the rows naming Bathla out of stock.json, so nothing left in
+    the rows says whose project 499 is: the projects published beside them have to."""
+    published = [r for r in _kensington_stock() if not is_withdrawn_builder(r["builder_name"])]
+    path = tmp_path / "stock.json"
+    monkeypatch.setenv("SPB_SNAPSHOT_JSON", str(path))
+    monkeypatch.delenv("SPB_SNAPSHOT_DB", raising=False)
+    _write_columnar(path, published)
+    loaded = {r["content_hash"] for r in C.load_snapshot()[0]}
+    assert set(KENSINGTON_BLANK) <= loaded, "premise: the rows alone do not withdraw them"
+    _write_columnar(path, published, withdrawn_projects=[[PROXIMA, "499"], [PROXIMA, " "]])
+    loaded = {r["content_hash"] for r in C.load_snapshot()[0]}
+    assert not loaded & set(KENSINGTON_BLANK)
+    assert set(KEPT_IN_PROJECTS) <= loaded
+    assert len(loaded) == len(published) - len(KENSINGTON_BLANK)
+
+
+def _snapshot_db(path, rows):
+    """A snapshot database with every SNAPSHOT_FIELDS column, for the SQLite reader."""
+    cols = list(C.SNAPSHOT_FIELDS)
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute("CREATE TABLE buildings (%s)" % ", ".join('"%s"' % c for c in cols))
+        conn.executemany("INSERT INTO buildings VALUES (%s)" % ", ".join("?" * len(cols)),
+                         [tuple(r.get(c) for c in cols) for r in rows])
+        conn.commit()
+    finally:
+        conn.close()
+    return path
+
+
+@pytest.mark.parametrize("reader", ["json", "sqlite"])
+def test_either_reader_finds_the_projects_in_rows_that_still_name_the_builder(
+        reader, tmp_path, monkeypatch):
+    """A snapshot built before 24 Oct, or a database read directly, still holds the rows
+    naming Bathla, so the reader finds project 499 there with nothing published."""
+    rows = _kensington_stock()
+    monkeypatch.delenv("SPB_SNAPSHOT_JSON", raising=False)
+    monkeypatch.delenv("SPB_SNAPSHOT_DB", raising=False)
+    if reader == "json":
+        monkeypatch.setenv("SPB_SNAPSHOT_JSON", str(S.write(tmp_path, rows)))
+    else:
+        monkeypatch.setenv("SPB_SNAPSHOT_DB", str(_snapshot_db(tmp_path / "snap.db", rows)))
+    loaded = {r["content_hash"] for r in C.load_snapshot()[0]}
+    assert not loaded & set(KENSINGTON_BLANK)
+    assert not loaded & {"v2:fresh-00000", "v2:fresh-00001"}           # named, by name
+    assert set(KEPT_IN_PROJECTS) <= loaded and len(loaded) == len(rows) - 6
+
+
+# ---------------------------------------------------------------- publish: build_web
+
+def _harvest_db(path, rows):
+    from database import ResearchDatabase
+    ResearchDatabase(path)
+    conn = sqlite3.connect(str(path))
+    try:
+        for r in rows:
+            conn.execute("INSERT INTO buildings (%s) VALUES (%s)"
+                         % (", ".join(r), ", ".join("?" * len(r))), list(r.values()))
+        conn.commit()
+    finally:
+        conn.close()
+    return path
+
+
+def _harvested_kensington():
+    """Project 499 in a harvest database, plus Hermitage's lot in it, a blank lot in 172,
+    and one Bathla portal lot with no project id."""
+    out = []
+    for i, (h, builder, project, channel, sup) in enumerate((
+            ("v2:named-53", "Bathla Development", "499", PROXIMA, "v2:blank-53"),
+            ("v2:blank-53", "", "499", PROXIMA, None),
+            ("v2:blank-64", "", "499", PROXIMA, None),
+            ("v2:hermitage-499", "Hermitage Homes", "499", PROXIMA, None),
+            ("v2:blank-172", "", "172", PROXIMA, None),
+            ("v2:bathla-portal", "Bathla", None, PORTAL, None))):
+        out.append({"content_hash": h, "dedup_key": h, "builder_name": builder,
+                    "source_channel": channel, "source_project_id": project,
+                    "superseded_by": sup, "lot_number": str(50 + i),
+                    "lot_address": "Lot %d, 20 Wonson Parade, Riverstone NSW 2765" % (50 + i),
+                    "suburb": "Riverstone", "state": "NSW", "availability_status": "For Sale",
+                    "price": 999990.0, "bedrooms": 3,
+                    "date_checked": datetime.now().strftime("%d/%m/%Y")})
+    return out
+
+
+def test_the_build_leaves_the_project_out_and_publishes_it(tmp_path, monkeypatch):
+    import build_web
+    import config
+    monkeypatch.setattr(config, "DATABASE_PATH",
+                        _harvest_db(tmp_path / "harvest.db", _harvested_kensington()))
+    monkeypatch.setattr(build_web, "_login_status", lambda: {})
+    out = tmp_path / "site"
+    build_web.build(out, with_assets=False)
+    stock = json.loads((out / "stock.json").read_text(encoding="utf-8"))
+    hashes = {r[stock["keys"].index("content_hash")] for r in stock["rows"]}
+    assert hashes == {"v2:hermitage-499", "v2:blank-172"}, hashes
+    assert stock["withdrawn_projects"] == [[PROXIMA, "499"]]
+    # And the search, reading what was published, offers exactly those two.
+    monkeypatch.setenv("SPB_SNAPSHOT_JSON", str(out / "stock.json"))
+    monkeypatch.delenv("SPB_SNAPSHOT_DB", raising=False)
+    assert {r["content_hash"] for r in C.load_snapshot()[0]} == hashes
+    # The Settings tab counts the same two of Proxima's four live lots.
+    channels = json.loads((out / "channels.json").read_text(encoding="utf-8"))
+    proxima = next(c for c in channels["channels"] if c["channel"] == PROXIMA)
+    assert proxima["live"] == 2
+
+
+# ---------------------------------------------------------- the Settings tab's counts
+
+def _project_db(rows):
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE buildings (source_channel TEXT, builder_name TEXT, "
+                 "source_project_id TEXT, superseded_by TEXT, date_checked TEXT, "
+                 "checked_at TEXT)")
+    conn.executemany("INSERT INTO buildings VALUES (?,?,?,?,?,?)", rows)
+    return conn
+
+
+def _channel_rows():
+    today = datetime.now().strftime("%d/%m/%Y")
+    return ([(PROXIMA, "Bathla Development", "499", "v2:x", "09/09/2026", None)] * 3
+            # 499's blank lots stopped being refreshed with the rest of Proxima
+            + [(PROXIMA, "", "499", None, "01/10/2026", None)] * 20
+            + [(PROXIMA, "Hermitage Homes", "499", None, today, None)] * 10
+            + [(PROXIMA, "", "172", None, today, None)] * 40
+            # Bathla's portal lots, unread since its portal was switched off
+            + [(PORTAL, "Bathla", None, None, "01/09/2026", None)] * 14
+            + [(PORTAL, "Hermitage Homes", None, None, today, None)] * 30)
+
+
+def _held(payload, name):
+    row = next(c for c in payload["channels"] if c["channel"] == name)
+    return row["live"], row["refreshed_pct"]
+
+
+def test_the_settings_counts_leave_a_withdrawn_builders_lots_out(tmp_path, monkeypatch):
+    """Held and Refreshed describe the stock the app can offer: on 23 Oct "Direct Builder
+    Portal (live)" held 453 with 14 of them Bathla's, unread, dragging Refreshed down."""
+    import build_web
+    monkeypatch.setattr(build_web, "_login_status", lambda: {})
+    monkeypatch.setattr(builder_names, "is_withdrawn_builder", _never)
+    before = build_web._export_channel_health(tmp_path, _project_db(_channel_rows()))
+    assert _held(before, PROXIMA) == (70, 71), "premise: every live lot is counted"
+    assert _held(before, PORTAL) == (44, 68), "premise"
+    monkeypatch.undo()
+    monkeypatch.setattr(build_web, "_login_status", lambda: {})
+    payload = build_web._export_channel_health(tmp_path, _project_db(_channel_rows()))
+    assert _held(payload, PROXIMA) == (50, 100)
+    assert _held(payload, PORTAL) == (30, 100)
+    assert [p["channel"] for p in payload["portals"]] == ["Hermitage Homes"]
+
+
+# ------------------------------------------------- parity and the replay's obvious rows
+
+def _obvious(h, builder, project, channel=PROXIMA, superseded=None):
+    return {"content_hash": h, "builder_name": builder, "source_channel": channel,
+            "source_project_id": project, "superseded_by": superseded,
+            "date_checked": "23/10/2026" if not superseded else "09/09/2026",
+            "availability_status": "For Sale", "price": 999990.0, "state": "NSW",
+            "bedrooms": 3, "lot_number": h[-2:]}
+
+
+def _obvious_catalogue():
+    rows = [_obvious("v2:named-53", "Bathla Development", "499", superseded="v2:blank-53"),
+            _obvious("v2:blank-53", "", "499"), _obvious("v2:blank-64", "", "499"),
+            _obvious("v2:hermitage-99", "Hermitage Homes", "499"),
+            _obvious("v2:blank-72", "", "172"),
+            _obvious("v2:portal-11", "", None, channel=PORTAL),
+            _obvious("v2:bathla-12", "Bathla", None, channel=PORTAL)]
+    return SimpleNamespace(db={r["content_hash"]: r for r in rows}, row=lambda h: None)
+
+
+def _cells(rec):
+    return {"price_kind": "package", "price_in_text": True}
+
+
+def _not_overseas(rec, snap):
+    return False
+
+
+def test_parity_and_the_replay_check_skip_the_same_rows():
+    """Both read the DATABASE, superseded captures included, and take the rule from the
+    bundle the way the search does. Without the project rule, parity would report 499's
+    blank lots as listed by Proxima and hidden by the app, every night."""
+    import parity_check as P
+    import search_regressions as SR
+    catalogue = _obvious_catalogue()
+    today = date(2026, 10, 23)
+
+    def parity(rule):
+        return {lot["hash"] for lot in P.obvious_lots(catalogue, today, _cells, _not_overseas,
+                                                      withdrawn=rule)}
+
+    def replay(rule):
+        return {SR._hash(r) for r in SR.obvious_candidates(catalogue, "NSW", 0, None, today,
+                                                           _cells, withdrawn=rule)}
+
+    # The bundle that shipped on 23 Oct has the name rule only.
+    older = SR.withdrawn_rule(SimpleNamespace(is_withdrawn_builder=is_withdrawn_builder),
+                              catalogue)
+    assert {"v2:blank-53", "v2:blank-64"} <= parity(older), "premise"
+    assert {"v2:blank-53", "v2:blank-64"} <= replay(older), "premise"
+    rule = SR.withdrawn_rule(C, catalogue)
+    kept = {"v2:hermitage-99", "v2:blank-72", "v2:portal-11"}
+    assert parity(rule) == replay(rule) == kept
+
+
+def _parity_lots():
+    """A clean catalogue (tests/_parity_fixture) plus project 499 in NSW: three captures
+    naming its owner, superseded, and the three blank-builder lots that replaced them,
+    read tonight."""
+    from tests import _parity_fixture as F
+
+    def kensington(owner):
+        named = [F.lot(500 + n, state="NSW", estate="Kensington Lot1", channel=PROXIMA,
+                       builder_name=owner, source_project_id="499", day="09/09/2026",
+                       superseded_by="v2:%064x" % (0xA11CE000 + 510 + n)) for n in range(3)]
+        blank = [F.lot(510 + n, state="NSW", estate="Kensington Lot1", channel=PROXIMA,
+                       builder_name="", source_project_id="499") for n in range(3)]
+        return named + blank
+    return F, F.clean_catalogue(), kensington
+
+
+@pytest.fixture(scope="module")
+def parity_bundle(tmp_path_factory):
+    """The research bundle build_web writes, built from this tree."""
+    site = tmp_path_factory.mktemp("withdrawn_bundle")
+    done = subprocess.run(
+        [sys.executable, "-X", "utf8", "-c",
+         "import sys; from pathlib import Path; import build_web; "
+         "build_web._bundle_research_function(Path(sys.argv[1]), Path(sys.argv[2]))",
+         str(APP), str(site)],
+        cwd=str(APP), capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
+    assert done.returncode == 0, done.stdout[-2000:] + done.stderr[-2000:]
+    return site / "api"
+
+
+def _parity_night(bundle, base, db_rows, snapshot_rows, published=()):
+    """parity_check.py over a database and the stock.json build_web would publish from it:
+    the rows the publish keeps, and the withdrawn projects beside them."""
+    F, _clean, _k = _parity_lots()
+    snapshot, db = F.write(base, db_rows)
+    data = json.loads(snapshot.read_text(encoding="utf-8"))
+    keep = {r["content_hash"] for r in snapshot_rows}
+    at = data["keys"].index("content_hash")
+    data["rows"] = [row for row in data["rows"] if row[at] in keep]
+    data["withdrawn_projects"] = [list(k) for k in published]
+    snapshot.write_text(json.dumps(data), encoding="utf-8")
+    report = base / "parity_report.json"
+    done = subprocess.run(
+        [sys.executable, "-X", "utf8", str(APP / "parity_check.py"), "--snapshot", str(snapshot),
+         "--db", str(db), "--bundle", str(bundle), "--today", "06/10/2026",
+         "--history", str(base / "parity_history.json"), "--report", str(report),
+         "--manifest", str(base / "harvest_manifest.json"),
+         "--degraded-marker", str(base / "_run_degraded")],
+        cwd=str(APP), capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env={k: v for k, v in dict(os.environ, PYTHONDONTWRITEBYTECODE="1").items()
+             if k != "SPB_MAX_CANDIDATES"}, timeout=600)
+    body = json.loads(report.read_text(encoding="utf-8")) if report.is_file() else None
+    return done.returncode, done.stdout + done.stderr, body
+
+
+def test_a_night_that_publishes_without_a_withdrawn_project_passes_parity(parity_bundle,
+                                                                        tmp_path):
+    """End to end, the way the nightly runs it: the real bundle, the database holding
+    project 499's blank lots, and a snapshot the publish has left them out of. A check
+    that still counted them would fail NSW every night from the first build."""
+    _F, clean, kensington = _parity_lots()
+    # PREMISE: a project nobody withdrew, missing from the snapshot the same way, fails
+    # NSW -- the bar sees these lots, so the pass below is the rule's doing.
+    code, out, body = _parity_night(parity_bundle, tmp_path / "control",
+                                    clean + kensington("Hermitage Homes"), clean)
+    assert code == 1, out
+    nsw = next(r for r in body["rows"] if r["state"] == "NSW")
+    assert nsw["lots"] == [15, 12], nsw                      # [obvious, shown]
+    code, out, body = _parity_night(parity_bundle, tmp_path / "withdrawn",
+                                    clean + kensington("Bathla Development"), clean,
+                                    published=[(PROXIMA, "499")])
+    assert code == 0, out
+    nsw = next(r for r in body["rows"] if r["state"] == "NSW")
+    assert nsw["lots"] == [12, 12], nsw
