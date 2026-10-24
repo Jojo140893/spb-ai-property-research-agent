@@ -422,6 +422,10 @@ RELISTING_CHANNELS = frozenset({
     # all from one endpoint -- one document, so a lot it stops listing is retired here and
     # a half-read list is caught by partial_reads like any other.
     "E-Agent Stocklist",
+    # RealNet's Drive folder (24 Oct 2026) is read whole every night, one file per package,
+    # and every row names the folder as its source_url -- so the folder is one list, and a
+    # package whose file leaves it is retired here (sources/realnet_drive.py).
+    "RealNet Stocklist",
 })
 # How long a listing must be absent from its OWN list before we take the hint.
 WITHDRAWN_AFTER_DAYS = 14
