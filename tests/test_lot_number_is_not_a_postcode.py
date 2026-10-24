@@ -231,10 +231,25 @@ def test_the_jubilee_lot_goes_back_to_the_page_it_came_from(tmp_path, monkeypatc
 
 def test_the_same_row_with_no_lot_number_keeps_its_postcode_state(tmp_path, monkeypatch):
     """PREMISE for the test above: the only thing that moves 19094 is that 4327 is its own
-    lot. With no lot number to compare, 4327 is a postcode and the state stands."""
+    lot. With no lot number to compare -- and the number after its aspect not read as the
+    lot, which the next test is about -- 4327 is a postcode and the state stands."""
+    import state_resolver
+    monkeypatch.setattr(state_resolver, "postcode_after_an_aspect", lambda *a, **k: False,
+                        raising=False)
     db = _make_db(tmp_path, [_jubilee_19094(lot_number=None), _verv_clyde_north_6948()])
     assert _enrich(monkeypatch, db) == 0
     assert _rows(db)[19094] == ("QLD", "suburb + postcode", "4327")
+
+
+def test_with_no_lot_number_the_number_after_its_aspect_is_still_its_lot(tmp_path,
+                                                                          monkeypatch):
+    """24 Oct 2026: Verv's [VG] email carries this very line with no lot number
+    (tests/test_document_locations.py). 4327 straight after "SS West" is the lot all the
+    same (state_resolver.postcode_after_an_aspect): out of the postcode column, and the VIC
+    page decides, as it does with the lot number."""
+    db = _make_db(tmp_path, [_jubilee_19094(lot_number=None), _verv_clyde_north_6948()])
+    assert _enrich(monkeypatch, db) == 0
+    assert _rows(db)[19094] == ("VIC", "e-agent page (conflicting signals)", None)
 
 
 def test_a_sheet_made_national_by_lot_numbers_gets_its_page_state_back(tmp_path, monkeypatch):
