@@ -445,13 +445,16 @@ def test_the_accountable_anchor_frees_a_list_held_by_its_own_gone_rows(tmp_path,
     """Proxima project 53, 24 Oct: 311 of its 312 'missing' rows are 'Not Available'
     captures from one read on 27/09, and tonight's read is 5 of 5. Measured over every
     stored row it is a failed read for good, so a lot that really left never retires.
-    The source already said those 311 are gone; they are not evidence of a half read."""
+    The source already said those 311 are gone; they are not evidence of a half read.
+    (The captures are from before the ledger's first night, as on 24 Oct: dropped WITH
+    lot 6 on one night, on a list main holds partial, they would be a step --
+    tests/test_retirement_attack3_25oct.py.)"""
     n = Nights(tmp_path, monkeypatch)
     for night in range(1, 18):
         carried = range(1, 7) if night == 1 else range(1, 6)
         lots = [_proxima(i, night, pid="53", status="Available") for i in carried]
         if night == 1:
-            lots += [_proxima(i, 1, pid="53", status="Not Available")
+            lots += [_proxima(i, -20, pid="53", status="Not Available")
                      for i in range(100, 120)]
         n.run(night, lots, entries=[_project_entry("53", len(carried), whole="uncapped")])
     assert "6" in n.retired(), "the lot the project stopped listing was never retired"
@@ -467,7 +470,7 @@ def test_a_night_without_a_manifest_holds_the_new_rules(tmp_path, monkeypatch):
         carried = range(1, 7) if night == 1 else range(1, 6)
         lots = [_proxima(i, night, pid="53", status="Available") for i in carried]
         if night == 1:
-            lots += [_proxima(i, 1, pid="53", status="Not Available")
+            lots += [_proxima(i, -20, pid="53", status="Not Available")
                      for i in range(100, 120)]
         n.run(night, lots, entries=[_project_entry("53", len(carried), whole="uncapped")],
               manifest=night not in (15, 16))

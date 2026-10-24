@@ -198,10 +198,16 @@ def _harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
             # "rejected", so a lot a constraint refused vanished with no line anywhere --
             # and the parity check's READ bar could not see the source at all.
             sl_state = str(getattr(sl, "state", "") or "")
+            # The site's stated total, the records read and why the walk is known to have
+            # stopped early (25 Oct 2026): the retirement ledger proves the search's read
+            # whole only on a stated total that was met (list_ledger.Tonight._search).
+            sl_short_why = str(getattr(sl, "short_why", "") or "")
             sl_entry = harvest_manifest.entry(
                 STOCKLIST_CHANNEL, "search", "stocklist", name=STOCKLIST_CHANNEL,
                 state=sl_state, printed=len(listings),
-                short=bool(getattr(sl, "truncated", False)),
+                short=bool(getattr(sl, "truncated", False) or sl_short_why),
+                short_why=sl_short_why, stated=getattr(sl, "total_stated", None),
+                records=getattr(sl, "records_seen", None),
                 outcome=("read" if listings else
                          "login failed" if sl_state == "refused" else
                          "fetch failed" if sl_state in ("unreachable", "error") else

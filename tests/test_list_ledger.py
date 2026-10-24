@@ -165,10 +165,20 @@ GATES = [
      _list(10, 0, url="", **PORTAL), (),
      {"entries": [_portal("Hermitage Homes", 10, found=12)]}, "partial",
      "veto: portal read 10 of 12"),
-    ("The Stocklist search ending clean proves its read",
+    ("The Stocklist search reading every record the site states proves its read",
      _list(5, 1, channel="E-Agent Stocklist", url="https://api.example/s"), (),
      {"entries": [{"channel": "E-Agent Stocklist", "kind": "search", "state": "ok",
-                   "short": False}]}, "whole", "stocklist search ok"),
+                   "short": False, "stated": 5, "records": 5, "printed": 5}]}, "whole",
+     "stocklist search ok: 5 listing(s) for 5 record(s), 5 stated"),
+    ("...'ok' with no stated total proves nothing (25 Oct): the anchor decides",
+     _list(5, 1, channel="E-Agent Stocklist", url="https://api.example/s"), (),
+     {"entries": [{"channel": "E-Agent Stocklist", "kind": "search", "state": "ok",
+                   "short": False}]}, "whole", "anchor 1/6"),
+    ("...and 'ok' short of its stated total vetoes it, short flag or not",
+     _list(5, 1, channel="E-Agent Stocklist", url="https://api.example/s"), (),
+     {"entries": [{"channel": "E-Agent Stocklist", "kind": "search", "state": "ok",
+                   "short": False, "stated": 12, "records": 6, "printed": 5}]}, "partial",
+     "veto: stocklist search read 6 of the 12"),
     ("...and stopping at its cap vetoes it",
      _list(5, 1, channel="E-Agent Stocklist", url="https://api.example/s"), (),
      {"entries": [{"channel": "E-Agent Stocklist", "kind": "search", "state": "ok",
@@ -204,7 +214,7 @@ def test_a_person_can_accept_a_read_and_a_veto_still_wins():
 def test_older_identities_are_matched_one_for_one():
     """Two older identities of lot 7 and one row of lot 7 on the read: one is set aside,
     the other still counts as missing. A different estate is a different lot."""
-    on_read = [_row(1, 0, lot=7, estate_name="Banksia Rise")]
+    on_read = [_row(1, 0, lot=7, estate_name="Banksia Rise", first_seen=_d(15))]
     missing = [_row(2, 20, lot=7, estate_name="Banksia Rise"),
                _row(3, 30, lot=7, estate_name="Banksia Rise"),
                _row(4, 20, lot=7, estate_name="Other Estate", lot_address="")]
@@ -213,6 +223,13 @@ def test_older_identities_are_matched_one_for_one():
     assert LL.same_lot(missing[0], on_read[0])
     assert not LL.same_lot(missing[2], on_read[0])
     assert not LL.same_lot(_row(5, 0, lot=7, builder="Other Homes"), on_read[0])
+    # Third review, 25 Oct 2026: a row of the same lot listed beside the missing one (first
+    # seen before it was last seen) is another package of the lot -- a second design --
+    # not its new identity; and a row whose first sighting is unknown matches nothing.
+    beside = [_row(6, 0, lot=7, estate_name="Banksia Rise", first_seen=_d(25))]
+    assert LL.older_identities(missing[:1], beside) == {}
+    assert LL.older_identities(missing[:1], [_row(7, 0, lot=7,
+                                                  estate_name="Banksia Rise")]) == {}
 
 
 def test_the_street_is_the_address_without_its_numbers():

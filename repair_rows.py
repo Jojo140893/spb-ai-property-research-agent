@@ -578,8 +578,14 @@ def list_verdicts(rows, today=None, ledger=None, tonight=None, withdrawn=None):
     ledger = ledger if ledger is not None else list_ledger.Ledger.empty(today)
     if withdrawn is None:
         withdrawn = withdrawn_builder_ids(rows)
+    held = main_holds_ids(rows, today)
     out = {}
-    for key, members in _by_document(rows, pool_portals=True).items():
+    # E-Agent lists before the portals': a pooled portal list's two-channel agreement leans
+    # on the verdict of the E-Agent list read through the same page tonight
+    # (list_ledger.Tonight.leaning_doubt).
+    groups = sorted(_by_document(rows, pool_portals=True).items(),
+                    key=lambda kv: str(kv[1][0]["source_channel"] or "") == PORTAL_CHANNEL)
+    for key, members in groups:
         dates = [d for d in (_as_date(r["date_checked"]) for r in members) if d]
         if not dates:
             continue
@@ -589,10 +595,38 @@ def list_verdicts(rows, today=None, ledger=None, tonight=None, withdrawn=None):
         if all(_col(r, "id") in withdrawn for r in members):
             continue                       # nothing on it can be offered, or retired
         v = ledger.judge(key, members, newest, tonight, _gone_status,
-                         PARTIAL_READ_SHARE, PARTIAL_READ_MIN_ROWS, withdrawn=withdrawn)
+                         PARTIAL_READ_SHARE, PARTIAL_READ_MIN_ROWS, withdrawn=withdrawn,
+                         strict=any(_col(r, "id") in held for r in members))
         ledger.note(v)
         out[key] = v
     return out
+
+
+def _as_main_sees(rows):
+    """The rows as main's nightly measures them: supersede_duplicates' reset there cleared
+    every withdrawn mark first, so a retired row is back in its list (the ratchet
+    included)."""
+    return [dict(r, superseded_by=None, superseded_at=None)
+            if str(r["superseded_by"] or "") == WITHDRAWN_FROM_SOURCE else r
+            for r in rows]
+
+
+def main_holds_ids(rows, today):
+    """Ids of the rows whose list the old rule retires NOTHING from tonight, measured as main
+    measures it (_as_main_sees, grouped by _by_document without pooling): it holds the
+    list partial (40%+ of everything stored missing -- the ratchet), or the list's newest
+    read is older than SOURCE_READ_WITHIN_DAYS. A list of the ledger's holding any of them is
+    judged on THE STRICT BAR (list_ledger.STEP_MIN_ROWS): whatever rule A retires there is
+    beyond main."""
+    cleared = _as_main_sees(rows)
+    partial = {k for k, _n, _t in _partial_reads_old_rule(cleared, today)}
+    out = set()
+    for key, members in _by_document(cleared).items():
+        dates = [d for d in (_as_date(r["date_checked"]) for r in members) if d]
+        if key in partial or not dates or \
+                (today - max(dates)).days > SOURCE_READ_WITHIN_DAYS:
+            out.update(_col(r, "id") for r in members)
+    return frozenset(out)
 
 
 def partial_reads(rows, today=None, ledger=None, verdicts=None):
@@ -638,10 +672,7 @@ def main_rule_tonight(rows, today=None):
     night would have run it: supersede had cleared every withdrawn mark first, so the
     lists are measured with those rows back in them (the ratchet included). This is MAIN
     PARITY: what the old rule does tonight, the ledger never delays."""
-    cleared = [dict(r, superseded_by=None, superseded_at=None)
-               if str(r["superseded_by"] or "") == WITHDRAWN_FROM_SOURCE else r
-               for r in rows]
-    return _withdrawn_old_rule(cleared, today or datetime.now())
+    return _withdrawn_old_rule(_as_main_sees(rows), today or datetime.now())
 
 
 def _realnet_held(tonight, row, why=None):
@@ -692,13 +723,28 @@ def _withdrawn_by_ledger(rows, today, ledger, verdicts, withdrawn=frozenset(), t
     MIN_WHOLE_READS_ABSENT whole reads on distinct nights since the row was last seen, and
     that no person put back since. Retirements only; calibration and the cap are main's.
     A withdrawn builder's row (withdrawn_builder_ids) is never one of them, nor a RealNet
-    package list_ledger.realnet_hold keeps (noted in `why`)."""
+    package list_ledger.realnet_hold keeps (noted in `why`).
+
+    THE STRICT BAR AT RETIREMENT (third review, 25 Oct 2026). A list is judged on the strict
+    bar on the nights the old rule holds it partial; a cut on a night it did not (31% of a
+    list missing, under 40%) was judged on max(2, 10%) and could be whole, and if the list
+    crossed 40% before the fortnight was out, the cut lots retired here while main retired
+    none. So, tonight, on a list the old rule holds partial (main_holds_ids), a lot for sale
+    that left it on the same read as another one -- a lot for sale, or a row whose own
+    status says gone -- since the ledger first recorded the list is not retired without a
+    proof tonight or a person's --accept of a read since it was last seen. A lot that left
+    alone still goes; so do drops older than the ledger (its inherited backlog)."""
     import list_ledger
+    held = main_holds_ids(rows, today)
     out = []
     for key, members in _by_document(rows, pool_portals=True).items():
         v = verdicts.get(key)
         if v is None or not v.whole:
             continue                       # a failed read, not a list of what sold
+        together = None
+        if not v.proof and any(r["id"] in held for r in members):
+            together = _left_together(members, v.newest, withdrawn,
+                                      ledger.first_read(v.list_key))
         for r in members:
             if r["id"] in withdrawn:
                 continue
@@ -709,10 +755,42 @@ def _withdrawn_by_ledger(rows, today, ledger, verdicts, withdrawn=frozenset(), t
                 continue                   # a person put it back; wait for a sighting
             if ledger.whole_reads_after(v.list_key, seen) < list_ledger.MIN_WHOLE_READS_ABSENT:
                 continue
+            if together and r["id"] in together and \
+                    not ledger.accepted_after(v.list_key, seen):
+                continue                   # left with another lot, main holds the list
             if _realnet_held(tonight, r, why):
                 continue                   # its file is still in the folder, or unknown
             out.append((r, (v.newest - seen).days))
     return out
+
+
+def _left_together(members, newest, withdrawn, since):
+    """Ids of the lots for sale on a list that left it on the same read as at least one
+    other row -- a lot for sale, or a row whose own status says gone -- on or after `since`
+    (the ledger's first recorded read of the list; None: nothing). STEP_MIN_ROWS rows
+    leaving together is the strict bar's step (list_ledger)."""
+    import list_ledger
+    if since is None:
+        return frozenset()
+    mine = [r for r in members if r["id"] not in withdrawn]
+    acc, gone, _older = list_ledger.accountable(mine, newest, _gone_status)
+    live, dead = collections.defaultdict(list), collections.Counter()
+    for r in mine:
+        d = _as_date(r["date_checked"])
+        if d is None or d >= newest or d < since:
+            continue
+        if r["id"] in gone:
+            dead[d] += 1
+    for r in acc:
+        d = _as_date(r["date_checked"])
+        if d is not None and since <= d < newest:
+            live[d].append(r["id"])
+    out = set()
+    for d, ids in live.items():
+        if len(ids) >= list_ledger.STEP_MIN_ROWS or (
+                len(ids) + dead[d] >= list_ledger.STEP_MIN_ROWS and dead[d]):
+            out.update(ids)
+    return frozenset(out)
 
 
 def find_withdrawn_from_source(rows, today=None, ledger=None, verdicts=None, tonight=None):
@@ -1750,7 +1828,10 @@ def _older_identity_of(rows, today):
         k, _p = list_ledger.lot_identity(row)
         best = None
         for r in pool.get(k, ()):
-            if r["id"] != row["id"] and r["content_hash"] and list_ledger.same_lot(row, r):
+            # First seen after this row was last seen (list_ledger.newer_identity): a row
+            # listed beside it is another package of the lot, not its new identity.
+            if r["id"] != row["id"] and r["content_hash"] and \
+                    list_ledger.newer_identity(row, r):
                 if best is None or (_as_date(r["date_checked"]), r["id"]) > \
                         (_as_date(best["date_checked"]), best["id"]):
                     best = r
@@ -1791,7 +1872,8 @@ def plan_retirements(rows, today, ledger, verdicts, tonight=None, withdrawn=None
                         "main": False, "key": _doc_key(r, True), "older": None})
             taken.add(r["id"])
     plan["rule_b"] = list_ledger.plan_rule_b(ledger, tonight, rows, verdicts, today,
-                                             withdrawn)
+                                             withdrawn, is_gone=_gone_status,
+                                             doc_key=lambda r: _doc_key(r, True))
     for r, silent, rule, basis in plan["rule_b"].retire:
         if r["id"] in taken or ledger.undone_since(r["id"], _as_date(r["date_checked"])):
             continue
@@ -1926,6 +2008,12 @@ def _report_rule_b(rb):
     if rb.blocked:
         print("       not counted tonight: " + "; ".join(
             f"{n} unit(s): {why}" for why, n in rb.blocked.most_common()))
+    for ch, unit, left, builder, lks in getattr(rb, "waiting", [])[:10]:
+        # What a person accepts to let it count: the successor's list(s), whose keys are
+        # also in section 12 (repair_rows.py --accept LIST_KEY --apply).
+        print(f"         waits: {ch} | {builder[:28] or '?'} [{unit}] left {left} lot(s) "
+              f"behind; its successor's list(s): "
+              f"{', '.join(lks) if lks else '(none judged tonight)'}")
     if rb.person:
         print(f"       {len(rb.person)} unit(s) naming no builder, "
               f"{sum(x[2] for x in rb.person)} live row(s), listed for a person -- nothing "

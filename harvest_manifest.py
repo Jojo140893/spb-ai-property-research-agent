@@ -74,7 +74,12 @@ SCHEMA (version 1)
   kind "search" (E-Agent Stocklist, one per night a company login is stored) adds:
       state    the reader's own word: ok | refused | unreachable | no_endpoint |
                gate_refused | error
-      short    true when the read stopped at its page or record cap
+      short    true when the read stopped at its page or record cap, or (25 Oct 2026,
+               additive) is otherwise known to have stopped early: short_why says why
+               (a stated total not met, a page fetch that failed, one full page the
+               server would not move past)
+      stated   the site's own count of its records, or null when it states none
+      records  the records the walk read (before mapping; printed is what mapped)
 
   Every entry also carries (24 Oct 2026, additive; the schema stays 1):
       unit     stocklist_key of the entry's own key (for a stock link the spelling-

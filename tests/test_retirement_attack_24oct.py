@@ -119,14 +119,16 @@ def test_A5_a_second_reupload_under_a_new_label_retires_nothing(tmp_path, monkey
         assert not lost & n.retired(), _say(n, night, lost)
 
 
-@pytest.mark.parametrize("keep, retires", [(10, False), (28, True)])
+@pytest.mark.parametrize("keep, retires", [(10, False), (28, False), (29, True)])
 def test_A6_a_file_renamed_inside_its_folder_and_cut(tmp_path, monkeypatch, keep, retires):
     """Beyond the review, A3 through _plan_files itself: one Dropbox folder link, read clean
     every night. Its file f.pdf (30 lots) is replaced by g.pdf, whose read silently stops at
     lot `keep`. f.pdf is a file the clean folder no longer serves -- but g.pdf is new to the
     folder and the lots it carries were stored before it appeared: it carries 10 of 30, and
-    nothing f.pdf left behind may retire. Twin: g.pdf carries 28, and lots 29-30 retire 14
-    nights after f.pdf went."""
+    nothing f.pdf left behind may retire. Since the third review (25 Oct) the same holds at
+    28 of 30 -- two lots still for sale left behind wait for a proof or a person's --accept
+    (tests/test_retirement_attack3_25oct.py). Twin: g.pdf carries 29, and lot 30 retires
+    14 nights after f.pdf went."""
     n = Nights(tmp_path, monkeypatch)
     links = [_page(k) for k in range(1, 12)]
     folder = "https://files.example/folder"
@@ -145,18 +147,20 @@ def test_A6_a_file_renamed_inside_its_folder_and_cut(tmp_path, monkeypatch, keep
         assert dropped <= n.retired(), sorted(dropped - n.retired())
 
 
-def test_twin_a_reupload_carrying_28_of_30_retires_the_two_it_dropped(tmp_path, monkeypatch):
+def test_twin_a_reupload_carrying_29_of_30_retires_the_one_it_dropped(tmp_path, monkeypatch):
     """The twin (with test_a_reuploaded_list_neither_resurrects_nor_strands_its_rows, 2 of
-    3): a re-upload that carries most of its list says the other lots are gone, and they
-    retire 14 counted nights after the old link left. The 28 never do."""
+    3): a re-upload that carries all its list but one lot says that lot is gone, and it
+    retires 14 counted nights after the old link left. The 29 never do. (It was 28 of 30
+    until the third review, 25 Oct: two lots still for sale left behind now wait for a
+    proof or a person's --accept -- tests/test_retirement_attack3_25oct.py.)"""
     n = Nights(tmp_path, monkeypatch)
-    kept = {str(i) for i in range(1, 29)}
+    kept = {str(i) for i in range(1, 30)}
     for night in range(1, 24):
-        _reupload_cut(n, night, 28)
+        _reupload_cut(n, night, 29)
         assert not kept & n.retired(), _say(n, night, kept)
         if night == 18:
-            assert not {"29", "30"} & n.retired(), "retired before 14 counted nights"
-    assert {"29", "30"} <= n.retired()
+            assert "30" not in n.retired(), "retired before 14 counted nights"
+    assert "30" in n.retired()
 
 
 def test_A2_stranded_before_the_ledger_began(tmp_path, monkeypatch):
@@ -625,14 +629,18 @@ def test_a_silent_cut_on_a_list_never_read_whole_retires_nothing(tmp_path, monke
 
 def test_twin_measured_only_from_a_whole_read_the_cut_retires(tmp_path, monkeypatch):
     """The twin: the step guard measuring only from a whole read (as before), the same
-    nights retire lots 22-30."""
+    nights retire lots 22-30. (The check at retirement the third review added holds them
+    too -- nine lots that left on one read of a list main holds partial -- so it is off
+    here: this twin is the step reference's.)"""
     import list_ledger
+    import repair_rows as RR
 
     def whole_only(self, lk, newest):
         whole = [(d, n) for d, n, v, _b in self.reads.get(lk, ())
                  if v == list_ledger.WHOLE and d < newest]
         return max(whole) + ("its last whole read",) if whole else None
     monkeypatch.setattr(list_ledger.Ledger, "step_reference", whole_only)
+    monkeypatch.setattr(RR, "_left_together", lambda *a, **k: frozenset())
     n = Nights(tmp_path, monkeypatch)
     for night in range(1, 30):
         _vetoed_then_cut_night(n, night)
