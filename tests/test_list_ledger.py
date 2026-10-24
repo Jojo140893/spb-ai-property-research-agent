@@ -370,7 +370,8 @@ def test_a_row_belongs_to_the_link_its_document_was_last_read_through():
     assert LL.row_unit(rows[0], fk, links) == LL.row_unit(rows[1], fk, links) == \
         LL.sha16(fk(new))
     assert LL.row_unit(rows[0], fk) == LL.sha16(fk(old)), "the row's own link changed"
-    assert LL.links_of(rows[:1], links) == sorted({old, new})
+    # ...and the document's own url, in case it is its own link (merged with main 1858d55).
+    assert LL.links_of(rows[:1], links) == sorted({old, new, doc})
     tonight = _tonight_says([_link(new, 1, rejected=1)], rows)
     assert tonight.veto_and_proof((doc, ""), rows[:1], 0)[0].startswith(
         "link had 1 lot(s) refused"), "a veto on the new link missed its document"

@@ -15,6 +15,7 @@ from typing import Dict, Any, List, Optional
 import config
 from brief_parser import coerce_number
 from state_resolver import postcode_is_lot_number
+from sources.base import read_date
 
 logger = logging.getLogger("spb.db")
 
@@ -132,6 +133,14 @@ BUILDINGS_EXTRA_COLUMNS = (
     ("product_type", "TEXT"),
     ("source_state_hint", "TEXT"),
     ("stocklist_file", "TEXT"),
+    # THE LINK THE LATEST READ CAME THROUGH (merged 24 Oct 2026). stocklist_file keeps the
+    # link a row was FIRST stored under -- enrich_buildings' per-file state votes rest on
+    # that -- so the link a re-uploaded or re-shared file is read through now is kept
+    # beside it, for the retirement ledger (list_ledger.row_link): a lot carried onto a
+    # new link that then fails is still offered there, and a veto on the new link (a lot
+    # refused) reaches it. Written on every read that names a link; a read that names none
+    # (a portal, the inbox) leaves it as it was. Never part of content_hash.
+    ("last_stocklist_file", "TEXT"),
     ("storey_source", "TEXT"),
     ("incentive_source", "TEXT"),
     # Full untruncated source row. lot_address is a short, human-readable label for
@@ -478,7 +487,9 @@ class ResearchDatabase:
         NOTE: callers that count "new" rows must compare against the string, not
         truthiness — every return value here is truthy.
         """
-        now_date = b.get("date_checked") or datetime.now().strftime("%d/%m/%Y")
+        # The RUN's day where the source gave none, never this row's own: a harvest that
+        # crosses midnight must not store one read under two dates (sources.base).
+        now_date = b.get("date_checked") or read_date()
         # Stamped HERE rather than in the eight sources, so a source that predates the
         # column still gets one and no harvest path can forget.
         now_ts = b.get("checked_at") or datetime.now().isoformat(timespec="seconds")
@@ -587,6 +598,7 @@ class ResearchDatabase:
             "product_type": b.get("product_type"),
             "source_state_hint": b.get("source_state_hint"),
             "stocklist_file": b.get("stocklist_file"),
+            "last_stocklist_file": b.get("stocklist_file"),
             "storey_source": b.get("storey_source"),
             "incentive_source": b.get("incentive_source"),
             "source_text": b.get("source_text") or b.get("lot_address", ""),
@@ -727,16 +739,15 @@ class ResearchDatabase:
             # these unconditionally meant one unparsed row blanked the availability and
             # title Coleen asked for, and zeroed its price.
             #
-            # stocklist_file TRAVELS WITH THE READ (24 Oct 2026 review), like source_url:
-            # it is the link this read came through. E-Agent gives a re-uploaded file a new
-            # link, and a row kept the link it was first stored under -- 1,666 live E-Agent
-            # rows on 30 Sep named a link other than the one their document was last read
-            # through -- so the retirement ledger's rule B, keyed on the link, took a lot
-            # carried onto a re-upload whose new link then failed for one the source had
-            # stopped offering, and a veto on the new link (a lot refused) never reached
-            # its document. A read that names no link (a portal, an inbox) changes nothing.
+            # stocklist_file is NOT in this list: it stays the link a row was first stored
+            # under. (The retirement review of 24 Oct 2026 moved it with each read; merged
+            # with main 1858d55 it went back, because enrich_buildings' per-file state
+            # votes rest on it -- APLACE's 23 Oct list read as national with every
+            # re-read lot moved onto it, and its two Brisbane lots lost QLD.) The link this
+            # read came through travels in last_stocklist_file instead, for the retirement
+            # ledger (see BUILDINGS_EXTRA_COLUMNS).
             for c in ("price", "availability_status", "title_status", "source_url",
-                      "stocklist_file",
+                      "last_stocklist_file",
                       "extraction_confidence", "land_price", "build_price"):
                 v = price if c == "price" else cols[c]
                 if v not in (None, "", 0, 0.0):

@@ -422,6 +422,10 @@ RELISTING_CHANNELS = frozenset({
     # all from one endpoint -- one document, so a lot it stops listing is retired here and
     # a half-read list is caught by partial_reads like any other.
     "E-Agent Stocklist",
+    # RealNet's Drive folder (24 Oct 2026) is read whole every night, one file per package,
+    # and every row names the folder as its source_url -- so the folder is one list, and a
+    # package whose file leaves it is retired here (sources/realnet_drive.py).
+    "RealNet Stocklist",
 })
 # How long a listing must be absent from its OWN list before we take the hint.
 WITHDRAWN_AFTER_DAYS = 14
@@ -536,14 +540,44 @@ def _gone_status(row) -> bool:
     return str(_col(row, "availability_status") or "").strip().lower() in _NOT_AVAILABLE
 
 
-def list_verdicts(rows, today=None, ledger=None, tonight=None):
+def withdrawn_builder_ids(rows):
+    """Ids of the rows no channel may offer because the client withdrew their builder
+    (builder_names.is_withdrawn_row: Bathla by name, by project, or by capture), found the
+    way the build and the checkers find them -- from every row, superseded ones included.
+
+    WHY HERE (merged 24 Oct 2026 with main's fix-bathla-projects). The rows stay in the
+    database and Proxima still reads Bathla's projects whole, so Bathla's lots sit on lists
+    beside other builders'. Counted, they move a list's verdict: read every night they carry
+    a cut read over the 40% line (12 other lots and 10 of Bathla's, 7 of the 12 missing, is
+    7 of 22 -- "whole"); left unread they hold a list partial for good. So the ledger sets
+    them aside (list_ledger.Ledger.judge) and never retires one: it is offered nowhere
+    already, and taking the builder off WITHDRAWN_BUILDERS must bring its rows back as they
+    were. Without builder_names nothing is set aside -- the rule as on main."""
+    try:
+        from builder_names import is_withdrawn_row, withdrawn_captures, withdrawn_projects
+    except Exception:                                      # noqa: BLE001
+        return frozenset()
+    rows = [r if isinstance(r, dict) else dict(r) for r in rows]
+    projects = withdrawn_projects(rows)
+    captures = withdrawn_captures(rows, projects)
+    return frozenset(r.get("id") for r in rows if is_withdrawn_row(r, projects, captures))
+
+
+def list_verdicts(rows, today=None, ledger=None, tonight=None, withdrawn=None):
     """{list key: list_ledger.Verdict} for every list read within SOURCE_READ_WITHIN_DAYS,
     judged by list_ledger (vetoes, proofs, history, then the anchor) instead of against
     every row ever stored for it. Lists are grouped the ledger's way (_doc_key with
-    pool_portals). Each verdict is noted in the ledger; ledger.commit() writes them."""
+    pool_portals). Each verdict is noted in the ledger; ledger.commit() writes them.
+
+    `withdrawn` (withdrawn_builder_ids, found from `rows` when not given): set aside inside
+    each list, never counted. A list's newest read is still dated by every row on it -- a
+    read that carried only withdrawn lots tonight is tonight's read, with the rest missing
+    -- and a list of nothing but withdrawn rows is not judged."""
     import list_ledger
     today = today or datetime.now()
     ledger = ledger if ledger is not None else list_ledger.Ledger.empty(today)
+    if withdrawn is None:
+        withdrawn = withdrawn_builder_ids(rows)
     out = {}
     for key, members in _by_document(rows, pool_portals=True).items():
         dates = [d for d in (_as_date(r["date_checked"]) for r in members) if d]
@@ -552,8 +586,10 @@ def list_verdicts(rows, today=None, ledger=None, tonight=None):
         newest = max(dates)
         if (today - newest).days > SOURCE_READ_WITHIN_DAYS:
             continue                       # the list itself is stale; it is not judged
+        if all(_col(r, "id") in withdrawn for r in members):
+            continue                       # nothing on it can be offered, or retired
         v = ledger.judge(key, members, newest, tonight, _gone_status,
-                         PARTIAL_READ_SHARE, PARTIAL_READ_MIN_ROWS)
+                         PARTIAL_READ_SHARE, PARTIAL_READ_MIN_ROWS, withdrawn=withdrawn)
         ledger.note(v)
         out[key] = v
     return out
@@ -608,11 +644,55 @@ def main_rule_tonight(rows, today=None):
     return _withdrawn_old_rule(cleared, today or datetime.now())
 
 
-def _withdrawn_by_ledger(rows, today, ledger, verdicts):
+def _realnet_held(tonight, row, why=None):
+    """True when list_ledger.realnet_hold keeps this RealNet package tonight -- its file is
+    still in the folder, or tonight's manifest cannot say -- noting the reason in `why`
+    ({row id: reason}, so a package both rules hold is noted once)."""
+    import list_ledger
+    reason = list_ledger.realnet_hold(tonight, row)
+    if reason and why is not None:
+        why[row["id"]] = reason
+    return bool(reason)
+
+
+def _main_parity(rows, today, ledger, verdicts, withdrawn, tonight=None, why=None):
+    """MAIN PARITY: [(row, silent days, held)] for what the old rule retires tonight
+    (main_rule_tonight) and is not retired already. `held` is "" for a retirement that
+    goes ahead, "vetoed" for one on a read the ledger forbids, "in_folder" for a RealNet
+    package whose file is still in its folder or that tonight's manifest cannot clear
+    (list_ledger.realnet_hold; the reason is noted in `why`), "undone" for a lot a
+    person put back since it was last seen.
+
+    Vetoed: a read tonight's manifest (or its own count) calls cut, and -- merged 24 Oct
+    2026 with main's fix-bathla-projects -- a list holding a withdrawn builder's rows that
+    the ledger does not call whole once they are set aside: the old rule counts them, so
+    read every night they could carry a cut read over its 40% line. A withdrawn builder's
+    row itself is never retired (withdrawn_builder_ids)."""
+    retired = {r["id"] for r in rows if str(r["superseded_by"] or "") == WITHDRAWN_FROM_SOURCE}
+    out = []
+    for r, silent in main_rule_tonight(rows, today):
+        if r["id"] in retired or r["id"] in withdrawn:
+            continue                       # retired already and kept, or offered nowhere
+        v = verdicts.get(_doc_key(r, True))
+        if v is not None and (v.vetoed or (bool(v.withdrawn) and not v.whole)):
+            out.append((r, silent, "vetoed"))
+        elif _realnet_held(tonight, r, why):
+            out.append((r, silent, "in_folder"))
+        elif ledger.undone_since(r["id"], _as_date(r["date_checked"])):
+            out.append((r, silent, "undone"))
+        else:
+            out.append((r, silent, ""))
+    return out
+
+
+def _withdrawn_by_ledger(rows, today, ledger, verdicts, withdrawn=frozenset(), tonight=None,
+                         why=None):
     """RULE A on the ledger's verdicts: [(row, silent days)] a WHOLE newest read (within
     SOURCE_READ_WITHIN_DAYS) has gone WITHDRAWN_AFTER_DAYS without, after at least
     MIN_WHOLE_READS_ABSENT whole reads on distinct nights since the row was last seen, and
-    that no person put back since. Retirements only; calibration and the cap are main's."""
+    that no person put back since. Retirements only; calibration and the cap are main's.
+    A withdrawn builder's row (withdrawn_builder_ids) is never one of them, nor a RealNet
+    package list_ledger.realnet_hold keeps (noted in `why`)."""
     import list_ledger
     out = []
     for key, members in _by_document(rows, pool_portals=True).items():
@@ -620,6 +700,8 @@ def _withdrawn_by_ledger(rows, today, ledger, verdicts):
         if v is None or not v.whole:
             continue                       # a failed read, not a list of what sold
         for r in members:
+            if r["id"] in withdrawn:
+                continue
             seen = _as_date(r["date_checked"])
             if not seen or (v.newest - seen).days < WITHDRAWN_AFTER_DAYS:
                 continue
@@ -627,11 +709,13 @@ def _withdrawn_by_ledger(rows, today, ledger, verdicts):
                 continue                   # a person put it back; wait for a sighting
             if ledger.whole_reads_after(v.list_key, seen) < list_ledger.MIN_WHOLE_READS_ABSENT:
                 continue
+            if _realnet_held(tonight, r, why):
+                continue                   # its file is still in the folder, or unknown
             out.append((r, (v.newest - seen).days))
     return out
 
 
-def find_withdrawn_from_source(rows, today=None, ledger=None, verdicts=None):
+def find_withdrawn_from_source(rows, today=None, ledger=None, verdicts=None, tonight=None):
     """Listings whose own source has gone on re-listing everything except them.
 
     THE APP WAS SHOWING PROPERTIES THAT HAD SOLD. Colin, 7 Sep: he searched Geelong at
@@ -665,28 +749,27 @@ def find_withdrawn_from_source(rows, today=None, ledger=None, verdicts=None):
 
     WITH A LEDGER (24 Oct 2026, list_ledger): what retires is the union of MAIN PARITY --
     what the rule below retires tonight, unless tonight's manifest vetoes the read or a
-    person put the lot back -- and RULE A (_withdrawn_by_ledger). Without a ledger this is
-    the rule as it stood on 24 Oct 2026, byte for byte.
+    person put the lot back -- and RULE A (_withdrawn_by_ledger). A RealNet package goes
+    by either only when `tonight` (list_ledger.Tonight) proves its file left the folder:
+    with no manifest every one is held. Without a ledger this is the rule as it stood on
+    24 Oct 2026, byte for byte.
     """
     today = today or datetime.now()
     if ledger is not None or verdicts is not None:
         import list_ledger
         ledger = ledger if ledger is not None else list_ledger.Ledger.empty(today)
+        withdrawn = withdrawn_builder_ids(rows)
         if verdicts is None:
-            verdicts = list_verdicts(rows, today, ledger)
+            verdicts = list_verdicts(rows, today, ledger, tonight, withdrawn=withdrawn)
         out, taken = [], set()
-        retired = {r["id"] for r in rows
-                   if str(r["superseded_by"] or "") == WITHDRAWN_FROM_SOURCE}
-        for r, silent in main_rule_tonight(rows, today):
-            if r["id"] in retired:
-                continue
-            v = verdicts.get(_doc_key(r, True))
-            if (v is not None and v.vetoed) or ledger.undone_since(
-                    r["id"], _as_date(r["date_checked"])):
+        for r, silent, held in _main_parity(rows, today, ledger, verdicts, withdrawn,
+                                            tonight):
+            if held:
                 continue
             out.append((r, silent))
             taken.add(r["id"])
-        out.extend((r, s) for r, s in _withdrawn_by_ledger(rows, today, ledger, verdicts)
+        out.extend((r, s) for r, s in _withdrawn_by_ledger(rows, today, ledger, verdicts,
+                                                           withdrawn, tonight)
                    if r["id"] not in taken)
         return out
     return _withdrawn_old_rule(rows, today)
@@ -1675,40 +1758,40 @@ def _older_identity_of(rows, today):
     return find
 
 
-def plan_retirements(rows, today, ledger, verdicts, tonight=None):
+def plan_retirements(rows, today, ledger, verdicts, tonight=None, withdrawn=None):
     """Tonight's retirements under the ledger, decided but not written.
 
     {"apply": [item], "would": [item], "deferred": [item], "vetoed": n, "undone": n,
     "rule_b": list_ledger.RuleB}, an item being {row, silent, rule, main, key, older,
     basis}. MAIN PARITY applies from night 1 with no 2-read rule and no cap; RULE A and
     RULE B (the source stopped offering the list) are printed as "would retire" while the
-    ledger is calibrating, and capped after."""
+    ledger is calibrating, and capped after. A withdrawn builder's row
+    (withdrawn_builder_ids, found from `rows` when not given) is retired by none of them,
+    and a RealNet package only when tonight's folder line proves its file has gone
+    (list_ledger.realnet_hold; "realnet_held" is {row id: why} for the rest)."""
     import list_ledger
+    if withdrawn is None:
+        withdrawn = withdrawn_builder_ids(rows)
     plan = {"apply": [], "would": [], "deferred": [], "vetoed": 0, "undone": 0,
-            "held_because": ""}
+            "in_folder": 0, "realnet_held": {}, "held_because": ""}
     items, taken = [], set()
-    retired = {r["id"] for r in rows if str(r["superseded_by"] or "") == WITHDRAWN_FROM_SOURCE}
-    for r, silent in main_rule_tonight(rows, today):
-        if r["id"] in retired:
-            continue                       # retired already, and kept: nothing to write
-        key = _doc_key(r, True)
-        v = verdicts.get(key)
-        if v is not None and v.vetoed:
-            plan["vetoed"] += 1
-            continue
-        if ledger.undone_since(r["id"], _as_date(r["date_checked"])):
-            plan["undone"] += 1
+    for r, silent, held in _main_parity(rows, today, ledger, verdicts, withdrawn, tonight,
+                                        plan["realnet_held"]):
+        if held:
+            plan[held] += 1
             continue
         items.append({"row": r, "silent": silent, "rule": list_ledger.RULE_PARITY,
-                      "main": True, "key": key, "older": None})
+                      "main": True, "key": _doc_key(r, True), "older": None})
         taken.add(r["id"])
     new = []
-    for r, silent in _withdrawn_by_ledger(rows, today, ledger, verdicts):
+    for r, silent in _withdrawn_by_ledger(rows, today, ledger, verdicts, withdrawn, tonight,
+                                          plan["realnet_held"]):
         if r["id"] not in taken:
             new.append({"row": r, "silent": silent, "rule": list_ledger.RULE_ABSENT,
                         "main": False, "key": _doc_key(r, True), "older": None})
             taken.add(r["id"])
-    plan["rule_b"] = list_ledger.plan_rule_b(ledger, tonight, rows, verdicts, today)
+    plan["rule_b"] = list_ledger.plan_rule_b(ledger, tonight, rows, verdicts, today,
+                                             withdrawn)
     for r, silent, rule, basis in plan["rule_b"].retire:
         if r["id"] in taken or ledger.undone_since(r["id"], _as_date(r["date_checked"])):
             continue
@@ -1777,9 +1860,16 @@ def _report_plan(plan, ledger, tonight, verdicts):
                                     for it in plan["deferred"])
         print(f"       nightly cap: {len(plan['deferred'])} deferred to the next night, "
               f"longest-silent first {dict(chans)}")
-    if plan["vetoed"] or plan["undone"]:
+    if plan["vetoed"] or plan["undone"] or plan.get("in_folder"):
         print(f"       the old rule's retirements held back: {plan['vetoed']} on a read "
-              f"tonight's manifest vetoes, {plan['undone']} a person put back")
+              f"tonight's manifest vetoes (or not whole once a withdrawn builder's rows "
+              f"are set aside), {plan.get('in_folder', 0)} RealNet package(s) still in "
+              f"their folder or not cleared by tonight's manifest, {plan['undone']} a "
+              f"person put back")
+    held = collections.Counter((plan.get("realnet_held") or {}).values())
+    if held:
+        print(f"       RealNet: {sum(held.values())} package(s) absent from the read kept "
+              f"live -- " + "; ".join(f"{n}: {why}" for why, n in held.most_common()))
     _report_rule_b(plan.get("rule_b"))
 
 
@@ -1942,8 +2032,12 @@ def main(apply_changes):
         ledger = list_ledger.Ledger(conn, today, write=apply_changes)
         manifest = list_ledger.read_manifest(now=today)
         tonight = list_ledger.Tonight(manifest, rows, ledger) if manifest else None
-        verdicts = list_verdicts(rows, today, ledger, tonight)
-        plan = plan_retirements(rows, today, ledger, verdicts, tonight)
+        # A withdrawn builder's rows (Bathla) are set aside in every list and never
+        # retired: see withdrawn_builder_ids.
+        withdrawn_ids = withdrawn_builder_ids(rows)
+        verdicts = list_verdicts(rows, today, ledger, tonight, withdrawn=withdrawn_ids)
+        plan = plan_retirements(rows, today, ledger, verdicts, tonight,
+                                withdrawn=withdrawn_ids)
         withdrawn = [(it["row"], it["silent"]) for it in plan["apply"] if not it["older"]]
         older_moves = [it for it in plan["apply"] if it["older"]]
         half_read = partial_reads(rows, today, verdicts=verdicts)

@@ -88,6 +88,18 @@ SCHEMA (version 1)
   and (24 Oct 2026 review, additive):
       "started"     dd/mm/YYYY HH:MM, local time: when reset() began this harvest, so a
                     run that crosses midnight is known to hold reads of two dates
+      "read_date"   dd/mm/YYYY (merged 24 Oct 2026 with fix-proxima-day): the one date
+                    every row of this run carries (sources.base.one_read_date) -- the
+                    ledger's name for the night, and always one of its read dates
+      "docs"        on a stock link (merged 24 Oct 2026): the stocklist_key of every
+                    document (a lot's source_url) the link served tonight (count_outcomes).
+                    A row keeps the link it was first stored under, so this is how the
+                    retirement ledger knows which link a document came through tonight --
+                    a re-uploaded file's vetoes reach the rows carried onto it
+      "files_listed" on RealNet's folder line (merged 24 Oct 2026 with realnet-wa-drive):
+                    the stocklist_key of the Drive id of every file the folder's listing
+                    returned tonight (note_listed) -- never the id, which opens the file.
+                    The retirement ledger never retires a package whose file is still here
       "runs"        {channel: {...}}: what a reader said of its whole run. "Proxima":
                     {"stats": the reader's own skip counts ("project unreadable",
                     "project errored", ...), "projects_seen", "projects_logged" (the
@@ -173,6 +185,20 @@ LINK_NOTES: Dict[str, Dict[str, Any]] = {}
 # for the same ledger: see "started" and "runs" in the schema above.
 RUNS: Dict[str, Dict[str, Any]] = {}
 STARTED: List[str] = []
+# THE RUN'S ONE READ DATE (merged 24 Oct 2026 with main's fix-proxima-day): the date every
+# row this harvest reads carries (sources.base.read_date, inside harvest_buildings'
+# one_read_date block). Noted beside "started" because reset() runs a moment after the block
+# opens: a block opened at 23:59:59 stamps every row with that day while "started" says
+# 00:00 the next one, and the retirement ledger must know those reads are tonight's.
+READ_DATE: List[str] = []
+
+
+def _run_read_date() -> str:
+    try:
+        from sources.base import read_date
+        return read_date()
+    except Exception:                                      # noqa: BLE001
+        return datetime.now().strftime("%d/%m/%Y")
 
 
 def reset() -> None:
@@ -183,6 +209,7 @@ def reset() -> None:
     LINK_NOTES.clear()
     RUNS.clear()
     STARTED[:] = [datetime.now().strftime("%d/%m/%Y %H:%M")]
+    READ_DATE[:] = [_run_read_date()]
 
 
 def note_run(channel: str, **fields: Any) -> None:
@@ -210,6 +237,12 @@ def note_link(href: str, truncated: bool = True, why: str = "") -> None:
     n["truncated"] = bool(n["truncated"] or truncated)
     if why:
         n["why"] = _no_links(why)[:200]
+
+
+def note_listed(e: Dict[str, Any], ids: Iterable[str]) -> None:
+    """The files a folder's listing returned tonight, on its line, each by the hash of its
+    own id (see "files_listed" above). Never fatal, never an id."""
+    e["files_listed"] = sorted({stocklist_key(i) for i in (ids or ()) if i})
 
 
 def stocklist_key(stocklist_file: str) -> str:
@@ -283,10 +316,20 @@ def tag(rows: Iterable[Dict[str, Any]], e: Dict[str, Any]) -> None:
 
 
 def count_outcomes(listings: List[Dict[str, Any]], outcomes: List[str]) -> None:
+    """What record_building did with each lot, counted on its entry; and, on a stock link,
+    the documents it served tonight ("docs", see the schema)."""
     for listing, outcome in zip(listings, outcomes):
         e = _BY_ID.get(listing.get("_manifest_id"))
-        if e is not None and outcome in e["stored"]:
+        if e is None:
+            continue
+        if outcome in e["stored"]:
             e["stored"][outcome] += 1
+        doc = str(listing.get("source_url_or_ref") or listing.get("source_url") or "").strip()
+        if doc and e.get("kind") == "stock link":
+            docs = e.setdefault("docs", [])
+            k = stocklist_key(doc)
+            if k not in docs:
+                docs.append(k)
 
 
 def problem_outcome(problem: str) -> str:
@@ -316,6 +359,7 @@ def snapshot() -> Dict[str, Any]:
     return {"schema": SCHEMA,
             "generated": datetime.now().strftime("%d/%m/%Y %H:%M"),
             "started": STARTED[0] if STARTED else None,
+            "read_date": READ_DATE[0] if READ_DATE else None,
             "entries": ENTRIES,
             "documents": DOCUMENTS,
             "link_notes": LINK_NOTES,

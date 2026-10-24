@@ -88,7 +88,8 @@ class Nights:
         self.out = ""
 
     def run(self, night, lots, entries=(), documents=None, link_notes=None, apply=True,
-            manifest=True, runs=None, started=None, generated=None, after_harvest=None):
+            manifest=True, runs=None, started=None, generated=None, after_harvest=None,
+            read_date=None):
         import repair_rows as RR
         import supersede_duplicates as SD
         # Another list, read every night, whose one line also reached the inbox: the
@@ -111,6 +112,8 @@ class Nights:
                 m["runs"] = runs
             if started is not None:
                 m["started"] = started.strftime("%d/%m/%Y %H:%M")
+            if read_date is not None:          # the run's one read date (one_read_date)
+                m["read_date"] = read_date.strftime("%d/%m/%Y")
             self.manifest.write_text(json.dumps(m), encoding="utf-8")
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):

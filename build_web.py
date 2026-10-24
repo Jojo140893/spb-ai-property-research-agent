@@ -443,7 +443,7 @@ def _assert_no_folder_capability_urls(path: Path) -> None:
     """
     if not path.exists():
         return
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8", errors="replace")
     folder = sum(text.count(m) for m in
                  ("dropbox.com/scl/fo/", "/:f:/", "sharepoint.com/:f:"))
     if folder:
@@ -451,6 +451,19 @@ def _assert_no_folder_capability_urls(path: Path) -> None:
             f"[ABORT] {path.name}: {folder} folder-level share link(s) would be "
             f"published. A folder capability grants the whole folder to anyone with the "
             f"URL. Export the per-document link instead, or nothing.")
+
+
+_STATIC_TEXT = (".json", ".html", ".js", ".css", ".svg", ".xml", ".txt", ".csv")
+
+
+def _static_files(site: Path):
+    """Every text file the deploy serves as-is: all of `site` except api/, the function
+    bundle, which Vercel runs and never serves. api/_data/price_list_links.json holds the
+    folder links on purpose and is reachable only through api/price_list.py."""
+    for path in sorted(site.rglob("*")):
+        rel = path.relative_to(site)
+        if path.is_file() and rel.parts[0] != "api" and path.suffix.lower() in _STATIC_TEXT:
+            yield path
 
 
 # The floor a suburb-blind harvest would fall through. See _assert_suburb_coverage.
@@ -1109,11 +1122,34 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     # after every pass above has read its rows as evidence for their neighbours, so no
     # other row's suburb or state differs from a build without this. stock.json, the
     # coverage floor and our side of the benchmarks below then never see it.
-    from builder_names import is_withdrawn_builder
-    _kept = [b for b in buildings if not is_withdrawn_builder(b.get("builder_name"))]
+    #
+    # AND SO DOES A BLANK-BUILDER LOT IN ONE OF ITS PROJECTS (builder_names.is_withdrawn_row):
+    # Proxima named Bathla on project 499 one night and nobody on the next, and the rule
+    # keyed on the name let the blank nights through to the live NSW answer. The projects
+    # are found here, from every row the database holds, live or superseded, because this
+    # is the last point that still holds the rows naming the builder. They are written
+    # into stock.json beside the rows for _candidates.load_snapshot, which no longer has
+    # those rows to find them by.
+    #
+    # AND SO DOES A BLANK-BUILDER CAPTURE OF ONE OF ITS LOTS (builder_names.withdrawn_captures):
+    # Bathla's Lot 128 and Lot 119 at Box Hill came back blank under project 724, which no
+    # Bathla row is filed under, and only superseded_by still said they were the same lots.
+    # Found here from every row for the same reason, and published beside the rows too.
+    from builder_names import (is_withdrawn_builder, is_withdrawn_row, withdrawn_captures,
+                               withdrawn_projects)
+    _withdrawn_projects = withdrawn_projects(buildings)
+    _withdrawn_captures = withdrawn_captures(buildings, _withdrawn_projects)
+    _kept = [b for b in buildings
+             if not is_withdrawn_row(b, _withdrawn_projects, _withdrawn_captures)]
     if len(_kept) != len(buildings):
-        print(f"    {len(buildings) - len(_kept)} listing(s) left out: their builder "
-              f"is withdrawn")
+        _by_name = sum(1 for b in buildings if is_withdrawn_builder(b.get("builder_name")))
+        _by_project = sum(1 for b in buildings
+                          if is_withdrawn_row(b, _withdrawn_projects)) - _by_name
+        print(f"    {len(buildings) - len(_kept)} listing(s) left out: {_by_name} name a "
+              f"withdrawn builder, {_by_project} name no builder in one of its "
+              f"{len(_withdrawn_projects)} project(s), "
+              f"{len(buildings) - len(_kept) - _by_name - _by_project} name no builder "
+              f"and are another capture of one of its lots")
     buildings = _kept
     # WHAT THE APP WILL ACTUALLY RESOLVE, measured here because this is the only place
     # that holds both the graded rows and the sibling maps at once. The stored grade
@@ -1151,6 +1187,13 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         "keys": BUILDING_FIELDS + BUILDING_DERIVED_FIELDS,
         "rows": [[b.get(f) for f in BUILDING_FIELDS + BUILDING_DERIVED_FIELDS]
                  for b in buildings],
+        # [source_channel, source_project_id] of each withdrawn project (see above), so
+        # the search drops a blank-builder lot in one even from a snapshot whose rows no
+        # longer show who the project belongs to.
+        "withdrawn_projects": [list(k) for k in sorted(_withdrawn_projects)],
+        # content_hash of each blank-builder capture joined to a withdrawn row (see above),
+        # for the same reason: the rows that joined them are no longer here.
+        "withdrawn_captures": sorted(_withdrawn_captures),
     }, separators=(",", ":"), default=str), encoding="utf-8")
 
     # BENCHMARKS — market comparables, written UNCONDITIONALLY, including with zero rows.
@@ -1441,6 +1484,11 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
             # key handling, so it carries that file as well as the masking rules.
             "api/lead_notes.py": {"memory": 256, "maxDuration": 30,
                                   "includeFiles": "{api/_contact.py,api/hot_leads.py}"},
+            # Opens one entry of the Settings tab's "Price lists we could not read" by id
+            # (24 Oct 2026). Stdlib only; the id -> link map travels with it and is never a
+            # static file, because most of those links are Dropbox folder shares.
+            "api/price_list.py": {"memory": 256, "maxDuration": 10,
+                                  "includeFiles": "api/_data/price_list_links.json"},
         }
     (out_dir / "vercel.json").write_text(json.dumps(vercel, indent=2), encoding="utf-8")
     _write_auth_middleware(out_dir)
@@ -1516,7 +1564,11 @@ _FUNCTION_ENTRY = ("research.py", "_bootstrap.py", "_candidates.py", "_export_bu
                    # The same shape, 15 Sep 2026: research.py imports this inside a
                    # try/except too, so a bundle without it would quietly stop reading
                    # "Tarn eat" as Tarneit and nobody would see an error. Probed below.
-                   "_location_resolver.py")
+                   "_location_resolver.py",
+                   # Ahsan, 24 Oct 2026: the unreadable price lists open from the Settings
+                   # tab through this. Stdlib only, like refresh.py; it carries
+                   # api/_data/price_list_links.json, probed below.
+                   "price_list.py")
 
 
 MIDDLEWARE_JS = r"""// Server-side gate for the whole dashboard. Generated by build_web.py — do not edit here.
@@ -1876,6 +1928,55 @@ CHANNEL_PUSH_SOURCES = frozenset({"digital email"})
 # A small source that dies outright still goes stale on age.
 CHANNEL_PARTIAL_MIN_LIVE = 25
 
+# "REFRESHED" IS ONE RUN, NOT ONE CALENDAR DAY (23 Oct 2026). It counted the live rows
+# dated a channel's newest day, so a read that crossed midnight was cut in two: a run
+# dispatched at 23:04 read Proxima from 23:40 to 00:00:44, the 288 lots read after midnight
+# made up the newest day on their own, and this tab said 3% -- "ONLY PART OF ITS STOCK" --
+# of a read that was whole (8,363 lots, 109 of 109 projects). The harvest now stamps one
+# date per run (sources.base.read_date), but a date is still the wrong unit for "what did
+# the last read see", so the tab measures the run itself: the live rows whose checked_at
+# (the moment, see _newest_ts) belongs to the same run as the channel's newest one.
+#
+# A RUN IS ONE BURST OF WRITES, found by walking back from the newest checked_at until the
+# stamps stop. record_building is the only writer of checked_at, and the harvest stores a
+# channel's rows straight after that channel's read returns -- one burst each for E-Agent,
+# the Stocklist, Proxima and the inbox, one per state for the direct portals -- so the
+# stamps of one run sit seconds apart and a pause of CHANNEL_RUN_GAP_MINUTES is the end
+# of an earlier run. Measured on run 39950641008 (23 Oct): Proxima stored its 8,363 rows
+# in 13 seconds (13:00:44Z, when its read returned, to 13:00:57Z, when the inbox sweep
+# connected), and the direct portals read state after state 10 to 40 seconds apart.
+# Against that, two nightly runs leave the same channel at least 33 minutes apart: runs
+# are queued one at a time (the spb-daily-harvest concurrency group), and a re-run
+# dispatched the moment a job fails only reaches its first store, E-Agent's, 33 minutes in
+# (12:04:47Z to 12:37:45Z); two runs that both finish are over an hour and a half apart
+# (Proxima stored 56 minutes after dispatch, and the run went on 49 minutes after that).
+# Two Proxima reads by hand (harvest_buildings.py --proxima-only) cannot store closer
+# than the 20 minutes one read takes (12:40:16Z to 13:00:44Z). Fifteen minutes sits
+# between: twenty times the longest pause inside a run, short of the quickest gap between
+# two. Only a quick channel read twice by hand -- the portals or the inbox, a minute or
+# two each -- still blends, as two runs on one date always did. The other way round, a
+# state's portal read that hung for a quarter of an hour would cut that night's portal
+# rows in two and could flag them "partial": a loud error to look at, not a quiet "ok".
+#
+# And no stamp more than CHANNEL_RUN_SPAN_HOURS older than the newest is the same run,
+# however the bursts chain: the harvest job is killed at 150 minutes (daily-harvest.yml),
+# so the cap never cuts a real run and only bites on reads repeated by hand.
+#
+# WHY NOT A FIXED WINDOW. The first cut of this (same day, before review) took every stamp
+# within 12 hours of the newest, on the reasoning that 12 is half the gap between two
+# scheduled nights, so last night's rows never count as tonight's. Runs are not only
+# scheduled: 23 Oct had the 09:00 run and manual ones dispatched at 13:08 and 23:04, and
+# that window took the 13:08 run's Proxima read (stored at 14:03) into the 23:04 run's
+# (stored from 00:00:44). Worse, a full read by a late manual run followed by a 09:00 run
+# that hands back 16 of 1,000 read as 100% "ok" -- the 17 Aug failure (16 lots against a
+# stored 1,396) this tab exists to catch, and one the day rule did catch. The day rule
+# had its own version: two runs on one date blend, so a thin re-run the same afternoon
+# read as whole. The gap separates both.
+#
+# A channel whose rows carry no checked_at (stored before 18 Aug 2026) keeps the day rule.
+CHANNEL_RUN_GAP_MINUTES = 15
+CHANNEL_RUN_SPAN_HOURS = 3
+
 
 def _trimmed_url(value, limit=120):
     """A URL cut to `limit` characters without leaving a half-written %-escape behind."""
@@ -1912,13 +2013,74 @@ def _readable_name(url) -> str:
     return f"{tail[:80]} ({host})" if host else tail[:80]
 
 
-def _unreadable_stocklists():
-    """What the last harvest fetched and could read nothing out of."""
+UNREADABLE_SHOWN = 80
+# id -> link for the panel's entries. Written INTO THE FUNCTION BUNDLE (api/_data), which
+# Vercel does not serve as a static file, and read only by api/price_list.py.
+PRICE_LIST_LINKS = "price_list_links.json"
+
+
+def _price_list_link(entry) -> str:
+    """The http(s) link one unreadable entry opens, or "" if it opens nothing.
+
+    The harvest records it as `link` since 24 Oct 2026. Older lists carried only `file`,
+    which for a downloaded file IS its link. Anything that is not http(s) -- a file name,
+    javascript:, file:, data: -- opens nothing, and the entry keeps its name.
+    """
+    from urllib.parse import urlparse
+    for value in (entry.get("link"), entry.get("file")):
+        text = str(value or "").strip()
+        parsed = urlparse(text)
+        if (parsed.scheme.lower() not in ("http", "https") or not parsed.netloc
+                or re.search(r"[\s\x00-\x1f\x7f]", text)):
+            continue
+        # A Dropbox file is fetched with dl=1, which downloads it. A person checking it
+        # wants Dropbox's own preview.
+        if parsed.netloc.lower().endswith("dropbox.com"):
+            text = re.sub(r"([?&])dl=1(?=&|#|$)", r"\1dl=0", text)
+        return text
+    return ""
+
+
+def _price_list_id(link: str) -> str:
+    """An opaque name for one link: 16 hex characters of its SHA-256. A share link holds a
+    long random key, so the id cannot be turned back into it."""
+    return hashlib.sha256(link.encode("utf-8")).hexdigest()[:16]
+
+
+def _unreadable_entries():
+    """(payload, the entries the panel shows), or (None, []) when there is no list."""
     path = Path(__file__).resolve().parent / "data" / "unreadable_stocklists.json"
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:                                  # pragma: no cover - absent is fine
-        return {"generated": "", "count": 0, "files": []}
+        return None, []
+    files = [f for f in payload.get("files") or [] if isinstance(f, dict)]
+    return payload, files[:UNREADABLE_SHOWN]
+
+
+def _write_price_list_links(dest_api: Path) -> int:
+    """api/_data/price_list_links.json: the id -> link map api/price_list.py resolves.
+
+    Built from the same list as the ids in channels.json, so every id the page shows is
+    here. Returns how many links it holds.
+    """
+    _payload, shown = _unreadable_entries()
+    links = {}
+    for entry in shown:
+        link = _price_list_link(entry)
+        if link:
+            links[_price_list_id(link)] = link
+    out = dest_api / "_data" / PRICE_LIST_LINKS
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(links, indent=1, sort_keys=True), encoding="utf-8")
+    return len(links)
+
+
+def _unreadable_stocklists():
+    """What the last harvest fetched and could read nothing out of."""
+    payload, shown = _unreadable_entries()
+    if payload is None:
+        return {"generated": "", "count": 0, "files": [], "open": []}
     files = payload.get("files") or []
     # HOW OLD IT IS, ALONGSIDE WHAT IT SAYS. The harvest rewrites this file on the runner
     # and the runner is thrown away, so a deploy from a laptop republishes whatever copy
@@ -1937,7 +2099,13 @@ def _unreadable_stocklists():
             #
             # The panel exists so somebody can go and ask that builder for a readable
             # price list. A file name does that; the capability URL only adds risk.
-            "files": [_readable_name(f.get("file")) for f in files][:80]}
+            "files": [_readable_name(f.get("file")) for f in shown],
+            # ...AND A WAY TO OPEN IT, STILL WITHOUT THE LINK (Ahsan, 24 Oct 2026: he
+            # wants to check the price list himself). One opaque id per entry, "" where
+            # there is nothing to open. /api/price_list?id= turns it into the link on the
+            # server, behind the sign-in; the links stay in the function bundle.
+            "open": [_price_list_id(link) if link else ""
+                     for link in map(_price_list_link, shown)]}
 
 
 def _sheet_check():
@@ -2122,14 +2290,24 @@ def _login_for(name, logins):
     # Whether "Fetch stock now" can fix this row, and when it cannot, why. Carried
     # through rather than recomputed in the browser: the answer depends on whether a
     # password is stored in the vendor sheet, which the page must never see.
-    for k in ("self_service", "blocked_by", "note"):
+    #
+    # And who measured it and what the page showed (23 Oct 2026): "basis" is "harvest"
+    # when tonight's own sign-in decided the row and "check" when the saved session was
+    # reopened afterwards; "reason" tells a dead session from a crash. The row's "url"
+    # stays in login_status.json and is not published; a reason or note names a PATH at
+    # most ("password field at /login"), never a host or a query string.
+    for k in ("self_service", "blocked_by", "note", "basis", "reason"):
         if k in hit:
             out[k] = hit[k]
     return out
 
 
 # Worst first: one dead sign-in inside a group is what the group should report.
-_LOGIN_RANK = {"missing": 0, "expired": 1, "unknown": 2, "not_applicable": 3, "ok": 4}
+# "no_login_needed" sits ABOVE ok: a public stocklist can never be the group's problem.
+# Missing from this map it took the default 2, so once Hermitage read ok the "Direct
+# Builder Portal" group would have said "no sign-in needed" over a portal that has one.
+_LOGIN_RANK = {"missing": 0, "expired": 1, "unknown": 2, "not_applicable": 3, "ok": 4,
+               "no_login_needed": 5}
 
 
 def _export_channel_health(out_dir: Path, conn) -> dict:
@@ -2151,7 +2329,7 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
     "Rows arrived" is the only claim worth making, and it is the one a consultant cares
     about. Session files are never published: they are live credentials.
     """
-    from datetime import date, datetime as _dt
+    from datetime import date, datetime as _dt, timedelta
 
     today = date.today()
     now_ts = _dt.now()
@@ -2163,6 +2341,31 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
     ISO = ("substr(date_checked, 7, 4) || substr(date_checked, 4, 2) "
            "|| substr(date_checked, 1, 2)")
     LIVE = "(superseded_by IS NULL OR superseded_by = '')"
+    # NOT A WITHDRAWN BUILDER'S ROWS, by name, by project or by capture
+    # (builder_names.is_withdrawn_row, the rule stock.json is built with). They stay in the
+    # database but the app cannot offer them, so counting them told Settings on 23 Oct
+    # that "Direct Builder Portal (live)" held 453 lots and refreshed 46% of them, when 14
+    # of the 453 were Bathla's and its portal is no longer read at all. The same Python
+    # rule runs inside the query as a function, so Held and Refreshed below are counted
+    # from the rows the app can offer and no second, SQL spelling of the rule can drift
+    # from the first. A table without a project or hash column passes NULL, which names
+    # no project and joins nothing.
+    from builder_names import is_withdrawn_row, withdrawn_captures, withdrawn_projects
+    _have = {r[1] for r in conn.execute("PRAGMA table_info(buildings)")}
+    _project = "source_project_id" if "source_project_id" in _have else "NULL"
+    _hash = "content_hash" if "content_hash" in _have else "NULL"
+    _rows = [{"builder_name": n, "source_channel": c, "source_project_id": p,
+              "content_hash": h, "superseded_by": s}
+             for n, c, p, h, s in conn.execute(
+                 f"SELECT builder_name, source_channel, {_project}, {_hash}, superseded_by "
+                 f"FROM buildings")]
+    _projects = withdrawn_projects(_rows)
+    _captures = withdrawn_captures(_rows, _projects)
+    conn.create_function(
+        "spb_withdrawn", 4, lambda n, c, p, h: int(is_withdrawn_row(
+            {"builder_name": n, "source_channel": c, "source_project_id": p,
+             "content_hash": h}, _projects, _captures)))
+    LIVE += f" AND NOT spb_withdrawn(builder_name, source_channel, {_project}, {_hash})"
 
     def _tally(group_sql, where_sql, params=()):
         """{name: {iso: live_rows}} for one grouping."""
@@ -2193,6 +2396,46 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
                 out[str(name or "").strip() or "(unnamed)"] = ts
         return out
 
+    def _moment(ts):
+        """checked_at as a naive datetime, or None. The first 19 characters only, as
+        supersede_duplicates._read_time reads it, so an offset or a fraction a future
+        writer adds can neither fail to parse nor refuse to compare with a naive stamp."""
+        try:
+            return _dt.strptime(str(ts or "").strip()[:19].replace(" ", "T"),
+                                "%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            return None
+
+    def _run_counts(group_sql, where_sql, params=()):
+        """{name: live rows read by its LATEST RUN} -- walking back from that name's newest
+        checked_at for as long as the stamps keep coming (no pause of
+        CHANNEL_RUN_GAP_MINUTES) and no further than CHANNEL_RUN_SPAN_HOURS. A name none
+        of whose rows carries a readable checked_at is absent, and _health keeps the day
+        rule."""
+        stamps = {}
+        for name, ts, n in conn.execute(
+                f"SELECT {group_sql} AS g, checked_at, COUNT(*) FROM buildings "
+                f"WHERE {LIVE} AND checked_at IS NOT NULL{where_sql} "
+                f"GROUP BY g, checked_at", params):
+            moment = _moment(ts)
+            if moment is not None:
+                key = str(name or "").strip() or "(unnamed)"
+                stamps.setdefault(key, []).append((moment, n))
+        gap = timedelta(minutes=CHANNEL_RUN_GAP_MINUTES)
+        span = timedelta(hours=CHANNEL_RUN_SPAN_HOURS)
+        out = {}
+        for key, seen in stamps.items():
+            seen.sort(key=lambda s: s[0], reverse=True)
+            newest = later = seen[0][0]
+            total = 0
+            for moment, n in seen:
+                if later - moment > gap or newest - moment > span:
+                    break
+                total += n
+                later = moment
+            out[key] = total
+        return out
+
     def _hours_since(ts):
         if not ts:
             return None
@@ -2204,7 +2447,7 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
         # future; report 0 rather than a negative age.
         return max(0, round(delta.total_seconds() / 3600))
 
-    def _health(name, by_iso, ts_map=None):
+    def _health(name, by_iso, ts_map=None, runs=None):
         """One row of the Settings table.
 
         REPORTS VOLUME AS WELL AS RECENCY, and the second one was the gap. The first cut
@@ -2213,10 +2456,12 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
         shown as healthy, on the very tab built to stop exactly this being invisible. The
         harvest's own partial-read guard caught it; the tab flattered it.
 
-        `refreshed` is how many of the live rows carry the newest date — i.e. how much of
-        what we hold was actually seen on the last successful read. A source that returns
-        a fraction of its stock is stamping that fraction as today's and letting the rest
-        go quietly stale, which is the same harm as not running at all, minus the warning.
+        `refreshed` is how many of the live rows the last successful READ saw — i.e. how
+        much of what we hold it actually handed back. A source that returns a fraction of
+        its stock is stamping that fraction as today's and letting the rest go quietly
+        stale, which is the same harm as not running at all, minus the warning. Counted
+        per run from checked_at (`runs`, see CHANNEL_RUN_GAP_MINUTES), and from the
+        newest date only where no row of the source carries one.
         """
         newest, live = None, sum(by_iso.values())
         for iso in by_iso:
@@ -2228,7 +2473,12 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
                 if newest is None or d > newest:
                     newest = d
         age = (today - newest).days if newest else None
-        refreshed = by_iso.get(newest.strftime("%Y%m%d"), 0) if newest else 0
+        if name in (runs or {}):
+            # Never more than is held: _tally keys a NULL and a blank name alike, and the
+            # later of the two overwrites the earlier's counts where this one adds them.
+            refreshed = min(runs[name], live)
+        else:
+            refreshed = by_iso.get(newest.strftime("%Y%m%d"), 0) if newest else 0
         pct = round(100.0 * refreshed / live) if live else 0
         if age is None:
             state = "unknown"
@@ -2255,7 +2505,9 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
 
     logins = _login_status()
     chan_ts = _newest_ts("source_channel", "")
-    channels = [_health(n, t, chan_ts) for n, t in _tally("source_channel", "").items()]
+    chan_runs = _run_counts("source_channel", "")
+    channels = [_health(n, t, chan_ts, chan_runs)
+                for n, t in _tally("source_channel", "").items()]
     channels.sort(key=lambda c: (-(c["days_ago"] or 0), -c["live"]))
     for c in channels:
         # An inbox has no sign-in to break, so it says so rather than reading as a
@@ -2284,7 +2536,9 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
     # that broke, which is the one thing a person needs in order to fix it.
     portal_ts = _newest_ts("builder_name", " AND source_channel LIKE ?",
                           ("Direct Builder Portal%",))
-    portals = [_health(n, t, portal_ts) for n, t in
+    portal_runs = _run_counts("builder_name", " AND source_channel LIKE ?",
+                              ("Direct Builder Portal%",))
+    portals = [_health(n, t, portal_ts, portal_runs) for n, t in
                _tally("builder_name", " AND source_channel LIKE ?",
                       ("Direct Builder Portal%",)).items()]
     # A withdrawn builder's portal is no longer read, so its row would only age into a
@@ -2326,9 +2580,11 @@ def _export_channel_health(out_dir: Path, conn) -> dict:
         # which is the cause and names the command that fixes it.
         "needs_login": [p["channel"] for p in portals + channels
                         if p.get("login", {}).get("state") in ("expired", "missing")],
-        # A source the checker cannot speak for: a public stocklist with no sign-in, or a
-        # session store it does not read (Proxima harvests from .browser_profiles). Kept
-        # out of needs_login so nobody is sent to fix something that is not broken.
+        # A source nobody could speak for tonight: a public stocklist with no sign-in, a
+        # check that could not run (its reason says why), or Proxima on a night the harvest
+        # did not try it -- the check never opens Proxima, and its cell otherwise comes from
+        # the harvest's own sign-in. Kept out of needs_login so nobody is sent to fix
+        # something that is not broken.
         "login_not_assessed": [p["channel"] for p in portals + channels
                                if p.get("login", {}).get("state")
                                in ("no_login_needed", "unknown")],
@@ -2455,6 +2711,10 @@ def _bundle_research_function(app: Path, out_dir: Path) -> int:
         raise RuntimeError(
             f"could not write the public builder registry ({e}); refusing to publish a "
             f"site with no research endpoint") from e
+    # The links behind the Settings tab's unreadable price lists, for api/price_list.py.
+    # Here, inside the bundle, and nowhere a browser can fetch as a file.
+    print(f"[+] unreadable price lists that open: {_write_price_list_links(dest_api)}")
+    n += 1
     for junk in dest_api.rglob("__pycache__"):
         shutil.rmtree(junk, ignore_errors=True)
     _verify_function_imports(dest_api)
@@ -2483,7 +2743,9 @@ finally:
     pathlib.Path.mkdir = _real_mkdir
 # The stdlib-only routes. They import nothing from the pipeline, so this proves only that
 # each was copied into the bundle at all -- and a missing one is a 404 on a green deploy.
-import refresh, narrative, hot_leads, contact_unlock, lead_notes
+import refresh, narrative, hot_leads, contact_unlock, lead_notes, price_list
+# The map is a data file, so an import cannot miss it: without it every link 404s.
+assert os.path.isfile(price_list.LINKS), 'price_list_links.json missing from bundle'
 # hot_leads, contact_unlock and lead_notes import this at module level, so the line above
 # already fails without it; asserted by name so the failure says which file is missing.
 import _contact as _ct
@@ -2587,10 +2849,10 @@ if __name__ == "__main__":
     # and only ever read stock.json, so channels.json went on publishing 56 Dropbox
     # folder capability URLs -- the exact thing it exists to stop -- for as long as the
     # unreadable-stocklists panel had existed. A guard that checks one of five files
-    # reads, from its passing, as though it checked all five.
-    for _published in ("stock.json", "channels.json", "builders.json",
-                       "vendor-assets.json", "benchmarks.json", "parity_report.json"):
-        _assert_no_folder_capability_urls(where / _published)
+    # reads, from its passing, as though it checked all five. So it reads every static
+    # file (24 Oct 2026): a named list had already missed suburbs.json.
+    for _published in _static_files(where):
+        _assert_no_folder_capability_urls(_published)
     _assert_a_benchmark_names_its_place(where / "stock.json")
     _assert_every_benchmark_listing_opens_somewhere(where / "benchmarks.json")
     # benchmarks.json is in this list for the same reason `notes` was the leak that

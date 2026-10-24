@@ -73,6 +73,7 @@ from urllib.parse import urlencode, urljoin, urlparse, parse_qsl
 
 import config
 from secrets_store import get_credentials
+from sources.base import read_date
 
 logger = logging.getLogger("spb.scraper.eagent_stocklist")
 
@@ -629,7 +630,8 @@ def map_record(record: Dict[str, Any], base: str, source_url: str,
         "stocklist_file": source_url,
         "source_text": source_text,
         "source_updated": updated,
-        "date_checked": datetime.now().strftime("%d/%m/%Y"),
+        # The run's day, not this row's moment: see sources.base.read_date.
+        "date_checked": read_date(),
         "extraction_confidence": 1.0,
         "verified": True,
         "_state_stated": state_stated,
@@ -1594,7 +1596,7 @@ class EAgentStocklistSource:
             g.update({"source_channel": CHANNEL, "stocklist_file": url.split("?")[0],
                       "source_url_or_ref": url.split("?")[0],
                       "attribution_scope": "builder" if g.get("builder_name") else "project",
-                      "date_checked": datetime.now().strftime("%d/%m/%Y"), "verified": True,
+                      "date_checked": read_date(), "verified": True,
                       "_state_stated": bool(g.get("state"))})
         ok, why, stats = plausibility(got, len(got))
         tried["gate"] = {"store": ok, "why": why, **stats}

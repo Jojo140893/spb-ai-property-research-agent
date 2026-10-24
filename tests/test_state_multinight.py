@@ -62,6 +62,8 @@ and checks, on every night:
   (3) the single-night bound of tests/test_state_invariant.py;
   (4) each named row lands where it should.
 """
+import json
+import os
 import re
 import sqlite3
 
@@ -210,6 +212,28 @@ _NAMED = [
      None),
     ("2-Part Detached SS North 9 Tambo Crossing Balah 283 $412,179 Eildon 190m2 3 / 2 / 2",
      None, None, None, None, None, None, None, None, "tambo", None),
+    # 24 Oct 2026, APLACE's lists (tests/test_aplace_sections.py): its two Queensland lots,
+    # live VIC on the page alone, QLD on their address from the first night; a Victorian lot
+    # the harvest stored QLD with no signal, VIC on its own words; and pages that are right
+    # against a bare place word -- Goldstate's Mandalay estate, Verv 19094's Jubilee (43-47)
+    ("1524 Gilchrist Street, BRISBANE WEST", "Dawn 1524 Gilchrist Street Dawn Nov-26 392 "
+     "Rectangular $485,000 Murray A 3 200.63 4 | 2 | 2 $373,520 $858,520 EOI Received", None,
+     "VIC", "VIC", "e-agent page (conflicting signals)", "BRISBANE WEST", None, None,
+     "aplace-gilchrist", {"QLD"}),
+    ("10 New Road, BRISBANE NORTH", "Joyner 10 New Road Park Lane Dec-26 199 Rectangular "
+     "$380,000 TERRACE Type C 239.31 4 | 3.5 | 2 $510,000 $890,000 EOI Received", None, "VIC",
+     "VIC", "e-agent page (conflicting signals)", "BRISBANE NORTH", None, None, "aplace-joyner",
+     {"QLD"}),
+    ("143 Hadar Way, VIC", "Clyde North 143 Hadar Way Alma Jun-27 294 10.5 x 28 $397,000 Mackay "
+     "01 167.08 4 | 2.5 | 2 $344,300 $716,300 Aplace Exclusive", "Bundaberg", "VIC", "QLD", None,
+     "VIC", None, None, "aplace-hadar", {"VIC"}),
+    ("5708 Piebald St, Mandalay", "Mar-27 5708 Piebald St North West 12.5 28 350 $334,000 Turin "
+     "23 Panorama 4 Single 210 $372,000 $706,000 Available", None, "VIC", "VIC",
+     "e-agent page (conflicting signals)", "Mandalay", None, "5708", "mandalay", {"VIC"}),
+    ("2-Part Detached SS West 4327 Jubilee Wyndhamvale 263 $338,000 Enzo 10.5 3 / 2 / 2",
+     "2-Part Detached SS West 4327 Jubilee Wyndhamvale 263 $338,000 Enzo 10.5 3 / 2 / 2 "
+     "$347,050 $685,050 Brochure Masterplan Stage 43 - POS Available", None, "VIC", "VIC",
+     "e-agent page (conflicting signals)", None, None, "4327", "jubilee", {"VIC"}),
 ]
 _ENDS = {13: "SA"}          # and where they stand after night 8
 _EXEMPT = {14: {4}}         # the night the Crestwood sheet has no hint
@@ -232,6 +256,17 @@ _SHEET = [
     ("Lot 571 Cunyarie Cypress Fortitue 186m2", None, None, None, None),
 ]
 _SHEET_URL = "https://drive.example/export?id=470&dn=NSW%20Dual%20SEP.xlsx"
+# 24 Oct 2026: Verv's [VG] email (tests/test_document_locations.py), all 114 rows as the
+# harvest stored them -- the Jubilee lots with their lot number in the postcode column -- in
+# one page-less file read by its own Location column: VIC on every night.
+_VG_URL = "email:Fwd: [VG] - Projects | House & Land | Dual Key Packages"
+
+
+def _vg_email():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures",
+                        "verv_vg_email.json")
+    with open(path, encoding="ascii") as f:
+        return json.load(f)["rows"]
 # Round 3's review: a no-page sheet two of whose rows prove two states -- national -- and
 # its two-place rows, which went back and forth as the places in them were stocked and sold
 _TWO_PLACE = [
@@ -284,6 +319,11 @@ def _corpus(geo):
         k += 1
         rows.append(_row(k, lot_address=label, source_text=f"{label} $646,681",
                          stocklist_file="night:two-place", source_url="night:two-place"))
+    for v in _vg_email():
+        k += 1
+        rows.append(_row(k, lot_address=v["lot_address"], source_text=v.get("source_text"),
+                         estate_name=v.get("estate_name"), postcode=v.get("postcode"),
+                         source_url=_VG_URL))
     rng_page = STATES + (None,)
     for j, rec in enumerate(corpus.generate(geo, 400, seed=30092026)):
         k += 1
@@ -447,6 +487,9 @@ def test_a_row_changes_state_at_most_once_over_eight_nights(tmp_path, monkeypatc
                     if k and k not in _EXEMPT.get(i, ()))]
     assert wrong == [], wrong
     assert {i: history[i][-1] for i in _ENDS} == _ENDS
+    vg = [r["id"] for r in rows if r["source_url"] == _VG_URL]
+    assert len(vg) == 114
+    assert [(i, history[i]) for i in vg if any(h != "VIC" for h in history[i][1:])] == []
     # and the nights did something: the stock moved rows, the dropped hints changed some
     moved = sum(1 for i in ids if len(set(history[i][1:])) > 1)
     assert moved > 10, moved

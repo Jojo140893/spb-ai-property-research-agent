@@ -983,7 +983,9 @@ def test_the_build_publishes_the_last_report_with_no_cache(tmp_path, monkeypatch
     src = inspect.getsource(build_web)
     assert '"parity_report.json")]' in src, "parity_report.json has no Cache-Control"
     assert 'meta["parity_report"] = _publish_parity_report(out_dir)' in src
-    assert '"benchmarks.json", "parity_report.json"):' in src, \
+    # The guard reads every static file the build writes (24 Oct 2026), this one included.
+    assert "for _published in _static_files(where):" in src and \
+        out / "parity_report.json" in set(build_web._static_files(out)), \
         "the folder-link guard does not read the published report"
 
 

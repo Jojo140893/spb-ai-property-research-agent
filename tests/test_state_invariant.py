@@ -26,6 +26,11 @@ put a row in a state origin/main would not, unless it is
         in the row names another state -- and on a generated row, only its true state; or
   (iv)  origin/main's answer on the postcode column as the run leaves it (round 3): a lot
         number enrich takes out of the column is out of it for origin/main the next night;
+  (v)   (24 Oct 2026) off a page, the state of a one-state place the row writes straight
+        after a street, where every place it writes is a place of that state and it states
+        no other, and the place is not taken from its estate -- "1524 Gilchrist Street,
+        BRISBANE WEST", QLD, off APLACE's VIC page (_address_state) -- and on a generated
+        row, only its true state;
 
 (i)'s missing hint and (iv) are round 3's (29 Sep 2026), for the harness over many nights
 (tests/test_state_multinight.py): without them the bound walked with this step's own writes
@@ -198,11 +203,126 @@ def _page(r):
     return ""
 
 
-def _allowed(r, old_state, geo, truth=None):
+_STREET_WORD = re.compile(r"^(?:st|street|rd|road|dr|drive|ave|avenue|av|cres|crescent|cct|"
+                          r"circuit|pde|parade|way|ct|court|cl|close|pl|place|blvd|boulevard|"
+                          r"tce|terrace|lane|ln|esplanade|esp|hwy|highway|grove|gr|walk|"
+                          r"link|loop|mews|row|square|track|trail|rise|green|retreat|chase|"
+                          r"glade|parkway|promenade|outlook|crest|bend)$", re.IGNORECASE)
+_COMPASS_WORD = re.compile(r"^(?:north|south|east|west|central)$", re.IGNORECASE)
+
+
+def _address_state(r, geo):
+    """(v), 24 Oct 2026: off a page, the state of a place of ONE state the row writes straight
+    after a street word ("1524 Gilchrist Street, BRISBANE WEST", VIC page: QLD) -- when every
+    place the row writes anywhere, line, label, estate or suburb, is a place of that state,
+    the row states no other, and the place is not its estate's name or inside it, bar an
+    estate that is the place and a compass word ("BRISBANE WEST", the section heading the
+    estate column holds). Not the brief's first rule, which a bare place word in a line was
+    enough for: Verv 19094 "... SS West 4327 Jubilee Wyndhamvale" is VIC, as its page says."""
+    page = sr.normalise_state(r["source_state_hint"])
+    if not page:
+        return ""
+    found = set()
+    for text in (r["source_text"], r["lot_address"]):
+        for part in re.split(r"[|/]", str(text or "")):
+            toks = re.findall(r"[A-Za-z][A-Za-z'\-]*|\d+[A-Za-z]?|,", part)
+            for j, tok in enumerate(toks[:-1]):
+                if not _STREET_WORD.match(tok) or j == 0 or not toks[j - 1][:1].isalpha():
+                    continue
+                k = j + 2 if toks[j + 1] == "," else j + 1
+                for size in (3, 2, 1):
+                    span = toks[k:k + size]
+                    if len(span) < size or not all(t[:1].isalpha() for t in span):
+                        continue
+                    states = geo.states_for_suburb(" ".join(span))
+                    if len(states) == 1:
+                        found.add((" ".join(span).lower(), states[0]))
+                        break
+    states = {st for _n, st in found}
+    if len(states) != 1 or page in states:
+        return ""
+    other = next(iter(states))
+    estate = [w.lower() for w in _W.findall(str(r["estate_name"] or ""))]
+    for name, _st in found:
+        words = name.split()
+        inside = any(estate[i:i + len(words)] == words for i in range(len(estate)))
+        heading = (estate[:len(words)] == words and len(estate) > len(words)
+                   and all(_COMPASS_WORD.match(w) for w in estate[len(words):]))
+        if inside and not heading:
+            return ""
+    if _states_stated(r, geo) - {other}:
+        return ""
+    for text in (r["source_text"], r["lot_address"], r["estate_name"], r["suburb"]):
+        for part in re.split(r"[,|/()]", str(text or "")):
+            words = [w.rstrip("-'") for w in _W.findall(part)]
+            for size in (1, 2, 3):
+                for i in range(len(words) - size + 1):
+                    span = words[i:i + size]
+                    if any(len(w) < 2 for w in span):
+                        continue
+                    states = geo.states_for_suburb(" ".join(span))
+                    if states and other not in states:
+                        return ""
+    return other
+
+
+_TITLE_WORD = re.compile(r"^(?:titled|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)"
+                         r"-\d\d)$", re.IGNORECASE)
+
+
+def _location_states(r, geo):
+    """The states of the place the row writes in a Location column -- straight before a title
+    date ("Titled", "Oct-26", "Q1 2027"), with a lot number no more than four words before
+    it and no price between -- or None."""
+    for text in (r["source_text"], r["lot_address"]):
+        words = re.findall(r"\$[\d,.]+|\d+[A-Za-z]?|[A-Za-z][\w'\-]*", str(text or ""))
+        for t, w in enumerate(words):
+            if not (_TITLE_WORD.match(w) or (re.fullmatch(r"Q[1-4]", w) and t + 1 < len(words)
+                                             and re.fullmatch(r"20\d\d", words[t + 1]))):
+                continue
+            for size in (3, 2, 1):
+                span = words[t - size:t] if t > size else []
+                if not span or not all(re.fullmatch(r"[A-Za-z][A-Za-z'\-]*", x) for x in span):
+                    continue
+                states = geo.states_for_suburb(" ".join(span))
+                if not states:
+                    continue
+                head = words[max(0, t - size - 4):t - size]
+                if (any(re.fullmatch(r"\d{1,5}[A-Za-z]?", x) for x in head)
+                        and not any(x.startswith("$") for x in head)):
+                    return states
+                break
+    return None
+
+
+def _document_states(rows, geo):
+    """(vi), 24 Oct 2026: {file: state} for each file no row of which has a page, where at
+    least five rows -- and half of them -- write a place in a Location column, every one a
+    place of one same state and of no other they all share, and one a place of that state
+    alone: Verv's [VG] email, VIC."""
+    files = {}
+    for r in rows:
+        files.setdefault(r["stocklist_file"] or r["source_url"], []).append(r)
+    out = {}
+    for f, rs in files.items():
+        if any(sr.normalise_state(r["source_state_hint"]) for r in rs):
+            continue
+        got = [s for s in (_location_states(r, geo) for r in rs) if s]
+        if len(got) < 5 or 2 * len(got) < len(rs):
+            continue
+        common = set.intersection(*(set(s) for s in got))
+        if len(common) == 1 and any(len(s) == 1 for s in got):
+            out[f] = next(iter(common))
+    return out
+
+
+def _allowed(r, old_state, geo, truth=None, document=""):
     """The states a row may be given that origin/main does not give it: (i) its page's
     (_page) or its file name's, (ii) its stated postcode's, (iii) round 1's longer name --
-    only where origin/main's answer is blank, and, on a generated row whose true state is
-    known, only that one."""
+    only where origin/main's answer is blank, (v) its address's over its page
+    (_address_state), (vi) its page-less file's Location column's (`document`,
+    _document_states) -- and, for (iii), (v) and (vi), on a generated row whose true state
+    is known, only that one."""
     page = _page(r)
     file_state = origin.state_from_filename(r["source_url"] or "")
     ok = {old_state or "", "", page, file_state, _stated_postcode(r, geo)}
@@ -211,6 +331,11 @@ def _allowed(r, old_state, geo, truth=None):
         longer = _longer_name(r, guess, geo)
         if longer and (not truth or longer == truth):
             ok.add(longer)
+    address = _address_state(r, geo)
+    if address and (not truth or address == truth):
+        ok.add(address)
+    if document and (not truth or document == truth):
+        ok.add(document)
     return ok
 
 
@@ -275,13 +400,15 @@ def _violations(rows, got, geo):
                 if (pc or None) != (next(r for r in rows if r["id"] == i)["postcode"] or None)}
     after_pc = (origin.old_enrich([dict(r, postcode=written[r["id"]]) if r["id"] in moved_pc
                                    else r for r in rows], geo) if moved_pc else before)
+    documents = _document_states(rows, geo)
     out, changed = [], 0
     for r in rows:
         new, old = got[r["id"]][0] or "", before[r["id"]][0] or ""
         changed += new != old
         if new != old and new == (after_pc[r["id"]][0] or "") and r["id"] in moved_pc:
             continue
-        if new != old and new not in _allowed(r, old, geo, r.get("_truth")):
+        document = documents.get(r["stocklist_file"] or r["source_url"], "")
+        if new != old and new not in _allowed(r, old, geo, r.get("_truth"), document):
             out.append((r["id"], old, new, got[r["id"]][1], r["lot_address"],
                         r["source_state_hint"], r["suburb"], r["state"], r["state_source"]))
     return out, changed
@@ -338,6 +465,83 @@ def test_the_harness_sees_round_2s_longer_name(tmp_path, monkeypatch, geo):
     rows = _rows(geo, 2000, 29092026)
     bad, _changed = _violations(rows, _enrich(tmp_path, monkeypatch, rows), geo)
     assert len(bad) > 5, bad
+
+
+def _address_rows(geo, n, seed):
+    rows = []
+    for k, rec in enumerate(corpus.generate_address_rows(geo, n, seed=seed)):
+        row = {c: rec.get(c) for c in _COLS}
+        row.update(id=k + 1, source_channel="Generated", content_hash=f"v2:addr{seed}-{k}",
+                   stocklist_file=f"generated:addr:{seed}:{k}",
+                   source_url=f"generated:addr:{seed}:{k}", superseded_by=None,
+                   price=500000.0, last_seen="24/10/2026", _truth=rec["truth"])
+        rows.append(row)
+    return rows
+
+
+def test_the_address_over_the_page_is_inside_the_bound(tmp_path, monkeypatch, geo):
+    """24 Oct 2026, (v): APLACE's and Goldstate's shapes (corpus.generate_address_rows) off
+    their own page, another state's or none. The address takes rows off their page, and only
+    ever to their true state; nothing else leaves origin/main's answer."""
+    rows = _address_rows(geo, 600, 24102026)
+    got = _enrich(tmp_path, monkeypatch, rows)
+    bad, _changed = _violations(rows, got, geo)
+    assert bad == [], f"{len(bad)} rows in a state origin/main would not give: {bad[:10]}"
+    moved = [r for r in rows if got[r["id"]][1] == sr.ADDRESS_OVER_PAGE_SOURCE]
+    assert len(moved) > 10, len(moved)
+    assert [(r["lot_address"], got[r["id"]][0], r["_truth"]) for r in moved
+            if got[r["id"]][0] != r["_truth"]] == []
+
+
+def _sheet_rows(geo, sheets, seed):
+    rows = []
+    for k, rec in enumerate(corpus.generate_document_sheets(geo, sheets, seed=seed)):
+        row = {c: rec.get(c) for c in _COLS}
+        row.update(id=k + 1, source_channel="Generated", content_hash=f"v2:sheet{seed}-{k}",
+                   stocklist_file=rec["sheet"], source_url=rec["sheet"], superseded_by=None,
+                   price=500000.0, last_seen="24/10/2026", _truth=rec["truth"])
+        rows.append(row)
+    return rows
+
+
+def test_a_location_column_is_inside_the_bound(tmp_path, monkeypatch, geo):
+    """24 Oct 2026, (vi): sheets in Verv's [VG] layout (corpus.generate_document_sheets), one
+    state's or two, on no page or on any. A page-less sheet's Location column gives rows a
+    state, and only ever their true one; nothing leaves origin/main's answer otherwise."""
+    rows = _sheet_rows(geo, 60, 24102027)
+    got = _enrich(tmp_path, monkeypatch, rows)
+    bad, _changed = _violations(rows, got, geo)
+    assert bad == [], f"{len(bad)} rows in a state origin/main would not give: {bad[:10]}"
+    read = [r for r in rows if (got[r["id"]][1] or "").startswith(sr.DOCUMENT_LOCATION_SOURCE)
+            or (got[r["id"]][1] or "").endswith(" + " + sr.DOCUMENT_LOCATION_SOURCE)]
+    assert len(read) > 50, len(read)
+    assert [(r["lot_address"][:60], got[r["id"]][0], r["_truth"]) for r in read
+            if got[r["id"]][0] != r["_truth"]] == []
+
+
+def test_the_harness_sees_a_location_column_read_by_its_majority(tmp_path, monkeypatch, geo):
+    """A silent check reads as a pass: read a sheet by the state most of its Location column
+    names, not the one all of it agrees on, and the harness sees the mixed sheets' other
+    state's lots moved."""
+    def majority(readings, rows):
+        got = [s for _n, s in (x for x in readings if x) if len(s) == 1]
+        return max(set(x[0] for x in got), key=[x[0] for x in got].count) if got else ""
+    monkeypatch.setattr(enrich_buildings, "document_location_state", majority)
+    rows = _sheet_rows(geo, 60, 24102027)
+    bad, _changed = _violations(rows, _enrich(tmp_path, monkeypatch, rows), geo)
+    assert len(bad) > 5, bad
+
+
+def test_the_harness_sees_the_briefs_first_rule(tmp_path, monkeypatch, geo):
+    """A silent check reads as a pass: the rule first asked for -- a suburb of one other
+    state, nothing in the row a place of the page's state, no street and no estate guard --
+    put in the reading and the bound, and the harness must see Goldstate's estates moved."""
+    from tests.test_aplace_sections import _the_briefs_rule
+    monkeypatch.setattr(sr, "address_over_page", _the_briefs_rule)
+    monkeypatch.setattr(enrich_buildings, "address_over_page", _the_briefs_rule)
+    rows = _address_rows(geo, 600, 24102026)
+    bad, _changed = _violations(rows, _enrich(tmp_path, monkeypatch, rows), geo)
+    assert len(bad) > 10, bad
 
 
 # ------------------------------------------------------------------- the misfile check

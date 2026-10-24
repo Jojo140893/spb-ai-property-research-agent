@@ -216,6 +216,8 @@ def _as_stored_before_the_fix(path):
     con = sqlite3.connect(str(path))
     con.execute("UPDATE buildings SET stocklist_file='https://files.example/link-0' "
                 "WHERE stocklist_file='https://files.example/link-0-reuploaded'")
+    # ...and no record of the link the latest read came through (the merge's column).
+    con.execute("UPDATE buildings SET last_stocklist_file=NULL")
     con.commit()
     con.close()
 
@@ -313,21 +315,137 @@ def test_a_document_two_links_lead_to_waits_while_either_is_offered(tmp_path, mo
         assert lots_x <= n.retired()
 
 
-def test_a_reread_moves_the_row_to_the_link_it_came_through(tmp_path):
-    """record_building: stocklist_file travels with the read, like source_url; a read that
-    names no link (a portal, an inbox) leaves it as it was."""
+def test_a_reread_keeps_the_rows_first_link_and_records_the_one_it_came_through(tmp_path):
+    """MERGED WITH MAIN 1858d55. This review first moved stocklist_file with each read;
+    main's per-file state votes (enrich_buildings, tests/test_aplace_sections.py) rest on a
+    row keeping the link it was first stored under, so record_building keeps it again and
+    writes the link each read came through to last_stocklist_file. A read that names no
+    link (a portal, an inbox) leaves both as they were."""
     from database import ResearchDatabase
     db = ResearchDatabase(db_path=tmp_path / "r.db")
     db.record_building(_lot(1, 1, doc="https://files.example/a"))
     db.record_building(_lot(1, 2, doc="https://files.example/a",
                             stocklist_file="https://files.example/a-reuploaded"))
     con = sqlite3.connect(str(tmp_path / "r.db"))
-    got = con.execute("SELECT stocklist_file, COUNT(*) FROM buildings").fetchone()
-    assert got == ("https://files.example/a-reuploaded", 1), got
+    q = "SELECT stocklist_file, last_stocklist_file, COUNT(*) FROM buildings"
+    assert con.execute(q).fetchone() == ("https://files.example/a",
+                                         "https://files.example/a-reuploaded", 1)
     db.record_building(_lot(1, 3, doc="https://files.example/a", stocklist_file=None))
-    assert con.execute("SELECT stocklist_file FROM buildings").fetchone()[0] == \
-        "https://files.example/a-reuploaded"
+    assert con.execute(q).fetchone() == ("https://files.example/a",
+                                         "https://files.example/a-reuploaded", 1)
     con.close()
+
+
+def test_the_ledger_finds_the_link_a_row_came_through(tmp_path):
+    """The ledger reaches a re-shared link's line -- a lot refused, a folder budget bound --
+    by the row's last_stocklist_file; for a row stored before that column, by tonight's
+    manifest naming the documents each link served ("docs",
+    harvest_manifest.count_outcomes), or by the document's own url where that is the link.
+    Twin: a row with neither, and a line that names no documents, reaches nothing."""
+    import harvest_manifest
+    import list_ledger as LL
+    from database import ResearchDatabase
+    from datetime import datetime
+    db = ResearchDatabase(db_path=tmp_path / "r.db")
+    db.record_building(_lot(1, 1, doc="https://files.example/a"))
+    db.record_building(_lot(1, 2, doc="https://files.example/a",
+                            stocklist_file="https://files.example/a-reuploaded"))
+    con = sqlite3.connect(str(tmp_path / "r.db"))
+    con.row_factory = sqlite3.Row
+    rows = [dict(r) for r in con.execute("SELECT * FROM buildings")]
+    con.close()
+    legacy = [dict(r, last_stocklist_file=None) for r in rows]
+    # The harvest's own line for the new link, with the document it served tonight.
+    harvest_manifest.reset()
+    e = harvest_manifest.entry("E-Agent", "stock link", "k-new", name="Example Homes",
+                               stocklist_key=harvest_manifest.stocklist_key(
+                                   "https://files.example/a-reuploaded"))
+    harvest_manifest.add_piece(e, "file", "read", 1)
+    listing = _lot(1, 2, doc="https://files.example/a")
+    harvest_manifest.tag([listing], e)
+    harvest_manifest.count_outcomes([listing], ["rejected"])
+    assert e["docs"] == [harvest_manifest.stocklist_key("https://files.example/a")]
+    line = json.loads(json.dumps(e))
+    bare = {k: v for k, v in line.items() if k != "docs"}
+    clean = dict(bare, stored=dict(line["stored"], rejected=0))
+    notes = {line["stocklist_key"]: {"truncated": True, "why": "file budget"}}
+    m = {"schema": 1, "entries": [line], "_made": datetime(2026, 9, 3, 3, 0)}
+    key = ("https://files.example/a", "")
+    refused = "link had 1 lot(s) refused by a constraint"
+
+    def veto(rs, *entries, **extra):
+        return LL.Tonight(dict(m, entries=list(entries), **extra), rs)._eagent(key, rs)[0]
+    # The row's own record of the link it came through: no docs needed.
+    assert veto(rows, bare) == refused
+    assert veto(rows, clean, link_notes=notes) == "link truncated (file budget)"
+    assert veto(rows, clean) is None
+    # A row stored before the column: tonight's docs say which link served its document.
+    assert veto(legacy, line) == refused
+    assert veto(legacy, dict(clean, docs=line["docs"]), link_notes=notes) == \
+        "link truncated (file budget)"
+    # Twin: neither, and nothing is reached.
+    assert veto(legacy, bare) is None
+    assert veto(legacy, clean, link_notes=notes) is None
+    # And a document that is its own link (a direct PDF re-uploaded: the document's url is
+    # the new link, the row still names the old) is found by its url, docs or not.
+    new_doc = "https://files.example/a-reuploaded"
+    moved = [dict(r, source_url=new_doc) for r in legacy]
+    assert LL.Tonight(dict(m, entries=[bare]), moved)._eagent((new_doc, ""), moved)[0] \
+        == refused
+    assert LL.Tonight(dict(m, entries=[clean]), moved)._eagent((new_doc, ""), moved) == \
+        (None, None)
+
+
+def _forget_the_read_link(path):
+    """Rows as stored before last_stocklist_file existed."""
+    con = sqlite3.connect(str(path))
+    con.execute("UPDATE buildings SET last_stocklist_file=NULL")
+    con.commit()
+    con.close()
+
+
+@pytest.mark.parametrize("how, retires", [
+    ("the row records its link", False),
+    ("rows stored before the column, the line names its documents", False),
+    ("rows stored before the column, a line that names none", True),     # the twin
+])
+def test_a_refused_lot_on_a_reshared_link_voids_the_proof(tmp_path, monkeypatch, how,
+                                                          retires):
+    """The refused-lot case once more, with the link re-shared on night 4 while the
+    document keeps its url (a folder shared again: the files inside are the same). Each
+    row keeps its first link; tonight's NEW link had a lot refused, and that veto must
+    reach the list -- through the link each row's latest read came through
+    (last_stocklist_file), or, for rows stored before that column, through tonight's line
+    naming the documents it served. Then nothing retires. The twin, legacy rows and a line
+    that names no documents: the export proves the read and the 18 lots retire -- the gate
+    this guards."""
+    import harvest_manifest
+    n = Nights(tmp_path, monkeypatch)
+    doc = "https://docs.example/verv-tab"
+    new = "https://docs.example/verv-folder-reshared"
+    legacy = how.startswith("rows stored before")
+    hook = _forget_the_read_link if legacy else None
+    for night in range(1, 4):
+        n.run(night, [_lot(i, night, doc=doc) for i in range(1, 31)], after_harvest=hook)
+    for night in range(4, 6):
+        n.run(night, [_lot(i, night, doc=doc, stocklist_file=new) for i in range(1, 31)],
+              after_harvest=hook)
+    for night in range(6, 20):
+        n.run(night, [_lot(i, night, doc=doc, stocklist_file=new) for i in range(1, 13)],
+              after_harvest=hook)
+    for night in (20, 21):
+        line = _link(new, 12, rejected=1)
+        if how.endswith("names its documents"):
+            line["docs"] = [harvest_manifest.stocklist_key(doc)]
+        n.run(night, [_lot(i, night, doc=doc, stocklist_file=new) for i in range(1, 13)],
+              documents={harvest_manifest.stocklist_key(doc): {"csv_rows": 13,
+                                                              "endpoint": "export"}},
+              entries=[line], after_harvest=hook)
+    assert {r["stocklist_file"] for r in n.rows().values()} == {doc}
+    if retires:
+        assert n.retired() == {str(i) for i in range(13, 31)}
+    else:
+        assert n.retired() == set(), "a read with a refused lot proved its list whole"
 
 
 # ------------------------------------------------------------------ 3. what Proxima could not read

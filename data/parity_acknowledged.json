@@ -20,8 +20,8 @@
    "group": "blank",
    "reason": "state_unknown",
    "ids": [20473],
-   "why": "Hattan's weekly email files lot 4317 under 'Wyndham' with no state; the email names no state for it (owner to confirm the estate: Jubilee, Wyndham Vale VIC)",
-   "until": "21/10/2026"
+   "why": "Hattan's weekly email files lot 4317 under 'Wyndham' with no state. Renewed 24 Oct 2026 on evidence: it is the same lot as row 12280 from the same email ('[Hattan New Release] Dual key in Deanside from 890k'), whose line reads 'Available Wyndham Vale Titled House Lot 4317 336 10.5 Vista 16 ... $742,290' -- estate Jubilee, Wyndham Vale VIC. The newer capture lost 'Vale', and 'Wyndham' alone is a NSW/WA town, so the search will not borrow VIC from its email's other rows (33 VIC, no other state, on the 30 Sep copy). A rule for every Hattan 'Wyndham' header row was measured and refused: it would also put the Mambourin Green lots 413/417/418, in the gazetted locality Mambourin, in Wyndham Vale. Owner: fix the email parse or add a lot-level rule",
+   "until": "07/11/2026"
   },
   {
    "group": "QLD",

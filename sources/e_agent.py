@@ -18,8 +18,9 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse
 
 import config
-from sources.base import PropertySource
+from sources.base import PropertySource, read_date
 from sources.scraper_base import PlaywrightScraper, ScraperError, parse_price, parse_int, PLAYWRIGHT_AVAILABLE, SESSION_DIR
+from sources.scraper_base import record_harvest_login
 from sources.portal_config import EAGENT_CONFIG, CategoryPage
 from sources.adaptive_extract import extract_listings
 from sources.spreadsheet_extract import extract_stocklist
@@ -443,17 +444,36 @@ class EAgentSource(PropertySource):
         except Exception as e:
             logger.warning("E-Agent: could not save the login failure page: %s", e)
 
+    @staticmethod
+    def _note_sign_in(scraper, outcome: str, reason: str) -> None:
+        """The harvest's own answer to "did we get in", for the Settings tab's Login column
+        (scraper_base.record_harvest_login). Where the page ended is part of the answer."""
+        try:
+            url = scraper.page.url
+        except Exception:                                             # noqa: BLE001
+            url = ""
+        record_harvest_login("e_agent", outcome, reason, url)
+
     def _login(self, scraper: PlaywrightScraper) -> bool:
         page = scraper.page
         # Checked here as well as by the caller so _login is correct when called on its
         # own (portal_login.py does). One extra page load against being wrong about
         # whether we are signed in.
         if self._authenticated(scraper):
+            self._note_sign_in(scraper, "session",
+                               "the saved session reached the members' stocklist files")
             return True  # a saved session is still good
         scraper.goto(self.cfg.login_url)
         if not (self.username and self.password):
             logger.error("E-Agent: no saved session and no credentials. "
                          "Run: python portal_login.py e_agent")
+            session_file = getattr(scraper, "session_file", None)
+            had = bool(session_file is not None and session_file.exists())
+            self._note_sign_in(
+                scraper, "bounced" if had else "missing",
+                "the saved session no longer reaches the stocklist files and no password "
+                "is stored to sign back in with" if had
+                else "no saved session and no password stored")
             return False
         try:
             # AS A NEW VISITOR. The login path runs only when the saved session has died,
@@ -485,6 +505,14 @@ class EAgentSource(PropertySource):
             dialog, password, reached = open_members_form(page, self.cfg.password_selector)
             if not reached:
                 self._record_login_failure(page, dialog)
+                # "error", NOT "bounced": no password was ever typed, so this says nothing
+                # about whether it works. On 24 Sep this exact ending was a selector that
+                # opened Google's popup, not a login E-Agent had refused. With no verdict
+                # from the harvest the check after it decides the row; the saved session
+                # has already failed by this point, so that usually still reads RE-LOGIN
+                # NEEDED, but on the check's own evidence and with this ending in the note
+                # rather than "could not sign in".
+                self._note_sign_in(scraper, "error", "the login form never appeared")
                 return False
             dialog.locator(self.cfg.email_selector).fill(self.username, timeout=10000)
             password.fill(self.password, timeout=10000)
@@ -505,9 +533,14 @@ class EAgentSource(PropertySource):
             if not closed:
                 self._record_login_failure(page, dialog, "the login dialog stayed open "
                                            "after the credentials were submitted")
+                self._note_sign_in(scraper, "bounced", "the login dialog stayed open after "
+                                                       "the stored password was submitted")
                 return False
         except Exception as e:
             logger.error("E-Agent login interaction failed: %s", e)
+            # The form broke, not necessarily the login: no verdict either way.
+            self._note_sign_in(scraper, "error",
+                               "the sign-in form failed: %s" % type(e).__name__)
             return False
         if not self._authenticated(scraper):
             # One more look after a pause: the member session can land a moment after the
@@ -515,14 +548,19 @@ class EAgentSource(PropertySource):
             page.wait_for_timeout(8000)
             if self._authenticated(scraper):
                 logger.info("E-Agent: signed in (stocklist files reachable on a second look).")
+                self._note_sign_in(scraper, "signed_in", "signed in with the stored password")
                 return True
             # Reached only when the stocklists are still unreachable after a submit — a
             # real failure (wrong password, changed form, a challenge), not the marker
             # mismatch that made every night since mid-August read as one.
             self._record_login_failure(page, page.locator(MEMBERS_DIALOG),
                                        "signed in but no stocklist files are reachable")
+            self._note_sign_in(scraper, "bounced", "the login dialog closed after the stored "
+                                                   "password was submitted, but no stocklist "
+                                                   "file is reachable")
             return False
         logger.info("E-Agent: signed in (stocklist files reachable).")
+        self._note_sign_in(scraper, "signed_in", "signed in with the stored password")
         return True
 
     # JS, not Python: the builder name is only recoverable from the DOM position of
@@ -719,7 +757,7 @@ class EAgentSource(PropertySource):
                     href, timeout=config.SCRAPER_NAV_TIMEOUT_MS).body()
             except Exception as e:
                 logger.warning("E-Agent: could not download stocklist %s: %s", label, e)
-                self._note_problem(entry, label, f"download failed: {e}")
+                self._note_problem(entry, label, f"download failed: {e}", link=href)
                 return []
             got = extract_stocklist(data, source_label=href, builder_hint=builder_hint)
             self._name_from_banner(got, builder_hint, allow_banner)
@@ -736,7 +774,8 @@ class EAgentSource(PropertySource):
                     guessed_empty += 1
                     manifest.add_piece(entry, piece.label, "no price list", 0, piece.problem)
                     continue
-                self._note_problem(entry, piece.label, piece.problem)
+                self._note_problem(entry, piece.label, piece.problem,
+                                   link=piece.url or href)
                 continue
             if piece.kind == remote.KIND_HTML:
                 got = self._scrape_html_stocklist(scraper, piece.url, builder_hint,
@@ -777,18 +816,20 @@ class EAgentSource(PropertySource):
         if guessed and guessed_empty == guessed and not out:
             self._note_problem(entry, label, f"no price list in this folder ({guessed} "
                                              f"other document(s) tried, none is one)",
-                               piece=False)
+                               piece=False, link=href)
         return out
 
     def _note_problem(self, entry: Dict[str, Any], piece_label: str, problem: str,
-                      piece: bool = True) -> None:
-        """One fetch problem: into the manifest, and into the Settings tab's list."""
+                      piece: bool = True, link: str = "") -> None:
+        """One fetch problem: into the manifest, and into the Settings tab's list, with the
+        link a person opens to look for themselves: the file where there is one, else the
+        folder. The manifest never gets the link (harvest_manifest strips share links)."""
         outcome = manifest.problem_outcome(problem)
         if piece:
             manifest.add_piece(entry, piece_label, outcome, 0, problem)
         else:
             entry["outcome"] = outcome
-        SE.note_unreadable("remote", _settings_label(entry, outcome), problem)
+        SE.note_unreadable("remote", _settings_label(entry, outcome), problem, link=link)
 
     def _parse_stocklist(self, scraper: PlaywrightScraper, link: Dict[str, str],
                          builder_hint: str, scope: str, state_hint: str = "",
@@ -801,7 +842,8 @@ class EAgentSource(PropertySource):
         manifest.tag(got, entry)
         for g in got:
             g["source_channel"] = self.channel_name
-            g["date_checked"] = datetime.now().strftime("%d/%m/%Y")
+            # The run's day, not this row's moment: see sources.base.read_date.
+            g["date_checked"] = read_date()
             g["verified"] = True
             g.setdefault("stocklist", link.get("label", ""))
             g["stocklist_file"] = href
@@ -1073,7 +1115,7 @@ class EAgentSource(PropertySource):
                 logger.info("E-Agent: adaptive extractor found %d listing(s).", len(adaptive))
                 for a in adaptive:
                     a["source_channel"] = self.channel_name
-                    a["date_checked"] = datetime.now().strftime("%d/%m/%Y")
+                    a["date_checked"] = read_date()
                     a["verified"] = True
                 return adaptive
             logger.warning("E-Agent: no listings found on %s (page may need a different stock-list URL).",
@@ -1098,7 +1140,7 @@ class EAgentSource(PropertySource):
                 "car_spaces": parse_int(scraper.text_or_none(card, fs.get("cars", ".cars"))),
                 "source_channel": self.channel_name,
                 "source_url_or_ref": href,
-                "date_checked": datetime.now().strftime("%d/%m/%Y"),
+                "date_checked": read_date(),
                 "verified": True,  # scraped live from the portal this run
             })
         logger.info("E-Agent: captured %d live listing(s).", len(results))
@@ -1113,6 +1155,7 @@ class EAgentSource(PropertySource):
         if not has_session and not (self.username and self.password):
             logger.warning("E-Agent skipped: no saved session and no credentials. "
                            "Run: python portal_login.py e_agent")
+            record_harvest_login("e_agent", "missing", "no saved session and no password stored")
             return []
         try:
             scraper = PlaywrightScraper(session_name="e_agent")
@@ -1129,7 +1172,11 @@ class EAgentSource(PropertySource):
                 self._goto_listings(scraper)
                 pooled = self._scrape_stocklist_files(scraper)
                 logged_in = bool(pooled)
-                if not pooled:
+                if pooled:
+                    # The pooled lists are members-only too; reaching them is a sign-in.
+                    self._note_sign_in(scraper, "session",
+                                       "the saved session reached the pooled stocklists")
+                else:
                     logger.info("E-Agent: no stocklists visible anonymously — logging in.")
                     if not self._login(scraper):
                         return []
@@ -1153,9 +1200,13 @@ class EAgentSource(PropertySource):
                             len(listings), len(per_builder), len(pooled))
         except ScraperError as e:
             logger.error("E-Agent scraper error: %s", e)
+            record_harvest_login("e_agent", "error", "the harvest could not open a browser")
             return []
         except Exception as e:
             logger.exception("E-Agent scraper crashed: %s", e)
+            # Never outranks a sign-in this run already recorded (record_harvest_login).
+            record_harvest_login("e_agent", "error",
+                                 "the harvest crashed: %s" % type(e).__name__)
             return []
 
         max_budget = float(filters.get("budget_max", 10_000_000))
