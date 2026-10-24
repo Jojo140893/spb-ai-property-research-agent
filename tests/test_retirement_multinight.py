@@ -22,9 +22,11 @@ from datetime import datetime, timedelta
 
 import pytest
 
+import harvest_manifest
 from database import ResearchDatabase, WITHDRAWN_FROM_SOURCE
 
 DAY0 = datetime(2026, 9, 1, 3, 0)
+PORTAL = "Direct Builder Portal (live)"
 
 
 def _night_dt(n):
@@ -143,6 +145,24 @@ def test_a_retirement_survives_the_nights_its_list_goes_unread(tmp_path, monkeyp
     assert rows["12"]["availability_status"] == "Sold"
     assert rows["12"]["status_previous"] == "Available", \
         "re-retiring overwrote what the lot said before it was retired"
+
+
+def test_the_old_rule_is_a_whole_rollback(tmp_path, monkeypatch):
+    """SPB_RETIREMENT_RULE=old: the nights run exactly as on 24 Oct 2026 -- the outage
+    throws the retirement away again -- and the ledger records nothing."""
+    monkeypatch.setenv("SPB_RETIREMENT_RULE", "old")
+    n = Nights(tmp_path, monkeypatch)
+    for night in range(1, 18):
+        carried = range(1, 13) if night < 4 else range(1, 12)
+        n.run(night, [_lot(i, night, status="Available") for i in carried])
+    assert n.retired() == {"12"}
+    for night in range(18, 22):
+        n.run(night, [])
+    assert n.retired() == set()
+    con = sqlite3.connect(str(n.path))
+    names = {t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    con.close()
+    assert not names & {"list_reads", "retirements", "source_offers", "channel_nights"}
 
 
 def test_supersede_keeps_a_retirement_and_clears_what_it_owns(tmp_path, monkeypatch):
@@ -332,3 +352,449 @@ def test_a_relisted_lot_whose_read_states_a_status_takes_that_one(tmp_path):
     r, log = _one(path)
     assert r["availability_status"] == "On Hold"
     assert log[0]["undone_by"] == "source"
+
+
+# ------------------------------------------------------------------ manifest lines
+
+def _unit(doc):
+    from sources.e_agent import stocklist_file_key
+    return harvest_manifest.stocklist_key(stocklist_file_key(doc))
+
+
+def _link(doc, printed, page="house-and-land-1", heading="Example Homes", label="Price List",
+          outcome="read", pieces=None, rejected=0):
+    """An E-Agent stock-link line as harvest_manifest writes it."""
+    return {"channel": "E-Agent", "kind": "stock link", "name": heading, "page": page,
+            "heading": heading, "label": label, "outcome": outcome, "printed": printed,
+            "stored": {"new": 0, "updated": 0, "unchanged": printed, "rejected": rejected},
+            "stocklist_key": harvest_manifest.stocklist_key(doc), "unit": _unit(doc),
+            "pieces": pieces if pieces is not None else
+            [{"name": "file", "outcome": outcome, "printed": printed, "why": ""}]}
+
+
+def _proxima(i, night, pid="587", **kw):
+    return _lot(i, night, channel="Proxima", builder="Damac Properties",
+                doc="https://proxima.example/projects", source_project_id=pid, **kw)
+
+
+def _project_entry(pid, printed, stated=None, whole="", short=False, on_index=True):
+    return {"channel": "Proxima", "kind": "project", "pid": str(pid), "printed": printed,
+            "stated": stated, "whole": whole, "short": short, "on_index": on_index,
+            "outcome": "read" if printed else "zero-yield",
+            "stored": {"new": 0, "updated": 0, "unchanged": printed, "rejected": 0}}
+
+
+def _portal_entry(builder, printed, found=None, read=None, host="", outcome="read"):
+    return {"channel": PORTAL, "kind": "portal", "name": builder, "outcome": outcome,
+            "printed": printed, "cards_found": printed if found is None else found,
+            "cards_read": printed if read is None else read, "host": host,
+            "stored": {"new": 0, "updated": 0, "unchanged": printed, "rejected": 0}}
+
+
+def _ledger_reads(path):
+    con = sqlite3.connect(str(path))
+    con.row_factory = sqlite3.Row
+    out = [dict(r) for r in con.execute("SELECT * FROM list_reads ORDER BY read_date")]
+    con.close()
+    return out
+
+
+# ------------------------------------------------------------------ 3. the ratchet
+
+def test_a_list_that_sells_steadily_keeps_retiring_what_it_sold(tmp_path, monkeypatch):
+    """THE RATCHET. A 20-lot list sells one lot every second night from night 3 to night
+    21 -- half of it. Judged against every row ever stored it crossed 40% "missing" on
+    night 18 and retired nothing from then on (and its earlier retirements were reset).
+    Judged against its own recent whole reads, every read is whole and every sold lot
+    retires a fortnight after it left."""
+    n = Nights(tmp_path, monkeypatch)
+    gone_on = {i: 1 + 2 * i for i in range(1, 11)}   # lot i leaves on night 2i+1
+    for night in range(1, 36):
+        n.run(night, [_lot(i, night) for i in range(1, 21)
+                      if gone_on.get(i, 99) > night])
+        retired = n.retired()
+        assert all(gone_on.get(int(k), 99) + 13 <= night for k in retired), \
+            f"night {night}: a lot retired before a fortnight's absence: {retired}"
+    assert n.retired() == {str(i) for i in range(1, 11)}, \
+        f"the sold lots that stayed live: {set(map(str, range(1, 11))) - n.retired()}"
+
+
+def test_the_accountable_anchor_frees_a_list_held_by_its_own_gone_rows(tmp_path,
+                                                                       monkeypatch):
+    """Proxima project 53, 24 Oct: 311 of its 312 'missing' rows are 'Not Available'
+    captures from one read on 27/09, and tonight's read is 5 of 5. Measured over every
+    stored row it is a failed read for good, so a lot that really left never retires.
+    The source already said those 311 are gone; they are not evidence of a half read."""
+    n = Nights(tmp_path, monkeypatch)
+    for night in range(1, 18):
+        carried = range(1, 7) if night == 1 else range(1, 6)
+        lots = [_proxima(i, night, pid="53", status="Available") for i in carried]
+        if night == 1:
+            lots += [_proxima(i, 1, pid="53", status="Not Available")
+                     for i in range(100, 120)]
+        n.run(night, lots, entries=[_project_entry("53", len(carried), whole="uncapped")])
+    assert "6" in n.retired(), "the lot the project stopped listing was never retired"
+    assert not {"1", "2", "3", "4", "5"} & n.retired()
+
+
+@pytest.mark.parametrize("floor_on_members", [True, False])
+def test_rows_set_aside_never_drop_a_big_list_under_the_floor(tmp_path, monkeypatch,
+                                                              floor_on_members):
+    """THE ANCHOR'S SAFETY, pure. 29 portal lots, 20 of them later marked Sold by a repair,
+    then a read that returns 1. Set aside, 9 accountable rows are under the 10-row floor --
+    but the floor is tested on all 29, so 8 of 9 missing is still a failed read and nothing
+    retires. The twin tests the floor on the accountable rows and retires the 8: the rule
+    holding is what keeps them, not the harness."""
+    import list_ledger
+    if not floor_on_members:
+        monkeypatch.setattr(list_ledger, "ANCHOR_FLOOR_ON_MEMBERS", False)
+    n = Nights(tmp_path, monkeypatch)
+    kw = {"channel": PORTAL, "builder": "Hermitage Homes"}
+    for night in range(1, 21):
+        carried = range(1, 30) if night == 1 else [1]
+        n.run(night, [_lot(i, night, doc=f"https://portal.example/lot/{i}", **kw)
+                      for i in carried])
+        if night == 1:
+            con = sqlite3.connect(str(n.path))
+            con.execute("UPDATE buildings SET availability_status='Sold' WHERE "
+                        "source_channel=? AND CAST(lot_number AS INTEGER) >= 10", (PORTAL,))
+            con.commit()
+            con.close()
+    if floor_on_members:
+        assert n.retired() == set()
+    else:
+        assert {str(i) for i in range(2, 10)} <= n.retired()
+
+
+@pytest.mark.parametrize("floor", [None, 0.0])
+def test_a_staircase_of_drops_never_walks_the_baseline_down(tmp_path, monkeypatch, floor):
+    """A safety test with its twin. 100 rows read whole, then 62 for a week, then 39: each
+    step is under 40% of the last week's whole reads, so the history bar alone would walk
+    the baseline down to 39 and retire 61 lots of a list that may simply be breaking. The
+    drift floor holds every read below half of the largest whole read of the last 28 days.
+    The twin (DRIFT_FLOOR 0) retires all 61."""
+    import list_ledger
+    if floor is not None:
+        monkeypatch.setattr(list_ledger, "DRIFT_FLOOR", floor)
+    n = Nights(tmp_path, monkeypatch)
+    doc = "https://docs.example/staircase"
+    for night in range(1, 29):
+        top = 100 if night <= 3 else 62 if night <= 10 else 39
+        n.run(night, [_lot(i, night, doc=doc) for i in range(1, top + 1)])
+    if floor is None:
+        assert n.retired() == set()
+        last = [r for r in _ledger_reads(n.path) if r["rows_seen"] == 39][-1]
+        assert last["verdict"] == "partial" and "drift floor" in last["basis"], last
+    else:
+        assert len(n.retired()) == 61
+
+
+# ------------------------------------------------------------------ 4. the safety rule
+
+@pytest.mark.parametrize("channel,builder,doc", [
+    ("E-Agent", "Example Homes", lambda i: "https://docs.example/sheet-c"),
+    (PORTAL, "Hermitage Homes", lambda i: f"https://portal.example/package/{i}"),
+])
+def test_a_list_that_comes_back_with_one_of_29_retires_nothing_for_a_month(
+        tmp_path, monkeypatch, channel, builder, doc):
+    """THE SAFETY RULE, over time. 29 lots read whole for five nights, then one lot a
+    night for thirty. A collapse never becomes the yardstick by repeating, so nothing on
+    the list ever retires; and the portal, whose count can never prove a read whole,
+    stays on the anchor (28 of 29 missing: a failed read)."""
+    import repair_rows as RR
+    n = Nights(tmp_path, monkeypatch)
+    for night in range(1, 36):
+        carried = range(1, 30) if night <= 5 else [1]
+        n.run(night, [_lot(i, night, channel=channel, builder=builder, doc=doc(i))
+                      for i in carried])
+        assert n.retired() == set(), f"night {night}: {sorted(n.retired())} retired"
+    con = sqlite3.connect(str(n.path))
+    con.row_factory = sqlite3.Row
+    rows = [dict(r) for r in con.execute("SELECT * FROM buildings")]
+    try:
+        import list_ledger
+        judged = {"ledger": list_ledger.Ledger(con, _night_dt(35))}
+    except ImportError:
+        judged = {}
+    assert RR.partial_reads(rows, today=_night_dt(35), **judged), \
+        "the half-read list is no longer reported"
+
+
+def test_the_harness_can_fail_on_a_collapse(tmp_path, monkeypatch):
+    """The test above has teeth: with the history bar and the drift floor switched off the
+    same nights retire the 28 lots, so 'nothing retired' is the rule holding, not the
+    harness idling."""
+    import list_ledger
+    monkeypatch.setattr(list_ledger, "FULL_READ_SHARE", 0.0)
+    monkeypatch.setattr(list_ledger, "DRIFT_FLOOR", 0.0)
+    n = Nights(tmp_path, monkeypatch)
+    for night in range(1, 36):
+        carried = range(1, 30) if night <= 5 else [1]
+        n.run(night, [_lot(i, night, doc="https://docs.example/sheet-c") for i in carried])
+    assert len(n.retired()) == 28
+
+
+def test_a_read_stopped_at_the_render_cap_retires_nothing(tmp_path, monkeypatch):
+    """Proxima's accordion serves 80 lots a project, and a read that stops there says so
+    (short). 12 lots on the board, 10 read every night after the second: on 24 Oct's rule
+    2 of 12 missing is 16%, a 'whole' read, and the 2 lots past the cap retired after a
+    fortnight. Here the manifest's own word vetoes the read."""
+    n = Nights(tmp_path, monkeypatch)
+    for night in range(1, 21):
+        carried = range(1, 13) if night <= 2 else range(1, 11)
+        n.run(night, [_proxima(i, night, status="Available") for i in carried],
+              entries=[_project_entry("587", len(carried), stated=12,
+                                      whole="uncapped" if night <= 2 else "",
+                                      short=night > 2)])
+        assert n.retired() == set(), f"night {night}: lots past the cap retired"
+
+
+def test_a_night_with_a_failed_fetch_retires_nothing(tmp_path, monkeypatch):
+    """A folder link whose fetch failed in part tonight: its lists are not judged whole
+    tonight, whatever their counts say -- the old rule retired lot 12 that night."""
+    n = Nights(tmp_path, monkeypatch)
+    doc = "https://docs.example/folder"
+    for night in range(1, 18):
+        carried = range(1, 13) if night < 4 else range(1, 12)
+        failed = [_link(doc, len(carried), pieces=[
+            {"name": "a.pdf", "outcome": "read", "printed": len(carried), "why": ""},
+            {"name": "b.pdf", "outcome": "fetch failed", "printed": 0, "why": "HTTP 500"}])]
+        n.run(night, [_lot(i, night, doc=doc) for i in carried],
+              entries=failed if night == 17 else ())
+    assert n.retired() == set(), "lot 12 retired on a night its folder half-failed"
+
+
+def test_an_inbox_never_retires_anything_over_a_month(tmp_path, monkeypatch):
+    """A pure safety test: an inbox does not re-list its stock, so absence from it means
+    nothing (RELISTING_CHANNELS), and it gets no ledger rows at all."""
+    n = Nights(tmp_path, monkeypatch)
+    for night in range(1, 41):
+        n.run(night, [_lot(i, night, channel="digital email", doc="inbox")
+                      for i in (range(1, 6) if night == 1 else [1])])
+    assert n.retired() == set()
+    assert all(r["channel"] != "digital email" for r in _ledger_reads(n.path))
+
+
+# ------------------------------------------------------------------ 5. proofs and vetoes
+
+def _tab_nights(n, doc, documents, entries=lambda night: ()):
+    """30 lots read whole for three nights, then 12 a night: 18 left at once."""
+    for night in range(1, 4):
+        n.run(night, [_lot(i, night, doc=doc) for i in range(1, 31)])
+    for night in range(4, 20):
+        n.run(night, [_lot(i, night, doc=doc) for i in range(1, 13)])
+    assert n.retired() == set(), "a collapse with no proof retired stock"
+    for night in (20, 21):
+        n.run(night, [_lot(i, night, doc=doc) for i in range(1, 13)], documents=documents,
+              entries=entries(night))
+        if night == 20:
+            assert n.retired() == set(), "one proven read was enough"
+
+
+def _tab(doc, endpoint="export", rows=13):
+    return {harvest_manifest.stocklist_key(doc): {"csv_rows": rows, "endpoint": endpoint}}
+
+
+def test_a_tab_whose_rows_are_all_accounted_for_retires_its_backlog(tmp_path, monkeypatch):
+    """Verv, 24 Oct: the tab's export has 90 rows and the read gives 89 listings, against
+    306 rows held. On 24 Oct's rule that list was a failed read for ever (217 missing).
+    The tab's own CSV row count proves the read whole, so what it no longer carries
+    retires -- after two such reads, never on the first."""
+    n = Nights(tmp_path, monkeypatch)
+    doc = "https://docs.example/verv-tab"
+    _tab_nights(n, doc, _tab(doc))                   # header + 12 listings
+    assert n.retired() == {str(i) for i in range(13, 31)}
+
+
+def test_a_gviz_tab_never_proves_a_read_whole(tmp_path, monkeypatch):
+    """A pure safety test (its twin is the export test above). gviz answers 200 with a
+    workbook's FIRST tab for a gid that no longer exists, so its row count is no proof."""
+    n = Nights(tmp_path, monkeypatch)
+    doc = "https://docs.example/verv-tab"
+    _tab_nights(n, doc, _tab(doc, endpoint="gviz"))
+    assert n.retired() == set()
+
+
+@pytest.mark.parametrize("rejected", [1, 0])
+def test_a_lot_refused_by_a_constraint_voids_the_proof(tmp_path, monkeypatch, rejected):
+    """A safety test with its twin. A link whose lots a constraint refused tonight (the
+    dedup_key trap: 41 lots a night, Fawkner Park West retired while its list carried
+    them) has not been stored whole, whatever its export says."""
+    n = Nights(tmp_path, monkeypatch)
+    doc = "https://docs.example/verv-tab"
+    _tab_nights(n, doc, _tab(doc),
+                entries=lambda night: [_link(doc, 12, rejected=rejected)])
+    assert n.retired() == (set() if rejected else {str(i) for i in range(13, 31)})
+
+
+@pytest.mark.parametrize("narrowed", [True, False])
+def test_a_narrowed_proxima_index_makes_every_project_partial(tmp_path, monkeypatch,
+                                                              narrowed):
+    """The session-filter trap: browsing Proxima signed in narrows the next harvest's
+    index. On a night the index lists far fewer projects than its recorded nights, every
+    Proxima read is partial -- the old rule retired lot 12 that night. Twin: the same night
+    with the whole index retires it."""
+    n = Nights(tmp_path, monkeypatch)
+    others = [_project_entry(p, 0, whole="uncapped") for p in range(200, 209)]
+    for night in range(1, 18):
+        carried = range(1, 13) if night < 4 else range(1, 12)
+        entries = [_project_entry("587", len(carried), stated=len(carried),
+                                  whole="uncapped")] + others
+        if narrowed and night == 17:
+            entries = entries[:4]
+        n.run(night, [_proxima(i, night, status="Available") for i in carried],
+              entries=entries)
+    assert n.retired() == (set() if narrowed else {"12"})
+
+
+@pytest.mark.parametrize("board,read,retires", [(101, 100, False), (100, 99, True)])
+def test_a_portal_read_that_ends_on_its_page_length_proves_nothing(tmp_path, monkeypatch,
+                                                                   board, read, retires):
+    """The portals' grid select is set to 100 a page and no grid total is read, so a read
+    of exactly 100 is what a second page looks like from here. On 24 Oct's rule 1 of 101
+    missing was a whole read and lot 101 retired. Twin: 99 of a 100-lot board retires."""
+    n = Nights(tmp_path, monkeypatch)
+    kw = {"channel": PORTAL, "builder": "Hermitage Homes"}
+    for night in range(1, 18):
+        carried = range(1, board + 1) if night < 4 else range(1, read + 1)
+        n.run(night, [_lot(i, night, doc=f"https://portal.example/lot/{i}", **kw)
+                      for i in carried],
+              entries=[_portal_entry("Hermitage Homes", len(carried))])
+    assert n.retired() == ({str(board)} if retires else set())
+
+
+@pytest.mark.parametrize("eagent_printed,retires", [(7, True), (20, False)])
+def test_two_channels_reading_one_page_prove_the_pooled_list(tmp_path, monkeypatch,
+                                                             eagent_printed, retires):
+    """TORSION. Its portal used to give each lot a page (pooled by builder) and now serves
+    every lot from one Stocklist page, which E-Agent also links. The 29 old per-lot rows
+    never looked re-read, so they never retired. Pooled with the new page they are 29 of
+    36 missing -- a failed read by count alone -- but the same page read through two
+    channels tonight agrees on 7, and that proves it whole. Twin: the counts disagree."""
+    n = Nights(tmp_path, monkeypatch)
+    host = "referrer.torsion.example"
+    page = f"https://{host}/stocklist"
+    kw = {"channel": PORTAL, "builder": "Torsion Homes"}
+    for night in range(1, 19):
+        lots = [_lot(i, night, doc=page, **kw) for i in range(30, 37)]
+        if night == 1:
+            lots += [_lot(i, 1, doc=f"https://{host}/lot/{i}", **kw) for i in range(1, 30)]
+        lots += [_lot(i, night, doc=page, builder="Torsion Homes",
+                      source_text=f"E-Agent copy of lot {i}") for i in range(30, 37)]
+        n.run(night, lots, entries=[_portal_entry("Torsion Homes", 7, host=host),
+                                    _link(page, eagent_printed, heading="Torsion Homes")])
+    old = {str(i) for i in range(1, 30)}
+    assert (n.retired() & old) == (old if retires else set())
+
+
+# ------------------------------------------------------------------ 6. how a retirement is made
+
+def test_a_lot_that_moved_to_a_new_identity_is_hidden_not_sold(tmp_path, monkeypatch):
+    """Lot 12 is read with its suburb from night 4 on, which is a new identity (suburb is
+    part of content_hash). The old row leaves the list -- but the lot did not: it is still
+    for sale. The old row is hidden as a duplicate of the new one, its availability kept;
+    the old rule retired it as Sold."""
+    n = Nights(tmp_path, monkeypatch)
+    for night in range(1, 20):
+        lots = [_lot(i, night, status="Available") for i in range(1, 12)]
+        lots.append(_lot(12, night, status="Available") if night < 4 else
+                    _lot(12, night, status="Available", suburb="Tarneit",
+                         source_text="Lot 12 Example Street Tarneit 4 bed $612,000"))
+        n.run(night, lots)
+    con = sqlite3.connect(str(n.path))
+    con.row_factory = sqlite3.Row
+    old, new = [dict(r) for r in con.execute(
+        "SELECT * FROM buildings WHERE lot_number='12' ORDER BY id")]
+    con.close()
+    assert new["superseded_by"] is None
+    assert old["superseded_by"] == new["content_hash"], old["superseded_by"]
+    assert old["availability_status"] == "Available"
+
+
+def test_calibration_holds_the_new_rules_while_the_old_rules_retirements_still_apply(
+        tmp_path, monkeypatch):
+    """The first CALIBRATION_NIGHTS nights print what the new rules would retire and write
+    none of it; what the old rule retires still goes from night 1. List Y: lot 42 has been
+    off it for three weeks -- the old rule retires it on night 1. List X: lot 21 likewise,
+    but X also holds 10 'Not Available' rows, so the old rule calls X a failed read; the
+    anchor sets them aside and retires lot 21 once calibration is over."""
+    n = Nights(tmp_path, monkeypatch)
+    x, y = "https://docs.example/list-x", "https://docs.example/list-y"
+    for night in range(1, 9):
+        lots = [_lot(i, night, doc=x, status="Available") for i in range(1, 11)]
+        lots += [_lot(i, night, doc=y, status="Available") for i in range(31, 42)]
+        if night == 1:
+            lots += [_lot(i, -20, doc=x, status="Not Available") for i in range(11, 21)]
+            lots += [_lot(21, -20, doc=x, status="Available"),
+                     _lot(42, -20, doc=y, status="Available")]
+        n.run(night, lots)
+        if night <= 7:
+            assert "42" in n.retired(), f"night {night}: the old rule's retirement waited"
+            assert "21" not in n.retired(), f"night {night}: calibration wrote a retirement"
+            if night >= 2:
+                assert "would retire" in n.out
+    assert "21" in n.retired()
+
+
+def test_a_retirement_a_person_undoes_stays_undone_until_the_lot_is_seen(tmp_path,
+                                                                         monkeypatch):
+    import list_ledger
+    n = Nights(tmp_path, monkeypatch)
+    for night in range(1, 18):
+        carried = range(1, 13) if night < 4 else range(1, 12)
+        n.run(night, [_lot(i, night, status="Available") for i in carried])
+    con = sqlite3.connect(str(n.path))
+    (stamp,) = con.execute("SELECT stamp FROM retirements").fetchone()
+    assert list_ledger.undo_retirements(con, stamp, now=_night_dt(17)) == 1
+    con.commit()
+    con.close()
+    assert n.rows()["12"]["availability_status"] == "Available"
+    for night in range(18, 22):
+        n.run(night, [_lot(i, night, status="Available") for i in range(1, 12)])
+    assert n.retired() == set(), "an undone retirement was made again the next night"
+
+
+def test_the_nightly_cap_defers_rather_than_drops(monkeypatch):
+    import repair_rows as RR
+    rows = [{"id": i, "source_channel": "E-Agent", "superseded_by": "",
+             "availability_status": "Available"} for i in range(1000)]
+    items = [{"row": r, "silent": 20 + r["id"] % 7, "main": False} for r in rows[:120]]
+    items += [{"row": {"id": 5000 + i, "source_channel": "E-Agent", "superseded_by": "",
+                       "availability_status": "Sold"}, "silent": 30, "main": False}
+              for i in range(40)]
+    items += [{"row": rows[500 + i], "silent": 15, "main": True} for i in range(30)]
+    keep, later = RR.cap_retirements(items, rows)
+    shown = [it for it in keep if it["row"]["availability_status"] != "Sold"
+             and not it["main"]]
+    assert len(shown) == 50                          # 5% of 1,000 live rows
+    assert sum(1 for it in keep if it["row"]["availability_status"] == "Sold") == 40
+    assert sum(1 for it in keep if it["main"]) == 30, "the old rule's retirements waited"
+    assert len(later) == 70
+    assert min(it["silent"] for it in shown) >= max(it["silent"] for it in later), \
+        "the longest-silent lots must go first"
+
+
+def test_a_report_only_run_writes_nothing_ledger_included(tmp_path, monkeypatch):
+    """A pure safety test. repair_rows without --apply writes nothing: not on a database
+    the ledger has never seen (no table is created), and not on one it has."""
+    import repair_rows as RR
+    n = Nights(tmp_path, monkeypatch)
+    n.run(1, [_lot(i, 1) for i in range(1, 13)], apply=False)
+    con = sqlite3.connect(str(n.path))
+    names = {t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    con.close()
+    assert not names & {"list_reads", "retirements", "source_offers", "channel_nights"}
+    for night in range(2, 18):
+        n.run(night, [_lot(i, night) for i in range(1, 12)])
+
+    def dump():
+        c = sqlite3.connect(str(n.path))
+        out = {t: c.execute(f"SELECT * FROM {t} ORDER BY 1, 2").fetchall()
+               for t in ("buildings", "list_reads", "retirements", "channel_nights")}
+        c.close()
+        return out
+    before = dump()
+    _Clock.current = _night_dt(18)
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert RR.main(False) == 0
+    assert dump() == before
