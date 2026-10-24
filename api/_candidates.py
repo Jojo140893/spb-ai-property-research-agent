@@ -44,7 +44,11 @@ from _bootstrap import HERE, ROOT
 import suburb_quality
 from address_label import clean_display_address, display_suburb
 from provenance import primary_source_link
-from builder_names import is_withdrawn_builder
+# parity_check and search_regressions take the withdrawn rules from this module, the way
+# they take snapshot_build_cells, so what they leave out is what the shipped search leaves
+# out. Nothing here calls is_withdrawn_builder any more; it stays for them.
+from builder_names import (is_withdrawn_builder, is_withdrawn_row,  # noqa: F401
+                           project_key, withdrawn_captures, withdrawn_projects)
 
 # Exactly the fields build_web.py exports to stock.json, so both readers agree and
 # neither can reach an internal column (content_hash, dedup_key, source_text).
@@ -534,25 +538,50 @@ def load_snapshot():
         tried.append(str(path))
         if not path.exists():
             continue
-        rows = _read_json(path) if kind == "json" else _read_sqlite(path)
-        # A withdrawn builder is never a candidate, whichever reader found the row.
-        # build_web already leaves it out of stock.json; this also holds for a snapshot
-        # built before it was withdrawn, and for a database read directly.
-        return [r for r in rows if not is_withdrawn_builder(r.get("builder_name"))], str(path)
+        if kind == "json":
+            rows, published, published_captures = _read_json_payload(path)
+        else:
+            rows, published, published_captures = _read_sqlite(path), frozenset(), frozenset()
+        # A withdrawn builder is never a candidate, whichever reader found the row, and
+        # neither is a blank-builder lot in one of its projects, or a blank-builder capture
+        # superseded_by joins to one of its rows (builder_names). build_web already leaves
+        # all three out of stock.json, and writes the projects and captures beside the rows
+        # because the rows that named the builder are no longer there to find them by.
+        # What the rows themselves show covers a snapshot built before these rules, and a
+        # database read directly.
+        projects = withdrawn_projects(rows) | published
+        captures = withdrawn_captures(rows, projects) | published_captures
+        return [r for r in rows if not is_withdrawn_row(r, projects, captures)], str(path)
     raise FileNotFoundError(
         "no stock snapshot found (looked at: %s). Deploy stock.json alongside the "
         "function, or set SPB_SNAPSHOT_JSON / SPB_SNAPSHOT_DB." % ", ".join(tried))
 
 
 def _read_json(path):
+    return _read_json_payload(path)[0]
+
+
+def _read_json_payload(path):
+    """(rows, the withdrawn projects and the withdrawn captures' content hashes build_web
+    published beside them; each empty for a snapshot written before it published them)."""
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
+    published = set()
+    for pair in data.get("withdrawn_projects") or ():
+        if isinstance(pair, (list, tuple)) and len(pair) == 2:
+            # Through project_key, so a published key is spelled as a row's key is.
+            key = project_key({"source_channel": pair[0], "source_project_id": pair[1]})
+            if key is not None:
+                published.add(key)
+    # Stripped as builder_names strips a row's hash, and a blank one dropped: it joins nothing.
+    captures = frozenset(str(h).strip() for h in data.get("withdrawn_captures") or ()
+                         if isinstance(h, str) and h.strip())
     # build_web.py writes a columnar payload; index.html also accepts a row-of-objects
     # shape from the live API, so accept both here too.
     if isinstance(data.get("rows"), list) and isinstance(data.get("keys"), list):
         keys = data["keys"]
-        return [dict(zip(keys, row)) for row in data["rows"]]
-    return list(data.get("buildings") or [])
+        return [dict(zip(keys, row)) for row in data["rows"]], frozenset(published), captures
+    return list(data.get("buildings") or []), frozenset(published), captures
 
 
 def _read_sqlite(path):
