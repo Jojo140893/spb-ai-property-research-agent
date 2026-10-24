@@ -726,7 +726,17 @@ class ResearchDatabase:
             # A run that could not read a field must not erase what is stored. Writing
             # these unconditionally meant one unparsed row blanked the availability and
             # title Coleen asked for, and zeroed its price.
+            #
+            # stocklist_file TRAVELS WITH THE READ (24 Oct 2026 review), like source_url:
+            # it is the link this read came through. E-Agent gives a re-uploaded file a new
+            # link, and a row kept the link it was first stored under -- 1,666 live E-Agent
+            # rows on 30 Sep named a link other than the one their document was last read
+            # through -- so the retirement ledger's rule B, keyed on the link, took a lot
+            # carried onto a re-upload whose new link then failed for one the source had
+            # stopped offering, and a veto on the new link (a lot refused) never reached
+            # its document. A read that names no link (a portal, an inbox) changes nothing.
             for c in ("price", "availability_status", "title_status", "source_url",
+                      "stocklist_file",
                       "extraction_confidence", "land_price", "build_price"):
                 v = price if c == "price" else cols[c]
                 if v not in (None, "", 0, 0.0):

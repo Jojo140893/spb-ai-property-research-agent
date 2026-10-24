@@ -85,6 +85,15 @@ SCHEMA (version 1)
                     whole-export CSV row count and the endpoint that served it
       "link_notes"  {key of a stock link: {"truncated", "why"}}: a folder whose file or
                     folder budget bound, or whose listing came back empty
+  and (24 Oct 2026 review, additive):
+      "started"     dd/mm/YYYY HH:MM, local time: when reset() began this harvest, so a
+                    run that crosses midnight is known to hold reads of two dates
+      "runs"        {channel: {...}}: what a reader said of its whole run. "Proxima":
+                    {"stats": the reader's own skip counts ("project unreadable",
+                    "project errored", ...), "projects_seen", "projects_logged" (the
+                    projects that got a line here), "errors" (ERROR records it logged)} --
+                    a project it could not read gets no line, exactly like one that left
+                    the dropdown, and only these counts tell the two apart
 
 OUTCOMES
       read                     at least one lot came out of it
@@ -160,6 +169,10 @@ _BY_ID: Dict[int, Dict[str, Any]] = {}
 #               lists yield tonight, they were not read whole.
 DOCUMENTS: Dict[str, Dict[str, Any]] = {}
 LINK_NOTES: Dict[str, Dict[str, Any]] = {}
+# WHEN THE HARVEST BEGAN AND WHAT EACH READER SAID OF ITS WHOLE RUN (24 Oct 2026 review),
+# for the same ledger: see "started" and "runs" in the schema above.
+RUNS: Dict[str, Dict[str, Any]] = {}
+STARTED: List[str] = []
 
 
 def reset() -> None:
@@ -168,6 +181,15 @@ def reset() -> None:
     _BY_ID.clear()
     DOCUMENTS.clear()
     LINK_NOTES.clear()
+    RUNS.clear()
+    STARTED[:] = [datetime.now().strftime("%d/%m/%Y %H:%M")]
+
+
+def note_run(channel: str, **fields: Any) -> None:
+    """What a reader said of its whole run tonight (counts, never a link). Never fatal."""
+    if channel:
+        RUNS.setdefault(str(channel), {}).update(
+            {k: v for k, v in fields.items() if v is not None})
 
 
 def note_document(url: str, csv_rows: Any = None, endpoint: Any = None) -> None:
@@ -293,9 +315,11 @@ def snapshot() -> Dict[str, Any]:
             e.get("outcome") or "unknown", 0) + 1
     return {"schema": SCHEMA,
             "generated": datetime.now().strftime("%d/%m/%Y %H:%M"),
+            "started": STARTED[0] if STARTED else None,
             "entries": ENTRIES,
             "documents": DOCUMENTS,
             "link_notes": LINK_NOTES,
+            "runs": RUNS,
             "totals": {"by_channel": by_channel, "by_outcome": by_outcome}}
 
 

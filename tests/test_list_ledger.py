@@ -279,10 +279,120 @@ def test_a_manifest_from_another_night_is_not_tonights(tmp_path):
     p.write_text(json.dumps({"schema": 1, "generated": "24/10/2026 02:10", "entries": []}))
     m = LL.read_manifest(p, now=datetime(2026, 10, 24, 3, 0))
     assert m is not None
-    assert LL.Tonight(m, []).read_dates == {"24/10/2026", "23/10/2026"}, \
-        "a run that crossed midnight holds reads from both dates"
+    # The run's dates come from when it began, never from the hour it ended (review, 24
+    # Oct 2026): a manifest written at 02:10 by a run that began at 01:00 holds one date.
+    assert LL.Tonight(m, []).read_dates == {"24/10/2026"}
+    late = {"checked_at": "2026-10-23T23:40:00", "date_checked": "23/10/2026"}
+    assert LL.Tonight(m, [late]).read_dates == {"24/10/2026", "23/10/2026"}, \
+        "a run whose first read was stamped before midnight holds reads from both dates"
+    yesterday = {"checked_at": "2026-10-23T13:00:00", "date_checked": "23/10/2026"}
+    assert LL.Tonight(m, [yesterday]).read_dates == {"24/10/2026"}, \
+        "a read from 13 hours before the manifest was taken for tonight's run"
+    said = dict(m, started="23/10/2026 23:30")
+    assert LL.Tonight(said, [yesterday]).read_dates == {"24/10/2026", "23/10/2026"}, \
+        "the manifest's own start was not believed"
+    assert LL.Tonight(dict(m, started="24/10/2026 01:00"), [late]).read_dates == \
+        {"24/10/2026"}, "the rows overrode the manifest's own start"
     assert LL.read_manifest(p, now=datetime(2026, 10, 25, 3, 0)) is None
     assert LL.read_manifest(tmp_path / "absent.json") is None
+
+
+def _tonight_says(entries, rows, started="24/10/2026 20:00"):
+    m = {"schema": 1, "entries": entries, "documents": {}, "link_notes": {},
+         "started": started, "_made": TODAY.replace(hour=21)}
+    return LL.Tonight(m, rows)
+
+
+def test_a_recorded_veto_is_never_rejudged():
+    """Review, 24 Oct 2026. A read the channel's own record called cut stays cut: not on a
+    night whose manifest has no line for it, not on a night that reads it again (a
+    midnight run), and not when that line would prove it whole."""
+    members = _list(15, 5, channel="Proxima", pid="53")
+    for r in members:
+        r["checked_at"] = "2026-10-24T20:30:00"
+    key = _key(members)
+    lk = LL.list_key(key)
+    newest = max(LL._as_date(r["date_checked"]) for r in members)
+    whole_line = [_project("53", 15, stated=15, whole="uncapped")]
+    for entries in ([], whole_line):
+        led, _h = _ledger()
+        led.reads[lk].append((newest, 15, LL.PARTIAL, "veto: proxima short 15/20"))
+        v = led.judge(key, members, newest, _tonight_says(entries, members),
+                      RR._gone_status, RR.PARTIAL_READ_SHARE, RR.PARTIAL_READ_MIN_ROWS)
+        assert (v.verdict, v.basis, v.recorded) == (
+            LL.PARTIAL, "veto: proxima short 15/20", True), (entries, v.basis)
+    # The twin: a recorded verdict that is not a veto IS re-judged by tonight's own line
+    # for a read tonight's run made...
+    led, _h = _ledger()
+    led.reads[lk].append((newest, 15, LL.PARTIAL, "anchor 5/20 accountable missing"))
+    v = led.judge(key, members, newest, _tonight_says(whole_line, members),
+                  RR._gone_status, RR.PARTIAL_READ_SHARE, RR.PARTIAL_READ_MIN_ROWS)
+    assert (v.verdict, v.recorded) == (LL.WHOLE, None), v.basis
+    # ...but not when the run began after the read was stamped: that read is yesterday's.
+    led, _h = _ledger()
+    led.reads[lk].append((newest, 15, LL.PARTIAL, "anchor 5/20 accountable missing"))
+    v = led.judge(key, members, newest, _tonight_says(whole_line, members,
+                                                      started="24/10/2026 20:45"),
+                  RR._gone_status, RR.PARTIAL_READ_SHARE, RR.PARTIAL_READ_MIN_ROWS)
+    assert (v.verdict, v.recorded) == (LL.PARTIAL, True), v.basis
+
+
+def test_the_table_never_writes_over_a_recorded_veto(tmp_path):
+    """commit()'s own guard, beneath judge's: a verdict for a read whose row already says
+    veto leaves the row as it is."""
+    con = sqlite3.connect(str(tmp_path / "l.db"))
+    led = LL.Ledger(con, TODAY, write=True)
+    con.execute("INSERT INTO list_reads (list_key, read_date, verdict, basis, recorded_at) "
+                "VALUES ('k1', '2026-10-24', 'partial', 'veto: proxima short 15/20', 'x')")
+    v = LL.Verdict(key=("u", "53"), list_key="k1", newest=TODAY, verdict=LL.WHOLE,
+                   basis="anchor 5/20", seen=15, members=20, channel="Proxima", label="l",
+                   recorded=None)
+    led.note(v)
+    led.commit()
+    assert con.execute("SELECT verdict, basis FROM list_reads").fetchall() == \
+        [("partial", "veto: proxima short 15/20")]
+    con.close()
+
+
+def test_a_row_belongs_to_the_link_its_document_was_last_read_through():
+    """Review, 24 Oct 2026: rows stored before record_building moved stocklist_file with
+    the read still name the link they were first stored under. A document's rows belong to
+    the link its most recently read row came through -- for rule B's unit and for every
+    veto and note on that link."""
+    old, new = "https://files.example/old", "https://files.example/new"
+    doc = "https://files.example/doc"
+    rows = [_row(1, 20, url=doc, stocklist_file=old),           # sold, never re-read
+            _row(2, 0, url=doc, stocklist_file=new),            # read tonight via new
+            _row(3, 0, url="https://files.example/other", stocklist_file=old)]
+    links = LL.current_links(rows)
+    assert links == {doc: new, "https://files.example/other": old}
+    fk = LL.file_key_fn()
+    assert LL.row_unit(rows[0], fk, links) == LL.row_unit(rows[1], fk, links) == \
+        LL.sha16(fk(new))
+    assert LL.row_unit(rows[0], fk) == LL.sha16(fk(old)), "the row's own link changed"
+    assert LL.links_of(rows[:1], links) == sorted({old, new})
+    tonight = _tonight_says([_link(new, 1, rejected=1)], rows)
+    assert tonight.veto_and_proof((doc, ""), rows[:1], 0)[0].startswith(
+        "link had 1 lot(s) refused"), "a veto on the new link missed its document"
+
+
+@pytest.mark.parametrize("note,why", [
+    (None, "does not say whether every listed project was read"),
+    ({"stats": {"project unreadable": 2}, "projects_seen": 9, "projects_logged": 7,
+      "errors": 0}, "2 listed project(s) could not be read (project unreadable 2)"),
+    ({"stats": {}, "projects_seen": 9, "projects_logged": 8, "errors": 0},
+     "8 of 9 listed project(s) have a manifest line"),
+    ({"stats": {}, "projects_seen": 9, "projects_logged": 9, "errors": 1},
+     "logged 1 error(s)"),
+    ({"stats": {}, "projects_seen": 9}, "run note is incomplete"),
+    ({"stats": {"developer field was not a company name": 335},
+      "projects_seen": 9, "projects_logged": 9, "errors": 0}, None),
+])
+def test_proxima_says_which_nights_can_count_a_project_gone(note, why):
+    tonight = LL.Tonight({"runs": {"Proxima": note} if note else {},
+                          "_made": TODAY.replace(hour=21)}, [])
+    got = LL.proxima_run_problem(tonight)
+    assert (got is None) if why is None else (why in str(got)), got
 
 
 def test_a_young_ledger_judges_no_night_healthy():

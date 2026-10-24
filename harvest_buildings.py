@@ -290,8 +290,15 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
         # re-challenges 2FA for every new browser context.
         px = ProximaSource(registry=registry)
         print("[+] Proxima: reading the agent portal's project stock...")
-        listings = px.search(ALL_STOCK_FILTERS)
+        px_errors = _ErrorCount()
+        px_logger = logging.getLogger("spb.scraper.proxima")
+        px_logger.addHandler(px_errors)
+        try:
+            listings = px.search(ALL_STOCK_FILTERS)
+        finally:
+            px_logger.removeHandler(px_errors)
         read["Proxima"] = len(listings)
+        _note_proxima_run(px, px_errors.n)
         if not listings:
             print("    Proxima: nothing read. If this says the sign-in expired, run: "
                   "python portal_login.py portal_proxima --profile")
@@ -447,6 +454,35 @@ def _record_unreadable_stocklists() -> None:
                            "their projects are missing from the catalogue.", len(UNREADABLE))
     except Exception as exc:                                          # noqa: BLE001
         logger.info("could not record unreadable stocklists: %s", exc)
+
+
+class _ErrorCount(logging.Handler):
+    """Counts the ERROR records a reader logs while it runs (a crash it caught itself)."""
+
+    def __init__(self):
+        super().__init__(level=logging.ERROR)
+        self.n = 0
+
+    def emit(self, record):
+        self.n += 1
+
+
+def _note_proxima_run(px, errors: int) -> None:
+    """What the Proxima reader said of its whole run, into the manifest's "runs" (see
+    harvest_manifest). WHY (24 Oct 2026 review): sources/proxima.py skips a project it
+    cannot open ("project unreadable", "project errored") before that project gets a
+    manifest line, so tonight's manifest says of it exactly what it says of a project that
+    left the account's dropdown. The retirement ledger's rule B must not count the one as
+    the other; these counts are how it tells. Never fatal, never a link."""
+    try:
+        stats = {str(k): int(v) for k, v in (getattr(px, "stats", None) or {}).items()}
+        harvest_manifest.note_run(
+            "Proxima", stats=stats,
+            projects_seen=int(getattr(px, "projects_seen", 0) or 0),
+            projects_logged=len(getattr(px, "project_log", None) or []),
+            errors=int(errors or 0))
+    except Exception as exc:                                          # noqa: BLE001
+        logger.warning("could not note the Proxima run in the manifest: %s", exc)
 
 
 def _write_manifest() -> None:

@@ -42,9 +42,12 @@ rule that matches decides (judge()):
      read. The 10-row floor is tested on the FULL member count.
 
 A PARTIAL read is recorded but never enters any baseline, however many nights it repeats:
-repeating a bad read never makes it the yardstick. Proxima, the direct portals and the
-E-Agent Stocklist can never be whole on count history at all -- a capped read repeats the
-same count night after night -- so they need (b), or fall to (d).
+repeating a bad read never makes it the yardstick. A RECORDED verdict stands: it is judged
+again only when tonight's run made the read and tonight's manifest has a line for its list,
+and a recorded veto is never judged again at all (review, 24 Oct 2026: a project unreadable
+the next night had no line, and the bare anchor rewrote its veto as whole). Proxima, the
+direct portals and the E-Agent Stocklist can never be whole on count history at all -- a
+capped read repeats the same count night after night -- so they need (b), or fall to (d).
 
 What retires a lot is unchanged: absence from its own list for WITHDRAWN_AFTER_DAYS (14) on
 a list read within SOURCE_READ_WITHIN_DAYS (3) and judged whole. On top of that a lot needs
@@ -93,8 +96,19 @@ CSV_SLACK_ROWS = 3
 CSV_SLACK_SHARE = 0.15
 # A manifest older than this did not describe tonight's harvest.
 MANIFEST_MAX_AGE_HOURS = 20
-# A run that ends before this hour may hold reads stamped the evening before.
-MANIFEST_SPANS_MIDNIGHT_BEFORE_HOUR = 6
+# WHEN TONIGHT'S RUN BEGAN (review, 24 Oct 2026). The dates tonight's reads carry run from
+# the run's start to the manifest's writing, so a run that crosses midnight holds reads of
+# two dates and every other run holds one. It used to be guessed from the hour the manifest
+# was written (before 06:00 meant "yesterday's date too"), which put yesterday's reads in
+# front of tonight's manifest: a project unreadable tonight has no line in it, so its
+# recorded veto ("proxima short 15/20") was re-judged by the bare anchor and overwritten as
+# whole. The start is the manifest's own "started" (harvest_manifest.reset), else the
+# earliest checked_at stamped within RUN_MAX_HOURS before the manifest was written (a
+# harvest takes about an hour; the job's timeout is 150 minutes), else the manifest's own
+# midnight. Never later than the run's first stamp: a read of tonight's taken for
+# yesterday's would be judged without its manifest line.
+RUN_MAX_HOURS = 12
+RUN_SLACK_MINUTES = 5
 # Retirements the old rule would not have made are printed as "would retire", and not
 # written, until the ledger holds this many recorded nights.
 CALIBRATION_NIGHTS = 7
@@ -206,6 +220,16 @@ def _ddmmyyyy(d):
 
 def _day(d):
     return datetime(d.year, d.month, d.day)
+
+
+def _checked(row):
+    """The row's checked_at (record_building stamps it on every read) as a naive datetime,
+    or None."""
+    s = str(_col(row, "checked_at") or "").strip()[:19].replace(" ", "T")
+    try:
+        return datetime.strptime(s, "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return None
 
 
 def sha16(text):
@@ -392,20 +416,88 @@ def read_manifest(path=None, now=None):
     return m
 
 
+def run_started(manifest, rows, made):
+    """When tonight's harvest began (see RUN_MAX_HOURS): the manifest's own "started",
+    else the earliest checked_at stamped within RUN_MAX_HOURS before it was written, else
+    its own midnight."""
+    hi = made + timedelta(minutes=RUN_SLACK_MINUTES)
+    try:
+        said = datetime.strptime(str((manifest or {}).get("started") or ""), "%d/%m/%Y %H:%M")
+    except ValueError:
+        said = None
+    if said is not None and said <= hi:
+        return said
+    lo, first = made - timedelta(hours=RUN_MAX_HOURS), None
+    for r in rows:
+        t = _checked(r)
+        if t is not None and lo <= t <= hi and (first is None or t < first):
+            first = t
+    return first or _day(made)
+
+
+# A ROW'S LINK IS THE ONE ITS DOCUMENT WAS LAST READ THROUGH (review, 24 Oct 2026). E-Agent
+# gives a file a new link when it is re-uploaded, and until this branch record_building
+# kept the link a row was first stored under: on the 30 Sep database 111 documents were fed
+# by more than one link, and 1,666 live E-Agent rows named a link other than the one their
+# document was last read through. Keyed on that, a lot carried onto a re-upload whose new
+# link then failed looked "no longer offered" and retired, and a veto on the new link (a
+# lot refused) never reached its document. record_building now moves stocklist_file with
+# each read; for rows stored before that, a document's rows are resolved through the link
+# its most recently read row came through.
+def current_links(rows):
+    """{document url: the stock link its most recently read E-Agent row came through}."""
+    best = {}
+    for r in rows:
+        if str(_col(r, "source_channel") or "") != "E-Agent":
+            continue
+        doc = str(_col(r, "source_url") or "").strip()
+        sf = str(_col(r, "stocklist_file") or "").strip()
+        if not doc or not sf:
+            continue
+        rank = (_as_date(_col(r, "date_checked")) or datetime.min,
+                _checked(r) or datetime.min, int(_col(r, "id") or 0))
+        if doc not in best or rank > best[doc][0]:
+            best[doc] = (rank, sf)
+    return {d: sf for d, (_rank, sf) in best.items()}
+
+
+def row_link(row, doc_link=None):
+    """The stock link a row belongs to: its document's (current_links), else its own."""
+    doc = str(_col(row, "source_url") or "").strip()
+    return ((doc_link or {}).get(doc) or str(_col(row, "stocklist_file") or "").strip()
+            or doc)
+
+
+def links_of(rows, doc_link=None):
+    """Every link these rows could have been read through: each row's own and its
+    document's. A veto, note or failure on any of them reaches the list."""
+    out = set()
+    for r in rows:
+        out.add(str(_col(r, "stocklist_file") or "").strip())
+        out.add(row_link(r, doc_link))
+    return sorted(out - {""})
+
+
 class Tonight:
     """What tonight's manifest says about each read, for judge(): vetoes and proofs.
 
-    A list is judged with the manifest only when its newest read is the manifest's own
-    night (read_dates): a list read yesterday is judged as it was recorded then."""
+    A list is judged with the manifest only when its newest read was made by tonight's run
+    (read_tonight: on one of the run's dates, stamped at or after it began), and a recorded
+    verdict is re-judged only when the manifest has a line for that list (has_line)."""
 
     def __init__(self, manifest, rows, ledger=None):
         self.m = manifest or {}
         made = self.m.get("_made") or datetime.now()
         self.night = _iso(made)
-        dates = {_ddmmyyyy(made)}
-        if made.hour < MANIFEST_SPANS_MIDNIGHT_BEFORE_HOUR:
-            dates.add(_ddmmyyyy(made - timedelta(days=1)))
-        self.read_dates = dates
+        self.started = run_started(self.m, rows, made)
+        dates, d = set(), _day(self.started)
+        while d <= made:
+            dates.add(_ddmmyyyy(d))
+            d += timedelta(days=1)
+        self.read_dates = dates or {_ddmmyyyy(made)}
+        runs = self.m.get("runs")
+        self.runs = runs if isinstance(runs, dict) else {}
+        self.doc_link = current_links(rows)
         entries = [e for e in (self.m.get("entries") or []) if isinstance(e, dict)]
         self.entries = entries
         self.projects = {str(e.get("pid")): e for e in entries
@@ -436,12 +528,19 @@ class Tonight:
         self.stored = collections.Counter()
         # E-Agent links read tonight, by host, for the two-channel agreement.
         self.eagent_by_host = collections.defaultdict(list)
-        # Who each stock link belongs to, from the rows it has given (any night).
+        # Who each stock link belongs to, from the rows it has given (any night): by the
+        # link's exact spelling and by its file key, through each row's own link and its
+        # document's.
         self._builders = collections.defaultdict(collections.Counter)
+        fk = file_key_fn()
         for r in rows:
-            if str(_col(r, "source_channel") or "") == "E-Agent" and _col(r, "stocklist_file"):
-                self._builders[sha16(_col(r, "stocklist_file"))][
-                    str(_col(r, "builder_name") or "").strip()] += 1
+            if str(_col(r, "source_channel") or "") != "E-Agent":
+                continue
+            for sf in links_of([r], self.doc_link):
+                name = str(_col(r, "builder_name") or "").strip()
+                self._builders[sha16(sf)][name] += 1
+                if fk is not None:
+                    self._builders["unit:" + sha16(fk(sf))][name] += 1
         for r in rows:
             if str(_col(r, "date_checked") or "") not in dates:
                 continue
@@ -455,16 +554,47 @@ class Tonight:
                     self.eagent_by_host[host].append(sf)
         self.proxima_unhealthy = proxima_index_health(self, ledger)
 
+    # --- whose read is tonight's ---------------------------------------------------
+    def read_tonight(self, members, newest):
+        """True when a list's newest read was made by tonight's run: dated on one of the
+        run's dates and, where its rows carry checked_at, stamped at or after the run began
+        (a run that crossed midnight shares a date with the run before it)."""
+        if _ddmmyyyy(newest) not in self.read_dates:
+            return False
+        stamps = [t for t in (_checked(r) for r in members
+                              if _as_date(_col(r, "date_checked")) == newest) if t]
+        return not stamps or max(stamps) >= self.started
+
+    def has_line(self, key, members):
+        """True when tonight's manifest says anything about this list. A recorded verdict
+        is never re-judged on a night that says nothing of its list: without the line no
+        veto can fire, and the bare anchor would overwrite one."""
+        ch = str(_col(members[0], "source_channel") or "")
+        if ch == "E-Agent":
+            links = links_of(members, self.doc_link)
+            return bool(self.link_entries(members)) or any(
+                sha16(sf) in self.link_notes for sf in links) or (
+                bool(key[0]) and sha16(key[0]) in self.documents)
+        if ch == "Proxima":
+            return str(key[1] or "") in self.projects
+        if ch == "E-Agent Stocklist":
+            return bool(self.searches)
+        if ch in PROOF_REQUIRED:
+            return self.portal_entry(ch, _col(members[0], "builder_name")) is not None
+        return False
+
     # --- E-Agent ----------------------------------------------------------------
     def link_builder(self, e):
         """The builder a stock link's rows name most often; blank for a pooled list."""
         c = collections.Counter(self._builders.get(str(e.get("stocklist_key") or "")) or {})
+        if not c and e.get("unit"):
+            c = collections.Counter(self._builders.get("unit:" + str(e["unit"])) or {})
         c.pop("", None)
         return c.most_common(1)[0][0] if c else ""
 
     def link_entries(self, members):
         ents, fk = [], file_key_fn()
-        for sf in sorted({str(_col(r, "stocklist_file") or "") for r in members} - {""}):
+        for sf in links_of(members, self.doc_link):
             e = self.links_by_key.get(sha16(sf))
             if e is None and fk is not None:
                 e = self.links_by_unit.get(sha16(fk(sf)))
@@ -474,7 +604,7 @@ class Tonight:
 
     def _eagent(self, key, members):
         veto = None
-        for sf in sorted({str(_col(r, "stocklist_file") or "") for r in members} - {""}):
+        for sf in links_of(members, self.doc_link):
             note = self.link_notes.get(sha16(sf)) or {}
             if note.get("truncated"):
                 return "link truncated (%s)" % (note.get("why") or "a folder budget bound"), \
@@ -612,7 +742,7 @@ class Verdict:
 
     __slots__ = ("key", "list_key", "newest", "verdict", "basis", "baseline", "seen",
                  "members", "accountable", "missing", "vetoed", "proof", "channel",
-                 "label", "recorded", "builder")
+                 "label", "recorded", "builder", "tonight")
 
     def __init__(self, **kw):
         for k in self.__slots__:
@@ -688,6 +818,12 @@ class Ledger:
         return self.nights_recorded < CALIBRATION_NIGHTS
 
     def recorded(self, lk, newest):
+        """(verdict, basis) recorded for this list's read of `newest`, or None. A verdict
+        noted tonight and not yet written is not "recorded": judging it again judges it
+        afresh, the same way, and commit() still writes it."""
+        mine = self.tonight.get(lk)
+        if mine is not None and mine.newest == newest and not mine.recorded:
+            return None
         for d, seen, verdict, basis in self.reads.get(lk, ()):
             if d == newest:
                 return verdict, basis
@@ -752,12 +888,19 @@ class Ledger:
         lk = list_key(key)
         ch = str(_col(members[0], "source_channel") or "")
         seen = sum(1 for r in members if _as_date(_col(r, "date_checked")) == newest)
-        base = dict(key=key, list_key=lk, newest=newest, seen=seen, members=len(members),
-                    channel=ch, label=label(key, members), builder=main_builder(members))
         recorded = self.recorded(lk, newest)
-        judged_tonight = tonight is not None and _ddmmyyyy(newest) in tonight.read_dates
+        judged_tonight = tonight is not None and tonight.read_tonight(members, newest)
+        base = dict(key=key, list_key=lk, newest=newest, seen=seen, members=len(members),
+                    channel=ch, label=label(key, members), builder=main_builder(members),
+                    tonight=judged_tonight)
         accepted = bool(recorded) and str(recorded[1]).startswith(ACCEPTED)
-        if recorded and not judged_tonight and not accepted:
+        # A RECORDED VERDICT STANDS (review, 24 Oct 2026) unless tonight's run made the read
+        # AND tonight's manifest has a line for its list -- and a recorded VETO stands for
+        # good: a read the channel's own record called cut is never re-judged whole by a
+        # later night that knows less about it.
+        if recorded and not accepted and (
+                str(recorded[1]).startswith(VETO) or not judged_tonight
+                or not tonight.has_line(key, members)):
             v, b = recorded
             return Verdict(**base, verdict=v, basis=b, vetoed=str(b).startswith(VETO),
                            proof=False, recorded=True)
@@ -836,12 +979,19 @@ class Ledger:
         for v in self.tonight.values():
             if v.recorded:
                 continue                               # already written on its own night
+            # Never over a recorded veto (judge keeps one; this is the table's own guard).
             self.conn.execute(
-                "INSERT OR REPLACE INTO list_reads (list_key, read_date, channel, label, "
+                "INSERT INTO list_reads (list_key, read_date, channel, label, "
                 "rows_seen, members, accountable, baseline, verdict, basis, recorded_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT (list_key, read_date) DO UPDATE SET channel=excluded.channel, "
+                "label=excluded.label, rows_seen=excluded.rows_seen, "
+                "members=excluded.members, accountable=excluded.accountable, "
+                "baseline=excluded.baseline, verdict=excluded.verdict, "
+                "basis=excluded.basis, recorded_at=excluded.recorded_at "
+                "WHERE COALESCE(list_reads.basis, '') NOT LIKE ?",
                 (v.list_key, _iso(v.newest), v.channel, v.label, v.seen, v.members,
-                 v.accountable, v.baseline, v.verdict, v.basis, stamp))
+                 v.accountable, v.baseline, v.verdict, v.basis, stamp, VETO + "%"))
         prune(self.conn, self.today)
         return len(self.tonight)
 
@@ -902,7 +1052,10 @@ def night_units(tonight):
     links = [e for e in tonight.entries if e.get("kind") == "stock link"]
     if links:
         pages = collections.Counter(str(e.get("page") or "") for e in links)
-        failed = sorted({tonight.link_builder(e) for e in links if _link_failed(e)} - {""})
+        # A failed link whose rows name no builder yet -- a re-upload none of whose rows
+        # has been read through it -- is its heading's: on a builder page, the builder.
+        failed = sorted({tonight.link_builder(e) or str(e.get("heading") or "").strip()
+                         for e in links if _link_failed(e)} - {""})
         out["E-Agent"] = (len(links), dict(pages), failed)
     projects = list(tonight.projects.values())
     if projects:
@@ -915,6 +1068,57 @@ def night_units(tonight):
 def _link_failed(e):
     return (e.get("outcome") in FAILED_OUTCOMES
             or any(p.get("outcome") in FAILED_OUTCOMES for p in (e.get("pieces") or [])))
+
+
+def _link_read_whole(tonight, e):
+    """A stock link read tonight with nothing failed, cut or refused (pieces that are
+    simply not price lists aside -- that is _clean_link's stricter bar)."""
+    note = tonight.link_notes.get(str(e.get("stocklist_key") or "")) or {}
+    return (e.get("outcome") == "read" and not _link_failed(e) and not e.get("truncated")
+            and not note.get("truncated")
+            and int((e.get("stored") or {}).get("rejected") or 0) == 0)
+
+
+# PROXIMA SAYS WHICH PROJECTS IT COULD NOT READ (review, 24 Oct 2026). sources/proxima.py
+# skips a project whose accordion will not open ("project unreadable") or that raised
+# ("project errored") before logging its manifest line, so tonight's manifest says of it
+# exactly what it says of a project that left the dropdown: nothing. Rule B cannot tell the
+# two apart, so it does not count a Proxima night on which any listed project failed to
+# read, nor one whose manifest does not say (harvest_buildings writes the reader's own
+# counts as manifest["runs"]["Proxima"]; a manifest without them is a harvest from before
+# this, or a Proxima run that never finished). It fails closed: one project that cannot be
+# read stops Proxima's rule B for the night, and the log says which counts stopped it.
+PROXIMA_FAILED_STATS = ("project unreadable", "project errored", "off-index project errored",
+                        "off-index project published no lots")
+
+
+def proxima_run_problem(tonight):
+    """Why tonight's Proxima run cannot say a project left the dropdown, or None."""
+    run = tonight.runs.get("Proxima") if tonight is not None else None
+    if not isinstance(run, dict):
+        return "tonight's manifest does not say whether every listed project was read"
+    stats = run.get("stats") if isinstance(run.get("stats"), dict) else {}
+    failed = {}
+    for k in PROXIMA_FAILED_STATS:
+        try:
+            n = int(stats.get(k) or 0)
+        except (TypeError, ValueError):
+            n = 1
+        if n:
+            failed[k] = n
+    if failed:
+        return "%d listed project(s) could not be read (%s)" % (
+            sum(failed.values()), ", ".join("%s %d" % kv for kv in sorted(failed.items())))
+    try:
+        errors = int(run.get("errors") or 0)
+        seen, logged = int(run["projects_seen"]), int(run["projects_logged"])
+    except (KeyError, TypeError, ValueError):
+        return "tonight's Proxima run note is incomplete"
+    if errors:
+        return "the Proxima reader logged %d error(s)" % errors
+    if logged < seen:
+        return "%d of %d listed project(s) have a manifest line" % (logged, seen)
+    return None
 
 
 def record_channels(ledger, tonight):
@@ -947,10 +1151,19 @@ def record_channels(ledger, tonight):
 # the channel healthy, no mass vanishing, the unit's page crawled, nothing of its builder
 # failed or half-read tonight. A dead or private link still on the page is still offered,
 # so it never counts. After UNOFFERED_NIGHTS counted nights the unit's live rows retire,
-# unless they were read within WITHDRAWN_AFTER_DAYS: a lot carried onto a new upload is
-# read nightly (record_building moves its source_url, never its stocklist_file), so
-# presence always wins. Direct portals are recorded but never retired this way: a portal
-# drops out of the manifest when OUR registry drops it, which says nothing about its stock.
+# unless they were read within WITHDRAWN_AFTER_DAYS: presence always wins. Direct portals
+# are recorded but never retired this way: a portal drops out of the manifest when OUR
+# registry drops it, which says nothing about its stock.
+#
+# A ROW'S UNIT IS ITS CURRENT LINK (review, 24 Oct 2026). A lot carried onto a re-upload
+# is read through the new link, and record_building now moves stocklist_file with the read,
+# so its unit is the new link: when that link is still on the page but failing, the lot is
+# still offered and never counts. Rows stored before that are resolved through their
+# document (current_links). And a unit whose place on the page (page, heading, label) is
+# held tonight by a link that did not read whole -- a re-upload none of whose rows we have
+# ever read -- is not counted either: what the old link carried may be on the new one.
+# Proxima is not counted on a night any listed project failed to read
+# (proxima_run_problem).
 UNOFFERED_NIGHTS = 14
 NOT_SERVED_NIGHTS = 14
 MASS_VANISH_MIN = 5
@@ -961,12 +1174,12 @@ UNOFFERED, SERVED, NOT_SERVED = "unoffered", "served", "not served"
 _ABSENT_DAYS = 14                                  # repair_rows.WITHDRAWN_AFTER_DAYS
 
 
-def row_unit(row, fk=None):
-    """The unit rule B counts a row under: an E-Agent stock link (by its spelling-
-    normalised file key) or a Proxima project, or None."""
+def row_unit(row, fk=None, doc_link=None):
+    """The unit rule B counts a row under: an E-Agent stock link (its current one, by its
+    spelling-normalised file key) or a Proxima project, or None."""
     ch = str(_col(row, "source_channel") or "")
     if ch == "E-Agent":
-        sf = str(_col(row, "stocklist_file") or _col(row, "source_url") or "").strip()
+        sf = row_link(row, doc_link)
         return sha16(fk(sf)) if (fk is not None and sf) else None
     if ch == "Proxima":
         pid = str(_col(row, "source_project_id") or "").strip()
@@ -1040,18 +1253,27 @@ def plan_rule_b(ledger, tonight, rows, verdicts, today):
     for r in rows:
         ch = str(_col(r, "source_channel") or "")
         if ch in live and not _col(r, "superseded_by"):
-            u = row_unit(r, fk)
+            u = row_unit(r, fk, tonight.doc_link)
             if u:
                 live[ch][u].append(r)
     partial_b, whole_b = collections.defaultdict(set), collections.defaultdict(set)
     for v in verdicts.values():
-        if _ddmmyyyy(v.newest) in tonight.read_dates and v.builder:
+        if v.tonight and v.builder:
             (whole_b if v.whole else partial_b)[v.channel].add(v.builder)
     units_now = night_units(tonight)
+    # Places on an E-Agent page held tonight by a link that did not read whole.
+    held_slots = {(str(e.get("page") or ""), str(e.get("heading") or ""),
+                   str(e.get("label") or "")) for e in links
+                  if not _link_read_whole(tonight, e)}
 
     for ch in RULE_B_CHANNELS:
         if ch in out.off:
             continue
+        if ch == "Proxima":
+            why = proxima_run_problem(tonight)
+            if why:
+                out.off[ch] = "night not counted: " + why
+                continue
         n_units, pages, failed = units_now.get(ch, (0, {}, []))
         healthy, why = channel_health(n_units, pages, ledger.channel_history(ch))
         if not healthy:
@@ -1077,6 +1299,11 @@ def plan_rule_b(ledger, tonight, rows, verdicts, today):
         for u, members in live[ch].items():
             if u in now:
                 continue
+            if ch == "E-Agent" and {row_unit(r, fk) for r in members} & set(now):
+                # Resolved through its document to a link gone tonight, but a row's own
+                # link is still on the page: either may lead to it, so it is still offered.
+                out.blocked["a link its rows were read through is still offered"] += 1
+                continue
             builder = main_builder(members)
             if not builder:
                 out.person.append((ch, u, len(members)))
@@ -1085,6 +1312,10 @@ def plan_rule_b(ledger, tonight, rows, verdicts, today):
             last = last[-1] if last else None
             if last is not None and last[1] not in tonight_pages:
                 out.blocked["its page was not crawled tonight"] += 1
+                continue
+            if ch == "E-Agent" and last is not None and tuple(last[1:4]) in held_slots:
+                out.blocked["its place on the page is held tonight by a link that did not "
+                            "read whole"] += 1
                 continue
             if last is None and builder not in whole_b[ch]:
                 out.blocked["never offered since the ledger began, and no list of its "
@@ -1122,7 +1353,7 @@ def _plan_files(out, ledger, tonight, rows, links, day):
     by_link = collections.defaultdict(list)
     for r in rows:
         if str(_col(r, "source_channel") or "") == "E-Agent" and _col(r, "stocklist_file"):
-            by_link[sha16(_col(r, "stocklist_file"))].append(r)
+            by_link[sha16(row_link(r, tonight.doc_link))].append(r)
     history = ledger.offers(FILE_CHANNEL)
     for e in links:
         if not _clean_link(tonight, e):

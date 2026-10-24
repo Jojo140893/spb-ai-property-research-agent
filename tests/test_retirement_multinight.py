@@ -88,7 +88,7 @@ class Nights:
         self.out = ""
 
     def run(self, night, lots, entries=(), documents=None, link_notes=None, apply=True,
-            manifest=True):
+            manifest=True, runs=None, started=None, generated=None, after_harvest=None):
         import repair_rows as RR
         import supersede_duplicates as SD
         # Another list, read every night, whose one line also reached the inbox: the
@@ -100,11 +100,18 @@ class Nights:
             self.started = True
         for b in lots:
             self.db.record_building(dict(b))
+        if after_harvest is not None:          # what an older harvest would have stored
+            after_harvest(self.path)
         if manifest:                           # else last night's: too old to be tonight's
-            self.manifest.write_text(json.dumps({
-                "schema": 1, "generated": _night_dt(night).strftime("%d/%m/%Y %H:%M"),
-                "entries": list(entries), "documents": documents or {},
-                "link_notes": link_notes or {}}), encoding="utf-8")
+            m = {"schema": 1,
+                 "generated": (generated or _night_dt(night)).strftime("%d/%m/%Y %H:%M"),
+                 "entries": list(entries), "documents": documents or {},
+                 "link_notes": link_notes or {}}
+            if runs is not None:               # else a harvest from before "runs" existed
+                m["runs"] = runs
+            if started is not None:
+                m["started"] = started.strftime("%d/%m/%Y %H:%M")
+            self.manifest.write_text(json.dumps(m), encoding="utf-8")
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             SD.main([])
@@ -384,6 +391,15 @@ def _project_entry(pid, printed, stated=None, whole="", short=False, on_index=Tr
             "stated": stated, "whole": whole, "short": short, "on_index": on_index,
             "outcome": "read" if printed else "zero-yield",
             "stored": {"new": 0, "updated": 0, "unchanged": printed, "rejected": 0}}
+
+
+def _px_run(projects, logged=None, errors=0, stats=None):
+    """manifest["runs"]["Proxima"] as harvest_buildings writes it: the reader's own skip
+    counts ({"project unreadable": 1}, ...) and how many projects it listed and logged."""
+    return {"Proxima": {"stats": dict(stats or {}),
+                        "projects_seen": projects,
+                        "projects_logged": projects if logged is None else logged,
+                        "errors": errors}}
 
 
 def _portal_entry(builder, printed, found=None, read=None, host="", outcome="read"):
@@ -956,7 +972,7 @@ def test_a_proxima_project_gone_from_the_dropdown_retires(tmp_path, monkeypatch)
             lots += [_lot(3010 + i, -10, channel="Proxima", builder="",
                           doc="https://proxima.example/projects", source_project_id="301")
                      for i in (1, 2)]
-        n.run(night, lots, entries=entries)
+        n.run(night, lots, entries=entries, runs=_px_run(len(entries)))
         if night == 16:
             assert not {"3001", "3002"} & n.retired(), "retired before 14 counted nights"
     assert {"3001", "3002"} <= n.retired()
