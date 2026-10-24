@@ -484,10 +484,12 @@ def test_rows_set_aside_never_drop_a_big_list_under_the_floor(tmp_path, monkeypa
     then a read that returns 1. Set aside, 9 accountable rows are under the 10-row floor --
     but the floor is tested on all 29, so 8 of 9 missing is still a failed read and nothing
     retires. The twin tests the floor on the accountable rows and retires the 8: the rule
-    holding is what keeps them, not the harness."""
+    holding is what keeps them, not the harness. (The twin also switches off the step
+    guard, which holds the same 8-of-9 drop on its own.)"""
     import list_ledger
     if not floor_on_members:
         monkeypatch.setattr(list_ledger, "ANCHOR_FLOOR_ON_MEMBERS", False)
+        monkeypatch.setattr(list_ledger, "STEP_MIN_ROWS", 10 ** 6)
     n = Nights(tmp_path, monkeypatch)
     kw = {"channel": PORTAL, "builder": "Hermitage Homes"}
     for night in range(1, 21):
@@ -512,8 +514,11 @@ def test_a_staircase_of_drops_never_walks_the_baseline_down(tmp_path, monkeypatc
     step is under 40% of the last week's whole reads, so the history bar alone would walk
     the baseline down to 39 and retire 61 lots of a list that may simply be breaking. The
     drift floor holds every read below half of the largest whole read of the last 28 days.
-    The twin (DRIFT_FLOOR 0) retires all 61."""
+    The twin (DRIFT_FLOOR 0) retires all 61. The step guard, which holds each of these
+    steps on its own (tests/test_retirement_attack_24oct.py), is off in both: this is the
+    drift floor's test."""
     import list_ledger
+    monkeypatch.setattr(list_ledger, "STEP_MIN_ROWS", 10 ** 6)
     if floor is not None:
         monkeypatch.setattr(list_ledger, "DRIFT_FLOOR", floor)
     n = Nights(tmp_path, monkeypatch)
@@ -561,12 +566,13 @@ def test_a_list_that_comes_back_with_one_of_29_retires_nothing_for_a_month(
 
 
 def test_the_harness_can_fail_on_a_collapse(tmp_path, monkeypatch):
-    """The test above has teeth: with the history bar and the drift floor switched off the
-    same nights retire the 28 lots, so 'nothing retired' is the rule holding, not the
-    harness idling."""
+    """The test above has teeth: with the history bar, the drift floor and the step guard
+    switched off the same nights retire the 28 lots, so 'nothing retired' is the rule
+    holding, not the harness idling."""
     import list_ledger
     monkeypatch.setattr(list_ledger, "FULL_READ_SHARE", 0.0)
     monkeypatch.setattr(list_ledger, "DRIFT_FLOOR", 0.0)
+    monkeypatch.setattr(list_ledger, "STEP_MIN_ROWS", 10 ** 6)
     n = Nights(tmp_path, monkeypatch)
     for night in range(1, 36):
         carried = range(1, 30) if night <= 5 else [1]
@@ -1038,7 +1044,8 @@ def test_the_log_names_every_half_read_list_never_its_link(tmp_path, monkeypatch
     section = n.out[n.out.index("\n12. "):n.out.index("\n11. ")]
     assert "rlkey" not in section and "/scl/fo/" not in section, section
     assert "E-Agent | Example Homes | www.dropbox.com" in section
-    assert "collapsed 1 of 29" in section and "stalled   6 night(s)" in section, section
+    assert "dropped 28 of 29 since its last whole read" in section and \
+        "stalled   6 night(s)" in section, section
 
 
 def test_the_first_night_lists_inherited_retirements_on_a_cut_read(tmp_path, monkeypatch):

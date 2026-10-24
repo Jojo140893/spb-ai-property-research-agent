@@ -32,11 +32,17 @@ rule that matches decides (judge()):
      it was short, capped, half-fetched or refused: PARTIAL, whatever the counts say.
   b) PROOFS. The channel's own count says the read was whole: Proxima's whole/stated, a
      Google tab's export CSV row count with its rows accounted for, the E-Agent Stocklist
-     search ending clean, two channels agreeing on the same page, a person's --accept.
-  c) HISTORY (E-Agent price lists only). Tonight's read is no smaller than 60% of the
+     search ending clean, two channels agreeing on the same page (and on a count that is
+     the page's: TORSION_AGREE), a person's --accept.
+  c) THE STEP GUARD. Tonight's accountable rows (see e) fell, since the list's last WHOLE
+     read (its first recorded read, when none was whole; never pruned), by at least
+     max(2, 10%) of what that read carried: PARTIAL until a proof (STEP_MIN_ROWS). A cut
+     the manifest says nothing about cannot walk a baseline down. A two-channel agreement
+     whose agreed count fell by such a step proves nothing (TORSION_AGREE).
+  d) HISTORY (E-Agent price lists only). Tonight's read is no smaller than 60% of the
      largest of the list's last 7 WHOLE reads, and no smaller than half the largest WHOLE
      read of the last 28 days (a staircase of drops just under 40% cannot walk it down).
-  d) THE ANCHOR, when there is no history and no proof: today's 40% rule, with the
+  e) THE ANCHOR, when there is no history and no proof: today's 40% rule, with the
      yardstick fixed -- measured over ACCOUNTABLE rows, the members minus rows whose own
      status says gone and minus older identities matched one-for-one to a row on tonight's
      read. The 10-row floor is tested on the FULL member count.
@@ -47,7 +53,7 @@ again only when tonight's run made the read and tonight's manifest has a line fo
 and a recorded veto is never judged again at all (review, 24 Oct 2026: a project unreadable
 the next night had no line, and the bare anchor rewrote its veto as whole). Proxima, the
 direct portals and the E-Agent Stocklist can never be whole on count history at all -- a
-capped read repeats the same count night after night -- so they need (b), or fall to (d).
+capped read repeats the same count night after night -- so they need (b), or fall to (e).
 
 What retires a lot is unchanged: absence from its own list for WITHDRAWN_AFTER_DAYS (14) on
 a list read within SOURCE_READ_WITHIN_DAYS (3) and judged whole. On top of that a lot needs
@@ -85,6 +91,27 @@ FULL_READ_RUNS = 7
 # so 100, then 62, then 39 does not walk the baseline down by steps just under 40%.
 DRIFT_FLOOR = 0.50
 DRIFT_WINDOW_DAYS = 28
+# THE STEP GUARD (second review, 24 Oct 2026). The ledger trusts lists the old rule gave up
+# on -- by history, or by the anchor over accountable rows -- and on those a cut that the
+# manifest says nothing about walked straight through: a silent cut keeping 70% of a
+# 114-row list read "history 81 of 114", and FULL_READ_RUNS nights later "81 of 81"; a
+# 10-row list cut to 7 fell under the 10-row floor and was "not judged by a share"; a
+# Proxima project with no counter was 30% missing, under the anchor's 40%. On the 30 Sep
+# copy that retired 46-68 lots still for sale, and main, which holds those lists partial,
+# none. So a read whose accountable rows fell, since the list's last WHOLE read, by at
+# least max(STEP_MIN_ROWS, STEP_SHARE of what that read and tonight's carried) is PARTIAL
+# ("dropped N ... since its last whole read") and stays so -- it never enters a baseline,
+# and the lots it dropped are counted every night -- until a proof or a person's --accept,
+# the lots coming back, or the old rule retiring them. A lot leaving a list on its own is
+# the sale signal; two or more of its for-sale lots at once (Luxton's 10-row tab cut to 7,
+# one of the three "Not Available": 2 of 9), or a tenth of a big list, waits for evidence.
+# Measured on 30 Sep (40 days, 439 lists): 139 drop events, 38 of them on 29 lists at
+# max(2, 10%), 33 on 25 at max(3, 10%); over the nightly logs of 9-24 Oct, 3 net drops of
+# that size in 2,322 night-over-night reads. It is no veto: what the old rule retires on
+# such a list still goes (main parity), so it holds only what the ledger would retire
+# beyond main.
+STEP_MIN_ROWS = 2
+STEP_SHARE = 0.10
 # A retirement needs this many WHOLE reads, on distinct nights after the lot's last
 # sighting, that did not carry it: one fluke whole read is never enough.
 MIN_WHOLE_READS_ABSENT = 2
@@ -151,7 +178,20 @@ PAGE_LINK_SHARE = 0.80
 # "Sold" rows plus 9 blank ones, 1 of them read, is still 8 of 9 missing, a failed read.
 ANCHOR_FLOOR_ON_MEMBERS = True
 # Two reads of the same page through two channels agree when their counts are this close.
+# AGREEMENT IS NOT WHOLENESS (second review, 24 Oct 2026): when the page paginates or
+# lazy-loads and neither reader follows it, both read page 1 and agree exactly (24 of
+# 120). So an agreed count proves a read whole only when it carries FULL_READ_SHARE of the
+# lots stored from that page through either channel (live, or hidden as a duplicate of
+# another channel's copy -- Torsion's E-Agent copies mostly are), and of the list's own
+# recent whole reads (each counted by its agreed portal count where it was an agreement),
+# and DRIFT_FLOOR of its whole reads of the last DRIFT_WINDOW_DAYS, and it is no STEP down
+# (STEP_MIN_ROWS) from the list's last whole read's count (repair, 25 Oct 2026: a page that
+# stops loading at 84 of 120 passes every share above); else it proves nothing
+# and the step guard and the anchor decide. On 30 Sep the portal stored each Torsion card
+# under its own brochure link, so no portal row names the page: the page's E-Agent rows and
+# the list's history are what hold an agreed count to account.
 TORSION_AGREE = 2
+_AGREED = re.compile(r"two channels agree: portal (\d+)")
 # list_reads, source_offers and channel_nights older than this are pruned; retirements
 # are kept for good.
 PRUNE_NIGHTS = 120
@@ -544,6 +584,9 @@ class Tonight:
 
     def __init__(self, manifest, rows, ledger=None):
         self.m = manifest or {}
+        self.ledger = ledger
+        # Why tonight's two-channel agreement on a list proved nothing, by list key.
+        self.doubts = {}
         made = self.m.get("_made") or datetime.now()
         # The run's own read date (RUN_DATE_MAX_DAYS): the date its rows carry.
         stated = _as_date(self.m.get("read_date"))
@@ -605,6 +648,19 @@ class Tonight:
         # link's exact spelling and by its file key, through each row's own link and its
         # document's.
         self._builders = collections.defaultdict(collections.Counter)
+        # The lots stored from each page, by the url they were stored from and the link
+        # they were read through, per channel: a two-channel agreement is held to its
+        # page's own stock. A capture hidden as a duplicate still says the page carried
+        # its lot (counted once, by the hash of the copy that won); a retired row does not.
+        self.page_rows = collections.defaultdict(lambda: collections.defaultdict(set))
+        for r in rows:
+            mark = str(_col(r, "superseded_by") or "")
+            if mark and not _is_hash_mark(mark):
+                continue
+            lot = mark or str(_col(r, "content_hash") or "") or "row %s" % _col(r, "id")
+            ch = str(_col(r, "source_channel") or "")
+            for u in {str(_col(r, "source_url") or "").strip(), read_link(r)} - {""}:
+                self.page_rows[u][ch].add(lot)
         fk = file_key_fn()
         for r in rows:
             if str(_col(r, "source_channel") or "") != "E-Agent":
@@ -766,17 +822,71 @@ class Tonight:
             if n and n % PORTAL_PAGE_LENGTH == 0:
                 return "portal read ends on its page length (%d)" % n, None
         # No grid total is read, so a clean portal proves nothing by itself -- unless the
-        # same page is read through E-Agent tonight and the two counts agree.
+        # same page is read through E-Agent tonight, the two counts agree, and the agreed
+        # count is the page's (see TORSION_AGREE: both readers can stop at page 1).
         host = str(e.get("host") or "").lower()
         if host and got == found and host in self.eagent_by_host:
             printed = int(e.get("printed") or got)
-            for sf in set(self.eagent_by_host[host]):
+            doubt = None
+            for sf in sorted(set(self.eagent_by_host[host])):
                 le = self.links_by_key.get(sha16(sf))
-                if le is not None and abs(int(le.get("printed") or 0) - printed) <= \
-                        TORSION_AGREE:
+                if le is None or abs(int(le.get("printed") or 0) - printed) > TORSION_AGREE:
+                    continue
+                doubt = self.agreement_doubt(key, members, sf, printed)
+                if doubt is None:
                     return None, "two channels agree: portal %d, e-agent %d" % (
                         printed, int(le.get("printed") or 0))
+            if doubt:
+                self.doubts[list_key(key)] = doubt
         return None, None
+
+    def agreement_doubt(self, key, members, sf, n):
+        """Why `n` lots agreed on by both channels for the page at `sf` are not the page's
+        whole stock (see TORSION_AGREE), or None."""
+        page = max((len(lots) for lots in
+                    self.page_rows.get(str(sf or "").strip(), {}).values()), default=0)
+        if page and n * 100 < round(FULL_READ_SHARE * 100) * page:
+            return "two channels agree on %d, under %d%% of the %d lot(s) stored from that " \
+                   "page" % (n, round(FULL_READ_SHARE * 100), page)
+        dates = [d for d in (_as_date(_col(r, "date_checked")) for r in members) if d]
+        if self.ledger is None or not dates:
+            return None
+        newest = max(dates)
+        counts, first = [], None
+        for d, seen, verdict, basis in self.ledger.reads.get(list_key(key), ()):
+            if d >= newest:
+                continue
+            m = _AGREED.match(str(basis or ""))
+            c = int(m.group(1)) if m else int(seen or 0)
+            if verdict == WHOLE:
+                counts.append((d, c))
+            elif first is None:
+                first = (d, c)
+        # THE STEP GUARD ON THE AGREED COUNT (repair, 25 Oct 2026). Two readers that both
+        # stop where a page stops loading agree on 84 of 120 as readily as on 24, and 84 is
+        # over every share below: the page's count fell by a step since its last whole read
+        # (its first recorded one, if none was whole), so the agreement proves nothing and
+        # the step guard over the list's rows decides. Measured on counts, not rows: the
+        # rows a pooled list holds from links the portal no longer uses (Torsion's old
+        # per-lot pages) are what an agreement is there to prove gone.
+        ref = counts[-1] if counts else first
+        if ref is not None:
+            need = max(STEP_MIN_ROWS, -(-ref[1] * round(STEP_SHARE * 100) // 100))
+            if ref[1] - n >= need:
+                return "two channels agree on %d, a step of %d or more down from %d on %s" % (
+                    n, need, ref[1], _iso(ref[0]))
+        if not counts:
+            return None
+        base = max(c for _d, c in counts[-FULL_READ_RUNS:])
+        window = [c for d, c in counts if (newest - d).days <= DRIFT_WINDOW_DAYS]
+        floor = max(window) if window else base
+        if n < FULL_READ_SHARE * base:
+            return "two channels agree on %d, under %d%% of the list's last whole reads " \
+                   "(%d)" % (n, round(FULL_READ_SHARE * 100), base)
+        if n < DRIFT_FLOOR * floor:
+            return "two channels agree on %d, below the drift floor (the %d-day max %d)" % (
+                n, DRIFT_WINDOW_DAYS, floor)
+        return None
 
     # --- E-Agent Stocklist -------------------------------------------------------
     def _search(self):
@@ -962,6 +1072,47 @@ class Ledger:
         return sum(1 for d, _n, v, _b in self.reads.get(lk, ())
                    if v == WHOLE and d > seen_on and d >= start)
 
+    def step_reference(self, lk, newest):
+        """(date, rows seen, what it is) the step guard measures tonight's read of a list
+        against: its last WHOLE read before `newest`, else -- a list never read whole since
+        the ledger began, every read of it vetoed or partial -- its FIRST recorded read
+        (repair, 25 Oct 2026: a list vetoed on its first nights, then cut silently, had no
+        whole read to step down from, and the bare anchor called the cut whole); None when
+        the ledger holds no earlier read of it at all."""
+        prior = [(d, n) for d, n, _v, _b in self.reads.get(lk, ()) if d < newest]
+        whole = [(d, n) for d, n, v, _b in self.reads.get(lk, ()) if v == WHOLE and d < newest]
+        if whole:
+            return max(whole) + ("its last whole read",)
+        if prior:
+            return min(prior) + ("its first recorded read (none whole)",)
+        return None
+
+    def step_down(self, lk, acc, newest):
+        """Why tonight's read of a list is a step down from its last WHOLE read (see
+        STEP_MIN_ROWS; step_reference when it has none), or None. `acc` are the list's
+        accountable rows: a row whose own status says gone, or an older identity of a lot
+        tonight's read carries, never counts as dropped. Dropped: accountable rows last
+        seen on or after that read and not on tonight's."""
+        ref = self.step_reference(lk, newest)
+        if ref is None:
+            return None
+        last, _n, what = ref
+        on = dropped = 0
+        for r in acc:
+            d = _as_date(_col(r, "date_checked"))
+            if d is None:
+                continue
+            if d == newest:
+                on += 1
+            elif last <= d < newest:
+                dropped += 1
+        # A whole number of rows, rounded up: 10% of 30 is 3, not 3.0000000000000004.
+        need = max(STEP_MIN_ROWS, -(-(on + dropped) * round(STEP_SHARE * 100) // 100))
+        if dropped < need:
+            return None
+        return ("dropped %d of %d since %s (%s): a step of %d or more waits for a proof or "
+                "a person's --accept" % (dropped, on + dropped, what, _iso(last), need))
+
     def undone_since(self, row_id, seen_on):
         """True when a person undid this row's retirement on or after its last sighting."""
         at = self.undone.get(row_id)
@@ -1077,7 +1228,20 @@ class Ledger:
                            proof=True)
         if proof:
             return Verdict(**base, verdict=WHOLE, basis=proof, vetoed=False, proof=True)
-        # c) history: E-Agent price lists only
+        # Tonight's two channels agreed on a count that is not the page's (TORSION_AGREE):
+        # it proved nothing, and every basis below says so.
+        doubt = tonight.doubts.get(lk) if judged_tonight else None
+        pre = (doubt + "; ") if doubt else ""
+        # c) the step guard (STEP_MIN_ROWS): measured over accountable rows, before any
+        #    baseline is consulted -- a step of a tenth needs a proof, whatever the history
+        #    or the anchor would make of what is left.
+        acc, gone, older = accountable(mine, newest, is_gone)
+        miss = sum(1 for r in acc if (_as_date(_col(r, "date_checked")) or newest) < newest)
+        step = self.step_down(lk, acc, newest)
+        if step:
+            return Verdict(**base, verdict=PARTIAL, basis=pre + step, accountable=len(acc),
+                           missing=miss, vetoed=False, proof=False)
+        # d) history: E-Agent price lists only
         prior = [(d, n) for d, n, v, _b in self.reads.get(lk, ()) if v == WHOLE and d < newest]
         if ch not in PROOF_REQUIRED and ch == "E-Agent" and prior:
             last = [n for _d, n in prior][-FULL_READ_RUNS:]
@@ -1097,10 +1261,8 @@ class Ledger:
                                baseline=baseline, vetoed=False, proof=False)
             return Verdict(**base, verdict=WHOLE, basis="history %d of %d" % (seen, baseline),
                            baseline=baseline, vetoed=False, proof=False)
-        # d) the anchor: today's rule over accountable rows
-        acc, gone, older = accountable(mine, newest, is_gone)
-        miss = sum(1 for r in acc if (_as_date(_col(r, "date_checked")) or newest) < newest)
-        basis = "anchor %d/%d accountable missing" % (miss, len(acc))
+        # e) the anchor: today's rule over accountable rows
+        basis = pre + "anchor %d/%d accountable missing" % (miss, len(acc))
         if gone or older:
             basis += " (%d gone-status, %d older identities set aside)" % (len(gone),
                                                                           len(older))
@@ -1342,6 +1504,31 @@ def record_channels(ledger, tonight):
 # on the new one.
 # Proxima is not counted on a night any listed project failed to read
 # (proxima_run_problem).
+#
+# THE 40% RULE CARRIED ACROSS A RE-UPLOAD (second review, 24 Oct 2026). A re-upload whose
+# read is cut silently -- outcome read, nothing failed, 10 of the old link's 30 lots -- is a
+# whole read of its own (10 of 10), so its builder was "read whole", its place on the page
+# was not held, and the old link's 20 stranded lots, still for sale, retired after 14
+# nights: the very cut the 40% rule holds on one link. A row keeps the link it was first
+# stored under (stocklist_file), so the lots a successor carries say which unit they came
+# from. A vanished E-Agent unit with a SUCCESSOR -- tonight's read carried some of its rows
+# through another link, another link holds its place (page, heading, label), or a link of
+# its builder first offered since it was last offered is on the page -- is counted only
+# when what tonight's read carried of its rows through other links is at least
+# SUCCESSOR_SHARE of that plus its stranded live rows ("its successor on the page carries
+# under 60% of it"). 2 of 3, or 28 of 30, still retire the lots the re-upload dropped; a
+# successor that carries none of its rows (its rows were first stored under a link before
+# it, say) carries 0% of it, and nothing is counted. The same holds for a file a cleanly
+# read folder stops serving while a file new to that folder appears (_plan_files): the new
+# file's rows stored before it first appeared were carried from the folder's other files.
+#
+# A UNIT NEVER OFFERED SINCE THE LEDGER BEGAN has no place to check, and "its builder has a
+# list read whole tonight" was all that gated it. It is counted only while under
+# STRANDED_SHARE of its builder's live rows sit on units no longer offered (30 Sep: Creation
+# Homes 116 against 51 read, EVO Homes 26 against 36), or when every list of its builder
+# judged tonight was PROVEN whole (a counter, an export, two channels), not merely whole.
+SUCCESSOR_SHARE = 60                               # 100 * FULL_READ_SHARE
+STRANDED_SHARE = 40                                # repair_rows.PARTIAL_READ_SHARE
 UNOFFERED_NIGHTS = 14
 NOT_SERVED_NIGHTS = 14
 MASS_VANISH_MIN = 5
@@ -1444,9 +1631,38 @@ def plan_rule_b(ledger, tonight, rows, verdicts, today, withdrawn=frozenset()):
             if u:
                 live[ch][u].append(r)
     partial_b, whole_b = collections.defaultdict(set), collections.defaultdict(set)
+    proven, unproven = collections.defaultdict(set), collections.defaultdict(set)
     for v in verdicts.values():
         if v.tonight and v.builder:
             (whole_b if v.whole else partial_b)[v.channel].add(v.builder)
+            (proven if v.whole and v.proof else unproven)[v.channel].add(v.builder)
+    # Builders every one of whose lists judged tonight was PROVEN whole.
+    proven_b = {ch: proven[ch] - unproven[ch] for ch in RULE_B_CHANNELS}
+    # Each builder's live rows on units offered tonight and on units no longer offered.
+    fresh_rows = {ch: collections.Counter() for ch in RULE_B_CHANNELS}
+    stale_rows = {ch: collections.Counter() for ch in RULE_B_CHANNELS}
+    for ch, units in live.items():
+        for u, members in units.items():
+            (fresh_rows if u in offered[ch] else stale_rows)[ch][main_builder(members)] += \
+                len(members)
+    # What each E-Agent unit's rows were carried through tonight by ANOTHER unit: a row read
+    # tonight whose first link (stocklist_file) is that unit's and whose current link is not
+    # -- a lot a re-upload carried on. Read tonight: one of the run's dates, and stamped at
+    # or after the run began where it carries a stamp.
+    moved = collections.Counter()
+    if fk is not None:
+        for r in rows:
+            if str(_col(r, "source_channel") or "") != "E-Agent" or \
+                    _col(r, "id") in withdrawn:
+                continue
+            mark = str(_col(r, "superseded_by") or "")
+            if (mark and not _is_hash_mark(mark)) or not _read_tonight(tonight, r):
+                continue
+            first = str(_col(r, "stocklist_file") or "").strip()
+            cur = row_unit(r, fk, tonight.doc_link)
+            if first and cur and sha16(fk(first)) != cur:
+                moved[sha16(fk(first))] += 1
+    slots_now = {v[:3] for v in offered["E-Agent"].values()}
     units_now = night_units(tonight)
     # Places on an E-Agent page held tonight by a link that did not read whole.
     held_slots = {(str(e.get("page") or ""), str(e.get("heading") or ""),
@@ -1469,6 +1685,8 @@ def plan_rule_b(ledger, tonight, rows, verdicts, today, withdrawn=frozenset()):
         history = ledger.offers(ch)
         offered_before = {u: [x for x in recs if x[5] != UNOFFERED]
                           for u, recs in history.items()}
+        # The night each unit was first offered (a unit new tonight is tonight's).
+        first_offered = {u: recs[0][0] for u, recs in offered_before.items() if recs}
         nights = sorted({x[0] for recs in offered_before.values() for x in recs})
         prev = {u for u, recs in offered_before.items() if nights and recs
                 and recs[-1][0] == nights[-1]}
@@ -1508,10 +1726,25 @@ def plan_rule_b(ledger, tonight, rows, verdicts, today, withdrawn=frozenset()):
                 out.blocked["its place on the page is held tonight by a link that did not "
                             "read whole"] += 1
                 continue
+            if ch == "E-Agent":
+                carried = moved.get(u, 0)
+                succeeded = carried > 0 or (last is not None and (
+                    tuple(last[1:4]) in slots_now
+                    or any(v[3] == builder and first_offered.get(s, tonight.night) >= last[0]
+                           for s, v in now.items())))
+                if succeeded and carried * 100 < SUCCESSOR_SHARE * (carried + len(members)):
+                    out.blocked["its successor on the page carries under 60% of it"] += 1
+                    continue
             if last is None and builder not in whole_b[ch]:
                 out.blocked["never offered since the ledger began, and no list of its "
                             "builder read whole tonight"] += 1
                 continue
+            if last is None and builder not in proven_b[ch]:
+                st, fr = stale_rows[ch][builder], fresh_rows[ch][builder]
+                if st * 100 >= STRANDED_SHARE * (st + fr):
+                    out.blocked["never offered since the ledger began, and 40% or more of "
+                                "its builder's live rows are on units no longer offered"] += 1
+                    continue
             if builder in failed_b:
                 out.blocked["its builder had a failed read tonight"] += 1
                 continue
@@ -1561,6 +1794,7 @@ def _plan_files(out, ledger, tonight, rows, links, day, withdrawn=frozenset()):
                   if any(str(_col(r, "date_checked") or "") in tonight.read_dates for r in rs)}
         if not served:
             continue
+        hold = _folder_successor_hold(tonight, history, files, served, withdrawn)
         for s, rs in files.items():
             fu = sha16(s)
             if s in served:
@@ -1569,6 +1803,9 @@ def _plan_files(out, ledger, tonight, rows, links, day, withdrawn=frozenset()):
             liv = [r for r in rs if not _col(r, "superseded_by")
                    and _col(r, "id") not in withdrawn]
             if not liv:
+                continue
+            if hold:
+                out.blocked[hold] += 1
                 continue
             recs = history.get(fu, [])
             since = max((x[0] for x in recs if x[5] == SERVED), default="")
@@ -1582,6 +1819,65 @@ def _plan_files(out, ledger, tonight, rows, links, day, withdrawn=frozenset()):
                     out.retire.append((r, (day - seen).days, RULE_NOT_SERVED,
                                        "file not served by its cleanly read folder for %d "
                                        "night(s)" % counted))
+
+
+def _read_tonight(tonight, r):
+    """A row tonight's run read: one of the run's dates, and stamped at or after the run
+    began where it carries a stamp."""
+    if str(_col(r, "date_checked") or "") not in tonight.read_dates:
+        return False
+    t = _checked(r)
+    return t is None or t >= tonight.started
+
+
+def _folder_successor_hold(tonight, history, files, served, withdrawn):
+    """Why no file this cleanly read folder no longer serves may be counted tonight, or
+    None (see THE 40% RULE CARRIED ACROSS A RE-UPLOAD). `files` is {document: rows} under
+    the folder's link, `served` the documents it served tonight.
+
+    A file served tonight that the folder first served on or after the night a file it no
+    longer serves was last served may be that file renamed or re-uploaded: its rows read
+    tonight that were stored before it first appeared were carried from elsewhere, and
+    they must be at least SUCCESSOR_SHARE of themselves plus every live row the folder no
+    longer serves. Files never served since the ledger began have no night to compare: their
+    live rows must be under STRANDED_SHARE of themselves plus the rows read tonight."""
+    nights = {s: sorted(x[0] for x in history.get(sha16(s), []) if x[5] == SERVED)
+              for s in files}
+    gone = {}
+    for s, rs in files.items():
+        if s in served:
+            continue
+        liv = [r for r in rs if not _col(r, "superseded_by") and _col(r, "id") not in withdrawn]
+        if liv:
+            gone[s] = len(liv)
+    if not gone:
+        return None
+    stranded = sum(gone.values())
+    lasts = [nights[s][-1] for s in gone if nights[s]]
+    if lasts:
+        since = min(lasts)
+        carried = new = 0
+        for s in served:
+            first = nights[s][0] if nights[s] else tonight.night
+            if first < since:
+                continue
+            new += 1
+            first_d = _from_iso(first)
+            for r in files[s]:
+                fs = _as_date(_col(r, "first_seen"))
+                if _read_tonight(tonight, r) and fs is not None and first_d is not None \
+                        and fs < first_d:
+                    carried += 1
+        if new and carried * 100 < SUCCESSOR_SHARE * (carried + stranded):
+            return ("a file new to its folder carries under 60% of what the folder no "
+                    "longer serves")
+    never = sum(n for s, n in gone.items() if not nights[s])
+    if never:
+        read_now = sum(1 for s in served for r in files[s] if _read_tonight(tonight, r))
+        if never * 100 >= STRANDED_SHARE * (never + read_now):
+            return ("40% or more of its folder's rows are on files not served since the "
+                    "ledger began")
+    return None
 
 
 def record_rule_b(ledger, tonight, plan):
@@ -1600,9 +1896,23 @@ def record_rule_b(ledger, tonight, plan):
 
 
 def prune(conn, today):
-    """Drop list_reads, source_offers and channel_nights older than PRUNE_NIGHTS."""
+    """Drop list_reads, source_offers and channel_nights older than PRUNE_NIGHTS -- except
+    the read each list's step guard is measured against (Ledger.step_reference), whatever
+    its age (repair, 25 Oct 2026): its latest WHOLE read, or, for a list never read whole,
+    its first recorded read. A list held partial by the step guard is measured against
+    that read for as long as the cut lasts; pruned after PRUNE_NIGHTS, the list's first
+    remaining read would be the cut itself, and the bare anchor would call the cut whole.
+    One row per list, kept for good, like the retirements."""
     cut = _iso(today - timedelta(days=PRUNE_NIGHTS))
-    conn.execute("DELETE FROM list_reads WHERE read_date < ?", (cut,))
+    # Null-safe throughout (IS, COALESCE): a NULL verdict or an empty MAX must never turn
+    # the keep-test into NULL, which NOT leaves NULL and the DELETE then skips.
+    conn.execute(
+        "DELETE FROM list_reads WHERE read_date < ? AND NOT COALESCE(("
+        "(verdict IS ? AND read_date IS (SELECT MAX(w.read_date) FROM list_reads w "
+        "WHERE w.list_key IS list_reads.list_key AND w.verdict IS ?)) OR "
+        "(NOT EXISTS (SELECT 1 FROM list_reads w WHERE w.list_key IS list_reads.list_key "
+        "AND w.verdict IS ?) AND read_date IS (SELECT MIN(f.read_date) FROM list_reads f "
+        "WHERE f.list_key IS list_reads.list_key))), 0)", (cut, WHOLE, WHOLE, WHOLE))
     conn.execute("DELETE FROM source_offers WHERE night < ?", (cut,))
     conn.execute("DELETE FROM channel_nights WHERE night < ?", (cut,))
 

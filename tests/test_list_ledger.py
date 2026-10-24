@@ -244,10 +244,13 @@ def _db(tmp_path):
 
 
 def test_pruning_drops_old_nights_and_keeps_every_retirement(tmp_path):
+    """(Every read whole: the read a step is measured from -- the latest whole one -- is
+    kept whatever its age, tests/test_retirement_attack_24oct.py; here it is 10 days old.)"""
     con = _db(tmp_path)
     for days in (10, 119, 121, 400):
         night = LL._iso(TODAY - timedelta(days=days))
-        con.execute("INSERT INTO list_reads (list_key, read_date) VALUES ('k', ?)", (night,))
+        con.execute("INSERT INTO list_reads (list_key, read_date, verdict) VALUES ('k', ?, "
+                    "'whole')", (night,))
         con.execute("INSERT INTO source_offers (night, channel, unit) VALUES (?, 'E-Agent', "
                     "'u')", (night,))
         con.execute("INSERT INTO channel_nights (night, channel) VALUES (?, 'E-Agent')",
