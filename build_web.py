@@ -1036,11 +1036,24 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
                                    if _geo.locate(_longest, st)}
         if len(set(_named)) != 1 or len(_subject_states) != 1:
             continue
+        # AND THE STATE THE SUBJECT WAS READ IN (24 Oct 2026). Where the rows hold no state,
+        # the place was accepted above only because it is a place of exactly one state --
+        # but the row took the suburb and not the state, and a suburb with no state is
+        # reached by no state search. "Fwd: 1x House and Land package at Novella Waters
+        # Estate, Coomera priced at $1,582,900" (Creation Homes, lot 114): its brochure
+        # names no place, Coomera is a Queensland locality and nowhere else, and the lot
+        # was published as Coomera with no state. "-" (the rows' own town) brings none.
+        _subject_state = next(iter(_subject_states))
+        _subject_state = _subject_state if _subject_state in (
+            "VIC", "NSW", "QLD", "SA", "WA", "NT", "ACT", "TAS") else ""
         for g in _group:
             if suburb_quality.is_searchable(g.get("suburb_source") or ""):
                 continue
             g["suburb"] = _named[0]
             g["suburb_source"] = suburb_quality.FROM_DOCUMENT
+            if _subject_state and not str(g.get("state") or "").strip():
+                g["state"] = _subject_state
+                g["state_source"] = "email subject"
             _from_subject += 1
     if _from_subject:
         print(f"    {_from_subject} listing(s) took the suburb their email subject names")
@@ -1060,12 +1073,34 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     # called March. That is why the answer is graded INFERRED_FROM_TEXT, the same reason
     # and the same badge as the stated-state version of this rule.
     _AU_STATES = ("VIC", "NSW", "QLD", "SA", "WA", "NT", "ACT", "TAS")
+    # ...AND A ROW resolve() ALREADY READ THE SAME PLACE OUT OF (24 Oct 2026). With no
+    # state, resolve() falls through to this very reading and grades the row
+    # INFERRED_FROM_TEXT -- searchable -- so the pass below skipped it and its state stayed
+    # blank, where no state search reaches it. APLACE's 16 Oct list is national (QLD and
+    # VIC sections), so enrich voids its page state, and seven new lots whose lines open
+    # "Joyner 7 New Road Park Lane Estate ..." and "Coomera 117 New Road Novella Waters
+    # ..." (its SUBURB column; Joyner and Coomera are Queensland places and nowhere else)
+    # were published as Joyner and Coomera with no state. Such a row takes the state only
+    # where two more things hold: the place OPENS its line, as a suburb column does
+    # (state_resolver.opens_with: not a design or an estate further in), and its own
+    # document already holds that state on other rows -- the reading picks between the
+    # document's states, never adds one. Measured on the 30 Sep copy plus tonight's
+    # lists: exactly those seven rows.
+    _doc_states = collections.defaultdict(set)
+    for b in buildings:
+        _held = str(b.get("state") or "").strip().upper()
+        if _held and b.get("source_doc") and not b.get("superseded_by"):
+            _doc_states[b["source_doc"]].add(_held)
+    from state_resolver import opens_with as _opens_with
     _from_text = 0
+    _text_state = 0
     for b in buildings:
         if b.get("superseded_by") or str(b.get("state") or "").strip():
             continue
         why = b.get("suburb_source") or ""
-        if suburb_quality.is_searchable(why) or why == suburb_quality.BLANK_OVERSEAS:
+        _read_already = why == suburb_quality.INFERRED_FROM_TEXT
+        if (suburb_quality.is_searchable(why) and not _read_already) \
+                or why == suburb_quality.BLANK_OVERSEAS:
             continue
         _found = set()
         for _try in _AU_STATES:
@@ -1077,6 +1112,14 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
         if len({n.lower() for n, _s in _found}) != 1 or len({s for _n, s in _found}) != 1:
             continue
         _name, _state_of = next(iter(_found))
+        if _read_already:
+            if (_name.lower() == str(b.get("suburb") or "").strip().lower()
+                    and _state_of in _doc_states.get(b.get("source_doc") or "", ())
+                    and _opens_with(_texts.get(id(b), ""), _name, _geo)):
+                b["state"] = _state_of
+                b["state_source"] = "row text locality + document"
+                _text_state += 1
+            continue
         b["suburb"] = _name
         b["state"] = _state_of
         b["suburb_source"] = suburb_quality.INFERRED_FROM_TEXT
@@ -1084,6 +1127,9 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
     if _from_text:
         print(f"    {_from_text} listing(s) read a suburb out of their own text "
               f"(no state recorded; inferred, badged)")
+    if _text_state:
+        print(f"    {_text_state} listing(s) took the state of the place their line opens "
+              f"with, a state their own document holds")
 
     _last_resort = last_resort_map(buildings)
     _guessed = 0
