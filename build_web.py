@@ -2247,9 +2247,9 @@ const RESET_JS = `
     var t = show.checked ? "text" : "password";
     pw.type = t; pw2.type = t;
   });
-  // A new password goes live with a redeploy, a minute or two. /login reports which record is live:
-  // its number and its id. Ours is live when the id matches; a higher number with another id means
-  // someone set a newer password after ours.
+  // A new password goes live with a redeploy. /login reports which record is live: its number and its
+  // id. Ours is live when the id matches, and this watch is the only thing that ever says "live"; a
+  // higher number with another id means someone set a newer password after ours.
   function watch(epoch, id, started) {
     fetch("/login", { cache: "no-store", credentials: "omit" })
       .then(function (r) { return { epoch: Number(r.headers.get("x-spb-auth-epoch") || "0"),
@@ -2261,18 +2261,26 @@ const RESET_JS = `
           live.hidden = false;
           return;
         }
-        // Same number, other id: another reset made at the same moment went live first; ours is queued
-        // behind it, so keep waiting. Only a HIGHER number means ours was overtaken.
         if (seen.epoch > epoch) {
           waitText.textContent = "A newer password was set after yours, so yours is not the one in use. " +
             "Ask whoever set it, or start again from Forgot password.";
           return;
         }
+        // Same number, other id: a reset made at the same moment as ours went live. The workflow
+        // refuses a record whose number is not above the live one (review, 25 Oct 2026), so ours is
+        // not queued behind it: say so. Still watched, in case ours was already past that check.
+        var twin = seen.epoch === epoch && seen.id !== "" && seen.id !== "none";
+        if (twin) {
+          waitText.textContent = "A password made at the same moment as yours went live instead, so yours " +
+            "is not the one in use. Ask whoever set it, or start again from Forgot password.";
+        }
         // Not "try the new password": after 10 minutes it is not live, and it may never be (a run
         // GitHub dropped). Say what is true now (review, 25 Oct 2026).
         if (Date.now() - started > 10 * 60 * 1000) {
-          waitText.textContent = "This is taking longer than usual. The new password is not live yet, " +
-            "so the old one still works. Tell the person who runs the dashboard if it is not live soon.";
+          if (!twin) {
+            waitText.textContent = "This is taking longer than usual. The new password is not live yet, " +
+              "so the old one still works. Tell the person who runs the dashboard if it is not live soon.";
+          }
           return;
         }
         setTimeout(function () { watch(epoch, id, started); }, 10000);

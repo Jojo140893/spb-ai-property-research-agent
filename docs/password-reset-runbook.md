@@ -2,8 +2,9 @@
 
 Written 23 Oct 2026. Once switched on, the dashboard (app.smartpropertybuying.com.au) shows a
 **Forgot password?** link on its sign-in page. It emails a reset code and link to
-digital@smartpropertybuying.com.au. Whoever reads that mailbox chooses a new password. A minute or
-two later only the new password works, and everyone who was signed in is signed out.
+digital@smartpropertybuying.com.au. Whoever reads that mailbox chooses a new password. Once GitHub has
+applied it (usually a few minutes; never while GitHub is refusing jobs) only the new password works,
+and everyone who was signed in is signed out.
 
 Why it exists: on the 23 Oct 2026 call Colin said people have left his team and he wants to change
 the dashboard password himself, without a developer.
@@ -52,8 +53,9 @@ not `vercel`: PowerShell's execution policy blocks the `.ps1` shim on this lapto
 
 3. **Nothing else to create.** `GITHUB_DISPATCH_TOKEN` is already on the project, and the workflow uses
    the GitHub secrets the nightly already has (`VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`).
-4. **Merge the branch to main.** The workflow has to be on main before GitHub will start it. The
-   nightly run deploys main, and that deploy picks up the env vars above.
+4. **Merge the branch to main.** The workflow has to be on main before GitHub will start it, and its
+   job runs only for main (a run started on any other branch is skipped). The nightly run deploys main,
+   and that deploy picks up the env vars above.
 
 Optional settings (Production env, same way):
 
@@ -73,16 +75,21 @@ Optional settings (Production env, same way):
    reaches digital@ within a minute. If it lands in Sent but not the Inbox (Gmail can do that with
    mail from an address to itself), set `SPB_RESET_TO` to another inbox.
 3. Only go further if you mean to change the password now. Open the link, choose the new password,
-   press **Change password**. The page says "Saved..." and, a minute or two later, "Your new
-   password is live". GitHub's Actions tab shows the run "Apply dashboard password" in green; its last
-   step proves a wrong password gets 401 on the live site.
+   press **Change password**. After up to about 15 seconds the page says "GitHub has started applying it" (or
+   "has not started applying it yet"), and that the old password still works until the page says the
+   new one is live. When the redeploy has finished (usually a few minutes) it says "Your new password
+   is live". GitHub's Actions tab shows the run "Apply dashboard password" in green; its last step
+   proves a wrong password gets 401 on the live site. **While GitHub is refusing jobs over billing (as
+   on 25 Oct 2026), the page says instead "GitHub could not run the change just now ... Nothing
+   changed", and the old password stays.**
 
 Logs: Vercel -> `vercel_site` -> Logs, filter `[auth]`. You will see lines such as `forgot: code sent`,
 `forgot: limited`, `forgot: this window's code was already sent`, `forgot: not sent
 (SMTPAuthenticationError 535)`, `reset: new password handed to GitHub (run started)`, `reset: GitHub
-refused the run; nothing changed`, `reset: hand-off limit reached`, `reset: GitHub did not accept the
-hand-off (401)`, `check: record confirmed` and `check: record refused (not_signed)`. They never contain
-the code or a password.
+refused the run; nothing changed`, `reset: GitHub stopped the run; nothing changed`, `reset: hand-off
+limit reached`, `reset: GitHub did not accept the hand-off (401)`, `reset: change notice timed out`,
+`check: record confirmed`, `check: record refused (not_signed)` and `check: record refused
+(not_newer_than_live)`. They never contain the code or a password.
 
 ## 3. What Colin sees
 
@@ -92,16 +99,25 @@ the code or a password.
 3. He opens the link, or enters the code at **Enter the code**, then types the new password twice ->
    **Change password**. The rules: 12 to 128 characters, not the email address, not the current
    password (nor the original one), and no space at either end.
-4. The page waits up to 15 seconds for GitHub to start the change. Then it says the password is saved
-   and starts working in a minute or two, and that the old one works until then. When it is live the
-   page says so and offers **Sign in with the new password**. At that moment everyone else is signed
-   out, and he tells his team the new password. Two other answers are possible:
+4. The page waits up to 15 seconds while GitHub starts the change and its first step checks it. What it
+   then says is never "saved" and never a time, because the change can still be refused after that (and
+   whoever holds the dispatch token can cancel any run):
+   * **"GitHub has started applying it. Your old password still works until this page says the new one
+     is live."** The page keeps watching. When it is live the page says so and offers **Sign in with
+     the new password**. At that moment everyone else is signed out, and he tells his team the new
+     password. If it is not live after 10 minutes the page says so, and that the old one still works.
+   * **"Sent to GitHub, which has not started applying it yet"**: GitHub had not started it within 15
+     seconds. Nothing is promised. The page keeps watching, and says so if it goes live.
    * **"GitHub could not run the change just now ... Nothing changed"**: GitHub refused to run it, for
      example because the account's billing failed (as on 30 Sep and 25 Oct 2026). The old password
      still works and no "change requested" email is sent. The same code works again while it lasts,
      and a new one can be asked for after that.
-   * **"Sent to GitHub, which has not started applying it yet"**: GitHub had not started it within 15
-     seconds. Nothing is promised. The page keeps watching, and says so if it goes live.
+   * **"GitHub stopped the change before saving it. Nothing changed"**: the workflow's own check refused
+     it inside the 15 seconds (for example the daily limit below), or the run was cancelled. Old
+     password, no email, the code still works.
+
+   The "password change requested" email goes out with the first two answers. It says the same: the new
+   password is not in use yet, may not be, and the old one works until the reset page says it is live.
 
 Limits. A code works for 15 minutes, and stops working as soon as any new password goes live. At most
 one code email per 5 minutes per server copy. Everyone who asks inside those 5 minutes would get the
@@ -111,7 +127,13 @@ address, and for IPv6 the whole /64 block): one code email a minute, three an ho
 minute. A stranger hammering the page blocks only themselves and cannot use anything up for Colin. At
 most 3 password changes an hour per server copy, and 10 a day in all, enforced by the workflow from
 GitHub's own run history. Each change is a Vercel deployment, Hobby allows 100 a day, and running out
-would stop the nightly publishing.
+would stop the nightly publishing. The daily 10 counts only runs that got as far as storing a password:
+runs GitHub refused (billing) and runs the check refused (a forged record) changed nothing and do not
+count. If GitHub will not list the runs, the change is refused, not guessed.
+
+Two resets made at the same moment get the same password number. Whichever goes live first wins, and
+the other is refused (a record is applied only over an older number); its page says "A password made at
+the same moment as yours went live instead".
 
 ## 4. Who can reset: anyone who can read the digital@ mailbox
 
@@ -146,14 +168,16 @@ Env var changes only take effect at the next deploy: Vercel dashboard -> `vercel
 * **Never set `SITE_PASSWORD` back to a value it had before a reset** while `SPB_PW_RECORD` is still
   there: that record would match again. To drop a reset for good, delete `SPB_PW_RECORD`.
 * **Never use GitHub's "Re-run" on an "Apply dashboard password" run.** It is refused anyway (the record
-  is more than 30 minutes old, or older than the live one), but a new password needs a new reset from
-  the dashboard.
+  is more than 30 minutes old, or not newer than the live one), but a new password needs a new reset
+  from the dashboard.
 * **The reset page never says "live"** (after 10 minutes it says the new password is not live yet and
   the old one still works): look at the run in GitHub's Actions tab.
   * Failed before "Store it in Vercel": nothing changed, the old password still works. Start a new reset.
     "did not confirm that the dashboard signed this record" in the first step means someone started
     the workflow with a record the dashboard never made: nothing was stored, but find out who
-    (`GITHUB_DISPATCH_TOKEN` or write access to the repo) and replace that token.
+    (`GITHUB_DISPATCH_TOKEN` or write access to the repo) and replace that token. A run that was
+    **cancelled** without anyone here pressing Cancel points the same way. "Could not count this
+    workflow's recent password changes" means GitHub would not list the runs: try again later.
   * Failed after that step: the record is saved, and the next deploy puts it live. That signs
     everyone out at a moment nobody announced, so tell the team, or delete `SPB_PW_RECORD` to cancel.
   * GitHub Actions down or refusing jobs (it was on 30 Sep and 25 Oct 2026, over billing): a reset made
@@ -191,5 +215,20 @@ Known and accepted:
 * **A deploy that starts in the same few seconds as a password change** could still finish in the wrong
   order. The workflow waits until no production deploy is building before it stores and redeploys,
   which closes the window except for those few seconds. The next nightly would put things right.
+* **`VERCEL_TOKEN` and other branches.** The job runs only for main, and only the three steps that call
+  Vercel get the token. But GitHub runs a branch's own copy of the workflow when it is started on that
+  branch. The copies in c8d1695, 153bdd2 and 1ba2844 have neither the guard nor the `/api/reset_check`
+  question (b82f599 has the question, not the guard), so never push those commits as a branch or tag.
+  While `VERCEL_TOKEN`
+  is a repository secret, a workflow on any pushed branch can read it. To make this structural (owner,
+  optional, with a small code change): GitHub -> repo Settings -> Environments -> a new environment
+  limited to the `main` branch, move `VERCEL_TOKEN` from the repository secrets into it, and add
+  `environment: <its name>` to every job that uses the token (this workflow, the nightly's deploy, the
+  token check).
+* **Whoever holds `GITHUB_DISPATCH_TOKEN` can stop resets, but not make one.** They can cancel any run
+  (the page then says "GitHub stopped the change", or after 10 minutes that it is not live), or start
+  so many forged runs that GitHub will not list them all (over 1,000 a day) or its API limit for the
+  run's token runs out, and then the daily count fails and resets are refused until it passes. They
+  cannot use up the daily 10, and nothing they send is stored. If this happens, replace the token.
 
 The Leads-tab contact password (`SPB_CONTACT_PASSWORD`) is separate, and this feature does not touch it.

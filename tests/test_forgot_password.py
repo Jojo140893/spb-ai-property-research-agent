@@ -5,7 +5,9 @@ What is proved where:
 
   this file                          the code (stateless, 50 bits, 15-20 minutes, bound to the live
                                      password), the encrypted record, the email, the GitHub hand-off and
-                                     the run it starts (refused over billing, stopped, queued), the limits
+                                     the run it starts (refused over billing, stopped, queued; no answer
+                                     promises "saved" or a time), the one deadline (real clock), the
+                                     workflow's daily cap (only runs that stored a password), the limits
                                      (per client and one email per window, so a stranger cannot block
                                      Coleen), the request checks, /api/reset_check, the workflow file and
                                      its first step run under bash, and that no log line carries a secret.
@@ -32,6 +34,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -82,11 +85,46 @@ def _iso(t):
 # the dispatch got its 204, the run completed with conclusion failure in about 5 seconds, and its job ran
 # 0 steps ("The job was not started because recent account payments have failed").
 _STEP = lambda name, status, conclusion: {"name": name, "status": status, "conclusion": conclusion}
+_CHECK = "Refuse an old, malformed or one-too-many record"
+_SET_UP = _STEP("Set up job", "completed", "success")
 RUN_KINDS = {
+    # Running, and its check step has not answered yet.
     "started": ({"status": "in_progress", "conclusion": None},
                 {"status": "in_progress", "conclusion": None, "steps": [
-                    _STEP("Set up job", "completed", "success"),
-                    _STEP("Refuse an old, malformed or one-too-many record", "in_progress", None)]}),
+                    _SET_UP, _STEP(_CHECK, "in_progress", None)]}),
+    # Its check step passed and it is waiting for Vercel: nothing stored yet.
+    "past the gate": ({"status": "in_progress", "conclusion": None},
+                      {"status": "in_progress", "conclusion": None, "steps": [
+                          _SET_UP, _STEP(_CHECK, "completed", "success"),
+                          _STEP("Install the Vercel CLI", "completed", "success"),
+                          _STEP("Wait for any production deploy in progress", "in_progress", None)]}),
+    "applied": ({"status": "completed", "conclusion": "success"},
+                {"status": "completed", "conclusion": "success", "steps": [
+                    _SET_UP, _STEP(_CHECK, "completed", "success"),
+                    _STEP("Store it in Vercel", "completed", "success"),
+                    _STEP("Redeploy production so it takes effect", "completed", "success"),
+                    _STEP("Wait until the new password signs people in", "completed", "success")]}),
+    # The check step refused it (the daily cap, a forged record, /api/reset_check not answering); the job
+    # has not finished tidying up yet.
+    "gate failed, still running": ({"status": "in_progress", "conclusion": None},
+                                   {"status": "in_progress", "conclusion": None, "steps": [
+                                       _SET_UP, _STEP(_CHECK, "completed", "failure")]}),
+    # The dispatch token can cancel any run (second review, 25 Oct 2026).
+    "cancelled after start": ({"status": "completed", "conclusion": "cancelled"},
+                              {"status": "completed", "conclusion": "cancelled", "steps": [
+                                  _SET_UP, _STEP(_CHECK, "completed", "cancelled")]}),
+    # Dispatched on another ref: the job's `if:` skips it. Shown both ways GitHub might conclude it.
+    "skipped": ({"status": "completed", "conclusion": "skipped"},
+                {"status": "completed", "conclusion": "skipped", "steps": []}),
+    "skipped, run says success": ({"status": "completed", "conclusion": "success"},
+                                  {"status": "completed", "conclusion": "skipped", "steps": []}),
+    # Stored and failed on attempt 1, then someone pressed Re-run and the check refused attempt 2.
+    "re-run after a store": ({"status": "completed", "conclusion": "failure"}, [
+        {"status": "completed", "conclusion": "failure", "steps": [
+            _SET_UP, _STEP(_CHECK, "completed", "success"), _STEP("Store it in Vercel", "completed", "success"),
+            _STEP("Redeploy production so it takes effect", "completed", "failure")]},
+        {"status": "completed", "conclusion": "failure", "steps": [
+            _SET_UP, _STEP(_CHECK, "completed", "failure"), _STEP("Store it in Vercel", "completed", "skipped")]}]),
     "refused": ({"status": "completed", "conclusion": "failure"},
                 {"status": "completed", "conclusion": "failure", "steps": []}),
     "stopped": ({"status": "completed", "conclusion": "failure"},
@@ -109,35 +147,59 @@ RUN_KINDS = {
 class FakeGitHub(object):
     """Stands in for api.github.com. Every dispatch is recorded in `calls` and answered `status` (204 =
     accepted); every read in `reads`. An accepted dispatch creates a run, listed newest first, created at
-    the dispatch's time, whose state is `run` (a RUN_KINDS key), or "unreadable" (reads answer 403)."""
+    the dispatch's time, whose state is `run` (a RUN_KINDS key), or "unreadable" (reads answer 403).
+    `run` may also be a list of kinds: the state the run shows at each listing in turn, the last one
+    staying, so a run can move from queued to started to refused as a real one does.
+
+    The runs listing honours `created=>=`, `per_page` and `page`; the jobs listing shows the latest
+    attempt unless asked for `filter=all`, as GitHub's does."""
 
     def __init__(self, clock):
         self.calls, self.reads, self.runs = [], [], []
         self.status = 204
-        self.run = "started"
+        self.run = "past the gate"
         self.clock = clock
+
+    def add_run(self, kind, created, run_id=None):
+        seq = list(kind) if isinstance(kind, (list, tuple)) else [kind]
+        run = {"id": run_id if run_id is not None else 90000 + len(self.runs), "created_at": _iso(created),
+               "event": "workflow_dispatch", "seq": seq, "reads": 0, "kind": seq[0]}
+        self.runs.insert(0, run)
+        self.runs.sort(key=lambda r: r["created_at"], reverse=True)     # stable: newest first
+        return run
 
     def __call__(self, method, url, headers, body, timeout):
         if method == "POST":
             self.calls.append({"method": method, "url": url, "headers": dict(headers),
                                "body": json.loads(body.decode("utf-8")) if body else None})
             if self.status == 204:
-                self.runs.insert(0, {"id": 4000 + len(self.calls), "created_at": _iso(self.clock()),
-                                     "event": "workflow_dispatch", "kind": self.run})
+                self.add_run(self.run, self.clock(), run_id=4000 + len(self.calls))
             return self.status, b""
         self.reads.append({"method": method, "url": url, "headers": dict(headers), "timeout": timeout})
         if self.run == "unreadable":
             return 403, b""
-        path = url.split("?")[0]
+        path, _, query = url.partition("?")
+        q = urllib.parse.parse_qs(query)
         if path.endswith("/actions/workflows/apply-dashboard-password.yml/runs"):
+            floor = q.get("created", [""])[0]
+            assert floor == "" or floor.startswith(">="), floor
+            rows = [r for r in self.runs if r["created_at"] >= floor[2:]]
+            per_page, page = int(q.get("per_page", ["30"])[0]), int(q.get("page", ["1"])[0])
+            shown = rows[(page - 1) * per_page:page * per_page]
+            for r in shown:
+                r["kind"] = r["seq"][min(r["reads"], len(r["seq"]) - 1)]
+                r["reads"] += 1
             shown = [dict(RUN_KINDS[r["kind"]][0], id=r["id"], created_at=r["created_at"], event=r["event"])
-                     for r in self.runs[:5] if r["kind"] in RUN_KINDS]
-            return 200, json.dumps({"total_count": len(shown), "workflow_runs": shown}).encode("utf-8")
+                     for r in shown if r["kind"] in RUN_KINDS]
+            return 200, json.dumps({"total_count": len(rows), "workflow_runs": shown}).encode("utf-8")
         m = re.search(r"/actions/runs/(\d+)/jobs$", path)
         run = next((r for r in self.runs if m and r["id"] == int(m.group(1))), None)
         if run is not None and run["kind"] in RUN_KINDS:
-            job = dict(RUN_KINDS[run["kind"]][1], name="apply")
-            return 200, json.dumps({"total_count": 1, "jobs": [job]}).encode("utf-8")
+            jobs = RUN_KINDS[run["kind"]][1]
+            jobs = [dict(j, name="apply") for j in (jobs if isinstance(jobs, list) else [jobs])]
+            if q.get("filter", ["latest"])[0] != "all":
+                jobs = jobs[-1:]
+            return 200, json.dumps({"total_count": len(jobs), "jobs": jobs}).encode("utf-8")
         return 404, b""
 
     def records(self):
@@ -490,7 +552,7 @@ def test_the_happy_path_hands_github_a_signed_encrypted_record_and_says_so(world
     r = world.reset(shown.lower(), "Brand-new-passphrase-9")
     assert len(world.github.calls) == 1
     record = world.github.records()[0]
-    assert r.status == 200 and r.payload == {"ok": True, "message": A.SAVED, "epoch": 1,
+    assert r.status == 200 and r.payload == {"ok": True, "message": A.APPLYING, "epoch": 1,
                                              "id": record.split(".")[-1][:A.ID_LEN]}
     call = world.github.calls[0]
     assert call["method"] == "POST"
@@ -624,7 +686,7 @@ def test_a_run_github_refuses_to_start_is_not_called_saved(world):
     assert len(world.github.calls) == A.HANDOFFS_PER_HOUR + 1, "a refused run is not counted as a change"
     world.github.run = "started"
     r = world.reset(code, "Brand-new-passphrase-9")
-    assert r.status == 200 and r.payload["message"] == A.SAVED, "the code still works once GitHub runs jobs"
+    assert r.status == 200 and r.payload["message"] == A.APPLYING, "the code still works once GitHub runs jobs"
     assert [m["subject"] for m in world.mails()] == [A.SUBJECT_CODE, A.SUBJECT_CHANGED]
 
 
@@ -643,22 +705,76 @@ def test_a_run_that_stops_before_storing_is_not_called_saved(world):
     assert world.reset(code, "Brand-new-passphrase-9").status == 200, "the code still works"
 
 
-@pytest.mark.parametrize("kind", ["queued", "unreadable", "stored, then failed"])
+@pytest.mark.parametrize("kind", ["queued", "unreadable"])
 def test_a_run_not_seen_starting_promises_nothing(world, kind):
-    """Queued past the wait, GitHub not saying, or failed after the store: it may still go live, so
-    neither "saved" nor "nothing changed". The page says it is not live yet and keeps watching."""
+    """Queued past the wait, or GitHub not saying: it may still go live, so neither "started" nor
+    "nothing changed". The page says it is not live yet and keeps watching."""
     A = world.A
     world.github.run = kind
     world.forgot()
     r = world.reset(world.last_code(), "Brand-new-passphrase-9")
     assert r.status == 200 and r.payload["message"] == A.PENDING and r.payload["epoch"] == 1, r.payload
     assert "old password still works" in A.PENDING and "Saved" not in A.PENDING
-    notice = world.mails()[-1]
-    assert notice["subject"] == A.SUBJECT_CHANGED and "was requested at" in notice["body"]
-    assert "was set" not in notice["body"]
+    _assert_the_notice_promises_nothing(world)
     waited = [s for s in world.slept if s == A.RUN_POLL]
     assert 1 <= len(waited) <= A.RUN_WAIT / A.RUN_POLL + 1, "the wait is bounded"
     assert all(x["timeout"] <= A.GITHUB_TIMEOUT for x in world.github.reads)
+
+
+# Words that make a promise the 15-second answer cannot keep: the workflow's own checks may still refuse
+# the change, and whoever holds the dispatch token can cancel any run (second review, 25 Oct 2026).
+_PROMISES = re.compile(r"\bsaved\b|\bminutes?\b|\bseconds?\b|\bwithin\b|\busually\b|\bsoon\b|was set\b"
+                       r"|\bstarts working\b|\bnow live\b", re.I)
+
+
+def _assert_the_answer_promises_nothing(message):
+    assert not _PROMISES.search(message), "the answer promises what nobody knows yet: %r" % message
+    assert "old password still works until this page says the new one is live" in message, message
+
+
+def _assert_the_notice_promises_nothing(world):
+    notice = world.mails()[-1]
+    assert notice["subject"] == world.A.SUBJECT_CHANGED and "was requested at" in notice["body"]
+    rest = notice["body"].split("\n", 1)[1]                  # after the line with the time it was asked
+    assert not _PROMISES.search(rest), "the notice promises more than the page: %r" % rest
+    assert "old\npassword keeps working until the reset page says the new one is live" in rest, rest
+
+
+def test_no_answer_at_the_wait_says_saved_or_gives_a_time(world):
+    """Second review, 25 Oct 2026: a run was "started", so "Saved. Your new password starts working in
+    about 2 minutes", and the notice went out, the moment GitHub showed "Set up job", seconds before the
+    workflow's own check ran. Ten forged dispatches used up the daily cap, the check then refused every
+    real reset for 24 hours, and each was told "Saved". Now a run that started is watched until its check
+    step answers: refused inside the wait is the honest 503, and every 200 says only what is true."""
+    A = world.A
+    cases = (
+        # (how the run moves, listing by listing; the answer; the message, by its name in the module)
+        (["queued", "started", "gate failed, still running"], 503, "STOPPED"),
+        (["queued", "started", "stopped"], 503, "STOPPED"),
+        (["queued", "started", "cancelled after start"], 503, "STOPPED"),
+        (["queued", "started"], 200, "APPLYING"),                    # its check had not answered in time
+        (["queued", "started", "past the gate"], 200, "APPLYING"),
+        (["started", "stored, then failed"], 200, "APPLYING"),       # stored: the next deploy puts it live
+    )
+    for moves, status, message in cases:
+        world.advance(3601)                  # past the hour's hand-off limit, which is not what is tested
+        ip = world.fresh_ip()
+        world.forgot(ip)
+        code = world.last_code()
+        mails = len(world.mails())
+        world.github.run = moves
+        r = world.reset(code, "Brand-new-passphrase-9", ip=ip)
+        assert (r.status, r.payload["message"]) == (status, getattr(A, message, message)), (moves, r.payload)
+        if status == 503:
+            assert len(world.mails()) == mails, "%s: a notice went out for a change that was refused" % moves
+            assert r.payload["error"] == "not_started"
+        else:
+            _assert_the_answer_promises_nothing(r.payload["message"])
+            _assert_the_notice_promises_nothing(world)
+    _assert_the_answer_promises_nothing(A.PENDING)
+    for name, value in vars(A).items():
+        if isinstance(value, str) and name.isupper():
+            assert not re.search(r"\bsaved\b|starts working", value, re.I), "%s still says it: %r" % (name, value)
 
 
 def test_a_double_click_does_not_hand_over_twice(world):
@@ -812,13 +928,109 @@ def test_reset_check_vouches_only_for_records_this_dashboard_signed(world):
         r = A.check_endpoint({"record": rec})
         assert r.status == 422 and r.payload["error"] == why, label
     world.apply(A.build_record("Brand-new-passphrase-8", 3, world.now))
-    assert A.verify_record(good, world.now) == "older_than_live"
-    assert A.verify_record(A.build_record("Brand-new-passphrase-9", 3, world.now), world.now) is None
+    assert A.verify_record(good, world.now) == "not_newer_than_live"
+    assert A.verify_record(A.build_record("Brand-new-passphrase-9", 3, world.now), world.now) == \
+        "not_newer_than_live", "the live number is not newer"
+    assert A.verify_record(A.build_record("Brand-new-passphrase-9", 4, world.now), world.now) is None
     world.apply(forged)
     assert A.verify_record(A.build_record("Brand-new-passphrase-9", 4, world.now), world.now) == \
         "live_record_broken", "a live record that cannot be trusted vouches for nothing"
     for body in ({}, {"record": good, "extra": 1}, {"record": 5}):
         assert A.check_endpoint(body).status == 400
+
+
+def test_a_record_is_applied_only_over_an_older_number(world, tmp_path):
+    """Second review, 25 Oct 2026. Two resets made before either is live get the same number. With
+    "refuse only an older number", the one that lost could be replayed (its record is readable in the
+    run's inputs) for up to 30 minutes after the other went live, bringing the older password back. Now
+    a record whose number is not above the live one is refused by /api/reset_check AND by the
+    workflow's own check, so the second of two same-moment resets fails, and says so."""
+    A = world.A
+    first = world.full_reset("First-new-passphrase-1")
+    world.advance(A.BUCKET)                   # a code is spent once here; the next window's is another
+    second = world.full_reset("Second-new-passphrase-2")
+    assert A.parse_record(first)["epoch"] == A.parse_record(second)["epoch"] == 1, "made at the same moment"
+    assert A.verify_record(first, world.now) is None and A.verify_record(second, world.now) is None
+    world.apply(second)                       # the second one went live
+    world.advance(60)
+    for label, rec in (("the one that lost, replayed", first), ("the live one, again", second)):
+        assert A.verify_record(rec, world.now) == "not_newer_than_live", label
+        r = A.check_endpoint({"record": rec})
+        assert (r.status, r.payload["error"]) == (422, "not_newer_than_live"), label
+    assert A.parse_record(world.full_reset("Third-new-passphrase-3"))["epoch"] == 2
+    assert A.verify_record(world.github.records()[-1], world.now) is None, "the next reset still works"
+    # The workflow's own check, from /login's number alone (SPB_PW_RECORD unset here, so
+    # /api/reset_check vouches, and only the step's comparison decides).
+    world.configure()
+    world.now = time.time()                   # check-record (a subprocess) reads the real clock
+    rec = A.build_record("Brand-new-passphrase-9", 3, world.now)
+    code, out, outputs, asked = run_check_step(world, tmp_path / "same", rec, live_epoch="3")
+    assert code != 0 and "number 3 is already live" in out, "the step applied a record of the live number:\n" + out
+    assert outputs == "" and asked == "", "the step went on after refusing it"
+    code, out, outputs, asked = run_check_step(world, tmp_path / "newer", rec, live_epoch="2")
+    assert code == 0 and outputs.split()[0] == "epoch=3", out
+
+
+# The reset page's script under Node, with just enough of a browser: the form is submitted, the server
+# answers 200 for password number 2 with id "mine", and /login then reports the number and id given.
+_RESET_PAGE_HARNESS = r'''
+import { readFileSync } from "node:fs";
+const [src, seenEpoch, seenId] = process.argv.slice(2);
+const els = {};
+function el(id) {
+  if (!els[id]) els[id] = { id, hidden: id === "wait" || id === "live" || id === "out", value: "",
+    textContent: "", type: "password", disabled: false, listeners: {},
+    addEventListener(type, fn) { this.listeners[type] = fn; }, focus() {} };
+  return els[id];
+}
+globalThis.document = { getElementById: el };
+globalThis.location = { hash: "", pathname: "/reset" };
+globalThis.history = { replaceState() {} };
+let timers = 0;
+globalThis.setTimeout = () => { timers += 1; };
+globalThis.fetch = async (url) => {
+  if (url === "/api/reset_password") {
+    return { status: 200, json: async () => ({ ok: true, epoch: 2, id: "mine", message: "MESSAGE FROM THE SERVER" }) };
+  }
+  if (url === "/login") {
+    return { status: 200, headers: { get: (n) => (n === "x-spb-auth-epoch" ? seenEpoch : n === "x-spb-auth-id" ? seenId : null) } };
+  }
+  throw new Error("unexpected fetch " + url);
+};
+new Function(readFileSync(src, "utf8"))();
+el("code").value = "ABCDE-FGHJK";
+el("pw").value = "Brand-new-passphrase-9";
+el("pw2").value = "Brand-new-passphrase-9";
+el("f").listeners.submit({ preventDefault() {} });
+for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+process.stdout.write(JSON.stringify({ text: els.waitText.textContent, live: !els.live.hidden, timers }));
+'''
+
+
+def test_the_reset_page_says_so_when_a_reset_made_at_the_same_moment_went_live(world, tmp_path):
+    """Same number, another id on /login: a reset made at the same moment went live. The page used to
+    say nothing and wait ("ours is queued behind it"), but the workflow now refuses ours (above), so the
+    page says what is true, and still watches in case ours was already past the check."""
+    import build_web
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed; the reset page cannot be run here")
+    src = re.search(r"const RESET_JS = `(.*?)`;", build_web.MIDDLEWARE_JS, re.S).group(1)
+    (tmp_path / "reset.js").write_text(src, encoding="utf-8")
+    (tmp_path / "harness.mjs").write_text(_RESET_PAGE_HARNESS, encoding="utf-8")
+    seen = {}
+    for label, (epoch, rid) in {"twin": ("2", "theirs"), "newer": ("3", "theirs"), "ours": ("2", "mine"),
+                                "older": ("1", "old"), "no record": ("0", "none")}.items():
+        p = subprocess.run([node, str(tmp_path / "harness.mjs"), str(tmp_path / "reset.js"), epoch, rid],
+                           capture_output=True, text=True, encoding="utf-8", timeout=60)
+        assert p.returncode == 0, label + ": " + p.stderr[-2000:]
+        seen[label] = json.loads(p.stdout)
+    assert seen["twin"]["text"].startswith("A password made at the same moment as yours went live instead"), seen
+    assert not seen["twin"]["live"] and seen["twin"]["timers"] == 1, "not live, and still watched"
+    assert seen["newer"]["text"].startswith("A newer password was set after yours") and seen["newer"]["timers"] == 0
+    assert seen["ours"]["text"].startswith("Your new password is live") and seen["ours"]["live"]
+    for label in ("older", "no record"):
+        assert seen[label] == {"text": "MESSAGE FROM THE SERVER", "live": False, "timers": 1}, (label, seen[label])
 
 
 def _git_bash():
@@ -837,20 +1049,32 @@ def _check_step_script():
     return next(s for s in data["jobs"]["apply"]["steps"] if s.get("id") == "check")["run"]
 
 
-def run_check_step(world, tmp_path, record, script=None, live_epoch="0", site_up=True):
+def run_check_step(world, tmp_path, record, script=None, live_epoch="0", site_up=True, github=None):
     """Run the workflow's first step, as written in the .yml, under bash, against a stand-in for the live
-    site that answers /login as middleware.js does and /api/reset_check with the REAL handler. `gh` is a
-    stub that logs its calls (it is how the next check, the daily cap, would show it ran) and says 0.
-    Returns (exit code, output, the step's outputs, the stub's log)."""
+    site that answers /login as middleware.js does and /api/reset_check with the REAL handler. The same
+    stand-in answers GitHub's API (GITHUB_API_URL points at it) from `github`, a FakeGitHub, by default
+    one with no runs: that is what the daily cap reads, so a read there shows the step got that far.
+    `gh` is a stub that logs and fails: the step must not need it (nor reach the real GitHub).
+    Returns (exit code, output, the step's outputs, what GitHub and gh were asked)."""
     bash = _git_bash()
     if not bash or not shutil.which("curl"):
         pytest.skip("bash and curl are needed to run the workflow step")
     tmp_path.mkdir(parents=True, exist_ok=True)
     sys.path.insert(0, str(API))
     reset_check = importlib.import_module("reset_check")
+    github = github if github is not None else FakeGitHub(time.time)
+    reads_before = len(github.reads)
 
     class LiveSite(reset_check.handler):
         def do_GET(self):
+            if self.path.startswith("/repos/"):
+                status, data = github("GET", "https://api.github.com" + self.path, dict(self.headers), None, 30)
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
             if self.path != "/login":
                 return self._not_allowed()
             self.send_response(200)
@@ -877,13 +1101,15 @@ def run_check_step(world, tmp_path, record, script=None, live_epoch="0", site_up
     # python3 is this interpreter. tr: Windows Python writes CRLF, a runner's does not.
     (bin_dir / "python3").write_bytes(('#!/bin/bash\nset -o pipefail\n"%s" "$@" | tr -d "\\r"\n'
                                        % Path(sys.executable).as_posix()).encode("utf-8"))
-    (bin_dir / "gh").write_bytes(('#!/bin/sh\necho "gh $*" >> "%s"\necho 0\n' % gh_log.as_posix()).encode("utf-8"))
+    (bin_dir / "gh").write_bytes(('#!/bin/sh\necho "gh $*" >> "%s"\necho "gh is not to be used" >&2\nexit 1\n'
+                                  % gh_log.as_posix()).encode("utf-8"))
     out_file = tmp_path / "github_output"
     out_file.write_text("", encoding="utf-8")
     step = tmp_path / "step.sh"
     step.write_bytes((script if script is not None else _check_step_script()).encode("utf-8"))
     env = dict(os.environ, RECORD=record, SITE="http://127.0.0.1:%d" % port, MAX_PER_DAY="10",
                GH_TOKEN="fake-github-token", GITHUB_REPOSITORY="Jojo140893/spb-ai-property-research-agent",
+               GITHUB_API_URL="http://127.0.0.1:%d" % port,
                GITHUB_RUN_ID="1", GITHUB_OUTPUT=out_file.as_posix(), RUNNER_TEMP=tmp_path.as_posix(),
                PATH=str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
     try:
@@ -893,8 +1119,9 @@ def run_check_step(world, tmp_path, record, script=None, live_epoch="0", site_up
         if site_up:
             server.shutdown()
             server.server_close()
-    return p.returncode, p.stdout + p.stderr, out_file.read_text(encoding="utf-8"), \
-        gh_log.read_text(encoding="utf-8")
+    asked = gh_log.read_text(encoding="utf-8") + "".join(
+        "GET %s %s\n" % (r["url"], r["headers"].get("Authorization", "")) for r in github.reads[reads_before:])
+    return p.returncode, p.stdout + p.stderr, out_file.read_text(encoding="utf-8"), asked
 
 
 def test_the_workflow_stores_nothing_the_dashboard_did_not_sign(world, tmp_path):
@@ -906,7 +1133,9 @@ def test_the_workflow_stores_nothing_the_dashboard_did_not_sign(world, tmp_path)
     good = A.build_record("Brand-new-passphrase-9", 1, world.now)
     code, out, outputs, gh = run_check_step(world, tmp_path / "good", good)
     assert code == 0, "the step refused a record the dashboard made:\n" + out
-    assert outputs.split() == ["epoch=1", "id=" + A.parse_record(good)["id"]] and gh.startswith("gh api"), out
+    assert outputs.split() == ["epoch=1", "id=" + A.parse_record(good)["id"]], out
+    assert "/actions/workflows/apply-dashboard-password.yml/runs?" in gh and "gh " not in gh, gh
+    assert "Bearer fake-github-token" in gh, "the cap reads GitHub with the run's own token"
     world.configure(SPB_AUTH_SECRET=OTHER_SECRET)
     signed_elsewhere = A.build_record("Brand-new-passphrase-9", 1, world.now)
     world.configure()
@@ -920,10 +1149,66 @@ def test_the_workflow_stores_nothing_the_dashboard_did_not_sign(world, tmp_path)
         assert rec not in out, "%s: the record was printed" % label
     data, _ = _workflow()
     job = data["jobs"]["apply"]
-    assert "if" not in job and "continue-on-error" not in job
+    assert job.get("if") == "github.ref == 'refs/heads/main'" and "continue-on-error" not in job, \
+        "the job's only condition is the main-only guard"
     for s in job["steps"]:
         assert "if" not in s and "continue-on-error" not in s, \
             "%r could run after a failed check" % s.get("name", s.get("uses"))
+
+
+def test_the_daily_cap_counts_only_runs_that_stored_a_password(world):
+    """Second review, 25 Oct 2026: the workflow's cap counted every run in 24 hours. Ten forged
+    dispatches (each refused by /api/reset_check), or a day of runs GitHub refused over billing, used it
+    up, and every real reset for the next day was refused by the cap. Only a run that got as far as
+    storing a password, in any attempt, is a change."""
+    A = world.A
+    gh, now = world.github, world.now
+    for i in range(120):                     # forged: refused at the check. More than one page of runs.
+        gh.add_run("stopped", now - 30 * (i + 1))
+    for i in range(6):
+        gh.add_run("refused", now - 7200 - 60 * i)                  # GitHub refusing jobs over billing
+    for kind in ("cancelled", "cancelled after start", "skipped", "skipped, run says success", "queued",
+                 "started", "past the gate", "gate failed, still running"):
+        gh.add_run(kind, now - 9000)
+    for kind in ("applied", "stored, then failed", "re-run after a store"):
+        gh.add_run(kind, now - 10000)
+    gh.add_run("applied", now - A.APPLIED_WINDOW - 60)             # yesterday's: outside the 24 hours
+    gh.add_run("past the gate", now, run_id=777)                   # the run asking: not counted
+    repo = "Jojo140893/spb-ai-property-research-agent"
+    assert A.count_applied(now, 777, "fake-github-token", repo) == 3
+    assert all(r["headers"]["Authorization"] == "Bearer fake-github-token" for r in gh.reads), \
+        "read with the run's own token, never the dashboard's"
+    assert any("page=2" in r["url"] for r in gh.reads), "past the first page of runs"
+    assert all("filter=all" in r["url"] for r in gh.reads if "/jobs" in r["url"]), "every attempt is looked at"
+    for i in range(7):
+        gh.add_run("applied", now - 100 - i)
+    assert A.count_applied(now, 777, "fake-github-token", repo) == 10
+    gh.run = "unreadable"
+    with pytest.raises(RuntimeError):
+        A.count_applied(now, 777, "fake-github-token", repo)
+
+
+def test_the_workflows_daily_cap_is_not_used_up_by_runs_that_changed_nothing(world, tmp_path):
+    """The same, through the workflow's step as written, under bash."""
+    A = world.A
+    world.now = time.time()                   # check-record (a subprocess) reads the real clock
+    good = A.build_record("Brand-new-passphrase-9", 1, world.now)
+    gh = FakeGitHub(time.time)
+    for i in range(10):
+        gh.add_run("stopped", world.now - 60 * (i + 1))             # ten forged dispatches
+    for i in range(6):
+        gh.add_run("refused", world.now - 3600 - 60 * i)            # a day of billing refusals
+    code, out, outputs, asked = run_check_step(world, tmp_path / "nothing-changed", good, github=gh)
+    assert code == 0, "runs that changed nothing used up the day's changes:\n" + out
+    assert "0 other changes in 24 hours" in out and outputs.startswith("epoch=1"), out
+    for i in range(10):
+        gh.add_run("applied", world.now - 120 * (i + 1))
+    code, out, outputs, asked = run_check_step(world, tmp_path / "ten-changes", good, github=gh)
+    assert code != 0 and "10 password changes in the last 24 hours (limit 10)" in out and outputs == "", out
+    gh.run = "unreadable"
+    code, out, outputs, asked = run_check_step(world, tmp_path / "github-silent", good, github=gh)
+    assert code != 0 and "Could not count this workflow's recent password changes" in out, out
+    assert outputs == "", "GitHub not saying is a refusal"
 
 
 # ------------------------------------------------------------------ the request plumbing
@@ -1027,7 +1312,9 @@ def test_no_log_line_carries_a_secret(world, capsys):
     world.github.run = "refused"
     world.reset(code, "Second-new-passphrase-2")
     forged = forged_record(2, world.now)
-    assert A.check_endpoint({"record": rec1}).status == 204
+    fresh = A.build_record("Third-new-passphrase-3", 2, world.now)
+    assert A.check_endpoint({"record": fresh}).status == 204
+    assert A.check_endpoint({"record": rec1}).status == 422, "the live one is not newer than itself"
     assert A.check_endpoint({"record": forged}).status == 422
     err = capsys.readouterr().err
     assert "[auth] reset: new password handed to GitHub" in err and "[auth] forgot: code sent" in err
@@ -1035,7 +1322,7 @@ def test_no_log_line_carries_a_secret(world, capsys):
     assert "[auth] check: record refused (not_signed)" in err
     for secret in (FAKE_SITE, FAKE_SECRET, FAKE_SMTP_PASSWORD, FAKE_TOKEN, "First-new-passphrase-1",
                    "Second-new-passphrase-2", code, A.normalise_code(code), live["hash"], live["mac"],
-                   live["box"], rec1, forged):
+                   live["box"], rec1, forged, fresh):
         assert secret not in err, "a log line carries a secret"
 
 
@@ -1070,8 +1357,112 @@ def test_the_build_ships_the_three_routes_and_their_module(world):
     assert '"api/reset_password.py": {"memory": 256, "maxDuration": 60,' in src
     assert '"api/reset_check.py": {"memory": 256, "maxDuration": 10,' in src
     assert "import reset_code, reset_password, reset_check, _spb_auth" in build_web._READONLY_PROBE
-    # The longest reset: the dispatch, the whole wait for the run, and three notice steps, inside 60 s.
-    assert world.A.GITHUB_TIMEOUT + world.A.RUN_WAIT + 3 * world.A.NOTICE_TIMEOUT < 60
+
+
+def test_the_reset_deadline_fits_inside_the_functions_limit(world):
+    """The arithmetic the deadline rests on (the tests below prove the code keeps to it). Second review,
+    25 Oct 2026: the old check here added the configured timeouts, 48 s, but the code gave two reads per
+    poll each "the time left", so the real worst case was about 63 s, past maxDuration."""
+    A = world.A
+    src = (APP / "build_web.py").read_text(encoding="utf-8")
+    max_duration = int(re.search(r'"api/reset_password\.py": \{"memory": 256, "maxDuration": (\d+),', src).group(1))
+    assert A.GITHUB_TIMEOUT + A.RUN_WAIT + A.NOTICE_TIMEOUT < A.RESET_DEADLINE, "every stage fits in the deadline"
+    assert A.RESET_DEADLINE + 15 <= max_duration, "and the deadline well inside maxDuration (a cold start, PBKDF2)"
+
+
+class _SlowGitHub(object):
+    """FakeGitHub behind a slow network: every read takes `share` of the time it is given, or, with
+    share=None, hangs for 5 seconds whatever it is given, as a stuck DNS lookup or a response that drips
+    in would (a socket timeout bounds one operation, not a call). `release` lets the hung ones go."""
+
+    def __init__(self, fake, share):
+        self.fake, self.share, self.release = fake, share, threading.Event()
+
+    def __call__(self, method, url, headers, body, timeout):
+        if method == "GET":
+            if self.share is None:
+                self.release.wait(5)
+                return 0, b""
+            time.sleep(timeout * self.share)
+        return self.fake(method, url, headers, body, timeout)
+
+
+def _real_time(world, **limits):
+    """The real clock and real sleeps, and the module's time limits scaled down to `limits`."""
+    world.mp.setattr(world.A, "sleep", time.sleep)
+    for name, value in limits.items():
+        world.mp.setattr(world.A, name, value, raising=False)
+
+
+def test_watching_the_run_keeps_to_its_deadline(world):
+    """Second review, 25 Oct 2026: each poll made two reads, each given "the time left", so with a slow
+    GitHub the 15-second watch took 29.8 s. Every read now gets what is left of ONE deadline, and is held
+    to it in wall time even when the network ignores its timeout. Limits scaled down; real clock."""
+    A = world.A
+    _real_time(world, RUN_WAIT=1.2, RUN_POLL=0.2, GITHUB_TIMEOUT=1.2, MIN_CALL=0.05)
+    world.github.add_run("started", world.now)               # running; its check never answers in time
+    for share in (0.9, None):
+        slow = _SlowGitHub(world.github, share)
+        world.mp.setattr(A, "TRANSPORT", slow)
+        began = time.monotonic()
+        try:
+            state = A.run_state(world.now)
+        finally:
+            took = time.monotonic() - began
+            slow.release.set()
+        assert took <= A.RUN_WAIT + 0.4, "share %s: a %.1f s watch took %.2f s" % (share, A.RUN_WAIT, took)
+        assert state in (A.STARTED, A.UNKNOWN), state
+
+
+class _StuckSMTP(object):
+    """A mail server that takes the login and then never answers (for 5 seconds)."""
+
+    def __init__(self, release):
+        self.release = release
+
+    def login(self, user, password):
+        self.release.wait(5)
+
+    def send_message(self, msg):
+        pass
+
+    def quit(self):
+        pass
+
+
+def test_a_reset_answers_inside_one_deadline_whatever_github_and_the_mail_do(world, capsys):
+    """The whole reset under one deadline: GitHub hanging at the dispatch, or accepting it and then
+    hanging on every read, and the mail server hanging on the notice. It answers before RESET_DEADLINE
+    with what is true (nothing promised, or nothing handed over), never Vercel's 504 after a dispatch
+    GitHub took. Limits scaled down; real clock."""
+    A = world.A
+    world.forgot()
+    code = world.last_code()                  # the code email, through the real local mail server
+    _real_time(world, RUN_WAIT=0.8, RUN_POLL=0.2, GITHUB_TIMEOUT=0.8, NOTICE_TIMEOUT=0.5,
+               RESET_DEADLINE=2.4, MIN_CALL=0.05)
+    release = threading.Event()
+    world.mp.setattr(A, "SMTP_FACTORY", lambda host, port, timeout: _StuckSMTP(release))
+
+    def stuck_dispatch(method, url, headers, body, timeout):
+        release.wait(5)
+        return 204, b""
+
+    slow = _SlowGitHub(world.github, None)
+    try:
+        for label, transport, status, message in (("reads hang", slow, 200, A.PENDING),
+                                                  ("the dispatch hangs", stuck_dispatch, 503, None)):
+            world.mp.setattr(A, "TRANSPORT", transport)
+            A.LIMITS.clear()
+            began = time.monotonic()
+            r = world.reset(code, "Brand-new-passphrase-9")
+            took = time.monotonic() - began
+            assert took <= A.RESET_DEADLINE + 0.4, "%s: the reset took %.2f s, deadline %.1f" % (
+                label, took, A.RESET_DEADLINE)
+            assert r.status == status and (message is None or r.payload["message"] == message), (label, r.payload)
+    finally:
+        release.set()
+        slow.release.set()
+    assert "[auth] reset: change notice timed out" in capsys.readouterr().err
 
 
 def _workflow():
@@ -1103,18 +1494,41 @@ def test_the_workflow_never_puts_the_input_in_a_shell_line(world):
     assert secrets == {"VERCEL_TOKEN", "VERCEL_ORG_ID", "VERCEL_PROJECT_ID"}
 
 
+def test_vercel_token_reaches_only_the_vercel_steps_and_only_on_main(world):
+    """Second review, 25 Oct 2026: workflow_dispatch takes any ref and runs that ref's code, and
+    VERCEL_TOKEN sat in the whole job's env. So a branch's copy (an old one skips /api/reset_check, a
+    work-in-progress one runs its own api/_spb_auth.py) could write SPB_PW_RECORD with it. The job now
+    runs only for main, and only the three steps that call Vercel get the token."""
+    data, _ = _workflow()
+    job = data["jobs"]["apply"]
+    assert job.get("if") == "github.ref == 'refs/heads/main'"
+    assert "VERCEL_TOKEN" not in (job.get("env") or {}) and "VERCEL_TOKEN" not in (data.get("env") or {})
+    with_token = [s["name"] for s in job["steps"] if "VERCEL_TOKEN" in (s.get("env") or {})]
+    assert with_token == ["Wait for any production deploy in progress", "Store it in Vercel",
+                          "Redeploy production so it takes effect"]
+    for s in job["steps"]:
+        calls_vercel = re.search(r"\bvercel (list|env|inspect|redeploy)\b", s.get("run", ""))
+        if s.get("name") in with_token:
+            assert s["env"]["VERCEL_TOKEN"] == "${{ secrets.VERCEL_TOKEN }}" and calls_vercel, s["name"]
+        else:
+            assert not calls_vercel, "%s calls Vercel without the token" % s.get("name", s.get("uses"))
+    assert world.A.REF == "main", "the dashboard dispatches the one ref the job runs for"
+
+
 def test_the_workflow_guards_then_waits_then_stores_then_redeploys_then_probes(world):
     data, _ = _workflow()
     runs = [s.get("run", "") for s in data["jobs"]["apply"]["steps"]]
     joined = "\n".join(runs)
     order = [joined.index(x) for x in (
         "python3 api/_spb_auth.py check-record", '"$SITE/api/reset_check"', '[ "$status" != "204" ]',
-        '[ "$epoch" -lt "$live" ]', '[ "$recent" -ge "$MAX_PER_DAY" ]',
+        '[ "$epoch" -le "$live" ]', "python3 api/_spb_auth.py count-applied", '[ "$recent" -ge "$MAX_PER_DAY" ]',
         "--status BUILDING,QUEUED,INITIALIZING", "vercel env add SPB_PW_RECORD", "vercel redeploy",
         "x-spb-auth-id:", '--data "email=probe')]
     assert order == sorted(order)
-    assert world.A.STORE_STEP in [s.get("name") for s in data["jobs"]["apply"]["steps"]], \
-        "run_state() looks for this step by name"
+    names = [s.get("name") for s in data["jobs"]["apply"]["steps"]]
+    assert world.A.STORE_STEP in names and world.A.CHECK_STEP in names, \
+        "run_state() and count_applied() look for these steps by name"
+    assert names.index(world.A.CHECK_STEP) < names.index(world.A.STORE_STEP)
     assert data["jobs"]["apply"]["env"]["MAX_PER_DAY"] == "10"
     add = next(r for r in runs if "vercel env add" in r)
     assert "printf '%s' \"$RECORD\" | vercel env add SPB_PW_RECORD" in add

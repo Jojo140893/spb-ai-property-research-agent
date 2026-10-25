@@ -13,14 +13,18 @@ reset_endpoint):
      which the login gate hides (review, 25 Oct 2026), or at the current password.)
   4. a signed password record is made and handed to GitHub, whose workflow asks /api/reset_check to
      confirm the record, stores it in Vercel as SPB_PW_RECORD and redeploys. The run is then watched for
-     up to 15 seconds: GitHub accepts a dispatch even while it refuses every job over billing. Only a
-     run that started is "saved"; a "password change requested" notice goes to the same address unless
-     GitHub refused it.
+     up to 15 seconds, until the workflow's own check step answers: GitHub accepts a dispatch even
+     while it refuses every job over billing. No answer here says "saved" or gives a time (review,
+     25 Oct 2026): the checks can still refuse it afterwards, and the dispatch token can cancel any
+     run. A "password change requested" notice, saying no more than that, goes to the same address
+     unless GitHub refused or stopped the run.
 
-200 {"ok": true, "epoch": N} when handed over (the page then waits for /login to report epoch N); 400 for
-a request, rule or code that is wrong; 429 for too many tries on this instance; 503 when nothing was
-handed over, or GitHub refused or stopped the run (nothing changed, the code still works). Not
-configured: 503, "not set up yet".
+200 {"ok": true, "epoch": N, "id": ...} when handed over: "GitHub has started applying it" or "has not
+started applying it yet", and the old password works until the page, watching /login for that id, says
+the new one is live; 400 for a request, rule or code that is wrong; 429 for too many tries on this
+instance; 503 when nothing was handed over, or GitHub refused or stopped the run (nothing changed, the
+code still works). Not configured: 503, "not set up yet". Always within 40 seconds (RESET_DEADLINE), well
+inside this function's maxDuration of 60.
 """
 import os
 import sys

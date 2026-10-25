@@ -85,6 +85,29 @@ def _username_before_the_code(A):
     return password_problem
 
 
+def _started_is_enough(A):
+    """run_state before the second review: the first step seen running was "started" (and so "saved")."""
+    real = A._run_state_once
+
+    def _run_state_once(since, end):
+        state = real(since, end)
+        return A.STARTED if state == A.RUNNING else state
+    return _run_state_once
+
+
+def _older_only(A):
+    """verify_record before the second review: only an OLDER number than the live one was refused."""
+    real = A.verify_record
+
+    def verify_record(text, now):
+        why = real(text, now)
+        if why == "not_newer_than_live":
+            live = A.parse_record(A._env("SPB_PW_RECORD"))
+            return "older_than_live" if A.parse_record(text)["epoch"] < live["epoch"] else None
+        return why
+    return verify_record
+
+
 def _early_code_ok(A):
     def code_ok(code, now, vid):            # stops at the first match: no longer constant-time
         bucket = int(now // A.BUCKET)
@@ -106,7 +129,7 @@ PY_MUTANTS = [
      lambda A, mp: mp.setattr(A, "same_origin", lambda headers: True),
      "test_respond_refuses_everything_but_small_same_origin_json"),
     ("waiting for GitHub to accept the record",
-     lambda A, mp: mp.setattr(A, "dispatch", lambda record: True),
+     lambda A, mp: mp.setattr(A, "dispatch", lambda record, timeout=None: True),
      "test_when_github_refuses_nothing_is_promised_and_the_code_still_works"),
     ("refusing SITE_PASSWORD as the new password after a reset",
      lambda A, mp: mp.setattr(A, "is_current_password", lambda pw, rec: rec is None and pw == T.FAKE_SITE),
@@ -130,10 +153,10 @@ PY_MUTANTS = [
      lambda A, mp: mp.setattr(A, "verify_record", lambda text, now: None if A.parse_record(text) else "malformed"),
      "test_reset_check_vouches_only_for_records_this_dashboard_signed"),
     ("watching that GitHub started the run",
-     lambda A, mp: mp.setattr(A, "run_state", lambda since: A.STARTED),
+     lambda A, mp: mp.setattr(A, "run_state", lambda since, end=None: A.STARTED),
      "test_a_run_github_refuses_to_start_is_not_called_saved"),
     ("telling a run that stopped from one that started",
-     lambda A, mp: mp.setattr(A, "run_state", lambda since: A.UNKNOWN),
+     lambda A, mp: mp.setattr(A, "run_state", lambda since, end=None: A.UNKNOWN),
      "test_a_run_that_stops_before_storing_is_not_called_saved"),
     ("one code email per window, with no shared ceiling",
      lambda A, mp: mp.setattr(A.LIMITS, "send_decision", _shared_ceiling(A)),
@@ -147,12 +170,25 @@ PY_MUTANTS = [
     ("asking the username rule only with the right code",
      lambda A, mp: mp.setattr(A, "password_problem", _username_before_the_code(A)),
      "test_the_username_rule_is_asked_only_with_the_right_code"),
+    # Second review, 25 Oct 2026.
+    ("watching a started run until its check step answers",
+     lambda A, mp: mp.setattr(A, "_run_state_once", _started_is_enough(A)),
+     "test_no_answer_at_the_wait_says_saved_or_gives_a_time"),
+    ("counting only runs that stored a password",
+     lambda A, mp: mp.setattr(A, "_steps_run", lambda jobs: {A.STORE_STEP: ("completed", "success")}),
+     "test_the_daily_cap_counts_only_runs_that_stored_a_password"),
+    ("holding each wait to the deadline in wall time",
+     lambda A, mp: mp.setattr(A, "_bounded", lambda seconds, fn, *a, **k: ("ok", fn(*a, **k))),
+     "test_watching_the_run_keeps_to_its_deadline"),
+    ("refusing a record of the live number",
+     lambda A, mp: mp.setattr(A, "verify_record", _older_only(A)),
+     "test_a_record_is_applied_only_over_an_older_number"),
 ]
 
 
 # The workflow's first step without the question to the live site: exactly what it was before the review.
 def _without_the_site_check(script):
-    start, end = script.index("# Signed by the dashboard"), script.index("# Not older than the password")
+    start, end = script.index("# Signed by the dashboard"), script.index("# Newer than the password")
     return script[:start] + script[end:]
 
 
@@ -209,23 +245,23 @@ def test_removing_a_middleware_safeguard_turns_its_check_red(removed, edit, sect
         "with %s removed, %r did not fail. Failed instead: %s" % (removed, expected, failed[:6]))
 
 
-def _run(test_name, monkeypatch, mutate=None):
+def _run(test_name, monkeypatch, tmp_path, mutate=None):
     w = T.World(monkeypatch)
     try:
         if mutate:
             mutate(w.A, monkeypatch)
         fn = getattr(T, test_name)
-        kwargs = {"world": w, "monkeypatch": monkeypatch}
+        kwargs = {"world": w, "monkeypatch": monkeypatch, "tmp_path": tmp_path}
         fn(**{k: kwargs[k] for k in inspect.signature(fn).parameters})
     finally:
         w.close()
 
 
 @pytest.mark.parametrize("removed,mutate,test_name", PY_MUTANTS, ids=[m[0] for m in PY_MUTANTS])
-def test_removing_a_python_safeguard_turns_its_test_red(removed, mutate, test_name):
+def test_removing_a_python_safeguard_turns_its_test_red(removed, mutate, test_name, tmp_path):
     with pytest.MonkeyPatch.context() as mp:
-        _run(test_name, mp)                  # green on the real code first
+        _run(test_name, mp, tmp_path / "control")    # green on the real code first
     with pytest.MonkeyPatch.context() as mp:
         # A failed assert, or pytest.raises reporting "DID NOT RAISE": both mean the test went red.
         with pytest.raises((AssertionError, pytest.fail.Exception)):
-            _run(test_name, mp, mutate)
+            _run(test_name, mp, tmp_path / "mutant", mutate)

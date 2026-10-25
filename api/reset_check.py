@@ -14,9 +14,10 @@ it). middleware.js lets exactly POST /api/reset_check through without a session,
 feature is configured; otherwise it is gated like any path, and the workflow, getting no 204, stores
 nothing.
 
-204 for a record this dashboard signed, for today's SITE_PASSWORD, made in the last 30 minutes and not
-older than the live one. 422 {"error": <why>} otherwise: "malformed" or "not_signed" for anything this
-dashboard did not make, and only past the mac anything more specific. Not configured: 503.
+204 for a record this dashboard signed, for today's SITE_PASSWORD, made in the last 30 minutes and newer
+than the live one (the same number is not newer: review, 25 Oct 2026, so a reset made at the same moment
+as the live one cannot replace it). 422 {"error": <why>} otherwise: "malformed" or "not_signed" for
+anything this dashboard did not make, and only past the mac anything more specific. Not configured: 503.
 """
 import os
 import sys

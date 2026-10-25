@@ -60,12 +60,22 @@ by verify_record() below. Before this, one forged dispatch was stored and redepl
 is checked before the fingerprint, sign-in answered 503 for everyone, and a new SITE_PASSWORD did not
 bring it back.
 
-"SAVED" ONLY ONCE GITHUB HAS STARTED (review, 25 Oct 2026). GitHub accepts a dispatch (204) even while
-it is refusing every job over billing, as it did on 30 Sep and 25 Oct: the run then fails in about five
-seconds with no step run, and is never retried. So after the 204 reset_endpoint watches the run for up
-to RUN_WAIT seconds (run_state()). Refused, or stopped before "Store it in Vercel": 503, "nothing
-changed", no notice, the code still works. Started: "saved". Not started yet: 200 with a sentence that
-promises nothing, and the page waits for /login to report it.
+NOTHING SAID AT 15 SECONDS IS A PROMISE (reviews, 25 Oct 2026). GitHub accepts a dispatch (204) even
+while it is refusing every job over billing, as it did on 30 Sep and 25 Oct: the run then fails in about
+five seconds with no step run, and is never retried. So after the 204 reset_endpoint watches the run for
+up to RUN_WAIT seconds (run_state()), until the workflow's own check step has answered. Refused, or
+stopped before "Store it in Vercel": 503, "nothing changed", no notice, the code still works. Anything
+else is a 200 that says only what is true at that moment: GitHub has started applying it (APPLYING), or
+has not started yet (PENDING), and either way the old password works until the page says the new one
+is live. Never "saved" and never a time: the check step can still refuse it after the answer, and
+whoever holds the dispatch token can cancel any run (the second review: "Saved, starts working in about
+2 minutes" went out for runs the daily cap then refused). Only the page's watch of /login says "live".
+The "change requested" notice says no more than the page does.
+
+ONE DEADLINE (review, 25 Oct 2026). reset_endpoint answers within RESET_DEADLINE (40 s, inside
+maxDuration 60). The dispatch, every GitHub read and the notice are each held to what is left of it in
+wall time (_bounded): a socket timeout bounds one operation, not a call, and two reads that were each
+given "the time left" once took 29.8 s of a 15 s wait.
 
 NO VERCEL TOKEN HERE. This function holds GITHUB_DISPATCH_TOKEN, already on the project for the
 Refresh button, which can start workflows and nothing else on Vercel. The token that writes the env var
@@ -85,8 +95,11 @@ connection or one cloud machine is handed (limit_key()).
   * wrong codes: 20 a minute per client (a right code is never refused by this);
   * hand-offs to GitHub: 3 an hour per instance. Each one is a redeploy, Vercel Hobby allows 100 a day,
     and running out would stop the nightly publishing. The workflow also refuses more than 10 a day,
-    counted from GitHub's own run history, which no instance can get around. A run GitHub refused to
-    start is not counted here (nothing ran); one that ran and stopped is.
+    counted from GitHub's own run history, which no instance can get around (count_applied()). It counts
+    only runs that got as far as storing a password: a run GitHub refused (billing) or that the check
+    step refused (a forged record) changed nothing, and counting those let a forger, or a day of billing
+    failures, use up the day's changes (review, 25 Oct 2026). A run GitHub refused to start is not
+    counted here either (nothing ran); one that ran and stopped is.
 
 FAIL-SAFE: without SPB_AUTH_SECRET, SPB_SMTP_PASSWORD and GITHUB_DISPATCH_TOKEN, configured() is False,
 the endpoints answer 503 "not set up yet", and middleware.js serves the sign-in page exactly as it was.
@@ -128,7 +141,7 @@ DEFAULT_SITE_URL = "https://app.smartpropertybuying.com.au"   # for the link in 
 GITHUB_API = "https://api.github.com"
 OWNER = os.environ.get("GITHUB_OWNER", "Jojo140893")
 REPO = os.environ.get("GITHUB_REPO", "spb-ai-property-research-agent")
-REF = os.environ.get("GITHUB_REF_NAME", "main")
+REF = "main"                                 # the workflow's job runs only on main (its `if:`)
 WORKFLOW = "apply-dashboard-password.yml"
 
 CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"   # Crockford base32: no I, L, O, U
@@ -164,13 +177,20 @@ SMTP_TIMEOUT = 15
 NOTICE_TIMEOUT = 6                           # the "changed" notice must not push a done reset past maxDuration
 GITHUB_TIMEOUT = 15
 # Watching the run a dispatch created (run_state). A run GitHub refuses over billing completes in about
-# 5 s (run 36666518741, 30 Sep 2026). 15 s for the dispatch, at most 15 here, then the notice (6 s a
-# step): inside reset_password.py's maxDuration of 60.
+# 5 s (run 36666518741, 30 Sep 2026).
 RUN_WAIT = 15.0
 RUN_POLL = 2.5
 RUN_SKEW = 10                                # GitHub's created_at may read this much before our clock
+MIN_CALL = 1.0                               # a GitHub read with less time than this left is not made
+# One deadline for everything reset_endpoint does (module header: ONE DEADLINE). The dispatch
+# (GITHUB_TIMEOUT), the watch (RUN_WAIT) and the notice (NOTICE_TIMEOUT) are 36 s at most, each held to
+# it in wall time; 40 leaves 20 of reset_password.py's maxDuration of 60 (build_web.py) for a cold start.
+RESET_DEADLINE = 40.0
 MAX_GITHUB_BODY = 1 << 20                    # a runs or jobs listing, not a download
+CHECK_STEP = "Refuse an old, malformed or one-too-many record"   # the workflow's own checks
 STORE_STEP = "Store it in Vercel"            # the workflow step after which a record may be stored
+APPLIED_WINDOW = 24 * 3600                   # the workflow's daily cap counts changes in this window
+MAX_RUN_PAGES = 10                           # GitHub lists at most 1,000 runs for a `created` filter
 # What we call ourselves in EHLO. smtplib otherwise asks the network for this machine's fully qualified
 # name (a reverse DNS lookup the socket timeout does not cover); Gmail does not care what it is.
 EHLO_NAME = "app.smartpropertybuying.com.au"
@@ -183,8 +203,11 @@ GENERIC_FORGOT = "If this site is set up for it, a code has been emailed."
 NOT_SET_UP = "Password reset is not set up yet - ask the person who runs the dashboard."
 CODE_INVALID = ("That code is not right, or it has expired. "
                 "Ask for a new code if you are not sure.")
-SAVED = ("Saved. Your new password starts working in about 2 minutes. "
-         "Until then, keep using the old one.")
+# GitHub has started the run (or it is past its checks, or has stored the record). Still not "saved" and
+# no time: the check step may yet refuse it, and the dispatch token can cancel any run (review, 25 Oct
+# 2026). Only the page's watch of /login says "live".
+APPLYING = ("GitHub has started applying it. Your old password still works until this page says the "
+            "new one is live.")
 # GitHub took the change but had not started it within RUN_WAIT: nothing is promised.
 PENDING = ("Sent to GitHub, which has not started applying it yet. Your old password still works "
            "until this page says the new one is live.")
@@ -214,6 +237,9 @@ _EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*
 _SITE_URL_RE = re.compile(r"^https://[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _IP_RE = re.compile(r"^[0-9A-Fa-f:.]{2,45}$")
+_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
+# Where count-applied reads GitHub: the runner's GITHUB_API_URL (https), or a loopback stand-in in tests.
+_API_RE = re.compile(r"^(https://[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+|http://127\.0\.0\.1:[0-9]{1,5})$")
 
 
 def log(event):
@@ -373,9 +399,14 @@ def build_record(password, epoch, now):
 
 def verify_record(text, now):
     """None when `text` is a record THIS dashboard signed, for today's SITE_PASSWORD, made in the last
-    30 minutes and not older than the live one; otherwise a fixed word saying why not. What
+    30 minutes and NEWER than the one in SPB_PW_RECORD; otherwise a fixed word saying why not. What
     POST /api/reset_check answers the workflow before it stores anything (review, 25 Oct 2026: the
     workflow could check only the shape, so a forged record was stored and sign-in answered 503).
+
+    Newer, not "not older" (second review, 25 Oct 2026): two resets made before either is live share a
+    number, so with "<" the one that lost could be replayed for up to 30 minutes after the other went
+    live, bringing the older password back. Now, once a record is live, one of the same number is
+    refused, and of two resets made at the same moment the second to arrive fails, and says so.
 
     The mac is checked first, so every answer after it is about a record only this dashboard could
     have made: someone without SPB_AUTH_SECRET learns "malformed" or "not_signed" and nothing else."""
@@ -399,8 +430,8 @@ def verify_record(text, now):
     except ConfigError:
         return "live_record_broken"
     live = parse_record(_env("SPB_PW_RECORD"))
-    if live is not None and rec["epoch"] < live["epoch"]:
-        return "older_than_live"
+    if live is not None and rec["epoch"] <= live["epoch"]:
+        return "not_newer_than_live"
     return None
 
 
@@ -591,12 +622,14 @@ def changed_mail_body(now):
     except Exception:                                                  # noqa: BLE001
         pass                                 # no tz database on this host: UTC alone is still right
     # "requested": this goes out once GitHub has the change, before it is live (review, 25 Oct 2026:
-    # "was set" went out for changes GitHub then refused to run, and nothing was ever set).
+    # "was set" went out for changes GitHub then refused to run, and nothing was ever set). No more than
+    # the page says, and no time (second review, 25 Oct 2026): the workflow's checks may still refuse it.
     return ("A new password for the Smart Property Buying dashboard was requested at %s.\n"
-            "It starts working once it is live, usually within a few minutes. Until then the old\n"
-            "password still works, and once it is live, everyone who was signed in is signed out.\n\n"
-            "If that was you there is nothing to do. If it was not, tell the person who runs the\n"
-            "dashboard straight away (docs/password-reset-runbook.md, section 5).\n" % when)
+            "It is not in use yet, and it may not be: GitHub can still refuse the change. The old\n"
+            "password keeps working until the reset page says the new one is live. If it goes live,\n"
+            "everyone who was signed in is signed out.\n\n"
+            "If that was not you, tell the person who runs the dashboard straight away\n"
+            "(docs/password-reset-runbook.md, section 5).\n" % when)
 
 
 def build_message(subject, body):
@@ -663,36 +696,64 @@ def _urllib_transport(method, url, headers, body, timeout):
         return 0, b""
 
 
-def _github(method, path, body=None, timeout=GITHUB_TIMEOUT):
-    """One call to the GitHub API with the dispatch token: (status, bytes). Never raises."""
+def _bounded(seconds, fn, *args, **kwargs):
+    """fn(*args, **kwargs) given at most `seconds` of wall time: ("ok", its value), ("error", what it
+    raised) or ("late", None). A socket timeout bounds one operation, not a call (DNS has none, and an
+    SMTP session is a dozen operations), so it cannot by itself keep a reset inside its deadline; this
+    can. A call cut off here goes on in a daemon thread, and whatever it returns is dropped."""
+    if seconds <= 0:
+        return "late", None
+    box = []
+
+    def run():
+        try:
+            box.append(("ok", fn(*args, **kwargs)))
+        except BaseException as e:                                     # noqa: BLE001
+            box.append(("error", e))
+
+    worker = threading.Thread(target=run, name="spb-bounded", daemon=True)
+    worker.start()
+    worker.join(seconds)
+    return box[0] if box else ("late", None)
+
+
+def _github(method, path, body=None, timeout=GITHUB_TIMEOUT, token=None, base=GITHUB_API):
+    """One call to the GitHub API, with the dispatch token unless another is given: (status, bytes),
+    within `timeout` seconds of wall time. Never raises."""
     headers = {
-        "Authorization": "Bearer " + _env("GITHUB_DISPATCH_TOKEN"),
+        "Authorization": "Bearer " + (_env("GITHUB_DISPATCH_TOKEN") if token is None else token),
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "spb-dashboard",
     }
     if body is not None:
         headers["Content-Type"] = "application/json"
-    try:
-        status, data = (TRANSPORT or _urllib_transport)(method, GITHUB_API + path, headers, body, timeout)
-    except Exception:                                                  # noqa: BLE001
+    kind, got = _bounded(timeout, TRANSPORT or _urllib_transport, method, base + path, headers, body, timeout)
+    if kind != "ok" or not isinstance(got, tuple) or len(got) != 2:
         return 0, b""
-    return (status if isinstance(status, int) else 0), (data if isinstance(data, bytes) else b"")
+    status, data = got
+    return (status if isinstance(status, int) and not isinstance(status, bool) else 0), \
+        (data if isinstance(data, bytes) else b"")
 
 
-def dispatch(record):
+def dispatch(record, timeout=GITHUB_TIMEOUT):
     """Start apply-dashboard-password.yml with the record. True when GitHub accepted it (204). That is
     NOT the same as the run starting: see run_state()."""
     path = "/repos/%s/%s/actions/workflows/%s/dispatches" % (OWNER, REPO, WORKFLOW)
     body = json.dumps({"ref": REF, "inputs": {"record": record}}).encode("utf-8")
-    status, _ = _github("POST", path, body)
+    status, _ = _github("POST", path, body, timeout=timeout)
     if status != 204:
         log("reset: GitHub did not accept the hand-off (%d)" % status)
     return status == 204
 
 
-def _github_json(path, timeout):
-    status, data = _github("GET", path, timeout=timeout)
+def _github_json(path, end, **kw):
+    """GET `path` as a JSON object, or None. `end` is a time.monotonic() deadline: the call gets what is
+    left of it (at most GITHUB_TIMEOUT), and is not made at all with less than MIN_CALL left."""
+    left = min(GITHUB_TIMEOUT, end - time.monotonic())
+    if left < MIN_CALL:
+        return None
+    status, data = _github("GET", path, timeout=left, **kw)
     if status != 200:
         return None
     try:
@@ -710,11 +771,24 @@ def _gh_time(text):
 
 
 STARTED, REFUSED, STOPPED_EARLY, UNKNOWN = "started", "refused", "stopped", "unknown"   # run_state
+RUNNING = "running"          # _run_state_once only: a step has run, the check step has not answered yet
 
 
-def _run_state_once(since, timeout):
+def _steps_run(jobs):
+    """{step name: (status, conclusion)} for every step that has run or is running, in every job
+    listed. A skipped step did not run."""
+    ran = {}
+    for job in jobs:
+        for step in ((job.get("steps") if isinstance(job, dict) else None) or []):
+            if isinstance(step, dict) and isinstance(step.get("name"), str) \
+                    and step.get("status") in ("in_progress", "completed") and step.get("conclusion") != "skipped":
+                ran[step["name"]] = (step.get("status"), step.get("conclusion"))
+    return ran
+
+
+def _run_state_once(since, end):
     runs = _github_json("/repos/%s/%s/actions/workflows/%s/runs?event=workflow_dispatch&per_page=5"
-                        % (OWNER, REPO, WORKFLOW), timeout)
+                        % (OWNER, REPO, WORKFLOW), end)
     if runs is None or not isinstance(runs.get("workflow_runs"), list):
         return UNKNOWN
     ours = []
@@ -727,50 +801,96 @@ def _run_state_once(since, timeout):
         return UNKNOWN                       # not listed yet
     run = min(ours, key=lambda c: c[0])[1]   # the one made closest to our dispatch
     status, conclusion = run.get("status"), run.get("conclusion")
-    if status == "completed" and conclusion == "success":
-        return STARTED
     if status not in ("in_progress", "completed"):
         return UNKNOWN                       # queued, waiting, pending, requested: not started yet
-    jobs = _github_json("/repos/%s/%s/actions/runs/%d/jobs" % (OWNER, REPO, run["id"]), timeout)
+    jobs = _github_json("/repos/%s/%s/actions/runs/%d/jobs" % (OWNER, REPO, run["id"]), end)
     if jobs is None or not isinstance(jobs.get("jobs"), list):
         return UNKNOWN
-    ran = []
-    for job in jobs["jobs"]:
-        for step in ((job.get("steps") if isinstance(job, dict) else None) or []):
-            if isinstance(step, dict) and step.get("status") in ("in_progress", "completed") \
-                    and step.get("conclusion") != "skipped":
-                ran.append(step.get("name"))
+    ran = _steps_run(jobs["jobs"])
+    if STORE_STEP in ran:
+        return STARTED                       # stored, or storing: from here it can go live
+    gate = ran.get(CHECK_STEP)
+    if gate is not None and gate[0] == "completed":
+        # The workflow's own checks have answered. Failed: no step after it runs (none has an `if:`),
+        # so nothing is stored. Passed: GitHub is applying it, which is still no promise (the dispatch
+        # token can cancel the run), so it is reported as started, never as saved.
+        return STARTED if gate[1] == "success" else STOPPED_EARLY
     if status == "completed":
-        # Failed or cancelled, and nothing stored unless the store step ran. Failed with no step run:
-        # GitHub never started it (billing: "The job was not started because recent account payments
-        # have failed"). Anything else (steps run, so the workflow's own checks stopped it; or
-        # cancelled, which a newer pending run in the concurrency group does to an older one): stopped.
-        if STORE_STEP in ran:
-            return UNKNOWN
+        # Nothing stored. Failed with no step run: GitHub never started it (billing: "The job was not
+        # started because recent account payments have failed"). Anything else (steps run, so it stopped
+        # on the way; cancelled, which a newer pending run in the concurrency group does to an older one,
+        # or the token holder does to any run; or skipped, on a ref other than main): stopped.
         if not ran and conclusion in ("failure", "startup_failure"):
             return REFUSED
         return STOPPED_EARLY
-    return STARTED if ran else UNKNOWN
+    return RUNNING if ran else UNKNOWN
 
 
-def run_state(since):
-    """What GitHub did with the run our dispatch created, watched for at most RUN_WAIT seconds:
-    STARTED (a step has run), REFUSED (completed with nothing run: billing), STOPPED_EARLY (it ran and
-    stopped before storing anything) or UNKNOWN (not started yet, or GitHub would not say).
+def run_state(since, end=None):
+    """What GitHub did with the run our dispatch created, watched for at most RUN_WAIT seconds and never
+    past `end` (a time.monotonic() deadline): STARTED (a step has run, or the run is past its checks),
+    REFUSED (completed with nothing run: billing), STOPPED_EARLY (it ran and stopped before storing
+    anything) or UNKNOWN (not started yet, or GitHub would not say).
+
+    A run that has started is watched on, until its check step answers or the time is up, so that a run
+    the workflow's own checks refuse inside the wait gets the honest "nothing changed" (second review,
+    25 Oct 2026: it used to be called started, and so "saved", the moment "Set up job" ran).
 
     Review, 25 Oct 2026: GitHub answers 204 to a dispatch while it refuses every job over billing, and
     the run then dies in about 5 seconds and is never retried, so a 204 alone promised a password
     change that never happened. The token already reads runs for the Refresh button (api/refresh.py)."""
-    deadline = time.monotonic() + RUN_WAIT
-    for _ in range(int(RUN_WAIT / RUN_POLL) + 1):
-        sleep(RUN_POLL)
-        left = deadline - time.monotonic()
+    stop = time.monotonic() + RUN_WAIT
+    if end is not None:
+        stop = min(stop, end)
+    seen = UNKNOWN
+    for _ in range(int(RUN_WAIT / RUN_POLL) + 1):   # a backstop: never more polls than this
+        left = stop - time.monotonic()
         if left <= 0:
             break
-        state = _run_state_once(since, min(GITHUB_TIMEOUT, max(1.0, left)))
-        if state != UNKNOWN:
+        sleep(min(RUN_POLL, left))
+        state = _run_state_once(since, stop)
+        if state == RUNNING:
+            seen = STARTED
+        elif state != UNKNOWN:
             return state
-    return UNKNOWN
+    return seen
+
+
+def count_applied(now, exclude_id, token, repo, base=GITHUB_API):
+    """How many runs of this workflow created in the APPLIED_WINDOW before `now`, other than
+    `exclude_id` (the run asking), got as far as storing a password: the store step ran in some attempt,
+    or the run succeeded. The workflow's daily cap counts these and nothing else (review, 25 Oct 2026: it
+    counted every run, so ten forged dispatches that /api/reset_check refused, or a day of runs GitHub
+    refused over billing, used up the day's changes, and Colin was then refused by the cap).
+    Raises RuntimeError whenever GitHub does not say, so the cap fails closed."""
+    since = datetime.fromtimestamp(int(now) - APPLIED_WINDOW, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    runs = {}
+    for page in range(1, MAX_RUN_PAGES + 1):
+        got = _github_json("/repos/%s/actions/workflows/%s/runs?created=%%3E%%3D%s&per_page=100&page=%d"
+                           % (repo, WORKFLOW, since, page), time.monotonic() + GITHUB_TIMEOUT,
+                           token=token, base=base)
+        if got is None or not isinstance(got.get("workflow_runs"), list):
+            raise RuntimeError("GitHub did not list this workflow's runs")
+        for r in got["workflow_runs"]:
+            rid = r.get("id") if isinstance(r, dict) else None
+            if not isinstance(rid, int) or isinstance(rid, bool):
+                raise RuntimeError("a run without an id")
+            runs[rid] = r
+        if len(got["workflow_runs"]) < 100:
+            break
+    else:
+        raise RuntimeError("more runs than GitHub will list in a day")
+    runs.pop(exclude_id, None)
+    applied = 0
+    for rid in sorted(runs):
+        jobs = _github_json("/repos/%s/actions/runs/%d/jobs?filter=all&per_page=100" % (repo, rid),
+                            time.monotonic() + GITHUB_TIMEOUT, token=token, base=base)
+        if jobs is None or not isinstance(jobs.get("jobs"), list):
+            raise RuntimeError("GitHub did not list a run's jobs")
+        finished = any(isinstance(j, dict) and j.get("conclusion") == "success" for j in jobs["jobs"])
+        if STORE_STEP in _steps_run(jobs["jobs"]) or (runs[rid].get("conclusion") == "success" and finished):
+            applied += 1
+    return applied
 
 
 # ------------------------------------------------------------------ the request
@@ -893,9 +1013,12 @@ def reset_endpoint(body, ip="unknown"):
       1. the request's shape and the rules the password breaks BY ITSELF (no configured value involved);
       2. the code, in constant time against every live bucket (a wrong one counts against this client);
       3. only with the right code: is the new password the sign-in email, or one that changes nothing?
-      4. the record is made and handed to GitHub, and the run it starts is watched (run_state). Only a
-         run that started is "saved"; one GitHub refused, or that stopped before storing, is "nothing
-         changed"; one not started yet promises nothing."""
+      4. the record is made and handed to GitHub, and the run it starts is watched (run_state). One
+         GitHub refused, or that stopped before storing, is "nothing changed"; anything else is a 200
+         that promises nothing: started, or not started yet, and the old password works until the page
+         says the new one is live.
+    All of it inside one deadline, RESET_DEADLINE (module header: ONE DEADLINE)."""
+    deadline = time.monotonic() + RESET_DEADLINE
     if set(body) != {"code", "password", "confirm"}:
         return _refuse(400, "Send the code, the new password and its confirmation.")
     now = clock()
@@ -930,11 +1053,12 @@ def reset_endpoint(body, ip="unknown"):
     epoch = next_epoch()
     record = build_record(body["password"], epoch, now)
     LIMITS.use(code, now)
-    if not dispatch(record):
+    # The notice's time is kept back from the two GitHub stages, so it always has its NOTICE_TIMEOUT.
+    if not dispatch(record, timeout=min(GITHUB_TIMEOUT, deadline - NOTICE_TIMEOUT - time.monotonic())):
         LIMITS.unuse(code)
         return _refuse(503, "Could not save that just now. Wait a minute and try again.",
                        error="unavailable")
-    state = run_state(now)
+    state = run_state(now, deadline - NOTICE_TIMEOUT)
     if state in (REFUSED, STOPPED_EARLY):
         # Nothing was stored: no notice, and the code still works. A refused run cost nothing and is
         # not counted against the hand-offs; one that ran and stopped used a runner, so it is.
@@ -946,11 +1070,13 @@ def reset_endpoint(body, ip="unknown"):
     LIMITS.handed_off(now)
     log("reset: new password handed to GitHub (%s)" % ("run started" if state == STARTED
                                                        else "not started yet"))
-    try:
-        send_mail(SUBJECT_CHANGED, changed_mail_body(now), timeout=NOTICE_TIMEOUT)
-    except Exception as e:                                             # noqa: BLE001
-        log("reset: change notice not sent (%s)" % _why(e))
-    return Reply(200, {"ok": True, "message": SAVED if state == STARTED else PENDING, "epoch": epoch,
+    left = min(NOTICE_TIMEOUT, deadline - time.monotonic())
+    kind, err = _bounded(left, send_mail, SUBJECT_CHANGED, changed_mail_body(now), timeout=max(0.1, left))
+    if kind == "error":
+        log("reset: change notice not sent (%s)" % _why(err))
+    elif kind == "late":
+        log("reset: change notice timed out")
+    return Reply(200, {"ok": True, "message": APPLYING if state == STARTED else PENDING, "epoch": epoch,
                        "id": parse_record(record)["id"]})
 
 
@@ -1050,9 +1176,16 @@ def _main(argv):
     Neither proves the dashboard made it: the mac needs SPB_AUTH_SECRET, which is deliberately not on
     GitHub. So the same step then asks the live site (POST /api/reset_check, verify_record above), which
     checks the mac and, under it, the age and the epoch again, and stops unless the answer is 204.
-    Prints "<epoch> <id>" for the workflow."""
+    Prints "<epoch> <id>" for the workflow.
+
+    `python api/_spb_auth.py count-applied`: the same step's daily cap. Prints how many other runs of the
+    workflow in the last 24 hours got as far as storing a password (count_applied), reading GitHub with
+    GH_TOKEN at GITHUB_API_URL for GITHUB_REPOSITORY, leaving out GITHUB_RUN_ID (all set by the runner).
+    Exits 1 whenever GitHub does not say, so the cap fails closed."""
+    if argv[1:] == ["count-applied"]:
+        return _count_applied_main()
     if argv[1:] != ["check-record"]:
-        sys.stderr.write("usage: RECORD=... python api/_spb_auth.py check-record\n")
+        sys.stderr.write("usage: RECORD=... python api/_spb_auth.py check-record | count-applied\n")
         return 2
     # Not stripped: the workflow stores RECORD exactly as given, so a value with any whitespace in it
     # is refused here rather than written to Vercel.
@@ -1066,6 +1199,23 @@ def _main(argv):
                          "password needs a new reset from the dashboard, not a re-run.\n" % (age // 60))
         return 1
     print("%d %s" % (rec["epoch"], rec["id"]))
+    return 0
+
+
+def _count_applied_main():
+    token = os.environ.get("GH_TOKEN", "")
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    base = (os.environ.get("GITHUB_API_URL") or GITHUB_API).rstrip("/")
+    run_id = os.environ.get("GITHUB_RUN_ID", "")
+    if not token or not _REPO_RE.match(repo) or not _API_RE.match(base) or not re.fullmatch(r"[0-9]{1,20}", run_id):
+        sys.stderr.write("count-applied needs GH_TOKEN, GITHUB_REPOSITORY, GITHUB_API_URL and GITHUB_RUN_ID\n")
+        return 1
+    try:
+        n = count_applied(time.time(), int(run_id), token, repo, base)
+    except RuntimeError as e:
+        sys.stderr.write("could not count this workflow's recent changes (%s)\n" % e)
+        return 1
+    print(n)
     return 0
 
 
