@@ -28,6 +28,7 @@ import imaplib
 import logging
 import os
 import re
+import ssl
 from datetime import datetime, timedelta
 from email.header import decode_header
 from typing import Any, Dict, List, Optional, Tuple
@@ -41,6 +42,23 @@ logger = logging.getLogger("spb.source.email")
 
 IMAP_HOST = os.getenv("IMAP_HOST", "imap.hostinger.com")
 IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
+# Seconds a single socket read may sit idle — not a cap on the whole sweep. There was no
+# timeout at all, so a server that stopped answering held the run until the job was
+# killed. Generous on purpose: a read that times out mid-sweep costs that message's stock.
+IMAP_TIMEOUT = 120
+
+
+def _open_imap(host: str, port: int) -> imaplib.IMAP4_SSL:
+    """The TLS connection to the inbox, with the server's certificate AND name checked.
+
+    Without an explicit ssl_context, imaplib on Python 3.11 and 3.12 falls back to
+    ssl._create_stdlib_context(), which checks neither. Anything that answered on
+    IMAP_HOST:993 — a hostile Wi-Fi, a poisoned DNS reply — completed the handshake
+    with any certificate at all and was then sent the digital@ app password by LOGIN.
+    create_default_context() refuses that handshake before a single command is sent.
+    """
+    return imaplib.IMAP4_SSL(host, port, ssl_context=ssl.create_default_context(),
+                             timeout=IMAP_TIMEOUT)
 
 # xlsm included: every sibling module accepts it (e_agent, remote_stocklist) and
 # extract_stocklist dispatches on the PK magic bytes, so it parses identically.
@@ -117,7 +135,7 @@ class EmailStocklistSource(PropertySource):
                            "Run: python setup_credentials.py email_inbox")
             return None
         try:
-            box = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+            box = _open_imap(IMAP_HOST, IMAP_PORT)
             box.login(self.username, self.password)
             logger.info("Email: connected to %s as %s (credentials from %s)",
                         IMAP_HOST, self.username, self.cred_source)

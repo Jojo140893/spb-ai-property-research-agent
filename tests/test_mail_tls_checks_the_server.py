@@ -1,0 +1,295 @@
+"""Every stdlib mail connection checks the server's certificate and the server's name.
+
+25 Oct 2026. sources/email_inbox.py opened the digital@ inbox with
+imaplib.IMAP4_SSL(host, port), and run_daily._alert sent through
+smtplib.SMTP_SSL(host, port). With no context, both fall back to
+ssl._create_stdlib_context() on Python 3.11 and 3.12 -- CERT_NONE, no hostname check -- so
+anything that answered on the port finished the handshake with any certificate at all, and
+LOGIN then handed it the Gmail app password.
+
+The impostor here is a real TLS server on 127.0.0.1 with a throwaway self-signed
+certificate made for the test. The control test proves it is a working server -- a client
+built the old way gets all the way to the greeting -- so a refusal in the other tests is
+the certificate check and nothing else.
+"""
+import imaplib
+import logging
+import smtplib
+import socket
+import ssl
+import threading
+from datetime import datetime, timedelta, timezone
+
+import pytest
+# Not in requirements.txt by name, but always installed: pdfplumber -> pdfminer.six
+# depends on it. Imported at the top so that if that ever changes the file fails to
+# collect, loudly, rather than skipping and reading as a pass.
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
+
+import run_daily
+from sources import email_inbox
+
+IMAP_GREETING = b"* OK evil.example ready\r\n"
+SMTP_GREETING = b"220 evil.example ESMTP ready\r\n"
+
+
+def _imap_reply(line: bytes) -> bytes:
+    """Says yes to every command. imaplib sends CAPABILITY straight after the greeting
+    and waits for the tagged answer, so the control needs at least this much."""
+    tag = line.split(b" ", 1)[0]
+    return b"* CAPABILITY IMAP4rev1 AUTH=PLAIN\r\n" + tag + b" OK done\r\n"
+NOT_A_PASSWORD = "not-a-real-password"
+
+# OpenSSL's X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT: refused because nobody vouches for the
+# certificate, not because the connection broke some other way.
+SELF_SIGNED = 18
+
+
+@pytest.fixture(scope="module")
+def certificate(tmp_path_factory):
+    """A self-signed certificate for evil.example, made fresh and thrown away."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "evil.example")])
+    now = datetime.now(timezone.utc)
+    cert = (x509.CertificateBuilder()
+            .subject_name(name).issuer_name(name)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(minutes=5))
+            .not_valid_after(now + timedelta(days=1))
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName("evil.example")]),
+                           critical=False)
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .sign(key, hashes.SHA256()))
+    folder = tmp_path_factory.mktemp("impostor")
+    cert_path, key_path = folder / "cert.pem", folder / "key.pem"
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM,
+                                           serialization.PrivateFormat.PKCS8,
+                                           serialization.NoEncryption()))
+    return str(cert_path), str(key_path)
+
+
+class _Impostor:
+    """One TLS connection on 127.0.0.1, answered with a certificate nobody vouches for.
+
+    Records whether the handshake completed and every byte the client sent after it, so
+    a test can say not only that the client gave up but that it gave up before LOGIN.
+    """
+
+    def __init__(self, cert_path: str, key_path: str, greeting: bytes, reply=None):
+        self._ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        self._ctx.load_cert_chain(cert_path, key_path)
+        self._greeting = greeting
+        self._reply = reply
+        self._listener = socket.create_server(("127.0.0.1", 0))
+        self._listener.settimeout(15)
+        self.port = self._listener.getsockname()[1]
+        self.handshakes = 0
+        self.received = b""
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self):
+        try:
+            raw, _ = self._listener.accept()
+        except OSError:
+            return
+        raw.settimeout(15)
+        try:
+            with self._ctx.wrap_socket(raw, server_side=True) as tls:
+                self.handshakes += 1
+                tls.sendall(self._greeting)
+                pending = b""
+                while True:
+                    chunk = tls.recv(4096)
+                    if not chunk:
+                        break
+                    self.received += chunk
+                    pending += chunk
+                    while self._reply and b"\r\n" in pending:
+                        line, pending = pending.split(b"\r\n", 1)
+                        tls.sendall(self._reply(line))
+        except (ssl.SSLError, OSError):
+            pass            # the client walked away: what a refusal looks like from here
+        finally:
+            raw.close()
+
+    def finish(self):
+        """Wait for the one connection to end, so the counters are final."""
+        self._thread.join(timeout=20)
+        assert not self._thread.is_alive(), "the impostor never saw the connection end"
+
+    def close(self):
+        self._listener.close()
+
+
+@pytest.fixture
+def impostor(certificate):
+    started = []
+
+    def start(greeting: bytes) -> _Impostor:
+        imp = _Impostor(*certificate, greeting,
+                        reply=_imap_reply if greeting is IMAP_GREETING else None)
+        started.append(imp)
+        return imp
+
+    yield start
+    for imp in started:
+        imp.close()
+
+
+def _inbox_source():
+    """The real source with a made-up login, skipping the vault lookup in __init__."""
+    src = email_inbox.EmailStocklistSource.__new__(email_inbox.EmailStocklistSource)
+    src.username, src.password, src.cred_source = "digital@example.com", NOT_A_PASSWORD, "test"
+    return src
+
+
+def _alert_env(monkeypatch, port):
+    monkeypatch.setenv("SPB_ALERT_TO", "someone@example.com")
+    monkeypatch.setenv("SPB_SMTP_HOST", "127.0.0.1")
+    monkeypatch.setenv("SPB_SMTP_PORT", str(port))
+    monkeypatch.setattr("secrets_store.get_credentials",
+                        lambda portal, csv_fallback=("", ""): ("inbox@example.com",
+                                                               NOT_A_PASSWORD, "env"))
+
+
+# --- the impostor is a real server ----------------------------------------------------
+
+@pytest.mark.parametrize("protocol", ["imap", "smtp"])
+def test_the_impostor_answers_a_client_that_does_not_check(impostor, protocol):
+    """The control. ssl._create_stdlib_context() is exactly what both calls fell back to
+    before this fix; it completes the handshake and reads the greeting. Were the listener
+    broken, every refusal below would pass for the wrong reason."""
+    old_default = ssl._create_stdlib_context()
+    if protocol == "imap":
+        imp = impostor(IMAP_GREETING)
+        box = imaplib.IMAP4_SSL("127.0.0.1", imp.port, ssl_context=old_default, timeout=10)
+        assert box.welcome.startswith(b"* OK")
+        box.shutdown()
+    else:
+        imp = impostor(SMTP_GREETING)
+        smtp = smtplib.SMTP_SSL("127.0.0.1", imp.port, timeout=10, context=old_default)
+        smtp.close()
+    imp.finish()
+    assert imp.handshakes == 1
+
+
+# --- the inbox (sources/email_inbox.py) -----------------------------------------------
+
+def test_the_inbox_refuses_a_self_signed_impostor(impostor):
+    imp = impostor(IMAP_GREETING)
+    with pytest.raises(ssl.SSLCertVerificationError) as refused:
+        email_inbox._open_imap("127.0.0.1", imp.port)
+    assert refused.value.verify_code == SELF_SIGNED, refused.value.verify_message
+    imp.finish()
+    assert imp.handshakes == 0
+
+
+def test_the_inbox_password_never_reaches_an_impostor(impostor, monkeypatch, caplog):
+    """The whole path the harvest takes: _connect() gives up, says why, and LOGIN is never
+    sent."""
+    imp = impostor(IMAP_GREETING)
+    monkeypatch.setattr(email_inbox, "IMAP_HOST", "127.0.0.1")
+    monkeypatch.setattr(email_inbox, "IMAP_PORT", imp.port)
+    with caplog.at_level(logging.ERROR, logger="spb.source.email"):
+        assert _inbox_source()._connect() is None
+    assert "CERTIFICATE_VERIFY_FAILED" in caplog.text
+    imp.finish()
+    assert imp.received == b"", "the impostor was sent something after the handshake"
+    assert NOT_A_PASSWORD.encode() not in imp.received
+
+
+def test_the_inbox_refuses_a_trusted_certificate_for_another_name(impostor, monkeypatch,
+                                                                    certificate):
+    """The hostname half. Here the impostor's certificate IS trusted, so only the name check
+    stands between it and the password: a certificate for evil.example must not be accepted
+    for the address that was dialled."""
+    real = ssl.create_default_context
+
+    def trusting_the_impostor(*a, **k):
+        ctx = real(*a, **k)
+        ctx.load_verify_locations(cafile=certificate[0])
+        return ctx
+
+    monkeypatch.setattr(ssl, "create_default_context", trusting_the_impostor)
+    imp = impostor(IMAP_GREETING)
+    with pytest.raises(ssl.SSLCertVerificationError) as refused:
+        email_inbox._open_imap("127.0.0.1", imp.port)
+    assert "mismatch" in refused.value.verify_message, refused.value.verify_message
+    imp.finish()
+    assert imp.handshakes == 0
+
+
+def test_the_inbox_context_requires_a_certificate_and_the_name(monkeypatch):
+    seen = {}
+
+    class _Capture:
+        def __init__(self, host, port, ssl_context=None, timeout=None):
+            seen.update(ssl_context=ssl_context, timeout=timeout)
+
+        def login(self, user, password):
+            pass
+
+    monkeypatch.setattr(imaplib, "IMAP4_SSL", _Capture)
+    assert _inbox_source()._connect() is not None
+    ctx = seen["ssl_context"]
+    assert isinstance(ctx, ssl.SSLContext), "no context: imaplib's unverified default"
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert ctx.check_hostname is True
+    assert seen["timeout"], "no timeout: a server that stops answering hangs the run"
+
+
+# --- the failure alert (run_daily._alert) ---------------------------------------------
+
+def test_the_alert_refuses_a_self_signed_impostor(impostor):
+    imp = impostor(SMTP_GREETING)
+    with pytest.raises(ssl.SSLCertVerificationError) as refused:
+        run_daily._open_smtp("127.0.0.1", imp.port)
+    assert refused.value.verify_code == SELF_SIGNED, refused.value.verify_message
+    imp.finish()
+    assert imp.handshakes == 0
+
+
+def test_the_alert_password_never_reaches_an_impostor(impostor, monkeypatch, capsys):
+    imp = impostor(SMTP_GREETING)
+    _alert_env(monkeypatch, imp.port)
+    run_daily._alert("subject", "body")
+    out = capsys.readouterr().out
+    assert "COULD NOT NOTIFY" in out and "CERTIFICATE_VERIFY_FAILED" in out, out
+    imp.finish()
+    assert imp.received == b"", "the impostor was sent something after the handshake"
+
+
+def test_the_alert_context_requires_a_certificate_and_the_name(monkeypatch, capsys):
+    seen = {}
+
+    class _Capture:
+        def __init__(self, host, port, timeout=None, context=None):
+            seen.update(context=context, timeout=timeout)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def login(self, user, password):
+            pass
+
+        def send_message(self, msg):
+            pass
+
+    monkeypatch.setattr(smtplib, "SMTP_SSL", _Capture)
+    _alert_env(monkeypatch, 465)
+    run_daily._alert("subject", "body")
+    assert "sent to someone@example.com" in capsys.readouterr().out
+    ctx = seen["context"]
+    assert isinstance(ctx, ssl.SSLContext), "no context: smtplib's unverified default"
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert ctx.check_hostname is True
+    assert seen["timeout"]
