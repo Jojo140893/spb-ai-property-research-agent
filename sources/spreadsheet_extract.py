@@ -31,6 +31,7 @@ import os
 import logging
 import re
 from typing import Any, Dict, Iterator, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from sources.adaptive_extract import parse_fields, _clean
 from sources.feature_extract import parse_listing_features
@@ -1524,7 +1525,19 @@ def _assign_variant_ordinals(rows: List[Dict[str, Any]]) -> int:
 UNREADABLE: List[Dict[str, str]] = []
 
 
-def note_unreadable(kind: str, source_label: str, why: str) -> None:
+def web_link(value: Any) -> str:
+    """`value` if it is an http(s) link to somewhere, else "". The only kind of link the
+    unreadable list keeps: a file name, a javascript: or file: string is not one."""
+    text = str(value or "").strip()
+    parsed = urlparse(text)
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+        return ""
+    if re.search(r"[\s\x00-\x1f\x7f]", text):
+        return ""
+    return text
+
+
+def note_unreadable(kind: str, source_label: str, why: str, link: str = "") -> None:
     """Record a stocklist that produced no listings, so somebody can see it.
 
     A FILE THAT YIELDS NOTHING IS INVISIBLE, and that is the whole problem. On 27 Aug
@@ -1540,8 +1553,17 @@ def note_unreadable(kind: str, source_label: str, why: str) -> None:
     with a real cost, because a misread price in a client report is worse than a missing
     listing. Until it is made, the honest thing is to say which projects are missing
     instead of letting them vanish.
+
+    `link` is where a person can open it (Ahsan, 24 Oct 2026: he wants to check the price
+    list himself): the file itself where the harvest knows it, else its folder. It is kept
+    only if it is http(s). Most are Dropbox folder shares, which hand the whole folder to
+    anyone holding the string, so build_web never publishes one: the Settings tab gets an
+    opaque id and api/price_list.py resolves it, behind the sign-in.
     """
-    UNREADABLE.append({"kind": kind, "file": source_label or "(file)", "why": why})
+    entry = {"kind": kind, "file": source_label or "(file)", "why": why}
+    if web_link(link):
+        entry["link"] = web_link(link)
+    UNREADABLE.append(entry)
 
 
 def _log_yield(kind: str, source_label: str, out: List[Dict[str, Any]]) -> None:
@@ -1552,7 +1574,10 @@ def _log_yield(kind: str, source_label: str, out: List[Dict[str, Any]]) -> None:
                 source_label or "(file)", len(out), links,
                 f", {numbered} price-only sibling(s) numbered" if numbered else "")
     if not out:
-        note_unreadable(kind, source_label, "no listings could be read from it")
+        # A downloaded file is labelled with the link it came from; an email attachment
+        # with its file name, which is no link and records none.
+        note_unreadable(kind, source_label, "no listings could be read from it",
+                        link=source_label)
 
 
 def extract_from_xlsx(data: bytes, source_label: str = "", builder_hint: str = "") -> List[Dict[str, Any]]:

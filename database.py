@@ -15,6 +15,7 @@ from typing import Dict, Any, List, Optional
 import config
 from brief_parser import coerce_number
 from state_resolver import postcode_is_lot_number
+from sources.base import read_date
 
 logger = logging.getLogger("spb.db")
 
@@ -132,6 +133,14 @@ BUILDINGS_EXTRA_COLUMNS = (
     ("product_type", "TEXT"),
     ("source_state_hint", "TEXT"),
     ("stocklist_file", "TEXT"),
+    # THE LINK THE LATEST READ CAME THROUGH (merged 24 Oct 2026). stocklist_file keeps the
+    # link a row was FIRST stored under -- enrich_buildings' per-file state votes rest on
+    # that -- so the link a re-uploaded or re-shared file is read through now is kept
+    # beside it, for the retirement ledger (list_ledger.row_link): a lot carried onto a
+    # new link that then fails is still offered there, and a veto on the new link (a lot
+    # refused) reaches it. Written on every read that names a link; a read that names none
+    # (a portal, the inbox) leaves it as it was. Never part of content_hash.
+    ("last_stocklist_file", "TEXT"),
     ("storey_source", "TEXT"),
     ("incentive_source", "TEXT"),
     # Full untruncated source row. lot_address is a short, human-readable label for
@@ -478,7 +487,9 @@ class ResearchDatabase:
         NOTE: callers that count "new" rows must compare against the string, not
         truthiness — every return value here is truthy.
         """
-        now_date = b.get("date_checked") or datetime.now().strftime("%d/%m/%Y")
+        # The RUN's day where the source gave none, never this row's own: a harvest that
+        # crosses midnight must not store one read under two dates (sources.base).
+        now_date = b.get("date_checked") or read_date()
         # Stamped HERE rather than in the eight sources, so a source that predates the
         # column still gets one and no harvest path can forget.
         now_ts = b.get("checked_at") or datetime.now().isoformat(timespec="seconds")
@@ -587,6 +598,7 @@ class ResearchDatabase:
             "product_type": b.get("product_type"),
             "source_state_hint": b.get("source_state_hint"),
             "stocklist_file": b.get("stocklist_file"),
+            "last_stocklist_file": b.get("stocklist_file"),
             "storey_source": b.get("storey_source"),
             "incentive_source": b.get("incentive_source"),
             "source_text": b.get("source_text") or b.get("lot_address", ""),
@@ -691,12 +703,51 @@ class ResearchDatabase:
             if str(was_superseded or "") == WITHDRAWN_FROM_SOURCE:
                 upd["superseded_by"] = None
                 upd["superseded_at"] = None
+                # AND WHAT IT SAID COMES BACK WITH IT (24 Oct 2026). The retirement wrote
+                # "Sold" into availability_status, and the loop below rewrites that only
+                # when tonight's read states one -- so a lot re-listed by a sheet with no
+                # status column came back live and still saying Sold: out of every search,
+                # and counted as held on the Settings tab. What it said before it was
+                # retired is in repair_rows' retirement ledger; a retirement older than the
+                # ledger has only status_previous, which is no evidence when it is "Sold"
+                # (the old nightly re-retirement wrote Sold over Sold: 367 of 369 retired
+                # rows on 30 Sep). Inline SQL and no import: the API bundle copies this file.
+                if not status:
+                    try:
+                        got = conn.execute(
+                            "SELECT status_before FROM retirements WHERE row_id=? AND "
+                            "undone_at IS NULL ORDER BY stamp DESC LIMIT 1", (rid,)).fetchone()
+                    except sqlite3.OperationalError:            # no ledger table yet
+                        got = None
+                    if got is not None:
+                        back = got[0] or None                    # NULL stays NULL
+                    else:
+                        prev = conn.execute("SELECT status_previous FROM buildings "
+                                            "WHERE id=?", (rid,)).fetchone()
+                        prev = str((prev[0] if prev else "") or "").strip()
+                        back = None if not prev or prev.lower() == "sold" else prev
+                    upd["availability_status"] = back
+                    upd["status_previous"] = old_status
+                try:
+                    conn.execute("UPDATE retirements SET undone_at=?, undone_by='source' "
+                                 "WHERE row_id=? AND undone_at IS NULL", (now_ts, rid))
+                except sqlite3.OperationalError:
+                    pass
                 logger.info("buildings: %r is back on its source's list — un-retired",
                             b.get("lot_address"))
             # A run that could not read a field must not erase what is stored. Writing
             # these unconditionally meant one unparsed row blanked the availability and
             # title Coleen asked for, and zeroed its price.
+            #
+            # stocklist_file is NOT in this list: it stays the link a row was first stored
+            # under. (The retirement review of 24 Oct 2026 moved it with each read; merged
+            # with main 1858d55 it went back, because enrich_buildings' per-file state
+            # votes rest on it -- APLACE's 23 Oct list read as national with every
+            # re-read lot moved onto it, and its two Brisbane lots lost QLD.) The link this
+            # read came through travels in last_stocklist_file instead, for the retirement
+            # ledger (see BUILDINGS_EXTRA_COLUMNS).
             for c in ("price", "availability_status", "title_status", "source_url",
+                      "last_stocklist_file",
                       "extraction_confidence", "land_price", "build_price"):
                 v = price if c == "price" else cols[c]
                 if v not in (None, "", 0, 0.0):

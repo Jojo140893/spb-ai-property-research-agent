@@ -9,8 +9,10 @@ budget/suburb), this pulls the full current stock list from:
   - the direct builder portals (Paramount, FRD, Torsion, Hermitage, Bathla, Proxima)
 
   - the digital@ inbox, where the nine builders with no portal send their stock
+  - RealNet's "RealNet Stocklist" Google Drive folder, WA and Tasmanian packages, one PDF
+    each (sources/realnet_drive.py; shared by link, so no login)
 
-Google-Drive weekly PDFs are still out of scope here (no website stock list to scrape).
+Other Google-Drive PDFs (Shape Homes' weekly list) are still out of scope here.
 
 Credentials are read from the vendor CSV in drive_input/ (gitignored) via the
 builder registry. Nothing is fabricated: a source that returns nothing records
@@ -53,6 +55,8 @@ from sources.builder_portals import BuilderPortalSource
 from sources.email_inbox import EmailStocklistSource
 from sources.proxima import ProximaSource
 from sources.realestate import RealestateSource
+from sources.realnet_drive import RealNetDriveSource, CHANNEL as REALNET_CHANNEL
+from sources.base import one_read_date
 from database import ResearchDatabase
 
 # Permissive filters => return the full stock list, not a client-filtered subset.
@@ -96,7 +100,28 @@ def _require_readers():
 
 
 def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
-            email_days=90, eagent_stocklist=None):
+            email_days=90, eagent_stocklist=None, realnet=False):
+    # realnet defaults OFF here and ON from the command line (__main__, which the nightly
+    # runs): several tests call harvest() directly and switch off only the channels that
+    # existed when they were written, and a default-on folder read would put Google
+    # Drive's answer into every one of them.
+    #
+    # ONE DATE FOR THE WHOLE RUN, fixed before the first channel reads. Every channel
+    # below stamped date_checked per row from the clock, so on 23 Oct 2026 a run
+    # dispatched at 23:04 stored Proxima's last six projects (288 lots) under 24/10 and
+    # its other 8,075 under 23/10, and swept the inbox entirely on 24/10 while E-Agent
+    # sat on 23/10. The Settings tab, the search and parity then each read one run as
+    # two days -- see sources.base. Every row read inside this block carries the day the
+    # run started; checked_at keeps each row's moment. RealNet's folder read is inside
+    # it too (sources.realnet_drive stamps sources.base.read_date()).
+    with one_read_date():
+        return _harvest(eagent=eagent, portals=portals, email=email, proxima=proxima,
+                        rea=rea, email_days=email_days, eagent_stocklist=eagent_stocklist,
+                        realnet=realnet)
+
+
+def _harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
+             email_days=90, eagent_stocklist=None, realnet=False):
     logging.basicConfig(level=logging.INFO, format='    %(levelname)s %(message)s')
     # The Stocklist is E-Agent's own stock, so it runs whenever E-Agent does unless asked
     # for separately (--eagent-stocklist-only).
@@ -173,10 +198,16 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
             # "rejected", so a lot a constraint refused vanished with no line anywhere --
             # and the parity check's READ bar could not see the source at all.
             sl_state = str(getattr(sl, "state", "") or "")
+            # The site's stated total, the records read and why the walk is known to have
+            # stopped early (25 Oct 2026): the retirement ledger proves the search's read
+            # whole only on a stated total that was met (list_ledger.Tonight._search).
+            sl_short_why = str(getattr(sl, "short_why", "") or "")
             sl_entry = harvest_manifest.entry(
                 STOCKLIST_CHANNEL, "search", "stocklist", name=STOCKLIST_CHANNEL,
                 state=sl_state, printed=len(listings),
-                short=bool(getattr(sl, "truncated", False)),
+                short=bool(getattr(sl, "truncated", False) or sl_short_why),
+                short_why=sl_short_why, stated=getattr(sl, "total_stated", None),
+                records=getattr(sl, "records_seen", None),
                 outcome=("read" if listings else
                          "login failed" if sl_state == "refused" else
                          "fetch failed" if sl_state in ("unreachable", "error") else
@@ -193,6 +224,45 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
             if getattr(sl, "truncated", False):
                 print("    E-Agent Stocklist: the read STOPPED AT ITS CAP -- the list is "
                       "longer than what was stored tonight.")
+
+    if realnet:
+        # RealNet's WA packages (Coleen, 24 Oct 2026: "can we add these WA properties from
+        # E-Agent. They are all in the drive here"). E-Agent publishes no WA page, so the
+        # folder is the only copy. Shared by link: no login, nothing to skip for lack of
+        # one. Counted in `read` every night, so a folder whose sharing is tightened is a
+        # dead channel like any other (_dead_channels).
+        rn = RealNetDriveSource()
+        if rn.off:
+            skipped[REALNET_CHANNEL] = rn.why or "switched off (SPB_REALNET_FOLDER=off)"
+        else:
+            print("[+] RealNet Stocklist: reading the Google Drive folder...")
+            listings = rn.search(ALL_STOCK_FILTERS)
+            read[REALNET_CHANNEL] = len(listings)
+            rn_entry = harvest_manifest.entry(
+                REALNET_CHANNEL, "stock link", "folder", name="RealNet Stocklist (Google Drive)",
+                state=rn.state, stocklist_key=harvest_manifest.stocklist_key(rn.folder_url))
+            for name, outcome, printed, why in rn.files:
+                harvest_manifest.add_piece(rn_entry, name, outcome, printed, why)
+            # Which files are still in the folder, hashed: the retirement ledger keeps a
+            # package whose file is still there, however its download or brochure went
+            # (list_ledger.Tonight.realnet_hold). Written only when Drive listed the
+            # folder; a line without it proves nothing and holds every package.
+            if rn.state == "ok":
+                harvest_manifest.note_listed(rn_entry, getattr(rn, "file_ids", ()))
+            if not rn.files:
+                rn_entry["outcome"] = ("fetch failed" if rn.state in ("unreachable", "not_shared",
+                                                                     "error") else "zero-yield")
+            harvest_manifest.tag(listings, rn_entry)
+            outcomes = [db.record_building(L) for L in listings]
+            harvest_manifest.count_outcomes(listings, outcomes)
+            rejected[REALNET_CHANNEL] = outcomes.count("rejected")
+            new, updated = outcomes.count("new"), outcomes.count("updated")
+            total_new += new
+            print(f"    RealNet Stocklist: {len(listings)} package(s), {new} new, {updated} "
+                  f"updated -- {rn.state}: {rn.why}")
+            for name, outcome, _printed, why in rn.files:
+                if outcome != "read" or why:
+                    print(f"      {outcome}: {name} -- {why}")
 
     if portals:
         bp = BuilderPortalSource(registry)
@@ -290,8 +360,15 @@ def harvest(eagent=True, portals=True, email=True, proxima=True, rea=True,
         # re-challenges 2FA for every new browser context.
         px = ProximaSource(registry=registry)
         print("[+] Proxima: reading the agent portal's project stock...")
-        listings = px.search(ALL_STOCK_FILTERS)
+        px_errors = _ErrorCount()
+        px_logger = logging.getLogger("spb.scraper.proxima")
+        px_logger.addHandler(px_errors)
+        try:
+            listings = px.search(ALL_STOCK_FILTERS)
+        finally:
+            px_logger.removeHandler(px_errors)
         read["Proxima"] = len(listings)
+        _note_proxima_run(px, px_errors.n)
         if not listings:
             print("    Proxima: nothing read. If this says the sign-in expired, run: "
                   "python portal_login.py portal_proxima --profile")
@@ -449,6 +526,35 @@ def _record_unreadable_stocklists() -> None:
         logger.info("could not record unreadable stocklists: %s", exc)
 
 
+class _ErrorCount(logging.Handler):
+    """Counts the ERROR records a reader logs while it runs (a crash it caught itself)."""
+
+    def __init__(self):
+        super().__init__(level=logging.ERROR)
+        self.n = 0
+
+    def emit(self, record):
+        self.n += 1
+
+
+def _note_proxima_run(px, errors: int) -> None:
+    """What the Proxima reader said of its whole run, into the manifest's "runs" (see
+    harvest_manifest). WHY (24 Oct 2026 review): sources/proxima.py skips a project it
+    cannot open ("project unreadable", "project errored") before that project gets a
+    manifest line, so tonight's manifest says of it exactly what it says of a project that
+    left the account's dropdown. The retirement ledger's rule B must not count the one as
+    the other; these counts are how it tells. Never fatal, never a link."""
+    try:
+        stats = {str(k): int(v) for k, v in (getattr(px, "stats", None) or {}).items()}
+        harvest_manifest.note_run(
+            "Proxima", stats=stats,
+            projects_seen=int(getattr(px, "projects_seen", 0) or 0),
+            projects_logged=len(getattr(px, "project_log", None) or []),
+            errors=int(errors or 0))
+    except Exception as exc:                                          # noqa: BLE001
+        logger.warning("could not note the Proxima run in the manifest: %s", exc)
+
+
 def _write_manifest() -> None:
     """data/harvest_manifest.json: one line per source link, project and portal. Never
     fatal -- a manifest that cannot be written must not cost the night's stock."""
@@ -596,11 +702,14 @@ if __name__ == "__main__":
     ap.add_argument("--proxima-only", action="store_true")
     ap.add_argument("--rea-only", action="store_true",
                     help="only the realestate.com.au comparables (Benchmarks)")
+    ap.add_argument("--realnet-only", action="store_true",
+                    help="only RealNet's Google Drive folder (WA packages)")
     ap.add_argument("--email-days", type=int, default=90,
                     help="how far back to sweep the inbox (default 90)")
     args = ap.parse_args()
     only = (args.eagent_only or args.portals_only or args.email_only
-            or args.proxima_only or args.rea_only or args.eagent_stocklist_only)
+            or args.proxima_only or args.rea_only or args.eagent_stocklist_only
+            or args.realnet_only)
     # Non-zero when a channel that holds stock read nothing, OR read so much less than
     # usual that the run is a partial, so run_daily stops and the operator is told,
     # instead of publishing a stale snapshot as if it were fresh.
@@ -616,4 +725,5 @@ if __name__ == "__main__":
                      rea=args.rea_only or not only,
                      email_days=args.email_days,
                      eagent_stocklist=(args.eagent_stocklist_only or args.eagent_only
-                                       or not only)))
+                                       or not only),
+                     realnet=args.realnet_only or not only))

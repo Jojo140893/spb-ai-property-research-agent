@@ -73,6 +73,7 @@ from urllib.parse import urlencode, urljoin, urlparse, parse_qsl
 
 import config
 from secrets_store import get_credentials
+from sources.base import read_date
 
 logger = logging.getLogger("spb.scraper.eagent_stocklist")
 
@@ -629,7 +630,8 @@ def map_record(record: Dict[str, Any], base: str, source_url: str,
         "stocklist_file": source_url,
         "source_text": source_text,
         "source_updated": updated,
-        "date_checked": datetime.now().strftime("%d/%m/%Y"),
+        # The run's day, not this row's moment: see sources.base.read_date.
+        "date_checked": read_date(),
         "extraction_confidence": 1.0,
         "verified": True,
         "_state_stated": state_stated,
@@ -1119,6 +1121,18 @@ class EAgentStocklistSource:
         self.endpoint = ""
         self.records_seen = 0
         self.truncated = False
+        # WHETHER THE WALK READ THE WHOLE LIST (third review of the retirement ledger, 25 Oct
+        # 2026). `truncated` is set at the record and page caps alone, so a walk that ended
+        # early read as "ok": a page fetch that failed, a server that ignored page= and
+        # every offset, "the API says 120 record(s), 60 were read" (a log warning only).
+        # The ledger took that line as proof the list was whole and retired the lots past
+        # the stopping point. `total_stated` is the site's own count of its records (None
+        # when it states none) and `short_why` says why the walk is known to have stopped
+        # early; the harvest writes both into the manifest's search line, and only a stated
+        # total that was met proves the read (list_ledger.Tonight._search).
+        self.total_stated: Optional[int] = None
+        self.short_why = ""
+        self._page_failures = 0
         self.gate: Dict[str, Any] = {}
         self.capture = Capture(self.capture_dir, (self.username, self.password))
 
@@ -1180,6 +1194,7 @@ class EAgentStocklistSource:
             self._write_status()
             return []
         self.capture.reset()
+        self.total_stated, self.short_why, self._page_failures = None, "", 0
         self.capture.summary.append("EAgent Stocklist capture, %s" %
                                     datetime.now().strftime("%d/%m/%Y %H:%M"))
         self.capture.summary.append("site: %s" % urlparse(self.base).netloc)
@@ -1433,9 +1448,11 @@ class EAgentStocklistSource:
             r = self._get(path, params=params, json_ok=True)
         except Exception as exc:                                        # noqa: BLE001
             logger.warning("EAgent Stocklist: page %s failed: %s", params, type(exc).__name__)
+            self._page_failures += 1
             return None, None
         payload = self._json(r)
         if r.status_code != 200 or payload is None:
+            self._page_failures += 1
             return None, None
         self.capture.payload("GET %s %s" % (path, urlencode(params)), payload)
         records, _where = find_records(payload)
@@ -1448,6 +1465,7 @@ class EAgentStocklistSource:
         seen = {_fingerprint(r) for r in records}
         meta = paging_meta(payload, len(first))
         total = meta.get("total")
+        failures_before = self._page_failures
         # Ask for the next page in the size the server chose, under the name it uses.
         page_size = meta.get("limit") or len(first)
         limit_param = meta.get("limit_param") or "limit"
@@ -1544,9 +1562,26 @@ class EAgentStocklistSource:
         if total and len(records) < total:
             logger.warning("EAgent Stocklist: the API says %d record(s), %d were read.",
                            total, len(records))
+        # Whether the walk is known to have stopped early (see total_stated): short of a
+        # stated total; or, with none stated, a page fetch that failed, or one page the
+        # server would not move past although it was full (as long as the page size it
+        # said it serves). A single answer with no size stated may be the whole list -- some
+        # servers answer everything at once -- so it is not short; with no total it proves
+        # nothing either, and the ledger's step guard and anchor judge it.
+        self.total_stated = int(total) if total else None
+        failed = self._page_failures - failures_before
+        declared = meta.get("limit")
+        if total and len(records) < total:
+            self.short_why = "%d of the %d record(s) the site states" % (len(records), total)
+        elif not total and failed:
+            self.short_why = "%d page fetch(es) failed during the walk" % failed
+        elif not total and strategy.startswith("single page (no paging") and declared \
+                and len(first) >= int(declared):
+            self.short_why = "one full page, and no paging parameter moved past it"
         self.capture.discovery["paging"] = {"strategy": strategy, "pages": pages,
                                             "records": len(records), "total_stated": total,
-                                            "truncated": self.truncated}
+                                            "truncated": self.truncated,
+                                            "short": self.short_why}
         self.capture.summary.append("paging: %s, %d page(s), %d record(s)%s" % (
             strategy, pages, len(records),
             "" if not total else " of %d stated" % total))
@@ -1594,7 +1629,7 @@ class EAgentStocklistSource:
             g.update({"source_channel": CHANNEL, "stocklist_file": url.split("?")[0],
                       "source_url_or_ref": url.split("?")[0],
                       "attribution_scope": "builder" if g.get("builder_name") else "project",
-                      "date_checked": datetime.now().strftime("%d/%m/%Y"), "verified": True,
+                      "date_checked": read_date(), "verified": True,
                       "_state_stated": bool(g.get("state"))})
         ok, why, stats = plausibility(got, len(got))
         tried["gate"] = {"store": ok, "why": why, **stats}
@@ -1661,6 +1696,8 @@ class EAgentStocklistSource:
         self.state, self.why = "ok", why
         if self.truncated:
             self.why += " (STOPPED AT THE READ CAP -- the list is longer)"
+        elif self.short_why:
+            self.why += " (THE READ STOPPED EARLY: %s)" % self.short_why
         logger.info("EAgent Stocklist: %d row(s) from %d record(s) via %s; %s.",
                     len(rows), len(records), label, why)
         return self._finish_rows(rows)

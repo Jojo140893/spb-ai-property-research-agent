@@ -3,13 +3,6 @@
  "note": "Known data issues parity_check.py reports as a note, not a failure, until each entry's date (repair round 2, 7 Oct 2026). Every entry names the rows or lists, why they fail, and who has to act. After its date the failure is back. Renew an entry only with a reason; delete it when the data is fixed. Measured on the 6 Oct database.",
  "acknowledged": [
   {
-   "group": "VIC",
-   "reason": "no_suburb",
-   "ids": [17450, 17451, 17452, 17453, 17454, 17465, 17466, 17467, 17468, 17469],
-   "why": "the E-Agent 'Pitt Street' project list prints no suburb, estate or postcode on its lines, and no other row names one; the owner to find the development's address and add a document_suburbs_manual.json rule",
-   "until": "21/10/2026"
-  },
-  {
    "group": "QLD",
    "reason": "availability_unstated:no_document",
    "ids": [12748, 12765, 12768, 17334, 20461, 20559, 23543],
@@ -20,8 +13,8 @@
    "group": "blank",
    "reason": "state_unknown",
    "ids": [20473],
-   "why": "Hattan's weekly email files lot 4317 under 'Wyndham' with no state; the email names no state for it (owner to confirm the estate: Jubilee, Wyndham Vale VIC)",
-   "until": "21/10/2026"
+   "why": "Hattan's weekly email files lot 4317 under 'Wyndham' with no state. Renewed 24 Oct 2026 on evidence: it is the same lot as row 12280 from the same email ('[Hattan New Release] Dual key in Deanside from 890k'), whose line reads 'Available Wyndham Vale Titled House Lot 4317 336 10.5 Vista 16 ... $742,290' -- estate Jubilee, Wyndham Vale VIC. The newer capture lost 'Vale', and 'Wyndham' alone is a NSW/WA town, so the search will not borrow VIC from its email's other rows (33 VIC, no other state, on the 30 Sep copy). A rule for every Hattan 'Wyndham' header row was measured and refused: it would also put the Mambourin Green lots 413/417/418, in the gazetted locality Mambourin, in Wyndham Vale. Owner: fix the email parse or add a lot-level rule",
+   "until": "07/11/2026"
   },
   {
    "group": "QLD",

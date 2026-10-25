@@ -74,7 +74,43 @@ SCHEMA (version 1)
   kind "search" (E-Agent Stocklist, one per night a company login is stored) adds:
       state    the reader's own word: ok | refused | unreachable | no_endpoint |
                gate_refused | error
-      short    true when the read stopped at its page or record cap
+      short    true when the read stopped at its page or record cap, or (25 Oct 2026,
+               additive) is otherwise known to have stopped early: short_why says why
+               (a stated total not met, a page fetch that failed, one full page the
+               server would not move past)
+      stated   the site's own count of its records, or null when it states none
+      records  the records the walk read (before mapping; printed is what mapped)
+
+  Every entry also carries (24 Oct 2026, additive; the schema stays 1):
+      unit     stocklist_key of the entry's own key (for a stock link the spelling-
+               normalised file key), the retirement ledger's name for it
+
+  And the file (24 Oct 2026, additive) -- both dicts keyed by stocklist_key, never a link:
+      "documents"   {key of a document url: {"csv_rows", "endpoint"}}: a Google tab's
+                    whole-export CSV row count and the endpoint that served it
+      "link_notes"  {key of a stock link: {"truncated", "why"}}: a folder whose file or
+                    folder budget bound, or whose listing came back empty
+  and (24 Oct 2026 review, additive):
+      "started"     dd/mm/YYYY HH:MM, local time: when reset() began this harvest, so a
+                    run that crosses midnight is known to hold reads of two dates
+      "read_date"   dd/mm/YYYY (merged 24 Oct 2026 with fix-proxima-day): the one date
+                    every row of this run carries (sources.base.one_read_date) -- the
+                    ledger's name for the night, and always one of its read dates
+      "docs"        on a stock link (merged 24 Oct 2026): the stocklist_key of every
+                    document (a lot's source_url) the link served tonight (count_outcomes).
+                    A row keeps the link it was first stored under, so this is how the
+                    retirement ledger knows which link a document came through tonight --
+                    a re-uploaded file's vetoes reach the rows carried onto it
+      "files_listed" on RealNet's folder line (merged 24 Oct 2026 with realnet-wa-drive):
+                    the stocklist_key of the Drive id of every file the folder's listing
+                    returned tonight (note_listed) -- never the id, which opens the file.
+                    The retirement ledger never retires a package whose file is still here
+      "runs"        {channel: {...}}: what a reader said of its whole run. "Proxima":
+                    {"stats": the reader's own skip counts ("project unreadable",
+                    "project errored", ...), "projects_seen", "projects_logged" (the
+                    projects that got a line here), "errors" (ERROR records it logged)} --
+                    a project it could not read gets no line, exactly like one that left
+                    the dropdown, and only these counts tell the two apart
 
 OUTCOMES
       read                     at least one lot came out of it
@@ -139,12 +175,79 @@ def old_counter_gap_ok(read: Any, stated: Any) -> bool:
 ENTRIES: List[Dict[str, Any]] = []
 _BY_KEY: Dict[tuple, Dict[str, Any]] = {}
 _BY_ID: Dict[int, Dict[str, Any]] = {}
+# WHAT A READER LEARNED ABOUT ONE DOCUMENT'S OWN SIZE (24 Oct 2026), for repair_rows'
+# retirement ledger (list_ledger), which accepts a read as whole only on evidence like this.
+#   DOCUMENTS   {stocklist_key(document url): {"csv_rows", "endpoint"}} -- a Google tab's
+#               whole-export row count and which endpoint served it, said by
+#               remote_stocklist the moment it fetched the tab. Keyed by the hash of the url
+#               the rows store as source_url, never the url.
+#   LINK_NOTES  {stocklist_key(stock link): {"truncated", "why"}} -- a Dropbox folder whose
+#               file or folder budget bound, or whose listing came back empty: whatever its
+#               lists yield tonight, they were not read whole.
+DOCUMENTS: Dict[str, Dict[str, Any]] = {}
+LINK_NOTES: Dict[str, Dict[str, Any]] = {}
+# WHEN THE HARVEST BEGAN AND WHAT EACH READER SAID OF ITS WHOLE RUN (24 Oct 2026 review),
+# for the same ledger: see "started" and "runs" in the schema above.
+RUNS: Dict[str, Dict[str, Any]] = {}
+STARTED: List[str] = []
+# THE RUN'S ONE READ DATE (merged 24 Oct 2026 with main's fix-proxima-day): the date every
+# row this harvest reads carries (sources.base.read_date, inside harvest_buildings'
+# one_read_date block). Noted beside "started" because reset() runs a moment after the block
+# opens: a block opened at 23:59:59 stamps every row with that day while "started" says
+# 00:00 the next one, and the retirement ledger must know those reads are tonight's.
+READ_DATE: List[str] = []
+
+
+def _run_read_date() -> str:
+    try:
+        from sources.base import read_date
+        return read_date()
+    except Exception:                                      # noqa: BLE001
+        return datetime.now().strftime("%d/%m/%Y")
 
 
 def reset() -> None:
     ENTRIES.clear()
     _BY_KEY.clear()
     _BY_ID.clear()
+    DOCUMENTS.clear()
+    LINK_NOTES.clear()
+    RUNS.clear()
+    STARTED[:] = [datetime.now().strftime("%d/%m/%Y %H:%M")]
+    READ_DATE[:] = [_run_read_date()]
+
+
+def note_run(channel: str, **fields: Any) -> None:
+    """What a reader said of its whole run tonight (counts, never a link). Never fatal."""
+    if channel:
+        RUNS.setdefault(str(channel), {}).update(
+            {k: v for k, v in fields.items() if v is not None})
+
+
+def note_document(url: str, csv_rows: Any = None, endpoint: Any = None) -> None:
+    """A document's own size, as its reader saw it. Never fatal, never a link."""
+    if not url:
+        return
+    fields = {"csv_rows": csv_rows, "endpoint": endpoint}
+    DOCUMENTS.setdefault(stocklist_key(url), {}).update(
+        {k: v for k, v in fields.items() if v is not None})
+
+
+def note_link(href: str, truncated: bool = True, why: str = "") -> None:
+    """A stock link whose read was cut short by the reader itself. Never fatal, never a
+    link: `why` loses any url it holds."""
+    if not href:
+        return
+    n = LINK_NOTES.setdefault(stocklist_key(href), {"truncated": False, "why": ""})
+    n["truncated"] = bool(n["truncated"] or truncated)
+    if why:
+        n["why"] = _no_links(why)[:200]
+
+
+def note_listed(e: Dict[str, Any], ids: Iterable[str]) -> None:
+    """The files a folder's listing returned tonight, on its line, each by the hash of its
+    own id (see "files_listed" above). Never fatal, never an id."""
+    e["files_listed"] = sorted({stocklist_key(i) for i in (ids or ()) if i})
 
 
 def stocklist_key(stocklist_file: str) -> str:
@@ -162,7 +265,11 @@ def entry(channel: str, kind: str, key: str, **fields: Any) -> Dict[str, Any]:
     e = _BY_KEY.get(k)
     if e is None:
         e = {"id": len(ENTRIES) + 1, "channel": channel, "kind": kind, "name": "",
-             "outcome": "", "printed": 0, "stored": {s: 0 for s in _STORED}}
+             "outcome": "", "printed": 0, "stored": {s: 0 for s in _STORED},
+             # The entry's own key, hashed (24 Oct 2026): for a stock link that is the
+             # spelling-normalised file key, so two spellings of one link are one unit to
+             # the retirement ledger's rule B as they are one entry here.
+             "unit": stocklist_key(str(key))}
         if kind == "stock link":
             e["pieces"] = []
         ENTRIES.append(e)
@@ -214,10 +321,20 @@ def tag(rows: Iterable[Dict[str, Any]], e: Dict[str, Any]) -> None:
 
 
 def count_outcomes(listings: List[Dict[str, Any]], outcomes: List[str]) -> None:
+    """What record_building did with each lot, counted on its entry; and, on a stock link,
+    the documents it served tonight ("docs", see the schema)."""
     for listing, outcome in zip(listings, outcomes):
         e = _BY_ID.get(listing.get("_manifest_id"))
-        if e is not None and outcome in e["stored"]:
+        if e is None:
+            continue
+        if outcome in e["stored"]:
             e["stored"][outcome] += 1
+        doc = str(listing.get("source_url_or_ref") or listing.get("source_url") or "").strip()
+        if doc and e.get("kind") == "stock link":
+            docs = e.setdefault("docs", [])
+            k = stocklist_key(doc)
+            if k not in docs:
+                docs.append(k)
 
 
 def problem_outcome(problem: str) -> str:
@@ -246,7 +363,12 @@ def snapshot() -> Dict[str, Any]:
             e.get("outcome") or "unknown", 0) + 1
     return {"schema": SCHEMA,
             "generated": datetime.now().strftime("%d/%m/%Y %H:%M"),
+            "started": STARTED[0] if STARTED else None,
+            "read_date": READ_DATE[0] if READ_DATE else None,
             "entries": ENTRIES,
+            "documents": DOCUMENTS,
+            "link_notes": LINK_NOTES,
+            "runs": RUNS,
             "totals": {"by_channel": by_channel, "by_outcome": by_outcome}}
 
 

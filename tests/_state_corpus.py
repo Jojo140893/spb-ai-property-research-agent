@@ -345,12 +345,113 @@ class Gen:
 
 _VOCAB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures",
                       "state_corpus_vocab.json")
+COMPASS = ("WEST", "NORTH", "SOUTH", "EAST")
 
 
-def generate(geo, n, seed=29092026, vocab=None):
+def _vocab(vocab):
     if vocab is None:
         with open(_VOCAB, encoding="ascii") as f:
             vocab = json.load(f)
         vocab["catalogue_suburbs"] = [[n_, st, 1] for n_, st in vocab["catalogue_suburbs"]]
-    g = Gen(geo, vocab, seed)
+    return vocab
+
+
+def generate(geo, n, seed=29092026, vocab=None):
+    g = Gen(geo, _vocab(vocab), seed)
     return [g.record() for _ in range(n)]
+
+
+VERV_REGIONS = ("Geelong", "North", "West", "Southeast")
+
+
+def generate_document_sheets(geo, sheets, seed=24102027, vocab=None):
+    """24 Oct 2026: sheets in the layout of Verv's [VG] master stocklist --
+    "<n>-Part <product> SS <Region> <lot> <estate> <Location> <title date> <m2> $..." --
+    for enrich_buildings.document_states. Each sheet is one file of 8 to 14 rows: most with
+    no page, some on a page of any state; most with every Location in one state, a quarter
+    mixing a second state's; estates drawn from place-like names of any state (Jubilee,
+    Mandalay ...); in a one-state sheet a few rows with a Location no gazetteer knows
+    ("Wyndhamvale") or none at all (a split line); now and then the lot read as the postcode.
+    `truth` is the state of the row's Location -- the sheet's own, for a row that names none.
+    Each record carries `sheet`, its file."""
+    g = Gen(geo, _vocab(vocab), seed)
+    rng = g.rng
+    by_state = {}
+    for name, st in g.suburbs:
+        if st in _places(geo, name):
+            by_state.setdefault(st, set()).add(name)
+    by_state = {st: sorted(v) for st, v in by_state.items() if len(v) >= 8}
+    out = []
+    for s in range(sheets):
+        st = g.pick(sorted(by_state))
+        mixed = rng.random() < 0.25
+        other = g.pick([x for x in sorted(by_state) if x != st])
+        page = g.pick(STATES) if rng.random() < 0.3 else None
+        for k in range(rng.randint(8, 14)):
+            lot = str(rng.randint(100, 4999))
+            region = g.pick(VERV_REGIONS)
+            estate = g.pick(PLACE_ESTATES + tuple(g.other_places))
+            title = g.pick(("Titled", "%s-%d" % (g.pick(("Oct", "Nov", "Dec", "Mar", "Sep")),
+                                                  rng.randint(25, 28)),
+                            "Q%d %d" % (rng.randint(1, 4), rng.randint(2026, 2028))))
+            r = rng.random()
+            truth = other if (mixed and rng.random() < 0.4) else st
+            if not mixed and r < 0.08:
+                location = "Wyndhamvale"
+            else:
+                location = g.pick(by_state[truth])
+            head = f"2-Part {g.pick(('Detached', 'Dual Key', 'Townhome'))} SS {region} {lot}"
+            if not mixed and r > 0.94:
+                line = f"{head} {_money(rng)} {_money(rng)} Brochure Masterplan Stage 3 - POS"
+            else:
+                line = (f"{head} {estate} {location} {title} {rng.randint(150, 700)} "
+                        f"{_money(rng)} {g.design()} 20 4 / 2 / 2 {_money(rng)} "
+                        f"{_money(rng)} Brochure Masterplan Stage 4 - POS Available")
+            pc = lot if (len(lot) == 4 and rng.random() < 0.3) else None
+            out.append(dict(lot_address=line[:110], source_text=line, suburb=None,
+                            estate_name=None, source_state_hint=page, postcode=pc,
+                            lot_number=None, state=None, state_source=None,
+                            builder_name="Gen Builder", truth=truth, tmpl=45,
+                            words={"T": location, "E": estate}, named=True, pc_real=False,
+                            sheet=f"generated:sheet:{seed}:{s}"))
+    return out
+
+
+def generate_address_rows(geo, n, seed=24102026, vocab=None):
+    """24 Oct 2026: the shapes around state_resolver.address_over_page, kept apart from
+    generate() so its corpora stay as they are. Half APLACE's -- "<no> <street>, <PLACE>
+    <COMPASS>" under that section heading for an estate, the line opening with a suburb the
+    gazetteer may not know ("Dawn 1524 Gilchrist Street Dawn ...") -- and half Goldstate's
+    "<no> <street>, <estate>" over a line that names no locality (the Mandalay estate in
+    Beveridge, VIC; Mandalay is a QLD place), each off its own state's page, another
+    state's or none; stored blank, or on its page alone as the live rows are."""
+    g = Gen(geo, _vocab(vocab), seed)
+    rng = g.rng
+    out = []
+    for _ in range(n):
+        T, st = g.suburb()
+        S, D, E = g.street(), g.design(), g.pick(PLACE_ESTATES + tuple(g.other_places))
+        no = str(rng.randint(1, 5999))
+        r = rng.random()
+        page = st if r < 0.4 else (g.pick([s for s in STATES if s != st]) if r < 0.85
+                                   else None)
+        if rng.random() < 0.5:
+            heading = f"{T.upper()} {g.pick(COMPASS)}"
+            opener = g.pick(("Dawn", "Joyner", "Coral Cove", T, D))
+            label = f"{no} {S}, {heading}"
+            line = (f"{opener} {no} {S} {opener} Nov-26 392 Rectangular {_money(rng)} {D} A 3 "
+                    f"200.63 4 | 2 | 2 {_money(rng)} {_money(rng)} EOI Received")
+            estate, truth, named = heading, st, True
+        else:
+            label = f"{no} {S}, {E}"
+            line = (f"Mar-27 {no} {S} North West 12.5 28 350 {_money(rng)} {D} 23 "
+                    f"{g.facade()} 4 Single 210 {_money(rng)} {_money(rng)} Available")
+            estate, truth, named = E, page or "", False
+        stored = (page, "e-agent page (conflicting signals)") if page and rng.random() < 0.5 \
+            else (None, None)
+        out.append(dict(lot_address=label, source_text=line, suburb=None, estate_name=estate,
+                        source_state_hint=page, postcode=None, lot_number=None,
+                        state=stored[0], state_source=stored[1], builder_name="Gen Builder",
+                        truth=truth, tmpl=43 if named else 44,
+                        words={"T": T, "E": E, "D": D, "S": S}, named=named, pc_real=False))
+    return out

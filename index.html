@@ -1689,10 +1689,21 @@
         // filenames that were cut to a fixed length — so two of the 57 threw, the render
         // died mid-way, and the whole Data Sources panel sat on "Loading..." forever.
         // The name is decoration; the panel is not.
+        /* PRICE-LIST-LINES-BEGIN */
         const prettyFile = f => {
             const name = String(f || '').split('/').pop().split('?')[0];
             try { return decodeURIComponent(name); } catch (e) { return name; }
         };
+        // Ahsan, 24 Oct 2026: an unreadable price list opens, so he can check it himself.
+        // Never through the file's own link -- most are Dropbox folder shares that hand the
+        // whole folder to anyone holding them -- but through /api/price_list, which turns
+        // the build's opaque id into the link on the server, behind the sign-in. No id, or
+        // not one the build makes: the name alone, as before.
+        const priceListLine = (f, id) => /^[0-9a-f]{16}$/.test(String(id || ''))
+            ? `<div><a href="/api/price_list?id=${id}" target="_blank" rel="noopener noreferrer"
+                   style="color:var(--accent-blue);">${esc(prettyFile(f))}</a></div>`
+            : `<div>${esc(prettyFile(f))}</div>`;
+        /* PRICE-LIST-LINES-END */
         const pill = s => s === 'ok'
             ? '<span class="pill pill-recommend">sending stock</span>'
             : s === 'partial'
@@ -1716,8 +1727,16 @@
             const l = (c && c.login) || {};
             const age = (l.age_days === 0) ? 'saved today'
                       : (l.age_days > 0) ? `saved ${l.age_days}d ago` : '';
+            // WHO SAID SO, under every verdict (23 Oct 2026). A row the nightly's own
+            // sign-in decided says when and how it got in ("signed in by the harvest at
+            // 23/10 23:39"), and a red one says what the page showed. "saved today" is
+            // not that: on the runner it is the time the session file was COPIED in from
+            // the bucket, so it read "today" on every row, signed in or not.
+            const why = l.note
+                ? `<div style="font-size:0.72rem; color:var(--text-muted); margin-top:0.15rem;">${esc(l.note)}</div>`
+                : '';
             if (l.state === 'ok') return `<span class="pill pill-recommend">signed in</span>`
-                + (age ? `<div style="font-size:0.72rem; color:var(--text-muted); margin-top:0.15rem;">${esc(age)}</div>` : '');
+                + (why || (age ? `<div style="font-size:0.72rem; color:var(--text-muted); margin-top:0.15rem;">${esc(age)}</div>` : ''));
             // WHAT TO DO ABOUT IT, on the row that needs it. "Fetch stock now" already
             // signs a lapsed source back in from its stored password -- that is the whole
             // reason it exists (api/refresh.py) -- so where that will work, this offers
@@ -1738,7 +1757,7 @@
                     : `<div style="font-size:0.72rem; color:var(--text-muted); margin-top:0.15rem;">
                          Needs a person${l.blocked_by ? ` &mdash; ${esc(l.blocked_by)}` : ''}${
                            l.session ? `<br><code>portal_login.py ${esc(l.session)}</code>` : ''}</div>`;
-                return `<span class="pill pill-reject">${label}</span>${act}`;
+                return `<span class="pill pill-reject">${label}</span>${why}${act}`;
             }
             // An inbox has no sign-in to break; it is judged on whether mail arrived.
             if (l.state === 'not_applicable') return '<span style="color:var(--text-muted);">&mdash;</span>';
@@ -1746,8 +1765,7 @@
             // byte-identical and both return 235 rows. Red here sent a person to
             // re-authenticate something with no login, so it says so instead.
             if (l.state === 'no_login_needed') return '<span class="pill pill-muted">no sign-in needed</span>';
-            return '<span class="pill pill-muted">not checked</span>'
-                + (l.note ? `<div style="font-size:0.72rem; color:var(--text-muted); margin-top:0.15rem;">${esc(l.note)}</div>` : '');
+            return '<span class="pill pill-muted">not checked</span>' + why;
         };
         // WRAPPED TO SCROLL SIDEWAYS (7 Oct 2026): six columns of pills and dates are wider
         // than a phone, and the table pushed the whole Settings tab 191 px past a 375 px
@@ -1872,9 +1890,11 @@
               projects are missing from the catalogue. Nearly all are price lists saved as
               a picture rather than text &mdash; there is nothing in the file to read. Ask
               the builder for the spreadsheet or a text PDF and they will come straight in.
+              Click a name to open the file, or its folder where there is no one file.
             </p>
             <div style="font-size:0.78rem; color:var(--text-muted); max-height:11rem; overflow:auto;">
-              ${CHANNELS.unreadable_stocklists.files.map(f => `<div>${esc(prettyFile(f))}</div>`).join('')}
+              ${CHANNELS.unreadable_stocklists.files.map((f, i) =>
+                  priceListLine(f, (CHANNELS.unreadable_stocklists.open || [])[i])).join('')}
             </div>
           </div>` : ''}
           ${bad.length ? `
@@ -2344,6 +2364,11 @@ python state_sync.py push</pre>
             return;
         }
         STOCK = asBuildings(data);
+        STOCK.forEach(b => {
+            if (!b.lot_page_gone) return;
+            b.availability_listed = b.availability_status;
+            b.availability_status = soldByLotPage(b);
+        });
         // The headline figures describe CURRENT stock, so they count the same rows the
         // table shows by default — superseded captures excluded. Counting all 6,480 while
         // the table listed 5,703 made the summary and the grid disagree on screen.
@@ -5029,8 +5054,17 @@ python state_sync.py push</pre>
         'on hold', 'withdrawn', 'not available', 'unavailable', 'not avail',
         'no longer available', 'off market', 'settled', 'deposit taken',
         'contract pending']);
-    const unpurchasable = b => NOT_PURCHASABLE.has(
+    const unpurchasable = b => Boolean(b.lot_page_gone) || NOT_PURCHASABLE.has(
         String(b.availability_status || '').trim().toLowerCase());
+    /* A LOT WHOSE OWN PAGE IS GONE IS SOLD (Ahsan, 24 Oct 2026: "if they are gone mark them
+       sold"). link_check.py marks a page gone only on the site's own 404/410 or the page's
+       own Sold / Under offer -- never for a site that answered 404 all at once, which it
+       holds back -- and the search already leaves these lots out. So the table says so
+       wherever it reads a status: the pill, the Availability filter and breakdown, the
+       sold/unavailable switch and the export. What the price list printed is kept in
+       availability_listed. */
+    const soldByLotPage = b => (b.lot_page_status && b.lot_page_status !== 'gone'
+        ? `${b.lot_page_status} (lot page)` : 'Sold (lot page gone)');
 
     let COMPARISONS = {};
 

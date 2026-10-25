@@ -211,8 +211,20 @@ def _day(value):
 
 
 def _age(value, today):
+    """Whole days from a stored date to `today` (the AEST day), or None without a date.
+
+    EXACTLY ONE DAY AHEAD IS 0, as the search's own _candidates._days_old reads it. The
+    runner stamps Melbourne's date and this clock is a fixed UTC+10, so from October to
+    April a row read in the hour after Melbourne's midnight is dated tomorrow until 14:00
+    UTC. On 23 Oct 2026 this replay ran at 13:44 UTC, and obvious_candidates' "age < 0"
+    dropped every Proxima lot read after midnight from the briefs it checks -- while
+    parity, at 13:46, left all 288 out of its obvious set. Neither said so. A silent
+    check reads as a pass; parity now counts its nights through here too."""
     seen = _day(value)
-    return None if seen is None else (today - seen).days
+    if seen is None:
+        return None
+    age = (today - seen).days
+    return 0 if age == -1 else age
 
 
 def _read_time(value):
@@ -1415,13 +1427,58 @@ def _email_lot_key(rec, catalogue):
     return doc, lot, int(round(price))
 
 
+def withdrawn_rule(C, catalogue):
+    """rec -> True for a database row the bundle's search never offers because the client
+    withdrew its builder; None for a bundle with no such rule.
+
+    By the bundle's own definition (builder_names.is_withdrawn_row through _candidates):
+    the builder named, or no builder named in one of that builder's projects, or no
+    builder named on a capture superseded_by joins to one of its rows. The projects and
+    captures are found in the DATABASE, every row of it including superseded captures --
+    project 499's rows naming Bathla were all superseded by the night its blank-builder
+    rows were on the live NSW answer, and so were the two project-593 rows naming Bathla
+    whose blank captures sat under project 724. A bundle from before captures were
+    withdrawn still drops the named rows and the projects; one from before projects, the
+    named rows; one from before builders were withdrawn drops nothing, and the checks then
+    count the builder's lots like anyone's."""
+    by_row = getattr(C, "is_withdrawn_row", None)
+    projects_of = getattr(C, "withdrawn_projects", None)
+    captures_of = getattr(C, "withdrawn_captures", None)
+    if by_row is not None and projects_of is not None:
+        projects = projects_of(catalogue.db.values())
+        if captures_of is None:
+            return lambda rec: by_row(rec, projects)
+        captures = captures_of(catalogue.db.values(), projects)
+        return lambda rec: by_row(rec, projects, captures)
+    by_name = getattr(C, "is_withdrawn_builder", None)
+    if by_name is not None:
+        return lambda rec: by_name(rec.get("builder_name"))
+    return None
+
+
+def lot_page_says_sold(snapshot_row):
+    """True when the snapshot marks the lot's own page gone: a lot that is no longer for
+    sale, read the same as a price list stating Sold.
+
+    Ahsan, 24 Oct 2026: "if they are gone mark them sold". link_check.py calls a page gone
+    only on the site's own 404 or 410, or on the page's own Sold / Under offer, and never
+    for a site that answered 404 at once for most of the pages that were fine the night
+    before (a moved site or an outage: it holds those back as unknown). build_web.py writes
+    what it found into the snapshot as lot_page_gone, the date it was first found. The
+    database carries no such column, so this reads the SNAPSHOT row (Catalogue.row).
+
+    Until then such a lot stayed "obvious" and was counted as hidden for an allowed reason,
+    and nine SA lots sold through Kenekt over four nights put SA over the 3% ceiling."""
+    return bool(str((snapshot_row or {}).get("lot_page_gone") or "").strip())
+
+
 def obvious_candidates(catalogue, state, low, high, today, build_cells, withdrawn=None):
     """The obvious rows for a state and price range, picked from the DATABASE: live, in
     the state, priced in range, stated available, at most OBVIOUS_MAX_DAYS old, and not a
     Build Only / Land Only price (by its text, or by its own land and build columns), one
     part of a bigger printed total, or a price-list line that does not print its price
-    (build_cells is the bundle's snapshot_build_cells), nor a builder the client has
-    withdrawn (withdrawn is the bundle's is_withdrawn_builder; None for an older bundle).
+    (build_cells is the bundle's snapshot_build_cells), nor a row of a builder the client
+    has withdrawn (withdrawn is withdrawn_rule(C, catalogue): rec -> bool, or None).
 
     An emailed row ages from the list's FIRST read (critique #27), and a lot's first read
     is the earliest of its live twins on that list: a re-parse stamps its rows with a later
@@ -1441,12 +1498,14 @@ def obvious_candidates(catalogue, state, low, high, today, build_cells, withdraw
     for rec in live_db:
         if str(rec.get("state") or "").strip().upper() != state:
             continue
-        if withdrawn is not None and withdrawn(rec.get("builder_name")):
+        if withdrawn is not None and withdrawn(rec):
             continue
         price = _num(rec.get("price"))
         if not price or price <= 0 or price < low or (high and price > high):
             continue
         if str(rec.get("availability_status") or "").strip().lower() not in IS_AVAILABLE:
+            continue
+        if lot_page_says_sold(catalogue.row(_hash(rec))):
             continue
         age = _age(rec.get("date_checked"), today)
         if age is None or age < 0 or age > OBVIOUS_MAX_DAYS:
@@ -1511,10 +1570,11 @@ _FRAGMENT_MONEY = re.compile(
 
 def obvious_rows_check(C, research, bootstrap, catalogue, snapshot_path):
     """The independent obvious-rows check, as a Run hook. See the module docstring."""
+    withdrawn = withdrawn_rule(C, catalogue)
 
     def picked(state, low, high, today):
         return obvious_candidates(catalogue, state, low, high, today, C.snapshot_build_cells,
-                                  withdrawn=getattr(C, "is_withdrawn_builder", None))
+                                  withdrawn=withdrawn)
 
     def hook(run, where, brief, body, resp):
         used = resp.get("brief_used") or {}
