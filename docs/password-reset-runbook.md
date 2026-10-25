@@ -11,7 +11,8 @@ the dashboard password himself, without a developer.
 
 How it works, in one paragraph: the reset page checks the code and turns the new password into a
 signed, encrypted record. It starts the GitHub workflow `apply-dashboard-password.yml`, which first asks
-the live site (`/api/reset_check`) to confirm the dashboard signed that record, then stores it in Vercel
+the live site (`/api/reset_check`) to confirm the dashboard signed that record, and GitHub to confirm
+that this is the first attempt of the run the dashboard started for it, then stores it in Vercel
 as `SPB_PW_RECORD` and redeploys production. The sign-in check (`middleware.js`)
 reads that env var from memory and makes no network call. Nothing is kept in Vercel Blob: the team is
 on the Hobby plan, whose Blob quota (10,000 operations a month, shared with the hook) would have run
@@ -81,7 +82,8 @@ Optional settings (Production env, same way):
    is live". GitHub's Actions tab shows the run "Apply dashboard password" in green; its last step
    proves a wrong password gets 401 on the live site. **While GitHub is refusing jobs over billing (as
    on 25 Oct 2026), the page says instead "GitHub could not run the change just now ... Nothing
-   changed", and the old password stays.**
+   changed", and the old password stays.** It stays that way after billing is fixed: GitHub emails
+   each failed run, and pressing Re-run on one is refused (section 5).
 
 Logs: Vercel -> `vercel_site` -> Logs, filter `[auth]`. You will see lines such as `forgot: code sent`,
 `forgot: limited`, `forgot: this window's code was already sent`, `forgot: not sent
@@ -111,10 +113,13 @@ limit reached`, `reset: GitHub did not accept the hand-off (401)`, `reset: chang
    * **"GitHub could not run the change just now ... Nothing changed"**: GitHub refused to run it, for
      example because the account's billing failed (as on 30 Sep and 25 Oct 2026). The old password
      still works and no "change requested" email is sent. The same code works again while it lasts,
-     and a new one can be asked for after that.
+     and a new one can be asked for after that. That run is never applied later: a re-run of it is
+     refused, and so is its record started again in a new run (section 5).
    * **"GitHub stopped the change before saving it. Nothing changed"**: the workflow's own check refused
      it inside the 15 seconds (for example the daily limit below), or the run was cancelled. Old
-     password, no email, the code still works.
+     password, no email, the code still works. The same holds: that run is never applied later, with
+     one exception in the first minute that only someone who can start the workflow (the dispatch
+     token, or write access to the repo) can cause (section 7).
 
    The "password change requested" email goes out with the first two answers. It says the same: the new
    password is not in use yet, may not be, and the old one works until the reset page says it is live.
@@ -167,24 +172,31 @@ Env var changes only take effect at the next deploy: Vercel dashboard -> `vercel
   `SPB_AUTH_SECRET` back).
 * **Never set `SITE_PASSWORD` back to a value it had before a reset** while `SPB_PW_RECORD` is still
   there: that record would match again. To drop a reset for good, delete `SPB_PW_RECORD`.
-* **Never use GitHub's "Re-run" on an "Apply dashboard password" run.** It is refused anyway (the record
-  is more than 30 minutes old, or not newer than the live one), but a new password needs a new reset
-  from the dashboard.
+* **GitHub's "Re-run" on an "Apply dashboard password" run is always refused**, whatever the run did and
+  however soon it is pressed: the first step stops any attempt but the first ("This is a re-run
+  (attempt 2)"), before it asks anyone anything. A record copied out of a run's log and started again as
+  a new run is refused too, unless GitHub created that run within a minute of the record ("This run is
+  not confirmed as the one the dashboard started for this record"). Either way nothing changes. A new
+  password needs a new reset from the dashboard.
 * **The reset page never says "live"** (after 10 minutes it says the new password is not live yet and
   the old one still works): look at the run in GitHub's Actions tab.
   * Failed before "Store it in Vercel": nothing changed, the old password still works. Start a new reset.
     "did not confirm that the dashboard signed this record" in the first step means someone started
     the workflow with a record the dashboard never made: nothing was stored, but find out who
     (`GITHUB_DISPATCH_TOKEN` or write access to the repo) and replace that token. A run that was
-    **cancelled** without anyone here pressing Cancel points the same way. "Could not count this
-    workflow's recent password changes" means GitHub would not list the runs: try again later.
+    **cancelled** without anyone here pressing Cancel points the same way, and so does "This run is not
+    confirmed as the one the dashboard started for this record" when the line above it says "started
+    with a copy of the record". "This is a re-run" (or "GitHub says this is attempt 2") means someone
+    pressed Re-run: nothing changed. "Could not count this workflow's recent password changes" or
+    "could not read this run from GitHub" means GitHub would not answer: start a new reset later.
   * Failed after that step: the record is saved, and the next deploy puts it live. That signs
     everyone out at a moment nobody announced, so tell the team, or delete `SPB_PW_RECORD` to cancel.
   * GitHub Actions down or refusing jobs (it was on 30 Sep and 25 Oct 2026, over billing): a reset made
     then is **dropped, not queued**. GitHub fails the run within seconds ("The job was not started
     because recent account payments have failed") and never retries it. The reset page normally sees
-    this and says nothing changed. Either way the old password still works. Start a new reset once
-    Actions runs jobs again.
+    this and says nothing changed. Either way the old password still works. GitHub emails each failed
+    run to the token's owner; pressing Re-run on one is refused (above). Start a new reset once Actions
+    runs jobs again.
 
 ## 6. Turn it off / roll back
 
@@ -225,10 +237,17 @@ Known and accepted:
   limited to the `main` branch, move `VERCEL_TOKEN` from the repository secrets into it, and add
   `environment: <its name>` to every job that uses the token (this workflow, the nightly's deploy, the
   token check).
-* **Whoever holds `GITHUB_DISPATCH_TOKEN` can stop resets, but not make one.** They can cancel any run
-  (the page then says "GitHub stopped the change", or after 10 minutes that it is not live), or start
-  so many forged runs that GitHub will not list them all (over 1,000 a day) or its API limit for the
-  run's token runs out, and then the daily count fails and resets are refused until it passes. They
-  cannot use up the daily 10, and nothing they send is stored. If this happens, replace the token.
+* **Whoever holds `GITHUB_DISPATCH_TOKEN` can stop resets, and cannot choose a password.** They can
+  cancel any run (the page then says "GitHub stopped the change", or after 10 minutes that it is not
+  live), or start so many forged runs that GitHub will not list them all (over 1,000 a day) or its API
+  limit for the run's token runs out, and then the daily count fails and resets are refused until it
+  passes. They cannot use up the daily 10, nothing they make up is stored, and a re-run is refused. One
+  thing they (or anyone with write access to the repo) can do: in the first minute after a reset,
+  cancel its run (the page then says "GitHub
+  stopped the change ... Nothing changed") and start the same record again as a new run. That puts the
+  password Colin typed live after all, with no "change requested" email and no page watching, so
+  everyone else is signed out. After that minute the copy is refused. So if the page says "GitHub
+  stopped the change" and nobody here cancelled anything, look in the Actions tab for an "Apply
+  dashboard password" run started just after it, tell the team if it went live, and replace the token.
 
 The Leads-tab contact password (`SPB_CONTACT_PASSWORD`) is separate, and this feature does not touch it.

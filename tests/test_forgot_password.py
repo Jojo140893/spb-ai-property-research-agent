@@ -10,7 +10,9 @@ What is proved where:
                                      workflow's daily cap (only runs that stored a password), the limits
                                      (per client and one email per window, so a stranger cannot block
                                      Coleen), the request checks, /api/reset_check, the workflow file and
-                                     its first step run under bash, and that no log line carries a secret.
+                                     its first step run under bash (which also refuses a re-run, and a
+                                     record started again in a later run), and that no log line carries
+                                     a secret.
   tests/forgot_password_checks.mjs   the REAL generated middleware.js against records made by the REAL
                                      reset flow below: who signs in, which cookies survive, what a bad
                                      or re-keyed record does, and that sign-in never touches the network.
@@ -152,7 +154,8 @@ class FakeGitHub(object):
     staying, so a run can move from queued to started to refused as a real one does.
 
     The runs listing honours `created=>=`, `per_page` and `page`; the jobs listing shows the latest
-    attempt unless asked for `filter=all`, as GitHub's does."""
+    attempt unless asked for `filter=all`, as GitHub's does. One run (GET .../actions/runs/{id}) shows
+    its created_at and run_attempt, which a re-run raises and leaves the created_at alone."""
 
     def __init__(self, clock):
         self.calls, self.reads, self.runs = [], [], []
@@ -160,10 +163,10 @@ class FakeGitHub(object):
         self.run = "past the gate"
         self.clock = clock
 
-    def add_run(self, kind, created, run_id=None):
+    def add_run(self, kind, created, run_id=None, attempt=1):
         seq = list(kind) if isinstance(kind, (list, tuple)) else [kind]
         run = {"id": run_id if run_id is not None else 90000 + len(self.runs), "created_at": _iso(created),
-               "event": "workflow_dispatch", "seq": seq, "reads": 0, "kind": seq[0]}
+               "event": "workflow_dispatch", "seq": seq, "reads": 0, "kind": seq[0], "attempt": attempt}
         self.runs.insert(0, run)
         self.runs.sort(key=lambda r: r["created_at"], reverse=True)     # stable: newest first
         return run
@@ -181,6 +184,8 @@ class FakeGitHub(object):
         path, _, query = url.partition("?")
         q = urllib.parse.parse_qs(query)
         if path.endswith("/actions/workflows/apply-dashboard-password.yml/runs"):
+            if self.run == "unlisted":       # one run can be read, the listing cannot
+                return 403, b""
             floor = q.get("created", [""])[0]
             assert floor == "" or floor.startswith(">="), floor
             rows = [r for r in self.runs if r["created_at"] >= floor[2:]]
@@ -192,6 +197,13 @@ class FakeGitHub(object):
             shown = [dict(RUN_KINDS[r["kind"]][0], id=r["id"], created_at=r["created_at"], event=r["event"])
                      for r in shown if r["kind"] in RUN_KINDS]
             return 200, json.dumps({"total_count": len(rows), "workflow_runs": shown}).encode("utf-8")
+        one = re.search(r"/actions/runs/(\d+)$", path)
+        if one:
+            run = next((r for r in self.runs if r["id"] == int(one.group(1))), None)
+            if run is None or run["kind"] not in RUN_KINDS:
+                return 404, b""
+            return 200, json.dumps(dict(RUN_KINDS[run["kind"]][0], id=run["id"], created_at=run["created_at"],
+                                        event=run["event"], run_attempt=run["attempt"])).encode("utf-8")
         m = re.search(r"/actions/runs/(\d+)/jobs$", path)
         run = next((r for r in self.runs if m and r["id"] == int(m.group(1))), None)
         if run is not None and run["kind"] in RUN_KINDS:
@@ -1049,13 +1061,20 @@ def _check_step_script():
     return next(s for s in data["jobs"]["apply"]["steps"] if s.get("id") == "check")["run"]
 
 
-def run_check_step(world, tmp_path, record, script=None, live_epoch="0", site_up=True, github=None):
+RUN_ID = 1                                   # GITHUB_RUN_ID of the run the step is in
+
+
+def run_check_step(world, tmp_path, record, script=None, live_epoch="0", site_up=True, github=None,
+                   run_attempt="1", run_created=None, api_attempt=1, own_run=True):
     """Run the workflow's first step, as written in the .yml, under bash, against a stand-in for the live
     site that answers /login as middleware.js does and /api/reset_check with the REAL handler. The same
     stand-in answers GitHub's API (GITHUB_API_URL points at it) from `github`, a FakeGitHub, by default
-    one with no runs: that is what the daily cap reads, so a read there shows the step got that far.
-    `gh` is a stub that logs and fails: the step must not need it (nor reach the real GitHub).
-    Returns (exit code, output, the step's outputs, what GitHub and gh were asked)."""
+    one with no other runs: that is what the run check and the daily cap read, so a read there shows the
+    step got that far. The run the step is in (RUN_ID) is listed there, created at `run_created` (by
+    default a second after the record's `at`, as the dashboard's dispatch does) with GitHub's
+    run_attempt `api_attempt`, unless own_run is False; the runner's GITHUB_RUN_ATTEMPT is `run_attempt`
+    (None: unset). `gh` is a stub that logs and fails: the step must not need it (nor reach the real
+    GitHub). Returns (exit code, output, the step's outputs, what GitHub and gh were asked)."""
     bash = _git_bash()
     if not bash or not shutil.which("curl"):
         pytest.skip("bash and curl are needed to run the workflow step")
@@ -1063,6 +1082,11 @@ def run_check_step(world, tmp_path, record, script=None, live_epoch="0", site_up
     sys.path.insert(0, str(API))
     reset_check = importlib.import_module("reset_check")
     github = github if github is not None else FakeGitHub(time.time)
+    github.runs = [r for r in github.runs if r["id"] != RUN_ID]
+    if own_run:
+        parsed = world.A.parse_record(record)
+        when = run_created if run_created is not None else (parsed["at"] + 1 if parsed else time.time())
+        github.add_run("started", when, run_id=RUN_ID, attempt=api_attempt)
     reads_before = len(github.reads)
 
     class LiveSite(reset_check.handler):
@@ -1110,8 +1134,11 @@ def run_check_step(world, tmp_path, record, script=None, live_epoch="0", site_up
     env = dict(os.environ, RECORD=record, SITE="http://127.0.0.1:%d" % port, MAX_PER_DAY="10",
                GH_TOKEN="fake-github-token", GITHUB_REPOSITORY="Jojo140893/spb-ai-property-research-agent",
                GITHUB_API_URL="http://127.0.0.1:%d" % port,
-               GITHUB_RUN_ID="1", GITHUB_OUTPUT=out_file.as_posix(), RUNNER_TEMP=tmp_path.as_posix(),
+               GITHUB_RUN_ID=str(RUN_ID), GITHUB_OUTPUT=out_file.as_posix(), RUNNER_TEMP=tmp_path.as_posix(),
                PATH=str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+    env.pop("GITHUB_RUN_ATTEMPT", None)       # never this machine's own (a CI runner's), only `run_attempt`
+    if run_attempt is not None:
+        env["GITHUB_RUN_ATTEMPT"] = run_attempt
     try:
         p = subprocess.run([bash, "--noprofile", "--norc", "-eo", "pipefail", step.as_posix()], cwd=str(APP),
                            env=env, capture_output=True, text=True, encoding="utf-8", timeout=120)
@@ -1205,10 +1232,115 @@ def test_the_workflows_daily_cap_is_not_used_up_by_runs_that_changed_nothing(wor
         gh.add_run("applied", world.now - 120 * (i + 1))
     code, out, outputs, asked = run_check_step(world, tmp_path / "ten-changes", good, github=gh)
     assert code != 0 and "10 password changes in the last 24 hours (limit 10)" in out and outputs == "", out
-    gh.run = "unreadable"
+    gh.run = "unlisted"
     code, out, outputs, asked = run_check_step(world, tmp_path / "github-silent", good, github=gh)
     assert code != 0 and "Could not count this workflow's recent password changes" in out, out
     assert outputs == "", "GitHub not saying is a refusal"
+
+
+def test_a_rerun_is_never_applied(world, tmp_path):
+    """Third review, 25 Oct 2026. When GitHub refused the run (billing) or it stopped before storing,
+    the reset page says "Nothing changed: your old password still works", frees the code and sends no
+    notice. But GitHub's Re-run (POST /actions/runs/{id}/rerun: the dispatch token may call it as it may
+    cancel, and the owner, whom GitHub emails the failed runs, may press it) repeats the run with the
+    same record as attempt 2, inside the record's 30 minutes, and the step let it through: the password
+    the person had been told was not set became the only one, and nobody was told. The step now refuses
+    every attempt but the first, by the runner's GITHUB_RUN_ATTEMPT and, each alone, by the run_attempt
+    GitHub reports for the run, before anything is stored."""
+    A = world.A
+    records = {}
+    for kind, message in (("refused", A.NOT_STARTED), ("stopped", A.STOPPED)):
+        world.now = time.time() - 10 * 60     # the person's reset, ten minutes ago
+        world.github.run = kind
+        ip = world.fresh_ip()
+        assert world.forgot(ip).status == 200
+        r = world.reset(world.last_code(), "Abandoned-passphrase-1", ip=ip)
+        assert (r.status, r.payload["message"]) == (503, message) and "Nothing changed" in message, r.payload
+        records[kind] = world.github.records()[-1]
+    assert [m["subject"] for m in world.mails() if m["subject"] != A.SUBJECT_CODE] == [], "no notice went out"
+    world.now = time.time()                   # check-record (a subprocess) reads the real clock
+    for kind, record in records.items():
+        assert A.verify_record(record, world.now) is None, "the site vouches for it: only the step stands in the way"
+        # A re-run keeps the run's created_at (a second after the record) and raises its attempt.
+        code, out, outputs, asked = run_check_step(world, tmp_path / ("rerun-" + kind), record,
+                                                   run_attempt="2", api_attempt=2)
+        assert code != 0, "%s: a re-run of a run the page called 'Nothing changed' was applied:\n%s" % (kind, out)
+        assert outputs == "" and asked == "", "%s: the step went on after refusing a re-run:\n%s" % (kind, out)
+        assert "This is a re-run (attempt 2)" in out and record not in out, out
+    record = records["refused"]
+    for label, kw, needle in (
+            ("GITHUB_RUN_ATTEMPT 2, GitHub saying 1", {"run_attempt": "2"}, "This is a re-run (attempt 2)"),
+            ("GITHUB_RUN_ATTEMPT unset", {"run_attempt": None}, "This is a re-run (attempt unknown)"),
+            ("GitHub saying 2, GITHUB_RUN_ATTEMPT 1", {"api_attempt": 2}, "GitHub says this is attempt 2 of this run")):
+        code, out, outputs, asked = run_check_step(world, tmp_path / label.replace(" ", "-").replace(",", ""),
+                                                   record, **kw)
+        assert code != 0 and needle in out and outputs == "", "%s: not refused as a re-run:\n%s" % (label, out)
+        assert "workflows/apply-dashboard-password.yml/runs" not in asked, label + ": the daily cap was asked"
+    code, out, outputs, asked = run_check_step(world, tmp_path / "first-attempt", record)
+    assert code == 0 and outputs.split()[0] == "epoch=1", "the dashboard's own first attempt was refused:\n" + out
+
+
+def test_a_record_copied_into_a_later_run_is_refused(world, tmp_path):
+    """Third review, 25 Oct 2026. A run that stopped at its check step has the record in its log (the
+    step's env), and the record stays valid for 30 minutes, so anyone who can start the workflow could
+    start it again as a NEW run, attempt 1, after the reset page had said "Nothing changed". The step now
+    asks GitHub when it created this run, and refuses unless that is within RUN_AFTER_RECORD of the
+    record's `at`: the dashboard dispatches within seconds of making it, and a run that waited in the
+    concurrency group keeps its created_at, so that one is still applied. GitHub not saying is a refusal."""
+    A = world.A
+    world.now = time.time()                   # check-record (a subprocess) reads the real clock
+    rec = A.build_record("Abandoned-passphrase-1", 1, world.now - 6 * 60)
+    at = A.parse_record(rec)["at"]
+    assert A.verify_record(rec, world.now) is None, "the site vouches for it: only the step stands in the way"
+
+    def refused(label, **kw):
+        code, out, outputs, asked = run_check_step(world, tmp_path / label.replace(" ", "-"), rec, **kw)
+        assert code != 0, "%s: the step applied it:\n%s" % (label, out)
+        assert "not confirmed as the one the dashboard started for this record" in out and outputs == "", \
+            label + ":\n" + out
+        assert "/actions/runs/%d " % RUN_ID in asked and "workflows/apply-dashboard-password.yml/runs" not in asked, \
+            "%s: GitHub was asked about this run, and the step stopped before the daily cap:\n%s" % (label, asked)
+        assert rec not in out, label + ": the record was printed"
+        return out
+
+    out = refused("started again five minutes later", run_created=at + 300)
+    assert "created this run 300 seconds after the record was made" in out, out
+    refused("GitHub does not show the run", own_run=False)
+    lo, hi = A.RUN_AFTER_RECORD
+    assert (lo, hi) == (-30, 60), "the runbook says a minute"
+    refused("a second past the window", run_created=at + hi + 1)
+    refused("created before the record by more than the skew", run_created=at + lo - 1)
+    # The dashboard's own run: a second after, at either edge, and here six minutes old when the step
+    # runs (it waited in the concurrency group): applied.
+    for label, created in (("the dashboard's own run", at + 1), ("the late edge", at + hi), ("the early edge", at + lo)):
+        code, out, outputs, asked = run_check_step(world, tmp_path / label.replace(" ", "-").replace("'", ""),
+                                                   rec, run_created=created)
+        assert code == 0 and outputs.split()[0] == "epoch=1", "%s was refused:\n%s" % (label, out)
+        assert "in a run GitHub created %d s after it" % (created - at) in out, out
+
+
+def test_github_not_saying_which_run_this_is_is_a_refusal(world, monkeypatch):
+    """run_info, which the run check above reads, raises unless GitHub plainly shows this run, its
+    attempt and when it was created."""
+    A = world.A
+    world.github.add_run("started", world.now, run_id=55, attempt=3)
+    assert A.run_info(55, "fake-github-token", "o/r") == (float(int(world.now)), 3)
+    good = {"id": 55, "run_attempt": 1, "created_at": _iso(world.now)}
+    for label, answer in (("403", (403, b"")), ("not JSON", (200, b"<html>")), ("a list", (200, b"[]")),
+                          ("another run", (200, dict(good, id=56))), ("id true", (200, dict(good, id=True))),
+                          ("no attempt", (200, {"id": 55, "created_at": _iso(world.now)})),
+                          ("attempt as text", (200, dict(good, run_attempt="1"))),
+                          ("attempt true", (200, dict(good, run_attempt=True))),
+                          ("no created_at", (200, {"id": 55, "run_attempt": 1})),
+                          ("created_at garbled", (200, dict(good, created_at="yesterday")))):
+        status, body = answer
+        data = body if isinstance(body, bytes) else json.dumps(body).encode("utf-8")
+        monkeypatch.setattr(A, "TRANSPORT", lambda *a, s=status, d=data: (s, d))
+        try:
+            got = A.run_info(55, "fake-github-token", "o/r")
+        except RuntimeError:
+            continue
+        pytest.fail("%s: run_info answered %r instead of refusing" % (label, got))
 
 
 # ------------------------------------------------------------------ the request plumbing
@@ -1520,8 +1652,10 @@ def test_the_workflow_guards_then_waits_then_stores_then_redeploys_then_probes(w
     runs = [s.get("run", "") for s in data["jobs"]["apply"]["steps"]]
     joined = "\n".join(runs)
     order = [joined.index(x) for x in (
+        '[ "${GITHUB_RUN_ATTEMPT:-}" != "1" ]',
         "python3 api/_spb_auth.py check-record", '"$SITE/api/reset_check"', '[ "$status" != "204" ]',
-        '[ "$epoch" -le "$live" ]', "python3 api/_spb_auth.py count-applied", '[ "$recent" -ge "$MAX_PER_DAY" ]',
+        '[ "$epoch" -le "$live" ]', "python3 api/_spb_auth.py check-run",
+        "python3 api/_spb_auth.py count-applied", '[ "$recent" -ge "$MAX_PER_DAY" ]',
         "--status BUILDING,QUEUED,INITIALIZING", "vercel env add SPB_PW_RECORD", "vercel redeploy",
         "x-spb-auth-id:", '--data "email=probe')]
     assert order == sorted(order)

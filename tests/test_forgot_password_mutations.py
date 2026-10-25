@@ -8,7 +8,9 @@ Two kinds:
   * the middleware (build_web.MIDDLEWARE_JS): the text is edited and tests/forgot_password_checks.mjs
     runs against it under Node, with records from the real reset flow;
   * the Python half (api/_spb_auth.py): one function or setting is swapped in memory, and the test in
-    tests/test_forgot_password.py written for it is run against that.
+    tests/test_forgot_password.py written for it is run against that;
+  * the workflow's first step, which runs api/_spb_auth.py in a subprocess: its text is edited, or it
+    is pointed at an edited copy of the module, and the test that runs the step is run against that.
 """
 import inspect
 
@@ -115,6 +117,39 @@ def _early_code_ok(A):
     return code_ok
 
 
+# The workflow's first step runs `python3 api/_spb_auth.py` in a subprocess, so an in-memory swap does not
+# reach it. These mutants edit the step's text (T._check_step_script, which run_check_step reads), or
+# point it at an edited copy of api/_spb_auth.py. A mutant that no longer matches raises LookupError, not
+# AssertionError: an AssertionError here would be taken for the test going red.
+
+def _step_without(start, end):
+    """The step with the lines from `start` up to `end` taken out."""
+    def mutate(A, mp, tmp_path):
+        script = T._check_step_script()
+        if script.count(start) != 1 or script.count(end) != 1:
+            raise LookupError("the mutant no longer matches the step: %r .. %r" % (start, end))
+        i, j = script.index(start), script.index(end)
+        mp.setattr(T, "_check_step_script", lambda: script[:i] + script[j:])
+    return mutate
+
+
+def _module_edited(original, mutated, mode="check-run"):
+    """The step with `python3 api/_spb_auth.py <mode>` running a copy of the module with one edit."""
+    def mutate(A, mp, tmp_path):
+        src = (T.API / "_spb_auth.py").read_text(encoding="utf-8")
+        script, call = T._check_step_script(), "python3 api/_spb_auth.py " + mode
+        if src.count(original) != 1:
+            raise LookupError("the mutant no longer matches the code: %r" % original)
+        if script.count(call) != 1:
+            raise LookupError("the step no longer runs %r" % call)
+        copy = tmp_path / "mutant_api" / "_spb_auth.py"
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        copy.write_text(src.replace(original, mutated), encoding="utf-8")
+        mp.setattr(T, "_check_step_script",
+                   lambda: script.replace(call, 'python3 "%s" %s' % (copy.as_posix(), mode)))
+    return mutate
+
+
 # (what is removed, how, the test that must go red)
 PY_MUTANTS = [
     ("the 20-minute limit on a code",
@@ -183,6 +218,16 @@ PY_MUTANTS = [
     ("refusing a record of the live number",
      lambda A, mp: mp.setattr(A, "verify_record", _older_only(A)),
      "test_a_record_is_applied_only_over_an_older_number"),
+    # Third review, 25 Oct 2026: a run the reset page called "Nothing changed" could still be applied.
+    ("refusing a re-run by GITHUB_RUN_ATTEMPT",
+     _step_without("# Only the first attempt of a run", "# Shape and age"),
+     "test_a_rerun_is_never_applied"),
+    ("refusing a re-run by the run_attempt GitHub reports",
+     _module_edited("    if attempt != 1:\n", "    if False:\n"),
+     "test_a_rerun_is_never_applied"),
+    ("binding the record to the run GitHub created for it",
+     _module_edited("    if not (lo <= gap <= hi):\n", "    if False:\n"),
+     "test_a_record_copied_into_a_later_run_is_refused"),
 ]
 
 
@@ -248,7 +293,9 @@ def test_removing_a_middleware_safeguard_turns_its_check_red(removed, edit, sect
 def _run(test_name, monkeypatch, tmp_path, mutate=None):
     w = T.World(monkeypatch)
     try:
-        if mutate:
+        if mutate and len(inspect.signature(mutate).parameters) == 3:
+            mutate(w.A, monkeypatch, tmp_path)
+        elif mutate:
             mutate(w.A, monkeypatch)
         fn = getattr(T, test_name)
         kwargs = {"world": w, "monkeypatch": monkeypatch, "tmp_path": tmp_path}

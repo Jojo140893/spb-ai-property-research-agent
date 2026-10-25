@@ -60,6 +60,19 @@ by verify_record() below. Before this, one forged dispatch was stored and redepl
 is checked before the fingerprint, sign-in answered 503 for everyone, and a new SITE_PASSWORD did not
 bring it back.
 
+ONLY IN THE RUN THE DASHBOARD STARTED FOR IT, AND ONLY ITS FIRST ATTEMPT (third review, 25 Oct 2026). A
+record stays valid for RECORD_MAX_AGE, and when GitHub refused the run (billing) or it stopped before
+storing, the reset page frees the code, sends no notice and says "Nothing changed". That run could
+still be applied afterwards: GitHub's Re-run (POST /actions/runs/{id}/rerun, which the dispatch token
+may call, as it may cancel) repeats it with the same record as attempt 2, and a stopped run's record is
+in its log (the check step's env), so it could be started again as a new run. Either way the password
+the person had been told was not set became the only one, with no notice and no page watching. So the
+workflow's check step refuses any attempt but the first (GITHUB_RUN_ATTEMPT, and the run's run_attempt
+as GitHub reports it), and any run GitHub created more than RUN_AFTER_RECORD from the record's `at`
+(check-run, run_info): the dashboard dispatches within GITHUB_TIMEOUT of `at`, and a run waiting in the
+concurrency group keeps its created_at. What is left: within that minute, whoever can start the
+workflow could cancel the run and start the same record again (runbook, section 7).
+
 NOTHING SAID AT 15 SECONDS IS A PROMISE (reviews, 25 Oct 2026). GitHub accepts a dispatch (204) even
 while it is refusing every job over billing, as it did on 30 Sep and 25 Oct: the run then fails in about
 five seconds with no step run, and is never retried. So after the 204 reset_endpoint watches the run for
@@ -156,6 +169,10 @@ WRONG_PER_MINUTE = 20                        # per client: wrong codes before th
 HANDOFFS_PER_HOUR = 3                        # per instance: records handed to GitHub (each is a redeploy)
 MIN_FORGOT_SECONDS = 2.0                     # floor on the forgot answer, see forgot_endpoint
 RECORD_MAX_AGE = 30 * 60                     # check-record refuses a record older than this
+# check-run: GitHub must have created the run applying a record within this many seconds of the record's
+# `at` (created_at minus `at`). The dashboard dispatches within GITHUB_TIMEOUT of making it; the low end
+# allows for GitHub's clock reading behind Vercel's. A copy of the record started later is refused.
+RUN_AFTER_RECORD = (-30, 60)
 
 # 210,000 rounds of PBKDF2-HMAC-SHA256 measured 76 ms in Node's WebCrypto (the call middleware.js makes
 # on every login POST, right or wrong) and 92 ms here, 23 Oct 2026. The middleware runs on Vercel's
@@ -893,6 +910,26 @@ def count_applied(now, exclude_id, token, repo, base=GITHUB_API):
     return applied
 
 
+def run_info(run_id, token, repo, base=GITHUB_API):
+    """(created_at as unix seconds, run_attempt) of run `run_id`, as GitHub reports it: what check-run
+    binds a record to (module header: ONLY IN THE RUN THE DASHBOARD STARTED FOR IT). A re-run keeps the
+    run's created_at and raises its run_attempt. Raises RuntimeError whenever GitHub does not say, so
+    the check fails closed."""
+    got = _github_json("/repos/%s/actions/runs/%d" % (repo, run_id), time.monotonic() + GITHUB_TIMEOUT,
+                       token=token, base=base)
+    if got is None:
+        raise RuntimeError("GitHub did not show this run")
+    rid, attempt = got.get("id"), got.get("run_attempt")
+    if isinstance(rid, bool) or rid != run_id:
+        raise RuntimeError("GitHub showed another run")
+    if not isinstance(attempt, int) or isinstance(attempt, bool):
+        raise RuntimeError("GitHub did not say which attempt this run is")
+    created = _gh_time(got.get("created_at"))
+    if created is None:
+        raise RuntimeError("GitHub did not say when this run was created")
+    return created, attempt
+
+
 # ------------------------------------------------------------------ the request
 
 def same_origin(headers):
@@ -1178,14 +1215,24 @@ def _main(argv):
     checks the mac and, under it, the age and the epoch again, and stops unless the answer is 204.
     Prints "<epoch> <id>" for the workflow.
 
+    `python api/_spb_auth.py check-run`: the same step, once the live site has vouched for the record.
+    This run is the one the dashboard started for it, and its first attempt: GitHub (run_info, with
+    GH_TOKEN at GITHUB_API_URL for GITHUB_REPOSITORY and GITHUB_RUN_ID) says run_attempt 1, and created
+    the run within RUN_AFTER_RECORD of the record's `at`. A re-run, or a record copied out of a run's log
+    and started again, must not apply a password the reset page said was not set (third review, 25 Oct
+    2026). Prints how many seconds after the record GitHub created the run. Exits 1 whenever GitHub
+    does not say.
+
     `python api/_spb_auth.py count-applied`: the same step's daily cap. Prints how many other runs of the
     workflow in the last 24 hours got as far as storing a password (count_applied), reading GitHub with
     GH_TOKEN at GITHUB_API_URL for GITHUB_REPOSITORY, leaving out GITHUB_RUN_ID (all set by the runner).
     Exits 1 whenever GitHub does not say, so the cap fails closed."""
     if argv[1:] == ["count-applied"]:
         return _count_applied_main()
+    if argv[1:] == ["check-run"]:
+        return _check_run_main()
     if argv[1:] != ["check-record"]:
-        sys.stderr.write("usage: RECORD=... python api/_spb_auth.py check-record | count-applied\n")
+        sys.stderr.write("usage: RECORD=... python api/_spb_auth.py check-record | check-run | count-applied\n")
         return 2
     # Not stripped: the workflow stores RECORD exactly as given, so a value with any whitespace in it
     # is refused here rather than written to Vercel.
@@ -1202,16 +1249,56 @@ def _main(argv):
     return 0
 
 
-def _count_applied_main():
+def _runner_env(mode):
+    """(token, repo, base, run id) from what the runner sets, or None (said on stderr) if any is off."""
     token = os.environ.get("GH_TOKEN", "")
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     base = (os.environ.get("GITHUB_API_URL") or GITHUB_API).rstrip("/")
     run_id = os.environ.get("GITHUB_RUN_ID", "")
     if not token or not _REPO_RE.match(repo) or not _API_RE.match(base) or not re.fullmatch(r"[0-9]{1,20}", run_id):
-        sys.stderr.write("count-applied needs GH_TOKEN, GITHUB_REPOSITORY, GITHUB_API_URL and GITHUB_RUN_ID\n")
+        sys.stderr.write("%s needs GH_TOKEN, GITHUB_REPOSITORY, GITHUB_API_URL and GITHUB_RUN_ID\n" % mode)
+        return None
+    return token, repo, base, int(run_id)
+
+
+def _check_run_main():
+    rec = parse_record(os.environ.get("RECORD", ""))
+    if rec is None:
+        sys.stderr.write("not a password record: refusing to apply it\n")
         return 1
+    env = _runner_env("check-run")
+    if env is None:
+        return 1
+    token, repo, base, run_id = env
     try:
-        n = count_applied(time.time(), int(run_id), token, repo, base)
+        created, attempt = run_info(run_id, token, repo, base)
+    except RuntimeError as e:
+        sys.stderr.write("could not read this run from GitHub (%s): refusing to apply the record\n" % e)
+        return 1
+    if attempt != 1:
+        sys.stderr.write("GitHub says this is attempt %d of this run, a re-run: refusing to apply the record. "
+                         "A re-run is never applied: a new password needs a new reset from the dashboard.\n"
+                         % attempt)
+        return 1
+    gap = int(created - rec["at"])
+    lo, hi = RUN_AFTER_RECORD
+    if not (lo <= gap <= hi):
+        sys.stderr.write("GitHub created this run %d seconds %s the record was made, but the run the dashboard "
+                         "starts for a record is created within %d seconds of it. So this run was started "
+                         "with a copy of the record: refusing to apply it. A new password needs a new reset "
+                         "from the dashboard.\n" % (abs(gap), "after" if gap >= 0 else "before", hi))
+        return 1
+    print(gap)
+    return 0
+
+
+def _count_applied_main():
+    env = _runner_env("count-applied")
+    if env is None:
+        return 1
+    token, repo, base, run_id = env
+    try:
+        n = count_applied(time.time(), run_id, token, repo, base)
     except RuntimeError as e:
         sys.stderr.write("could not count this workflow's recent changes (%s)\n" % e)
         return 1
