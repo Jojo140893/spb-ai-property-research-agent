@@ -88,7 +88,7 @@ await section("OFF: nothing new until the owner sets it up", async () => {
         page.headers.get("x-spb-auth-id") === null);
   check("OFF: /forgot is gated like any page", (await html("/forgot")).status === 302);
   check("OFF: /reset is gated like any page", (await html("/reset")).status === 302);
-  for (const p of ["/api/reset_code", "/api/reset_password"]) {
+  for (const p of ["/api/reset_code", "/api/reset_password", "/api/reset_check"]) {
     const res = await call(req(p, { method: "POST" }));
     check("OFF: POST " + p + " is not passed through", res && res.status === 401, res ? res.status : "PASSED");
   }
@@ -96,7 +96,7 @@ await section("OFF: nothing new until the owner sets it up", async () => {
   check("OFF: a SITE_PASSWORD session works", await served(legacyCookie(F.site)));
 });
 
-await section("ON, no reset yet: the link, the pages, the four routes and nothing wider", async () => {
+await section("ON, no reset yet: the link, the pages, the five routes and nothing wider", async () => {
   deploy(ON);
   const page = await html("/login");
   const text = await page.text();
@@ -129,7 +129,9 @@ await section("ON, no reset yet: the link, the pages, the four routes and nothin
         rt.includes('fetch("/api/reset_password"') && rt.includes('"#code="'));
   check("  ...a fresh nonce per page", ((/nonce-([A-Za-z0-9_-]+)/.exec(reset.headers.get("content-security-policy") || "") || [])[1]) !== nonce);
 
-  for (const p of ["/api/reset_code", "/api/reset_password"]) {
+  // /api/reset_check (25 Oct 2026): the GitHub workflow asks it whether the dashboard signed a record,
+  // with no session and no Origin. It must reach its function, or no reset could ever be stored.
+  for (const p of ["/api/reset_code", "/api/reset_password", "/api/reset_check"]) {
     check("ON: POST " + p + " is passed to its function", (await call(req(p, { method: "POST" }))) === undefined);
     const get = await call(req(p));
     check("ON: GET " + p + " still needs a login", get && get.status === 401, get ? get.status : "SERVED");
@@ -143,7 +145,8 @@ await section("ON, no reset yet: the link, the pages, the four routes and nothin
   // A prefix test would open every one of these.
   for (const p of ["/forgot/", "/reset/", "/forgot.html", "/reset.html", "/forgotten", "/resets", "/Forgot",
                    "/api/reset_code/", "/api/reset_password/", "/api/reset_codex", "/api/reset_code.py",
-                   "/API/reset_code", "/api/reset", "/api/reset_password.py"]) {
+                   "/API/reset_code", "/api/reset", "/api/reset_password.py", "/api/reset_check/",
+                   "/api/reset_checks", "/api/reset_check.py", "/api/reset_chec"]) {
     const res = await call(req(p, { method: p.startsWith("/api") || p.startsWith("/API") ? "POST" : "GET" }));
     check("ON: " + p + " still needs a login", res && res.status === 401, res ? res.status : "SERVED WITHOUT AUTH");
   }

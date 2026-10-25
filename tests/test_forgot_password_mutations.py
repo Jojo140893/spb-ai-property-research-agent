@@ -43,7 +43,8 @@ MW_MUTANTS = [
      ("  if (resetOn) {\n    if (request.method", "  if (true) {\n    if (request.method"),
      "off", "OFF: /forgot is gated like any page"),
     ("exact matching of the endpoint paths",
-     ('(path === "/api/reset_code" || path === "/api/reset_password")', '(path.startsWith("/api/reset"))'),
+     ('(path === "/api/reset_code" || path === "/api/reset_password" ||\n'
+      '                                      path === "/api/reset_check")', '(path.startsWith("/api/reset"))'),
      "on, no reset", "ON: /api/reset_codex still needs a login"),
 ]
 
@@ -57,6 +58,31 @@ def _fingerprint_first(A):
             return None
         return real()
     return active_record
+
+
+def _shared_ceiling(A):
+    """The code-email limiter before the 25 Oct review: per exact IP, plus 20 an hour per instance for
+    everyone together, which a stranger could use up."""
+    sends = []
+
+    def send_decision(ip, now, window):
+        sends[:] = [(t, i) for t, i in sends if now - t < 3600]
+        mine = [t for t, i in sends if i == ip]
+        if (mine and now - mine[-1] < A.IP_GAP) or len(mine) >= A.IP_PER_HOUR or len(sends) >= 20:
+            return A.LIMITED
+        sends.append((now, ip))
+        return A.SEND
+    return send_decision
+
+
+def _username_before_the_code(A):
+    real = A.password_problem
+
+    def password_problem(password, confirm):  # the order before the 25 Oct review
+        if isinstance(password, str) and A.normalise(password).lower() == A.site_username().lower():
+            return "Do not use the sign-in email address as the password."
+        return real(password, confirm)
+    return password_problem
 
 
 def _early_code_ok(A):
@@ -99,7 +125,54 @@ PY_MUTANTS = [
     ("checking the mac before the fingerprint",
      lambda A, mp: mp.setattr(A, "active_record", _fingerprint_first(A)),
      "test_a_changed_secret_is_refused_not_ignored"),
+    # Review, 25 Oct 2026.
+    ("checking the mac in /api/reset_check (shape only, as the workflow did)",
+     lambda A, mp: mp.setattr(A, "verify_record", lambda text, now: None if A.parse_record(text) else "malformed"),
+     "test_reset_check_vouches_only_for_records_this_dashboard_signed"),
+    ("watching that GitHub started the run",
+     lambda A, mp: mp.setattr(A, "run_state", lambda since: A.STARTED),
+     "test_a_run_github_refuses_to_start_is_not_called_saved"),
+    ("telling a run that stopped from one that started",
+     lambda A, mp: mp.setattr(A, "run_state", lambda since: A.UNKNOWN),
+     "test_a_run_that_stops_before_storing_is_not_called_saved"),
+    ("one code email per window, with no shared ceiling",
+     lambda A, mp: mp.setattr(A.LIMITS, "send_decision", _shared_ceiling(A)),
+     "test_a_stranger_cannot_use_up_coleens_code_email"),
+    ("freeing the window when the email fails",
+     lambda A, mp: mp.setattr(A.LIMITS, "window_failed", lambda window: None),
+     "test_a_failed_email_does_not_hold_the_window"),
+    ("counting an IPv6 client by its /64",
+     lambda A, mp: mp.setattr(A, "limit_key", lambda ip: ip),
+     "test_ipv6_clients_are_counted_by_their_64"),
+    ("asking the username rule only with the right code",
+     lambda A, mp: mp.setattr(A, "password_problem", _username_before_the_code(A)),
+     "test_the_username_rule_is_asked_only_with_the_right_code"),
 ]
+
+
+# The workflow's first step without the question to the live site: exactly what it was before the review.
+def _without_the_site_check(script):
+    start, end = script.index("# Signed by the dashboard"), script.index("# Not older than the password")
+    return script[:start] + script[end:]
+
+
+def test_removing_the_workflows_question_to_the_site_lets_a_forgery_through(tmp_path):
+    """The real check is test_the_workflow_stores_nothing_the_dashboard_did_not_sign; this proves the
+    step it runs can fail, by running the step without the /api/reset_check call on a forged record."""
+    import time
+    with pytest.MonkeyPatch.context() as mp:
+        w = T.World(mp)
+        try:
+            w.now = time.time()
+            forged = T.forged_record(1, w.now)
+            code, out, outputs, gh = T.run_check_step(w, tmp_path / "control", forged)
+            assert code != 0, "control: the real step let a forgery through:\n" + out
+            code, out, outputs, gh = T.run_check_step(w, tmp_path / "mutant", forged,
+                                                      script=_without_the_site_check(T._check_step_script()))
+            assert code == 0 and outputs.startswith("epoch=1") and gh, \
+                "MUTANT DID NOT CHANGE THE OUTCOME: without the site check the forgery is still refused\n" + out
+        finally:
+            w.close()
 
 
 @pytest.fixture(scope="module")

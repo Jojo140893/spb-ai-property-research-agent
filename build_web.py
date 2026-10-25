@@ -1495,14 +1495,15 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
               for name in ("stock.json", "channels.json", "builders.json",
                            "benchmarks.json", "vendor-assets.json", "suburbs.json",
                            "parity_report.json")],
-            # Forgot password, 23 Oct 2026. The two pages (served by middleware.js) and the two
+            # Forgot password, 23 Oct 2026. The two pages (served by middleware.js) and the three
             # endpoints (api/reset_*.py) all set these themselves; this says it a second time,
             # last, because the global rule above gives Referrer-Policy "same-origin" and a page
             # that carries a reset code should send no Referer at all. Exact paths, no wildcard.
             *[{"source": "/%s" % name,
                "headers": [{"key": "Cache-Control", "value": "no-store"},
                            {"key": "Referrer-Policy", "value": "no-referrer"}]}
-              for name in ("forgot", "reset", "api/reset_code", "api/reset_password")],
+              for name in ("forgot", "reset", "api/reset_code", "api/reset_password",
+                           "api/reset_check")],
         ],
     }
     if fn:
@@ -1545,12 +1546,16 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
                                   "includeFiles": "api/_data/price_list_links.json"},
             # Forgot password (23 Oct 2026): email a code, spend a code. Stdlib only, one shared
             # module that is not a route, no storage. reset_code: one SMTP session (15 s timeout).
-            # reset_password: PBKDF2, one GitHub call (15 s) and the "changed" notice (6 s per step),
-            # so 60 s: a slow mail server must not turn a done reset into an error in the browser.
+            # reset_password: PBKDF2, the dispatch (15 s), watching the run start (at most 15 s;
+            # 25 Oct 2026) and the notice (6 s per step), so 60 s: a slow mail server must not turn
+            # a done reset into an error in the browser. reset_check (25 Oct 2026): the workflow
+            # asks it whether this dashboard signed a record; a few HMACs, no network.
             "api/reset_code.py": {"memory": 256, "maxDuration": 30,
                                   "includeFiles": "api/_spb_auth.py"},
             "api/reset_password.py": {"memory": 256, "maxDuration": 60,
                                       "includeFiles": "api/_spb_auth.py"},
+            "api/reset_check.py": {"memory": 256, "maxDuration": 10,
+                                   "includeFiles": "api/_spb_auth.py"},
         }
     (out_dir / "vercel.json").write_text(json.dumps(vercel, indent=2), encoding="utf-8")
     _write_auth_middleware(out_dir)
@@ -1618,10 +1623,10 @@ _FUNCTION_ENTRY = ("research.py", "_bootstrap.py", "_candidates.py", "_export_bu
                    # lead_notes.py all import it, so a bundle without it is three dead
                    # routes. Probed below.
                    "_contact.py", "contact_unlock.py", "lead_notes.py",
-                   # 23 Oct 2026: forgot password. Two routes (POST /api/reset_code and
-                   # /api/reset_password, the paths middleware.js lets through) and the module
-                   # they share, which is not a route. Probed below.
-                   "_spb_auth.py", "reset_code.py", "reset_password.py",
+                   # 23 Oct 2026: forgot password. Three routes (POST /api/reset_code,
+                   # /api/reset_password and, 25 Oct, /api/reset_check: the paths middleware.js
+                   # lets through) and the module they share, which is not a route. Probed below.
+                   "_spb_auth.py", "reset_code.py", "reset_password.py", "reset_check.py",
                    # research.py imports this inside a try/except, so leaving it out does
                    # not break the build or the endpoint -- it just quietly stops every
                    # region search widening, exactly as document_suburb.py did for the
@@ -1714,21 +1719,24 @@ async function gate(request) {
   // /reports and anything else beginning with those characters.
   if (path === "/r" || path === "/r.html") return;
 
-  // THE FORGOT-PASSWORD ROUTES (23 Oct 2026), only while the feature is configured, and four
+  // THE FORGOT-PASSWORD ROUTES (23 Oct 2026), only while the feature is configured, and five
   // exact matches, nothing wider. The person using them has by definition lost the password, so
   // they cannot hold a session.
   //   GET  /forgot, GET /reset      the two pages. Served from here, like the login page.
   //   POST /api/reset_code          api/reset_code.py: emails a code to the fixed address
   //   POST /api/reset_password      api/reset_password.py: spends the code on a new password
-  // The two POSTs are handed to their Python functions, which check the origin, the body and the
-  // code themselves. Method AND path must both match: GET /api/reset_password, POST /forgot,
-  // /forgot/ and /reset.html all still need a session. Not configured: all four are gated like
-  // any other path, exactly as before.
+  //   POST /api/reset_check         api/reset_check.py (25 Oct 2026): the GitHub workflow asks it
+  //                                 whether this dashboard signed a record, before storing it
+  // The POSTs are handed to their Python functions, which check the origin (the first two), the
+  // body and the code themselves. Method AND path must both match: GET /api/reset_password, POST
+  // /forgot, /forgot/ and /reset.html all still need a session. Not configured: all five are gated
+  // like any other path, exactly as before.
   const resetOn = resetConfigured();
   if (resetOn) {
     if (request.method === "GET" && path === "/forgot") return forgotPage();
     if (request.method === "GET" && path === "/reset") return resetPage();
-    if (request.method === "POST" && (path === "/api/reset_code" || path === "/api/reset_password")) return;
+    if (request.method === "POST" && (path === "/api/reset_code" || path === "/api/reset_password" ||
+                                      path === "/api/reset_check")) return;
   }
 
   // ONE MACHINE CALLER: AGENT 1 STARTING A RESEARCH ON A CALLER IT GRADED.
@@ -1950,10 +1958,11 @@ ${reset ? '  <p class="alt"><a href="/forgot">Forgot password?</a></p>\n' : ""} 
 // password himself, without a developer. Ahsan: "it sends a code to digital@smartpropertybuying.com.au
 // and she can reset the password".)
 //
-// The Python half (api/_spb_auth.py, api/reset_code.py, api/reset_password.py) emails the code and
-// makes the new password record. GitHub (.github/workflows/apply-dashboard-password.yml) stores the
-// record as the env var SPB_PW_RECORD and redeploys. This half decides what signs people in. The
-// owner's runbook is docs/password-reset-runbook.md.
+// The Python half (api/_spb_auth.py, api/reset_code.py, api/reset_password.py, api/reset_check.py)
+// emails the code, makes the new password record, and vouches for it. GitHub
+// (.github/workflows/apply-dashboard-password.yml) asks /api/reset_check, then stores the record as
+// the env var SPB_PW_RECORD and redeploys. This half decides what signs people in. The owner's
+// runbook is docs/password-reset-runbook.md.
 //
 // WHAT SIGNS PEOPLE IN. One of two, decided by resolveAuth() from env vars alone:
 //   * SITE_PASSWORD, exactly as before, unless
@@ -1979,8 +1988,11 @@ ${reset ? '  <p class="alt"><a href="/forgot">Forgot password?</a></p>\n' : ""} 
 // ignored: sign-in answers 503. Ignoring it would quietly bring back the old password, the one the
 // people who left know. That is why the mac is checked BEFORE the fingerprint: with a changed
 // SPB_AUTH_SECRET the fingerprint would not match either, and "ignored" would be the wrong answer.
-// The workflow checks the record's shape and age before writing it and probes the live site after, so
-// this should only ever follow a hand-edit in Vercel.
+// The workflow checks the record's shape and age, then asks /api/reset_check (which checks the mac
+// here, with SPB_AUTH_SECRET) before writing it, and probes the live site after, so this should only
+// ever follow a hand-edit in Vercel or a changed SPB_AUTH_SECRET. (Review, 25 Oct 2026: before
+// /api/reset_check, the workflow could check only the shape, and one forged dispatch made this 503
+// for everyone.)
 //
 // THE PAGES ARE OFF UNLESS CONFIGURED. resetConfigured() needs SPB_AUTH_SECRET (32+ characters),
 // SPB_SMTP_PASSWORD and GITHUB_DISPATCH_TOKEN. Without them the login page is byte-for-byte what it
@@ -2256,9 +2268,11 @@ const RESET_JS = `
             "Ask whoever set it, or start again from Forgot password.";
           return;
         }
+        // Not "try the new password": after 10 minutes it is not live, and it may never be (a run
+        // GitHub dropped). Say what is true now (review, 25 Oct 2026).
         if (Date.now() - started > 10 * 60 * 1000) {
-          waitText.textContent = "This is taking longer than usual. Try signing in with the new password " +
-            "in a few minutes. If it still does not work, tell the person who runs the dashboard.";
+          waitText.textContent = "This is taking longer than usual. The new password is not live yet, " +
+            "so the old one still works. Tell the person who runs the dashboard if it is not live soon.";
           return;
         }
         setTimeout(function () { watch(epoch, id, started); }, 10000);
@@ -3297,10 +3311,11 @@ finally:
 import refresh, narrative, hot_leads, contact_unlock, lead_notes, price_list
 # The map is a data file, so an import cannot miss it: without it every link 404s.
 assert os.path.isfile(price_list.LINKS), 'price_list_links.json missing from bundle'
-# Forgot password (23 Oct 2026): both routes import the shared module at load, so a bundle
-# without api/_spb_auth.py fails here; each must also expose the handler Vercel looks for.
-import reset_code, reset_password, _spb_auth
-for _route in (reset_code, reset_password):
+# Forgot password (23 Oct 2026): all three routes import the shared module at load, so a bundle
+# without api/_spb_auth.py fails here; each must also expose the handler Vercel looks for. Without
+# reset_check the workflow gets no 204 and stores nothing, so a missing one is every reset refused.
+import reset_code, reset_password, reset_check, _spb_auth
+for _route in (reset_code, reset_password, reset_check):
     assert issubclass(_route.handler, _spb_auth.AuthHandler), _route.__name__ + '.py has no handler'
 # hot_leads, contact_unlock and lead_notes import this at module level, so the line above
 # already fails without it; asserted by name so the failure says which file is missing.

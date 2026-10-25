@@ -9,8 +9,9 @@ Why it exists: on the 23 Oct 2026 call Colin said people have left his team and 
 the dashboard password himself, without a developer.
 
 How it works, in one paragraph: the reset page checks the code and turns the new password into a
-signed, encrypted record. It starts the GitHub workflow `apply-dashboard-password.yml`, which stores
-the record in Vercel as `SPB_PW_RECORD` and redeploys production. The sign-in check (`middleware.js`)
+signed, encrypted record. It starts the GitHub workflow `apply-dashboard-password.yml`, which first asks
+the live site (`/api/reset_check`) to confirm the dashboard signed that record, then stores it in Vercel
+as `SPB_PW_RECORD` and redeploys production. The sign-in check (`middleware.js`)
 reads that env var from memory and makes no network call. Nothing is kept in Vercel Blob: the team is
 on the Hobby plan, whose Blob quota (10,000 operations a month, shared with the hook) would have run
 out, and the 30-day lock-out after that would have stopped everyone signing in. Design:
@@ -77,9 +78,11 @@ Optional settings (Production env, same way):
    step proves a wrong password gets 401 on the live site.
 
 Logs: Vercel -> `vercel_site` -> Logs, filter `[auth]`. You will see lines such as `forgot: code sent`,
-`forgot: limited`, `forgot: not sent (SMTPAuthenticationError 535)`, `reset: new password handed to
-GitHub`, `reset: hand-off limit reached` and `reset: GitHub did not accept the hand-off (401)`. They
-never contain the code or a password.
+`forgot: limited`, `forgot: this window's code was already sent`, `forgot: not sent
+(SMTPAuthenticationError 535)`, `reset: new password handed to GitHub (run started)`, `reset: GitHub
+refused the run; nothing changed`, `reset: hand-off limit reached`, `reset: GitHub did not accept the
+hand-off (401)`, `check: record confirmed` and `check: record refused (not_signed)`. They never contain
+the code or a password.
 
 ## 3. What Colin sees
 
@@ -89,15 +92,26 @@ never contain the code or a password.
 3. He opens the link, or enters the code at **Enter the code**, then types the new password twice ->
    **Change password**. The rules: 12 to 128 characters, not the email address, not the current
    password (nor the original one), and no space at either end.
-4. The page says the password is saved and starts working in a minute or two, and that the old one
-   works until then. When it is live the page says so and offers **Sign in with the new password**.
-   At that moment everyone else is signed out. He then tells his team the new password.
+4. The page waits up to 15 seconds for GitHub to start the change. Then it says the password is saved
+   and starts working in a minute or two, and that the old one works until then. When it is live the
+   page says so and offers **Sign in with the new password**. At that moment everyone else is signed
+   out, and he tells his team the new password. Two other answers are possible:
+   * **"GitHub could not run the change just now ... Nothing changed"**: GitHub refused to run it, for
+     example because the account's billing failed (as on 30 Sep and 25 Oct 2026). The old password
+     still works and no "change requested" email is sent. The same code works again while it lasts,
+     and a new one can be asked for after that.
+   * **"Sent to GitHub, which has not started applying it yet"**: GitHub had not started it within 15
+     seconds. Nothing is promised. The page keeps watching, and says so if it goes live.
 
-Limits. A code works for 15 minutes, and stops working as soon as any new password goes live. Per
-person (by IP address): one code email a minute, three an hour, and 20 wrong codes a minute, so a
-stranger hammering the page blocks only themselves. At most 3 password changes an hour per server
-copy, and 10 a day in all, enforced by the workflow from GitHub's own run history. Each change is a
-Vercel deployment, Hobby allows 100 a day, and running out would stop the nightly publishing.
+Limits. A code works for 15 minutes, and stops working as soon as any new password goes live. At most
+one code email per 5 minutes per server copy. Everyone who asks inside those 5 minutes would get the
+same code. So when the page says "a code has been emailed" and nothing new arrives, the code from the
+last 5 minutes is the one to use, and it still has at least 15 minutes left. Per person (by IP
+address, and for IPv6 the whole /64 block): one code email a minute, three an hour, and 20 wrong codes a
+minute. A stranger hammering the page blocks only themselves and cannot use anything up for Colin. At
+most 3 password changes an hour per server copy, and 10 a day in all, enforced by the workflow from
+GitHub's own run history. Each change is a Vercel deployment, Hobby allows 100 a day, and running out
+would stop the nightly publishing.
 
 ## 4. Who can reset: anyone who can read the digital@ mailbox
 
@@ -123,20 +137,30 @@ Env var changes only take effect at the next deploy: Vercel dashboard -> `vercel
 * **Someone else reset it**: the same, and also delete `SPB_PW_RECORD`. Then close their access to
   the mailbox (section 4).
 * **Sign-in says "Sign-in is not working right now ... SPB_PW_RECORD"** (503): the stored password
-  cannot be checked. Either it was hand-edited, or `SPB_AUTH_SECRET` was removed or changed. The page
-  refuses rather than quietly bringing back the old password. Fix: delete `SPB_PW_RECORD`, set a new
-  `SITE_PASSWORD`, and redeploy (or put the old `SPB_AUTH_SECRET` back).
+  cannot be checked. Either it was hand-edited in Vercel, or `SPB_AUTH_SECRET` was removed or changed.
+  The workflow cannot cause it: it stores only a record the live site confirms the dashboard signed
+  (`/api/reset_check`). The page refuses rather than quietly bringing back the old password. **A new
+  `SITE_PASSWORD` alone does not fix this one** (the record is checked before `SITE_PASSWORD` is).
+  Fix: delete `SPB_PW_RECORD`, set a new `SITE_PASSWORD`, and redeploy (or put the old
+  `SPB_AUTH_SECRET` back).
 * **Never set `SITE_PASSWORD` back to a value it had before a reset** while `SPB_PW_RECORD` is still
   there: that record would match again. To drop a reset for good, delete `SPB_PW_RECORD`.
 * **Never use GitHub's "Re-run" on an "Apply dashboard password" run.** It is refused anyway (the record
   is more than 30 minutes old, or older than the live one), but a new password needs a new reset from
   the dashboard.
-* **The reset page never says "live"** (it gives up after 10 minutes): look at the run in GitHub's
-  Actions tab.
+* **The reset page never says "live"** (after 10 minutes it says the new password is not live yet and
+  the old one still works): look at the run in GitHub's Actions tab.
   * Failed before "Store it in Vercel": nothing changed, the old password still works. Start a new reset.
+    "did not confirm that the dashboard signed this record" in the first step means someone started
+    the workflow with a record the dashboard never made: nothing was stored, but find out who
+    (`GITHUB_DISPATCH_TOKEN` or write access to the repo) and replace that token.
   * Failed after that step: the record is saved, and the next deploy puts it live. That signs
     everyone out at a moment nobody announced, so tell the team, or delete `SPB_PW_RECORD` to cancel.
-  * GitHub Actions down or blocked (it was on 30 Sep over billing): resets wait until it is back.
+  * GitHub Actions down or refusing jobs (it was on 30 Sep and 25 Oct 2026, over billing): a reset made
+    then is **dropped, not queued**. GitHub fails the run within seconds ("The job was not started
+    because recent account payments have failed") and never retries it. The reset page normally sees
+    this and says nothing changed. Either way the old password still works. Start a new reset once
+    Actions runs jobs again.
 
 ## 6. Turn it off / roll back
 
@@ -155,7 +179,7 @@ Env var changes only take effect at the next deploy: Vercel dashboard -> `vercel
 | The live password | Vercel env `SPB_PW_RECORD` (Production, Secret). PBKDF2-SHA256, 210,000 rounds, salted, then encrypted and signed with keys from `SPB_AUTH_SECRET`. It is also the input of each "Apply dashboard password" run, so GitHub shows it to repo readers, but only as ciphertext. |
 | Codes | Nowhere. A code is computed from `SPB_AUTH_SECRET`, the 5-minute time window and the live password, and checked the same way. |
 | Sign-in check | `middleware.js`, generated by `build_web.py`. It reads env vars only. `/login` reports the live password's number and id (`x-spb-auth-epoch`, `x-spb-auth-id`); neither helps anyone sign in. |
-| The two endpoints | `api/reset_code.py`, `api/reset_password.py` (logic in `api/_spb_auth.py`) |
+| The three endpoints | `api/reset_code.py`, `api/reset_password.py`, and `api/reset_check.py`, which the workflow asks before it stores a record (logic in `api/_spb_auth.py`) |
 | Putting a password live | `.github/workflows/apply-dashboard-password.yml` |
 
 Known and accepted:

@@ -351,7 +351,7 @@ console.log("\n--- the forgot-password routes stay shut while the feature is not
     check(`GET ${p} -> the login redirect, like any page`, res && res.status === 302,
           res ? "status " + res.status : "SERVED WITHOUT AUTH");
   }
-  for (const p of ["/api/reset_code", "/api/reset_password"]) {
+  for (const p of ["/api/reset_code", "/api/reset_password", "/api/reset_check"]) {
     const res = await call(req(p, { method: "POST" }));
     check(`POST ${p} -> 401, not passed to its function`, res && res.status === 401,
           res ? "status " + res.status : "PASSED THROUGH WITHOUT AUTH");

@@ -11,8 +11,11 @@ deliberately NO email field, so nobody can aim the code at a different address.
 
 THE ANSWER IS ALWAYS THE SAME SENTENCE once configured: "If this site is set up for it, a code has been
 emailed." A request made too soon and a failed email read exactly like success, and the answer takes at
-least two seconds whichever it was. What happened is in the function log, as fixed event names that
-never carry the code. Nothing is stored. Not configured: 503, "not set up yet".
+least two seconds whichever it was. At most one email per 5-minute window per instance, so a request
+that sends nothing because of that means the window's code (the one it would have sent) is already in
+the inbox and good for 15 more minutes (review, 25 Oct 2026; _spb_auth.py header, LIMITS). What happened
+is in the function log, as fixed event names that never carry the code. Nothing is stored. Not
+configured: 503, "not set up yet".
 """
 import os
 import sys

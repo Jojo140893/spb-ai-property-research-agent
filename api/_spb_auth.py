@@ -12,6 +12,8 @@ is the sign-in half. The owner's runbook is docs/password-reset-runbook.md.
          {code,password,confirm}    a signed, encrypted password record, hands it to GitHub (below)
     GitHub Actions                  .github/workflows/apply-dashboard-password.yml stores the record
                                     as the Vercel env var SPB_PW_RECORD and redeploys production
+    POST /api/reset_check {record}  api/reset_check.py -> check_endpoint(): 204 only for a record this
+                                    dashboard signed. The workflow asks it before storing anything
     POST /login                     middleware.js: signs in against SPB_PW_RECORD when it is set
 
 NO STORAGE AT ALL, ON PURPOSE (23 Oct 2026). The first build kept the code and the new password in
@@ -49,18 +51,42 @@ THE RECORD (SPB_PW_RECORD). One shell-safe line:
 All keys come from SPB_AUTH_SECRET, a secret set only on this Vercel project. Not SPB_SERVICE_KEY: the
 hook holds that one and sends it on every research call.
 
+ONLY A RECORD THIS DASHBOARD SIGNED IS EVER STORED (review, 25 Oct 2026). Anyone who can start the
+workflow (GITHUB_DISPATCH_TOKEN, which every function on the project can read, or write access to the
+repo) can hand it any record of the right shape. GitHub cannot check the mac: SPB_AUTH_SECRET is
+deliberately not there. So the workflow's first step asks the live site, POST /api/reset_check, and
+stops unless it answers 204: mac, fingerprint, iterations, age (now an authenticated field) and epoch,
+by verify_record() below. Before this, one forged dispatch was stored and redeployed, and since the mac
+is checked before the fingerprint, sign-in answered 503 for everyone, and a new SITE_PASSWORD did not
+bring it back.
+
+"SAVED" ONLY ONCE GITHUB HAS STARTED (review, 25 Oct 2026). GitHub accepts a dispatch (204) even while
+it is refusing every job over billing, as it did on 30 Sep and 25 Oct: the run then fails in about five
+seconds with no step run, and is never retried. So after the 204 reset_endpoint watches the run for up
+to RUN_WAIT seconds (run_state()). Refused, or stopped before "Store it in Vercel": 503, "nothing
+changed", no notice, the code still works. Started: "saved". Not started yet: 200 with a sentence that
+promises nothing, and the page waits for /login to report it.
+
 NO VERCEL TOKEN HERE. This function holds GITHUB_DISPATCH_TOKEN, already on the project for the
 Refresh button, which can start workflows and nothing else on Vercel. The token that writes the env var
 and redeploys is the VERCEL_TOKEN GitHub secret the nightly already uses; it never enters this runtime.
 
-LIMITS, AND WHY THEY ARE PER CLIENT. Each Vercel instance keeps them in memory. By the client's IP
-(Vercel sets x-real-ip), so a stranger hammering the endpoints blocks only themselves, never Coleen:
-  * code emails: 1 a minute and 3 an hour per IP, and 20 an hour per instance in all (Gmail's sending
-    limit is the digital@ account's, which also sends the nightly's alerts);
-  * wrong codes: 20 a minute per IP (a right code is never refused by this);
+LIMITS, AND WHY NONE OF THEM LETS A STRANGER BLOCK COLEEN. Each Vercel instance keeps them in memory,
+per client: the IP Vercel reports (x-real-ip), and for IPv6 the whole /64, the block one home
+connection or one cloud machine is handed (limit_key()).
+  * code emails: ONE per 5-minute window per instance, and only once it has actually gone out. Every
+    request in a window would get that window's code anyway, so a request that sends nothing means the
+    window's code reached the inbox in the last 5 minutes and works for at least 15 more, whoever asked
+    for it. That also caps the mailbox at 12 code emails an hour per instance (Gmail's sending limit is
+    the digital@ account's, which also sends the nightly's alerts) with no shared counter to use up.
+    Per client on top: 1 a minute and 3 an hour. (Review, 25 Oct 2026: there was a shared ceiling of 20
+    an hour; 21 requests from 7 addresses of one /64 used it up in 3 minutes, and Coleen's request was
+    then told "emailed" while nothing was sent for the rest of the hour.)
+  * wrong codes: 20 a minute per client (a right code is never refused by this);
   * hand-offs to GitHub: 3 an hour per instance. Each one is a redeploy, Vercel Hobby allows 100 a day,
     and running out would stop the nightly publishing. The workflow also refuses more than 10 a day,
-    counted from GitHub's own run history, which no instance can get around.
+    counted from GitHub's own run history, which no instance can get around. A run GitHub refused to
+    start is not counted here (nothing ran); one that ran and stopped is.
 
 FAIL-SAFE: without SPB_AUTH_SECRET, SPB_SMTP_PASSWORD and GITHUB_DISPATCH_TOKEN, configured() is False,
 the endpoints answer 503 "not set up yet", and middleware.js serves the sign-in page exactly as it was.
@@ -73,6 +99,7 @@ import base64
 import email.utils
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -109,10 +136,10 @@ CODE_LEN = 10
 BUCKET = 300                                 # seconds per code bucket
 BUCKETS = 4                                  # the current bucket and the three before it: 15-20 min
 
-IP_GAP = 60                                  # per IP: seconds between two code emails
-IP_PER_HOUR = 3                              # per IP: code emails in any rolling hour
-SENDS_PER_HOUR = 20                          # per instance: code emails in all, any rolling hour
-WRONG_PER_MINUTE = 20                        # per IP: wrong codes before that IP gets a 429
+IP_GAP = 60                                  # per client: seconds between two code emails
+IP_PER_HOUR = 3                              # per client: code emails in any rolling hour
+# (No instance-wide count of code emails: at most one per window per instance, see _Limiter.)
+WRONG_PER_MINUTE = 20                        # per client: wrong codes before that client gets a 429
 HANDOFFS_PER_HOUR = 3                        # per instance: records handed to GitHub (each is a redeploy)
 MIN_FORGOT_SECONDS = 2.0                     # floor on the forgot answer, see forgot_endpoint
 RECORD_MAX_AGE = 30 * 60                     # check-record refuses a record older than this
@@ -136,12 +163,21 @@ MAX_BODY = 4096                              # a code and a password, not a docu
 SMTP_TIMEOUT = 15
 NOTICE_TIMEOUT = 6                           # the "changed" notice must not push a done reset past maxDuration
 GITHUB_TIMEOUT = 15
+# Watching the run a dispatch created (run_state). A run GitHub refuses over billing completes in about
+# 5 s (run 36666518741, 30 Sep 2026). 15 s for the dispatch, at most 15 here, then the notice (6 s a
+# step): inside reset_password.py's maxDuration of 60.
+RUN_WAIT = 15.0
+RUN_POLL = 2.5
+RUN_SKEW = 10                                # GitHub's created_at may read this much before our clock
+MAX_GITHUB_BODY = 1 << 20                    # a runs or jobs listing, not a download
+STORE_STEP = "Store it in Vercel"            # the workflow step after which a record may be stored
 # What we call ourselves in EHLO. smtplib otherwise asks the network for this machine's fully qualified
 # name (a reverse DNS lookup the socket timeout does not cover); Gmail does not care what it is.
 EHLO_NAME = "app.smartpropertybuying.com.au"
 
 SUBJECT_CODE = "Smart Property Buying dashboard reset code"
-SUBJECT_CHANGED = "Smart Property Buying dashboard password changed"
+# "requested", not "changed": it is sent once GitHub has the change, which is before it is live.
+SUBJECT_CHANGED = "Smart Property Buying dashboard password change requested"
 
 GENERIC_FORGOT = "If this site is set up for it, a code has been emailed."
 NOT_SET_UP = "Password reset is not set up yet - ask the person who runs the dashboard."
@@ -149,12 +185,24 @@ CODE_INVALID = ("That code is not right, or it has expired. "
                 "Ask for a new code if you are not sure.")
 SAVED = ("Saved. Your new password starts working in about 2 minutes. "
          "Until then, keep using the old one.")
+# GitHub took the change but had not started it within RUN_WAIT: nothing is promised.
+PENDING = ("Sent to GitHub, which has not started applying it yet. Your old password still works "
+           "until this page says the new one is live.")
+# GitHub refused to start the run (billing, 30 Sep and 25 Oct 2026): it is dropped, never retried.
+NOT_STARTED = ("GitHub could not run the change just now (it is refusing jobs). Nothing changed: "
+               "your old password still works. Try again later.")
+# The run started and stopped before it stored anything (the workflow's own checks refused it).
+STOPPED = ("GitHub stopped the change before saving it. Nothing changed: your old password still "
+           "works. If it happens again, tell the person who runs the dashboard.")
+BUSY_HANDOFFS = ("Several password changes were started in the last hour. "
+                 "Wait an hour and try again.")
+USERNAME_RULE = "Do not use the sign-in email address as the password."
 
 # Seams for the tests. Production leaves all of them alone; the tests set them so the clock, GitHub and
 # the mail server are fakes and nothing real is ever called.
 clock = time.time
 sleep = time.sleep
-TRANSPORT = None                             # (method, url, headers, body, timeout) -> HTTP status
+TRANSPORT = None                             # (method, url, headers, body, timeout) -> (status, bytes)
 SMTP_FACTORY = None                          # (host, port, timeout) -> an smtplib.SMTP-like object
 
 RECORD_RE = re.compile(
@@ -323,6 +371,39 @@ def build_record(password, epoch, now):
     return body + "." + record_mac(body)
 
 
+def verify_record(text, now):
+    """None when `text` is a record THIS dashboard signed, for today's SITE_PASSWORD, made in the last
+    30 minutes and not older than the live one; otherwise a fixed word saying why not. What
+    POST /api/reset_check answers the workflow before it stores anything (review, 25 Oct 2026: the
+    workflow could check only the shape, so a forged record was stored and sign-in answered 503).
+
+    The mac is checked first, so every answer after it is about a record only this dashboard could
+    have made: someone without SPB_AUTH_SECRET learns "malformed" or "not_signed" and nothing else."""
+    rec = parse_record(text)
+    if rec is None:
+        return "malformed"
+    if len(_env("SPB_AUTH_SECRET")) < MIN_SECRET:
+        return "unavailable"
+    if not hmac.compare_digest(rec["mac"], record_mac(rec["body"])):
+        return "not_signed"
+    if not hmac.compare_digest(rec["fp"], env_fp()):
+        return "other_site_password"          # it would only be ignored; the owner changed SITE_PASSWORD
+    plain = _xor(b64url_decode(rec["box"]), _keystream(rec["nonce"]))
+    if not (MIN_ITER <= int.from_bytes(plain[:4], "big") <= MAX_ITER):
+        return "out_of_range"
+    age = now - rec["at"]                     # `at` is covered by the mac, so this age is real
+    if not (-300 <= age <= RECORD_MAX_AGE):
+        return "stale"
+    try:
+        active_record()
+    except ConfigError:
+        return "live_record_broken"
+    live = parse_record(_env("SPB_PW_RECORD"))
+    if live is not None and rec["epoch"] < live["epoch"]:
+        return "older_than_live"
+    return None
+
+
 def is_current_password(password, rec):
     """Would this password change nothing? True for the password that signs in now, and for
     SITE_PASSWORD even after a reset: going back to the password the leavers knew is no change."""
@@ -371,55 +452,92 @@ def code_ok(code, now, vid):
     return ok
 
 
+SEND, LIMITED, ALREADY = "send", "limited", "already"     # _Limiter.send_decision
+
+
 class _Limiter(object):
-    """Per instance, in memory, keyed by client IP where it matters (module header: LIMITS). NOT what
-    makes the code safe (50 bits does that): it stops one client flooding the mailbox, running up
-    function time, or spending the day's Vercel deploys."""
+    """Per instance, in memory, keyed by client (limit_key) where it matters (module header: LIMITS).
+    NOT what makes the code safe (50 bits does that): it stops one client flooding the mailbox, running
+    up function time, or spending the day's Vercel deploys. Nothing in it is shared between clients in a
+    way one client can use up for another."""
 
     def __init__(self):
         self.lock = threading.Lock()
         self.clear()
 
     def clear(self):
-        self.sends = []                      # (time, ip) of every code email this instance sent
-        self.wrong = {}                      # ip -> times of wrong codes
+        self.sends = {}                      # client key -> times this client had a code email sent
+        self.windows = {}                    # (bucket, verifier id) -> "sending" | "sent", this instance
+        self.wrong = {}                      # client key -> times of wrong codes
         self.handoffs = []                   # times of records handed to GitHub
         self.used = {}                       # code -> when it was spent here, so a double-click is refused
 
-    def may_send(self, ip, now):
+    def send_decision(self, ip, now, window):
+        """SEND (and the window is held for this request), LIMITED (this client asked too often) or
+        ALREADY (this window's code went out, or is going out, from this instance).
+
+        One email per (5-minute bucket, verifier id) per instance: everyone asking in a window would get
+        the same code, so ALREADY always means that code reached the inbox in the last 5 minutes and is
+        good for at least 15 more. Review, 25 Oct 2026: a shared 20-an-hour ceiling here let a stranger
+        use up the hour, after which Coleen was told "emailed" and nothing was sent."""
+        key = limit_key(ip)
         with self.lock:
-            self.sends = [(t, i) for t, i in self.sends if now - t < 3600]
-            mine = [t for t, i in self.sends if i == ip]
-            if (mine and now - mine[-1] < IP_GAP) or len(mine) >= IP_PER_HOUR \
-                    or len(self.sends) >= SENDS_PER_HOUR:
-                return False
-            self.sends.append((now, ip))
-            return True
+            self.windows = {w: s for w, s in self.windows.items() if w[0] > window[0] - BUCKETS}
+            self.sends = {k: ts for k, ts in ((k, [t for t in ts if now - t < 3600])
+                                               for k, ts in self.sends.items()) if ts}
+            mine = self.sends.get(key, [])
+            if (mine and now - mine[-1] < IP_GAP) or len(mine) >= IP_PER_HOUR:
+                return LIMITED
+            if window in self.windows:
+                return ALREADY
+            self.windows[window] = "sending"
+            self.sends[key] = mine + [now]
+            return SEND
+
+    def window_sent(self, window):
+        with self.lock:
+            self.windows[window] = "sent"
+
+    def window_failed(self, window):
+        """The email did not go out: free the window, so the next request (Coleen's) sends it."""
+        with self.lock:
+            if self.windows.get(window) == "sending":
+                del self.windows[window]
 
     def too_many_wrong(self, ip, now):
+        key = limit_key(ip)
         with self.lock:
-            times = [t for t in self.wrong.get(ip, []) if now - t < 60]
-            self.wrong[ip] = times
+            times = [t for t in self.wrong.get(key, []) if now - t < 60]
+            self.wrong[key] = times
             return len(times) >= WRONG_PER_MINUTE
 
     def wrong_code(self, ip, now):
         with self.lock:
-            self.wrong.setdefault(ip, []).append(now)
+            self.wrong.setdefault(limit_key(ip), []).append(now)
 
     def may_hand_off(self, now):
         with self.lock:
             self.handoffs = [t for t in self.handoffs if now - t < 3600]
             return len(self.handoffs) < HANDOFFS_PER_HOUR
 
-    def handed_off(self, code, now):
+    def handed_off(self, now):
         with self.lock:
             self.handoffs.append(now)
-            self.used[code] = now
 
     def spent(self, code, now):
         with self.lock:
             self.used = {c: t for c, t in self.used.items() if now - t < BUCKET * (BUCKETS + 1)}
             return code in self.used
+
+    def use(self, code, now):
+        """Held from before the dispatch, so a second click while this one waits on GitHub is refused."""
+        with self.lock:
+            self.used[code] = now
+
+    def unuse(self, code):
+        """Nothing was changed after all: the same code may try again."""
+        with self.lock:
+            self.used.pop(code, None)
 
 
 LIMITS = _Limiter()
@@ -433,6 +551,22 @@ def client_ip(headers):
         if _IP_RE.match(value):
             return value
     return "unknown"
+
+
+def limit_key(ip):
+    """What the per-client limits count by. An IPv4 address is one client. An IPv6 address counts as its
+    /64: that is the block one home connection or one cloud machine is handed, so stepping through it
+    (review, 25 Oct 2026: 4 addresses of one /64 got 60 wrong codes a minute answered) is one client.
+    Anything that is not an address is its own key, unchanged."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip
+    if addr.version == 6:
+        if addr.ipv4_mapped is not None:
+            return str(addr.ipv4_mapped)
+        return str(ipaddress.ip_network((addr, 64), strict=False))
+    return str(addr)
 
 
 # ------------------------------------------------------------------ the email
@@ -456,9 +590,11 @@ def changed_mail_body(now):
                                 stamp.strftime("%H:%M UTC"))
     except Exception:                                                  # noqa: BLE001
         pass                                 # no tz database on this host: UTC alone is still right
-    return ("A new password for the Smart Property Buying dashboard was set at %s.\n"
-            "It starts working within a few minutes; until then the old password still works,\n"
-            "and once it does, everyone who was signed in is signed out.\n\n"
+    # "requested": this goes out once GitHub has the change, before it is live (review, 25 Oct 2026:
+    # "was set" went out for changes GitHub then refused to run, and nothing was ever set).
+    return ("A new password for the Smart Property Buying dashboard was requested at %s.\n"
+            "It starts working once it is live, usually within a few minutes. Until then the old\n"
+            "password still works, and once it is live, everyone who was signed in is signed out.\n\n"
             "If that was you there is nothing to do. If it was not, tell the person who runs the\n"
             "dashboard straight away (docs/password-reset-runbook.md, section 5).\n" % when)
 
@@ -520,28 +656,121 @@ def _urllib_transport(method, url, headers, body, timeout):
     req = urllib.request.Request(url, data=body, method=method, headers=headers)
     try:
         with _OPENER.open(req, timeout=timeout) as resp:
-            return resp.status
+            return resp.status, resp.read(MAX_GITHUB_BODY)
     except urllib.error.HTTPError as e:      # 3xx (not followed), 4xx, 5xx: the status is enough
-        return e.code
+        return e.code, b""
     except Exception:                                                  # noqa: BLE001
-        return 0
+        return 0, b""
 
 
-def dispatch(record):
-    """Start apply-dashboard-password.yml with the record. True when GitHub accepted it (204)."""
-    url = "%s/repos/%s/%s/actions/workflows/%s/dispatches" % (GITHUB_API, OWNER, REPO, WORKFLOW)
-    body = json.dumps({"ref": REF, "inputs": {"record": record}}).encode("utf-8")
+def _github(method, path, body=None, timeout=GITHUB_TIMEOUT):
+    """One call to the GitHub API with the dispatch token: (status, bytes). Never raises."""
     headers = {
         "Authorization": "Bearer " + _env("GITHUB_DISPATCH_TOKEN"),
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "Content-Type": "application/json",
         "User-Agent": "spb-dashboard",
     }
-    status = (TRANSPORT or _urllib_transport)("POST", url, headers, body, GITHUB_TIMEOUT)
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    try:
+        status, data = (TRANSPORT or _urllib_transport)(method, GITHUB_API + path, headers, body, timeout)
+    except Exception:                                                  # noqa: BLE001
+        return 0, b""
+    return (status if isinstance(status, int) else 0), (data if isinstance(data, bytes) else b"")
+
+
+def dispatch(record):
+    """Start apply-dashboard-password.yml with the record. True when GitHub accepted it (204). That is
+    NOT the same as the run starting: see run_state()."""
+    path = "/repos/%s/%s/actions/workflows/%s/dispatches" % (OWNER, REPO, WORKFLOW)
+    body = json.dumps({"ref": REF, "inputs": {"record": record}}).encode("utf-8")
+    status, _ = _github("POST", path, body)
     if status != 204:
         log("reset: GitHub did not accept the hand-off (%d)" % status)
     return status == 204
+
+
+def _github_json(path, timeout):
+    status, data = _github("GET", path, timeout=timeout)
+    if status != 200:
+        return None
+    try:
+        obj = json.loads(data.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _gh_time(text):
+    try:
+        return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+STARTED, REFUSED, STOPPED_EARLY, UNKNOWN = "started", "refused", "stopped", "unknown"   # run_state
+
+
+def _run_state_once(since, timeout):
+    runs = _github_json("/repos/%s/%s/actions/workflows/%s/runs?event=workflow_dispatch&per_page=5"
+                        % (OWNER, REPO, WORKFLOW), timeout)
+    if runs is None or not isinstance(runs.get("workflow_runs"), list):
+        return UNKNOWN
+    ours = []
+    for r in runs["workflow_runs"]:
+        created = _gh_time(r.get("created_at")) if isinstance(r, dict) else None
+        if created is not None and created >= since - RUN_SKEW and isinstance(r.get("id"), int) \
+                and not isinstance(r.get("id"), bool):
+            ours.append((abs(created - since), r))
+    if not ours:
+        return UNKNOWN                       # not listed yet
+    run = min(ours, key=lambda c: c[0])[1]   # the one made closest to our dispatch
+    status, conclusion = run.get("status"), run.get("conclusion")
+    if status == "completed" and conclusion == "success":
+        return STARTED
+    if status not in ("in_progress", "completed"):
+        return UNKNOWN                       # queued, waiting, pending, requested: not started yet
+    jobs = _github_json("/repos/%s/%s/actions/runs/%d/jobs" % (OWNER, REPO, run["id"]), timeout)
+    if jobs is None or not isinstance(jobs.get("jobs"), list):
+        return UNKNOWN
+    ran = []
+    for job in jobs["jobs"]:
+        for step in ((job.get("steps") if isinstance(job, dict) else None) or []):
+            if isinstance(step, dict) and step.get("status") in ("in_progress", "completed") \
+                    and step.get("conclusion") != "skipped":
+                ran.append(step.get("name"))
+    if status == "completed":
+        # Failed or cancelled, and nothing stored unless the store step ran. Failed with no step run:
+        # GitHub never started it (billing: "The job was not started because recent account payments
+        # have failed"). Anything else (steps run, so the workflow's own checks stopped it; or
+        # cancelled, which a newer pending run in the concurrency group does to an older one): stopped.
+        if STORE_STEP in ran:
+            return UNKNOWN
+        if not ran and conclusion in ("failure", "startup_failure"):
+            return REFUSED
+        return STOPPED_EARLY
+    return STARTED if ran else UNKNOWN
+
+
+def run_state(since):
+    """What GitHub did with the run our dispatch created, watched for at most RUN_WAIT seconds:
+    STARTED (a step has run), REFUSED (completed with nothing run: billing), STOPPED_EARLY (it ran and
+    stopped before storing anything) or UNKNOWN (not started yet, or GitHub would not say).
+
+    Review, 25 Oct 2026: GitHub answers 204 to a dispatch while it refuses every job over billing, and
+    the run then dies in about 5 seconds and is never retried, so a 204 alone promised a password
+    change that never happened. The token already reads runs for the Refresh button (api/refresh.py)."""
+    deadline = time.monotonic() + RUN_WAIT
+    for _ in range(int(RUN_WAIT / RUN_POLL) + 1):
+        sleep(RUN_POLL)
+        left = deadline - time.monotonic()
+        if left <= 0:
+            break
+        state = _run_state_once(since, min(GITHUB_TIMEOUT, max(1.0, left)))
+        if state != UNKNOWN:
+            return state
+    return UNKNOWN
 
 
 # ------------------------------------------------------------------ the request
@@ -591,9 +820,12 @@ def parse_json(raw):
 
 
 def password_problem(password, confirm):
-    """The first rule the password breaks, as a sentence for the person; None when it is fine.
+    """The first rule the password breaks BY ITSELF, as a sentence for the person; None when it is fine.
 
-    Nothing here looks at any secret, so a wrong answer is no oracle for anything."""
+    Asked before the code, so nothing here may look at any configured value, secret or not: a wrong
+    answer must be no oracle for anything. The username rule is NOT here (review, 25 Oct 2026: asked
+    before the code, "do not use the sign-in email address" told anyone without a code whether a guess
+    was SITE_USERNAME, which the login gate takes care to hide). reset_endpoint asks it after the code."""
     if not isinstance(password, str) or not isinstance(confirm, str):
         return "Send a password and its confirmation."
     pw = normalise(password)
@@ -605,11 +837,15 @@ def password_problem(password, confirm):
         return "Use at least %d characters." % MIN_PASSWORD
     if len(pw) > MAX_PASSWORD:
         return "Use %d characters or fewer." % MAX_PASSWORD
-    if pw.lower() == site_username().lower():
-        return "Do not use the sign-in email address as the password."
     if pw != normalise(confirm):
         return "The two passwords do not match."
     return None
+
+
+def is_username(password):
+    """Asked only after the code is right: it compares against SITE_USERNAME."""
+    return hmac.compare_digest(normalise(password).lower().encode("utf-8"),
+                               site_username().lower().encode("utf-8"))
 
 
 class Reply(object):
@@ -630,10 +866,18 @@ def forgot_endpoint(body, ip="unknown"):
         return _refuse(400, "Send an empty JSON object: {}.")
     try:
         now = clock()
-        if LIMITS.may_send(ip, now):
-            code = code_for(int(now // BUCKET), verifier_id(active_record()))
-            send_mail(SUBJECT_CODE, code_mail_body(code))
+        window = (int(now // BUCKET), verifier_id(active_record()))
+        decision = LIMITS.send_decision(ip, now, window)
+        if decision == SEND:
+            try:
+                send_mail(SUBJECT_CODE, code_mail_body(code_for(*window)))
+            except Exception:                                          # noqa: BLE001
+                LIMITS.window_failed(window)  # not marked: the next request sends it
+                raise
+            LIMITS.window_sent(window)
             log("forgot: code sent")
+        elif decision == ALREADY:
+            log("forgot: this window's code was already sent")
         else:
             log("forgot: limited")
     except Exception as e:                                             # noqa: BLE001
@@ -646,10 +890,12 @@ def forgot_endpoint(body, ip="unknown"):
 
 def reset_endpoint(body, ip="unknown"):
     """POST /api/reset_password after the request checks. The order is the design:
-      1. the request's shape and the rules the password breaks BY ITSELF (no secret involved);
-      2. the code, in constant time against every live bucket (a wrong one counts against this IP);
-      3. only with the right code: is the new password one that changes nothing?
-      4. the record is made and handed to GitHub; only when GitHub takes it is anything promised."""
+      1. the request's shape and the rules the password breaks BY ITSELF (no configured value involved);
+      2. the code, in constant time against every live bucket (a wrong one counts against this client);
+      3. only with the right code: is the new password the sign-in email, or one that changes nothing?
+      4. the record is made and handed to GitHub, and the run it starts is watched (run_state). Only a
+         run that started is "saved"; one GitHub refused, or that stopped before storing, is "nothing
+         changed"; one not started yet promises nothing."""
     if set(body) != {"code", "password", "confirm"}:
         return _refuse(400, "Send the code, the new password and its confirmation.")
     now = clock()
@@ -673,32 +919,61 @@ def reset_endpoint(body, ip="unknown"):
         LIMITS.wrong_code(ip, now)
         log("reset: wrong or expired code")
         return _refuse(400, CODE_INVALID, error="code_invalid")
+    if is_username(body["password"]):
+        return _refuse(400, USERNAME_RULE, error="weak_password")
     if is_current_password(body["password"], rec):
         return _refuse(400, "Use a password that is different from the current one.",
                        error="weak_password")
     if not LIMITS.may_hand_off(now):
         log("reset: hand-off limit reached")
-        return _refuse(429, "The password has been changed several times in the last hour. "
-                            "Wait an hour and try again.", error="busy")
+        return _refuse(429, BUSY_HANDOFFS, error="busy")
     epoch = next_epoch()
     record = build_record(body["password"], epoch, now)
+    LIMITS.use(code, now)
     if not dispatch(record):
+        LIMITS.unuse(code)
         return _refuse(503, "Could not save that just now. Wait a minute and try again.",
                        error="unavailable")
-    LIMITS.handed_off(code, now)
-    log("reset: new password handed to GitHub")
+    state = run_state(now)
+    if state in (REFUSED, STOPPED_EARLY):
+        # Nothing was stored: no notice, and the code still works. A refused run cost nothing and is
+        # not counted against the hand-offs; one that ran and stopped used a runner, so it is.
+        LIMITS.unuse(code)
+        if state == STOPPED_EARLY:
+            LIMITS.handed_off(now)
+        log("reset: GitHub %s the run; nothing changed" % ("refused" if state == REFUSED else "stopped"))
+        return _refuse(503, NOT_STARTED if state == REFUSED else STOPPED, error="not_started")
+    LIMITS.handed_off(now)
+    log("reset: new password handed to GitHub (%s)" % ("run started" if state == STARTED
+                                                       else "not started yet"))
     try:
         send_mail(SUBJECT_CHANGED, changed_mail_body(now), timeout=NOTICE_TIMEOUT)
     except Exception as e:                                             # noqa: BLE001
         log("reset: change notice not sent (%s)" % _why(e))
-    return Reply(200, {"ok": True, "message": SAVED, "epoch": epoch, "id": parse_record(record)["id"]})
+    return Reply(200, {"ok": True, "message": SAVED if state == STARTED else PENDING, "epoch": epoch,
+                       "id": parse_record(record)["id"]})
 
 
-def respond(headers, rfile, endpoint):
-    """Everything between the socket and the endpoint: configured? same origin? JSON? small?"""
+def check_endpoint(body, ip="unknown"):
+    """POST /api/reset_check {"record": ...}: 204 only when verify_record() passes. Called by the GitHub
+    workflow (a server: no Origin), before it stores anything. It changes nothing and answers only with
+    a fixed word, so it needs no session and no limit beyond the request checks."""
+    if set(body) != {"record"} or not isinstance(body["record"], str):
+        return _refuse(400, "Send the record.", error="malformed")
+    why = verify_record(body["record"], clock())
+    if why:
+        log("check: record refused (%s)" % why)
+        return _refuse(422, "That is not a record this dashboard can apply.", error=why)
+    log("check: record confirmed")
+    return Reply(204, None)
+
+
+def respond(headers, rfile, endpoint, need_origin=True):
+    """Everything between the socket and the endpoint: configured? same origin? JSON? small?
+    need_origin is False only for /api/reset_check, which a server calls and which changes nothing."""
     if not configured():
         return _refuse(503, NOT_SET_UP, configured=False)
-    if not same_origin(headers):
+    if need_origin and not same_origin(headers):
         return _refuse(403, "That request was not accepted.")
     ctype = (headers.get("Content-Type") or "").split(";")[0].strip().lower()
     if ctype != "application/json":
@@ -721,20 +996,23 @@ def respond(headers, rfile, endpoint):
 
 
 class AuthHandler(BaseHTTPRequestHandler):
-    """Vercel Python runtime entrypoint base. Subclasses set `endpoint`.
+    """Vercel Python runtime entrypoint base. Subclasses set `endpoint` (and `need_origin`).
 
-    Reachable without a session ONLY because middleware.js lets exactly POST /api/reset_code and
-    POST /api/reset_password through, and only while the feature is configured."""
+    Reachable without a session ONLY because middleware.js lets exactly POST /api/reset_code,
+    POST /api/reset_password and POST /api/reset_check through, and only while the feature is
+    configured."""
 
     endpoint = None
+    need_origin = True
     server_version = "spb"
     sys_version = ""
 
     def _reply(self, reply, extra=()):
-        body = json.dumps(reply.payload).encode("utf-8")
+        body = b"" if reply.status == 204 else json.dumps(reply.payload).encode("utf-8")
         self.send_response(reply.status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
+        if reply.status != 204:              # a 204 carries neither (RFC 9110 15.3.5, 8.6)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
@@ -747,7 +1025,7 @@ class AuthHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            reply = respond(self.headers, self.rfile, type(self).endpoint)
+            reply = respond(self.headers, self.rfile, type(self).endpoint, type(self).need_origin)
         except Exception as e:                                         # noqa: BLE001
             log("endpoint crashed (%s)" % _why(e))
             reply = _refuse(500, "Something went wrong. Try again in a minute.")
@@ -764,13 +1042,14 @@ class AuthHandler(BaseHTTPRequestHandler):
 
 
 def _main(argv):
-    """`python api/_spb_auth.py check-record`: the GitHub workflow's gate before it writes anything to
-    Vercel. Reads the record from the RECORD env var (not argv, which the process list shows) and checks:
-      * its SHAPE (the mac needs SPB_AUTH_SECRET, which is deliberately not on GitHub; the middleware
-        checks it, and answers 503 rather than accept a record it cannot verify);
-      * its AGE: made in the last 30 minutes. A re-run of an old workflow run, or a record copied out of
-        an old log, must not be able to put an older password back. (The workflow also refuses an epoch
-        below the live one.)
+    """`python api/_spb_auth.py check-record`: the GitHub workflow's FIRST gate, before it asks anyone
+    anything. Reads the record from the RECORD env var (not argv, which the process list shows) and checks:
+      * its SHAPE, so nothing malformed is ever sent on, let alone written;
+      * its AGE by the claimed `at`: made in the last 30 minutes. A re-run of an old workflow run, or a
+        record copied out of an old log, must not be able to put an older password back.
+    Neither proves the dashboard made it: the mac needs SPB_AUTH_SECRET, which is deliberately not on
+    GitHub. So the same step then asks the live site (POST /api/reset_check, verify_record above), which
+    checks the mac and, under it, the age and the epoch again, and stops unless the answer is 204.
     Prints "<epoch> <id>" for the workflow."""
     if argv[1:] != ["check-record"]:
         sys.stderr.write("usage: RECORD=... python api/_spb_auth.py check-record\n")

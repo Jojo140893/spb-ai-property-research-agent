@@ -4,9 +4,11 @@ Colin, 23 Oct 2026: people have left his team and he wants to change the dashboa
 What is proved where:
 
   this file                          the code (stateless, 50 bits, 15-20 minutes, bound to the live
-                                     password), the encrypted record, the email, the GitHub hand-off, the
-                                     limits (per client, so a stranger cannot block Coleen), the request
-                                     checks, the workflow file, and that no log line carries a secret.
+                                     password), the encrypted record, the email, the GitHub hand-off and
+                                     the run it starts (refused over billing, stopped, queued), the limits
+                                     (per client and one email per window, so a stranger cannot block
+                                     Coleen), the request checks, /api/reset_check, the workflow file and
+                                     its first step run under bash, and that no log line carries a secret.
   tests/forgot_password_checks.mjs   the REAL generated middleware.js against records made by the REAL
                                      reset flow below: who signs in, which cookies survive, what a bad
                                      or re-keyed record does, and that sign-in never touches the network.
@@ -71,17 +73,72 @@ def _loopback_only(monkeypatch):
     monkeypatch.setattr(socket.socket, "connect", guard)
 
 
-class FakeGitHub(object):
-    """Stands in for api.github.com. Records every call; answers `status` (204 = accepted)."""
+def _iso(t):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
 
-    def __init__(self):
-        self.calls = []
+
+# What GitHub's API shows for the run a dispatch created, by what happened to it. "refused" is exactly
+# what it showed on 30 Sep (run 36666518741) and 25 Oct 2026 (run 40172642421) while billing was failing:
+# the dispatch got its 204, the run completed with conclusion failure in about 5 seconds, and its job ran
+# 0 steps ("The job was not started because recent account payments have failed").
+_STEP = lambda name, status, conclusion: {"name": name, "status": status, "conclusion": conclusion}
+RUN_KINDS = {
+    "started": ({"status": "in_progress", "conclusion": None},
+                {"status": "in_progress", "conclusion": None, "steps": [
+                    _STEP("Set up job", "completed", "success"),
+                    _STEP("Refuse an old, malformed or one-too-many record", "in_progress", None)]}),
+    "refused": ({"status": "completed", "conclusion": "failure"},
+                {"status": "completed", "conclusion": "failure", "steps": []}),
+    "stopped": ({"status": "completed", "conclusion": "failure"},
+                {"status": "completed", "conclusion": "failure", "steps": [
+                    _STEP("Set up job", "completed", "success"),
+                    _STEP("Refuse an old, malformed or one-too-many record", "completed", "failure"),
+                    _STEP("Store it in Vercel", "completed", "skipped")]}),
+    "stored, then failed": ({"status": "completed", "conclusion": "failure"},
+                            {"status": "completed", "conclusion": "failure", "steps": [
+                                _STEP("Set up job", "completed", "success"),
+                                _STEP("Store it in Vercel", "completed", "success"),
+                                _STEP("Redeploy production so it takes effect", "completed", "failure")]}),
+    "queued": ({"status": "queued", "conclusion": None}, {"status": "queued", "conclusion": None, "steps": []}),
+    # A newer pending run in the concurrency group cancels an older pending one: not a billing refusal.
+    "cancelled": ({"status": "completed", "conclusion": "cancelled"},
+                  {"status": "completed", "conclusion": "cancelled", "steps": []}),
+}
+
+
+class FakeGitHub(object):
+    """Stands in for api.github.com. Every dispatch is recorded in `calls` and answered `status` (204 =
+    accepted); every read in `reads`. An accepted dispatch creates a run, listed newest first, created at
+    the dispatch's time, whose state is `run` (a RUN_KINDS key), or "unreadable" (reads answer 403)."""
+
+    def __init__(self, clock):
+        self.calls, self.reads, self.runs = [], [], []
         self.status = 204
+        self.run = "started"
+        self.clock = clock
 
     def __call__(self, method, url, headers, body, timeout):
-        self.calls.append({"method": method, "url": url, "headers": dict(headers),
-                           "body": json.loads(body.decode("utf-8")) if body else None})
-        return self.status
+        if method == "POST":
+            self.calls.append({"method": method, "url": url, "headers": dict(headers),
+                               "body": json.loads(body.decode("utf-8")) if body else None})
+            if self.status == 204:
+                self.runs.insert(0, {"id": 4000 + len(self.calls), "created_at": _iso(self.clock()),
+                                     "event": "workflow_dispatch", "kind": self.run})
+            return self.status, b""
+        self.reads.append({"method": method, "url": url, "headers": dict(headers), "timeout": timeout})
+        if self.run == "unreadable":
+            return 403, b""
+        path = url.split("?")[0]
+        if path.endswith("/actions/workflows/apply-dashboard-password.yml/runs"):
+            shown = [dict(RUN_KINDS[r["kind"]][0], id=r["id"], created_at=r["created_at"], event=r["event"])
+                     for r in self.runs[:5] if r["kind"] in RUN_KINDS]
+            return 200, json.dumps({"total_count": len(shown), "workflow_runs": shown}).encode("utf-8")
+        m = re.search(r"/actions/runs/(\d+)/jobs$", path)
+        run = next((r for r in self.runs if m and r["id"] == int(m.group(1))), None)
+        if run is not None and run["kind"] in RUN_KINDS:
+            job = dict(RUN_KINDS[run["kind"]][1], name="apply")
+            return 200, json.dumps({"total_count": 1, "jobs": [job]}).encode("utf-8")
+        return 404, b""
 
     def records(self):
         return [c["body"]["inputs"]["record"] for c in self.calls]
@@ -97,7 +154,7 @@ class World(object):
         self.A = importlib.import_module("_spb_auth")
         self.now = 1_800_000_000.0
         self.slept = []
-        self.github = FakeGitHub()
+        self.github = FakeGitHub(lambda: self.now)
         self.smtp = FakeSMTP("digital@smartpropertybuying.com.au", FAKE_SMTP_PASSWORD)
         self.ips = 0
         port = self.smtp.start()
@@ -145,6 +202,9 @@ class World(object):
         bodies = [m["body"] for m in self.mails() if m["subject"] == self.A.SUBJECT_CODE]
         assert bodies, "no code email arrived"
         return re.search(r"^    ([0-9A-Z]{5}-[0-9A-Z]{5})$", bodies[-1], re.M).group(1)
+
+    def code_mails(self):
+        return [m for m in self.mails() if m["subject"] == self.A.SUBJECT_CODE]
 
     def forgot(self, ip="203.0.113.7"):
         return self.A.forgot_endpoint({}, ip)
@@ -304,30 +364,111 @@ def test_the_email_link_uses_the_configured_site_never_the_request(world):
 
 
 def test_forgot_is_limited_per_client_and_always_answers_the_same(world):
+    A = world.A
     answers = set()
     for _ in range(2):
         answers.add(json.dumps(world.forgot("203.0.113.1").payload))
     assert len(world.mails()) == 1, "a second press inside a minute sends nothing"
-    world.forgot("203.0.113.2")
-    assert len(world.mails()) == 2, "another client is not held back by the first"
-    world.advance(61)
+    # Each in a new 5-minute window, so the one-email-per-window rule is not what refuses.
+    world.advance(A.BUCKET)
     world.forgot("203.0.113.1")
-    world.advance(61)
+    world.advance(A.BUCKET)
     world.forgot("203.0.113.1")
-    world.advance(61)
+    assert len(world.mails()) == 3
+    world.advance(A.BUCKET)
     answers.add(json.dumps(world.forgot("203.0.113.1").payload))
-    assert len(world.mails()) == 4, "three an hour per client, then nothing"
+    assert len(world.mails()) == 3, "three an hour per client, then nothing"
+    world.forgot("203.0.113.2")
+    assert len(world.mails()) == 4, "another client is not held back by the first"
     world.advance(3600)
     world.forgot("203.0.113.1")
     assert len(world.mails()) == 5
     assert len(answers) == 1
 
 
-def test_forgot_has_an_instance_wide_ceiling(world):
+def _code_good_for_15_minutes(world, when):
+    """Is the newest code in the inbox one that works now, and still works 15 minutes from now?"""
     A = world.A
-    for i in range(A.SENDS_PER_HOUR + 5):
-        world.forgot(world.fresh_ip())
-    assert len(world.mails()) == A.SENDS_PER_HOUR
+    code = A.normalise_code(world.last_code())
+    vid = A.verifier_id(A.active_record())
+    return A.code_ok(code, when, vid) and A.code_ok(code, when + 15 * 60 - 1, vid)
+
+
+def test_one_code_email_per_window_whoever_asks(world):
+    A = world.A
+    world.forgot("203.0.113.1")
+    world.advance(30)
+    r = world.forgot("203.0.113.2")
+    assert r.payload["message"] == A.GENERIC_FORGOT
+    assert len(world.code_mails()) == 1, "the window's code is in the inbox already: it is not sent twice"
+    assert _code_good_for_15_minutes(world, world.now), "and it is the code the second client would get"
+    world.advance(A.BUCKET)
+    world.forgot("203.0.113.2")
+    assert len(world.code_mails()) == 2, "the next window has its own email"
+
+
+def test_a_stranger_cannot_use_up_coleens_code_email(world):
+    """Review, 25 Oct 2026. The per-instance ceiling (20 code emails an hour, shared by every client)
+    was used up by 21 requests from 7 addresses of one /64 in 3 minutes. Coleen, asking afterwards from
+    her own address, was told "a code has been emailed" while nothing was sent, and for most of the
+    hour no code in the inbox worked. Now: whenever she asks, a code that works for 15 more minutes is
+    in the inbox, and the stranger gets at most one email per window."""
+    A = world.A
+    stranger = (["2001:db8:66:1::%x" % i for i in range(1, 8)]          # one home IPv6 connection
+                + ["192.0.2.%d" % i for i in range(10, 17)])             # and seven cloud machines
+    coleen = "203.0.113.50"
+    start = world.now
+    windows = set()
+    for minutes in (0, 5, 25, 50):
+        world.now = start + minutes * 60
+        for _ in range(3):                    # three rounds, a minute apart, from every address
+            for ip in stranger:
+                windows.add(int(world.now // A.BUCKET))
+                world.forgot(ip)
+            world.advance(61)
+        windows.add(int(world.now // A.BUCKET))
+        assert world.forgot(coleen).payload["message"] == A.GENERIC_FORGOT
+        assert _code_good_for_15_minutes(world, world.now), \
+            "Coleen asked %d minutes in and no working code is in the inbox" % minutes
+    assert len(world.code_mails()) <= len(windows), "at most one code email per window"
+
+
+def test_a_failed_email_does_not_hold_the_window(world):
+    """The window is marked only once the email has gone out, so a failed send (or one a stranger
+    started while Gmail was refusing) does not stop the next request sending it."""
+    world.smtp.mode = "auth_fail"
+    world.forgot("192.0.2.66")
+    assert world.code_mails() == []
+    world.smtp.mode = "ok"
+    world.forgot("203.0.113.50")
+    assert len(world.code_mails()) == 1 and _code_good_for_15_minutes(world, world.now)
+
+
+def test_the_limit_key_is_the_address_or_its_64(world):
+    A = world.A
+    assert A.limit_key("2001:db8:1:2:aaaa::1") == A.limit_key("2001:db8:1:2:ffff:1:2:3") == "2001:db8:1:2::/64"
+    assert A.limit_key("2001:db8:1:3::1") != A.limit_key("2001:db8:1:2::1")
+    assert A.limit_key("::ffff:198.51.100.7") == A.limit_key("198.51.100.7") == "198.51.100.7"
+    assert A.limit_key("198.51.100.8") != A.limit_key("198.51.100.7")
+    assert A.limit_key("unknown") == "unknown" and A.limit_key("everyone") == "everyone"
+
+
+def test_ipv6_clients_are_counted_by_their_64(world):
+    """Review, 25 Oct 2026: each IPv6 /128 was its own client, so four addresses of one /64 got 60 wrong
+    codes a minute answered, and seven sent seven times the code emails of one client."""
+    A = world.A
+    block = ["2001:db8:66:1::%x" % i for i in range(1, 5)]
+    answered = sum(world.reset("0000000000", "Brand-new-passphrase-9", ip=block[i % 4]).status == 400
+                   for i in range(60))
+    assert answered == A.WRONG_PER_MINUTE, "one /64 is one client for wrong codes"
+    assert world.reset("0000000000", "Brand-new-passphrase-9", ip="2001:db8:66:2::1").status == 400, \
+        "the next /64 is not held back"
+    for ip in block:                          # one address of the block per window
+        world.advance(A.BUCKET)
+        world.forgot(ip)
+    assert len(world.code_mails()) == A.IP_PER_HOUR, "one /64 is one client for code emails"
+    world.forgot("2001:db8:66:2::1")
+    assert len(world.code_mails()) == A.IP_PER_HOUR + 1
 
 
 def test_forgot_wants_an_empty_body_and_hides_a_mail_failure(world, capsys):
@@ -358,6 +499,13 @@ def test_the_happy_path_hands_github_a_signed_encrypted_record_and_says_so(world
     assert call["headers"]["Authorization"] == "Bearer " + FAKE_TOKEN
     assert set(call["body"]) == {"ref", "inputs"} and call["body"]["ref"] == "main"
     assert set(call["body"]["inputs"]) == {"record"}
+    # Then the run it started was looked up, with the same token, before anything was promised.
+    assert [x["url"] for x in world.github.reads] == [
+        "https://api.github.com/repos/Jojo140893/spb-ai-property-research-agent/actions/workflows"
+        "/apply-dashboard-password.yml/runs?event=workflow_dispatch&per_page=5",
+        "https://api.github.com/repos/Jojo140893/spb-ai-property-research-agent/actions/runs/4001/jobs"]
+    assert all(x["method"] == "GET" and x["headers"]["Authorization"] == "Bearer " + FAKE_TOKEN
+               for x in world.github.reads)
     shape = A.parse_record(record)
     assert shape and shape["epoch"] == 1 and shape["fp"] == A.env_fp() and shape["at"] == int(world.now)
     world.apply(record)
@@ -426,6 +574,26 @@ def test_password_rules(world, password, confirm, needle):
     assert world.github.calls == []
 
 
+def test_the_username_rule_is_asked_only_with_the_right_code(world):
+    """Review, 25 Oct 2026: asked before the code, "do not use the sign-in email address" told anyone,
+    with no code at all, whether a guess was SITE_USERNAME, which the login gate takes care to hide."""
+    A = world.A
+    for username in ("colin.private.login@example.com", None):     # a private one, then the default
+        world.configure(SITE_USERNAME=username)
+        A.LIMITS.clear()
+        name = username or USER
+        guesses = ("someone.else@example.com", name, name.upper())
+        for guess in guesses:
+            r = world.reset("0000000000", guess)
+            assert (r.status, r.payload["error"], r.payload["message"]) == (400, "code_invalid", A.CODE_INVALID), guess
+        assert len(A.LIMITS.wrong[A.limit_key("203.0.113.7")]) == len(guesses), "each counts as a wrong code"
+        world.advance(A.BUCKET)
+        world.forgot()
+        r = world.reset(world.last_code(), name.title())
+        assert r.status == 400 and r.payload["message"] == A.USERNAME_RULE, "with the right code it is refused"
+    assert world.github.calls == []
+
+
 def test_when_github_refuses_nothing_is_promised_and_the_code_still_works(world):
     world.forgot()
     code = world.last_code()
@@ -436,6 +604,61 @@ def test_when_github_refuses_nothing_is_promised_and_the_code_still_works(world)
     assert [m["subject"] for m in world.mails()] == [world.A.SUBJECT_CODE], "no 'changed' notice"
     world.github.status = 204
     assert world.reset(code, "Brand-new-passphrase-9").status == 200
+
+
+def test_a_run_github_refuses_to_start_is_not_called_saved(world):
+    """Review, 25 Oct 2026. GitHub answers 204 to a dispatch while it refuses every job over billing
+    (30 Sep, run 36666518741; 25 Oct, run 40172642421): the run completes with conclusion failure in
+    about 5 seconds, its job runs 0 steps, and it is never retried. Before this, the person was told
+    "Saved", emailed that a new password "was set", and the leavers' password stayed in force."""
+    A = world.A
+    world.github.run = "refused"
+    world.forgot()
+    code = world.last_code()
+    for attempt in range(A.HANDOFFS_PER_HOUR + 1):
+        r = world.reset(code, "Brand-new-passphrase-9")
+        assert (r.status, r.payload) == (503, {"ok": False, "message": A.NOT_STARTED, "error": "not_started"}), \
+            attempt
+    assert "Nothing changed" in A.NOT_STARTED and "old password still works" in A.NOT_STARTED
+    assert [m["subject"] for m in world.mails()] == [A.SUBJECT_CODE], "no 'change requested' notice"
+    assert len(world.github.calls) == A.HANDOFFS_PER_HOUR + 1, "a refused run is not counted as a change"
+    world.github.run = "started"
+    r = world.reset(code, "Brand-new-passphrase-9")
+    assert r.status == 200 and r.payload["message"] == A.SAVED, "the code still works once GitHub runs jobs"
+    assert [m["subject"] for m in world.mails()] == [A.SUBJECT_CODE, A.SUBJECT_CHANGED]
+
+
+def test_a_run_that_stops_before_storing_is_not_called_saved(world):
+    """The workflow's own checks stopped it, or GitHub cancelled it: "stopped", not "refusing jobs"."""
+    A = world.A
+    for kind in ("stopped", "cancelled"):
+        world.advance(A.BUCKET)
+        world.forgot(world.fresh_ip())
+        code = world.last_code()
+        world.github.run = kind
+        r = world.reset(code, "Brand-new-passphrase-9")
+        assert (r.status, r.payload) == (503, {"ok": False, "message": A.STOPPED, "error": "not_started"}), kind
+        assert world.mails()[-1]["subject"] == A.SUBJECT_CODE, "%s: no 'change requested' notice" % kind
+    world.github.run = "started"
+    assert world.reset(code, "Brand-new-passphrase-9").status == 200, "the code still works"
+
+
+@pytest.mark.parametrize("kind", ["queued", "unreadable", "stored, then failed"])
+def test_a_run_not_seen_starting_promises_nothing(world, kind):
+    """Queued past the wait, GitHub not saying, or failed after the store: it may still go live, so
+    neither "saved" nor "nothing changed". The page says it is not live yet and keeps watching."""
+    A = world.A
+    world.github.run = kind
+    world.forgot()
+    r = world.reset(world.last_code(), "Brand-new-passphrase-9")
+    assert r.status == 200 and r.payload["message"] == A.PENDING and r.payload["epoch"] == 1, r.payload
+    assert "old password still works" in A.PENDING and "Saved" not in A.PENDING
+    notice = world.mails()[-1]
+    assert notice["subject"] == A.SUBJECT_CHANGED and "was requested at" in notice["body"]
+    assert "was set" not in notice["body"]
+    waited = [s for s in world.slept if s == A.RUN_POLL]
+    assert 1 <= len(waited) <= A.RUN_WAIT / A.RUN_POLL + 1, "the wait is bounded"
+    assert all(x["timeout"] <= A.GITHUB_TIMEOUT for x in world.github.reads)
 
 
 def test_a_double_click_does_not_hand_over_twice(world):
@@ -557,6 +780,152 @@ def test_check_record_is_the_workflows_gate(world, monkeypatch):
     assert run(rec, "something-else").returncode == 2
 
 
+def forged_record(epoch, at):
+    """What anyone with the dispatch token can write: the right shape, a mac nobody computed."""
+    import base64
+    rnd = lambda n: base64.urlsafe_b64encode(os.urandom(n)).rstrip(b"=").decode("ascii")
+    return "v1.%d.%d.%s.%s.%s.%s" % (epoch, int(at), os.urandom(8).hex(), rnd(16), rnd(52), rnd(32))
+
+
+def test_reset_check_vouches_only_for_records_this_dashboard_signed(world):
+    """Review, 25 Oct 2026: the workflow could check only a record's shape, so a forged dispatch was
+    stored and redeployed, and sign-in answered 503 for everyone. /api/reset_check checks the mac."""
+    A = world.A
+    good = A.build_record("Brand-new-passphrase-9", 1, world.now)
+    assert A.verify_record(good, world.now) is None
+    r = A.check_endpoint({"record": good})
+    assert (r.status, r.payload) == (204, None)
+    forged = forged_record(1, world.now)
+    assert A.parse_record(forged) is not None, "the forgery has exactly the right shape"
+    world.configure(SPB_AUTH_SECRET=OTHER_SECRET)
+    signed_elsewhere = A.build_record("Brand-new-passphrase-9", 1, world.now)
+    world.configure(SITE_PASSWORD="a-different-site-password")
+    other_site = A.build_record("Brand-new-passphrase-9", 1, world.now)
+    world.configure()
+    old = A.build_record("Brand-new-passphrase-9", 1, world.now - 31 * 60)
+    future = A.build_record("Brand-new-passphrase-9", 1, world.now + 600)
+    for label, rec, why in (("forged", forged, "not_signed"), ("signed under another secret", signed_elsewhere,
+                             "not_signed"), ("made under another SITE_PASSWORD", other_site, "other_site_password"),
+                            ("31 minutes old", old, "stale"), ("from the future", future, "stale"),
+                            ("malformed", "v1.not-a-record", "malformed"), ("with a newline", good + "\n", "malformed")):
+        assert A.verify_record(rec, world.now) == why, label
+        r = A.check_endpoint({"record": rec})
+        assert r.status == 422 and r.payload["error"] == why, label
+    world.apply(A.build_record("Brand-new-passphrase-8", 3, world.now))
+    assert A.verify_record(good, world.now) == "older_than_live"
+    assert A.verify_record(A.build_record("Brand-new-passphrase-9", 3, world.now), world.now) is None
+    world.apply(forged)
+    assert A.verify_record(A.build_record("Brand-new-passphrase-9", 4, world.now), world.now) == \
+        "live_record_broken", "a live record that cannot be trusted vouches for nothing"
+    for body in ({}, {"record": good, "extra": 1}, {"record": 5}):
+        assert A.check_endpoint(body).status == 400
+
+
+def _git_bash():
+    """GitHub runs a step with bash. On Windows that is Git's bash, never C:\\Windows\\System32\\bash.exe
+    (WSL: another machine, with none of this checkout's tools)."""
+    if os.name != "nt":
+        return shutil.which("bash")
+    for base in (os.environ.get("ProgramW6432"), os.environ.get("ProgramFiles"), r"C:\Program Files"):
+        if base and (Path(base) / "Git" / "bin" / "bash.exe").is_file():
+            return str(Path(base) / "Git" / "bin" / "bash.exe")
+    return None
+
+
+def _check_step_script():
+    data, _ = _workflow()
+    return next(s for s in data["jobs"]["apply"]["steps"] if s.get("id") == "check")["run"]
+
+
+def run_check_step(world, tmp_path, record, script=None, live_epoch="0", site_up=True):
+    """Run the workflow's first step, as written in the .yml, under bash, against a stand-in for the live
+    site that answers /login as middleware.js does and /api/reset_check with the REAL handler. `gh` is a
+    stub that logs its calls (it is how the next check, the daily cap, would show it ran) and says 0.
+    Returns (exit code, output, the step's outputs, the stub's log)."""
+    bash = _git_bash()
+    if not bash or not shutil.which("curl"):
+        pytest.skip("bash and curl are needed to run the workflow step")
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    sys.path.insert(0, str(API))
+    reset_check = importlib.import_module("reset_check")
+
+    class LiveSite(reset_check.handler):
+        def do_GET(self):
+            if self.path != "/login":
+                return self._not_allowed()
+            self.send_response(200)
+            self.send_header("x-spb-auth-epoch", live_epoch)
+            self.send_header("x-spb-auth-id", "none")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_POST(self):
+            if self.path != "/api/reset_check":
+                return self._not_allowed()
+            return super().do_POST()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), LiveSite)
+    port = server.server_address[1]
+    if site_up:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    else:
+        server.server_close()                 # nothing listens: "no answer at all"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    gh_log = tmp_path / "gh.log"
+    gh_log.write_text("", encoding="utf-8")
+    # python3 is this interpreter. tr: Windows Python writes CRLF, a runner's does not.
+    (bin_dir / "python3").write_bytes(('#!/bin/bash\nset -o pipefail\n"%s" "$@" | tr -d "\\r"\n'
+                                       % Path(sys.executable).as_posix()).encode("utf-8"))
+    (bin_dir / "gh").write_bytes(('#!/bin/sh\necho "gh $*" >> "%s"\necho 0\n' % gh_log.as_posix()).encode("utf-8"))
+    out_file = tmp_path / "github_output"
+    out_file.write_text("", encoding="utf-8")
+    step = tmp_path / "step.sh"
+    step.write_bytes((script if script is not None else _check_step_script()).encode("utf-8"))
+    env = dict(os.environ, RECORD=record, SITE="http://127.0.0.1:%d" % port, MAX_PER_DAY="10",
+               GH_TOKEN="fake-github-token", GITHUB_REPOSITORY="Jojo140893/spb-ai-property-research-agent",
+               GITHUB_RUN_ID="1", GITHUB_OUTPUT=out_file.as_posix(), RUNNER_TEMP=tmp_path.as_posix(),
+               PATH=str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+    try:
+        p = subprocess.run([bash, "--noprofile", "--norc", "-eo", "pipefail", step.as_posix()], cwd=str(APP),
+                           env=env, capture_output=True, text=True, encoding="utf-8", timeout=120)
+    finally:
+        if site_up:
+            server.shutdown()
+            server.server_close()
+    return p.returncode, p.stdout + p.stderr, out_file.read_text(encoding="utf-8"), \
+        gh_log.read_text(encoding="utf-8")
+
+
+def test_the_workflow_stores_nothing_the_dashboard_did_not_sign(world, tmp_path):
+    """Review, 25 Oct 2026: a forged dispatch passed the first step (shape and age only), was stored,
+    and sign-in answered 503 for everyone. The step must now fail for it, before the next check (the
+    daily cap, which calls gh) runs, and no step after it may run when it fails."""
+    A = world.A
+    world.now = time.time()                   # check-record (a subprocess) reads the real clock
+    good = A.build_record("Brand-new-passphrase-9", 1, world.now)
+    code, out, outputs, gh = run_check_step(world, tmp_path / "good", good)
+    assert code == 0, "the step refused a record the dashboard made:\n" + out
+    assert outputs.split() == ["epoch=1", "id=" + A.parse_record(good)["id"]] and gh.startswith("gh api"), out
+    world.configure(SPB_AUTH_SECRET=OTHER_SECRET)
+    signed_elsewhere = A.build_record("Brand-new-passphrase-9", 1, world.now)
+    world.configure()
+    for label, rec, kw in (("forged", forged_record(1, world.now), {}),
+                           ("signed under another secret", signed_elsewhere, {}),
+                           ("the site does not answer", good, {"site_up": False})):
+        code, out, outputs, gh = run_check_step(world, tmp_path / label.replace(" ", "-"), rec, **kw)
+        assert code != 0, "%s: the step let it through:\n%s" % (label, out)
+        assert outputs == "" and gh == "", "%s: the step went on after refusing it" % label
+        assert "did not confirm that the dashboard signed this record" in out, label
+        assert rec not in out, "%s: the record was printed" % label
+    data, _ = _workflow()
+    job = data["jobs"]["apply"]
+    assert "if" not in job and "continue-on-error" not in job
+    for s in job["steps"]:
+        assert "if" not in s and "continue-on-error" not in s, \
+            "%r could run after a failed check" % s.get("name", s.get("uses"))
+
+
 # ------------------------------------------------------------------ the request plumbing
 
 def _headers(**over):
@@ -592,9 +961,16 @@ def test_respond_refuses_everything_but_small_same_origin_json(world):
     assert A.respond(_headers(**{"Content-Length": "5000"}), _Body(b"{}"), ok).status == 413
     for raw in (b"[]", b'{"a":1,"a":2}', b'{"a":NaN}', b"\xff"):
         assert A.respond(_headers(**{"Content-Length": str(len(raw))}), _Body(raw), ok).status == 400, raw
+    # /api/reset_check is called by a server, with no Origin; every other check still applies.
+    seen.clear()
+    assert A.respond(_headers(Origin=None), _Body(b"{}"), ok, need_origin=False).status == 200 and seen
+    assert A.respond(_headers(Origin=None, **{"Content-Type": "text/plain"}), _Body(b"{}"), ok,
+                     need_origin=False).status == 415
     world.configure(SPB_SMTP_PASSWORD=None)
     r = A.respond(_headers(), _Body(b"{}"), ok)
     assert r.status == 503 and r.payload == {"ok": False, "message": A.NOT_SET_UP, "configured": False}
+    assert A.respond(_headers(Origin=None), _Body(b"{}"), ok, need_origin=False).status == 503, \
+        "not configured: reset_check vouches for nothing"
 
 
 def test_the_route_files_serve_over_real_http(world):
@@ -603,17 +979,29 @@ def test_the_route_files_serve_over_real_http(world):
     sys.path.insert(0, str(API))
     reset_code = importlib.import_module("reset_code")
     reset_password = importlib.import_module("reset_password")
-    for mod, body, expect in ((reset_code, b"{}", 200), (reset_password, b'{"code":"x"}', 400)):
+    reset_check = importlib.import_module("reset_check")
+    good = world.A.build_record("Brand-new-passphrase-9", 1, world.now)
+    for mod, body, expect, origin in ((reset_code, b"{}", 200, True), (reset_password, b'{"code":"x"}', 400, True),
+                                      (reset_check, b'{"record":"x"}', 422, False),
+                                      (reset_check, json.dumps({"record": good}).encode(), 204, False)):
         server = ThreadingHTTPServer(("127.0.0.1", 0), mod.handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
             host = "127.0.0.1:%d" % server.server_address[1]
             c = http.client.HTTPConnection(host, timeout=30)
-            c.request("POST", "/", body=body, headers={"Origin": "https://" + host, "Host": host,
-                                                       "Content-Type": "application/json"})
+            headers = {"Host": host, "Content-Type": "application/json"}
+            if origin:
+                headers["Origin"] = "https://" + host
+            c.request("POST", "/", body=body, headers=headers)
             r = c.getresponse()
-            assert r.status == expect and r.getheader("Cache-Control") == "no-store"
-            assert json.loads(r.read())["ok"] is (expect == 200)
+            assert r.status == expect and r.getheader("Cache-Control") == "no-store", (mod.__name__, r.status)
+            raw = r.read()
+            if expect == 204:
+                assert raw == b"" and r.getheader("Content-Length") is None and r.getheader("Content-Type") is None
+                c.close()
+                c = http.client.HTTPConnection(host, timeout=30)
+            else:
+                assert json.loads(raw)["ok"] is (expect == 200)
             c.request("GET", "/")
             r = c.getresponse()
             r.read()
@@ -635,11 +1023,19 @@ def test_no_log_line_carries_a_secret(world, capsys):
     world.reset("ZZZZZ-ZZZZZ", "Second-new-passphrase-2")
     world.github.status = 500
     world.reset(code, "Second-new-passphrase-2")
+    world.github.status = 204
+    world.github.run = "refused"
+    world.reset(code, "Second-new-passphrase-2")
+    forged = forged_record(2, world.now)
+    assert A.check_endpoint({"record": rec1}).status == 204
+    assert A.check_endpoint({"record": forged}).status == 422
     err = capsys.readouterr().err
     assert "[auth] reset: new password handed to GitHub" in err and "[auth] forgot: code sent" in err
+    assert "[auth] reset: GitHub refused the run; nothing changed" in err
+    assert "[auth] check: record refused (not_signed)" in err
     for secret in (FAKE_SITE, FAKE_SECRET, FAKE_SMTP_PASSWORD, FAKE_TOKEN, "First-new-passphrase-1",
                    "Second-new-passphrase-2", code, A.normalise_code(code), live["hash"], live["mac"],
-                   live["box"], rec1):
+                   live["box"], rec1, forged):
         assert secret not in err, "a log line carries a secret"
 
 
@@ -664,14 +1060,18 @@ def test_the_changed_notice_has_a_short_deadline(world):
 
 # ------------------------------------------------------------------ the build and the workflow
 
-def test_the_build_ships_both_routes_and_their_module(world):
+def test_the_build_ships_the_three_routes_and_their_module(world):
     import build_web
-    for name in ("_spb_auth.py", "reset_code.py", "reset_password.py"):
+    for name in ("_spb_auth.py", "reset_code.py", "reset_password.py", "reset_check.py"):
         assert name in build_web._FUNCTION_ENTRY
         assert (API / name).is_file()
     src = (APP / "build_web.py").read_text(encoding="utf-8")
     assert '"api/reset_code.py": {"memory": 256, "maxDuration": 30,' in src
     assert '"api/reset_password.py": {"memory": 256, "maxDuration": 60,' in src
+    assert '"api/reset_check.py": {"memory": 256, "maxDuration": 10,' in src
+    assert "import reset_code, reset_password, reset_check, _spb_auth" in build_web._READONLY_PROBE
+    # The longest reset: the dispatch, the whole wait for the run, and three notice steps, inside 60 s.
+    assert world.A.GITHUB_TIMEOUT + world.A.RUN_WAIT + 3 * world.A.NOTICE_TIMEOUT < 60
 
 
 def _workflow():
@@ -708,10 +1108,13 @@ def test_the_workflow_guards_then_waits_then_stores_then_redeploys_then_probes(w
     runs = [s.get("run", "") for s in data["jobs"]["apply"]["steps"]]
     joined = "\n".join(runs)
     order = [joined.index(x) for x in (
-        "python3 api/_spb_auth.py check-record", '[ "$epoch" -lt "$live" ]', '[ "$recent" -ge "$MAX_PER_DAY" ]',
+        "python3 api/_spb_auth.py check-record", '"$SITE/api/reset_check"', '[ "$status" != "204" ]',
+        '[ "$epoch" -lt "$live" ]', '[ "$recent" -ge "$MAX_PER_DAY" ]',
         "--status BUILDING,QUEUED,INITIALIZING", "vercel env add SPB_PW_RECORD", "vercel redeploy",
-        "x-spb-auth-id:", '-X POST')]
+        "x-spb-auth-id:", '--data "email=probe')]
     assert order == sorted(order)
+    assert world.A.STORE_STEP in [s.get("name") for s in data["jobs"]["apply"]["steps"]], \
+        "run_state() looks for this step by name"
     assert data["jobs"]["apply"]["env"]["MAX_PER_DAY"] == "10"
     add = next(r for r in runs if "vercel env add" in r)
     assert "printf '%s' \"$RECORD\" | vercel env add SPB_PW_RECORD" in add
