@@ -73,6 +73,8 @@ const EXPORTS = ["hlSafeUrl", "hlTelHref", "hlMailHref", "hlMoney", "hlWhen", "h
   // 23 Sep: WhatsApp leads from the Kommo scan share the tab with Clare's callers, in
   // their own group.
   "hlChannel", "hlUnresolvedNote", "hlGroupEmptyText", "hlGroupBlock",
+  // 26 Oct (Coleen): Both / Clare calls (VAPI) / WhatsApp, above the grades.
+  "hlSetSource", "hlSourceKey", "hlFromSource", "hlSourceBar", "hlFilterEmptyText",
   // 28 Sep (Coleen): the Research tab's selection and report on every lead, notes and links
   // per lead, and contact details only once unlocked.
   "shortlistCardHtml", "leadPickBox", "hlReportBrief", "hlOpenReport", "hlClearPicks",
@@ -187,6 +189,7 @@ const ATTRS = new Set(["class", "id", "href", "target", "rel", "title", "style",
   "hidden", "aria-pressed", "checked", "data-hash", "data-lead", "data-term", "value", "placeholder",
   "maxlength", "rows", "autocomplete", "aria-label", "role", "aria-live", "onsubmit"]);
 const ONCLICK = new RegExp("^(rerunHotLead\\(\\d+\\)|loadHotLeads\\(true\\)|hlSetFilter\\('(all|hot|warm|nurture)'\\)"
+  + "|hlSetSource\\('(all|vapi|whatsapp)'\\)"
   + "|hlOpenReport\\(\\d+\\)|hlClearPicks\\(\\d+\\)|hlShowMore\\(\\d+\\)|hlSaveNote\\(\\d+\\)|hlAddLink\\(\\d+\\)"
   + "|hlRemoveNote\\(\\d+, \\d+\\)|hlRemoveLink\\(\\d+, \\d+\\)|hlLock\\(\\)"
   + "|hlPickAction\\(\\d+, '(package_sent|call_booked|follow_up|drive_link|property_saved)'\\))$");
@@ -244,6 +247,10 @@ check("auditor flags an unlisted tag", markupProblems('<img src="x">').length > 
 check("auditor flags a blank target without rel", markupProblems('<a href="https://a.b/" target="_blank">x</a>').length > 0);
 check("auditor flags a filter onclick outside the four grades",
   markupProblems(`<button onclick="hlSetFilter('closed')">x</button>`).length > 0);
+check("auditor flags a source onclick outside the three sources",
+  markupProblems(`<button onclick="hlSetSource('sms')">x</button>`).length > 0
+  && markupProblems(`<button onclick="hlSetSource('vapi'); alert(1)">x</button>`).length > 0
+  && markupProblems(`<button onclick="hlSetSource('vapi')">x</button>`).length === 0);
 check("auditor passes ordinary markup",
   markupProblems('<div class="x"><a href="https://a.b/?q=1&amp;r=2" target="_blank" rel="noopener noreferrer">x</a></div>').length === 0);
 check("auditor flags a Remove button carrying anything but numbers",
@@ -720,9 +727,11 @@ console.log("\n--- All / Hot / Warm / Nurture ---");
   auditMarkup("filter bar and mixed list markup", html0);
   check("filter buttons carry their counts",
     ["All (5)", "Hot (2)", "Warm (1)", "Nurture (2)"].every(t => html0.includes(">" + t + "</button>")));
+  // 26 Oct: two rows of buttons, so "only one pressed" is per row.
+  const gradeRow = (html0.match(/<div class="hl-filters hl-grades">[\s\S]*?<\/div>/) || [""])[0];
   check("All starts pressed",
-    /class="btn-ghost hl-filter is-active" id="hlFilter-all" aria-pressed="true"/.test(html0)
-    && (html0.match(/aria-pressed="true"/g) || []).length === 1);
+    /class="btn-ghost hl-filter is-active" id="hlFilter-all" aria-pressed="true"/.test(gradeRow)
+    && (gradeRow.match(/aria-pressed="true"/g) || []).length === 1, gradeRow.slice(0, 300));
   check("under All no card is hidden, and the empty note is", !/id="hlCard-\d+" hidden/.test(html0)
     && /id="hlFilterEmpty" hidden/.test(html0));
   check("each card has its grade pill", (html0.match(/pill pill-hot"/g) || []).length === 2
@@ -851,9 +860,10 @@ const groupHtml = (html, channel) => {
     out.indexOf('id="hlGroup-whatsapp"') >= 0
     && out.indexOf('id="hlGroup-whatsapp"') < out.indexOf('id="hlGroup-vapi"'),
     out.slice(0, 200));
+  // 26 Oct: the Vapi group is headed as its source button is, "Clare calls (VAPI)".
   check("each group has a heading and a count",
     out.includes('<span class="hl-group-name">WhatsApp</span><span class="hl-group-count">(1)</span>')
-    && out.includes('<span class="hl-group-name">Vapi</span><span class="hl-group-count">(2)</span>'));
+    && out.includes('<span class="hl-group-name">Clare calls (VAPI)</span><span class="hl-group-count">(2)</span>'));
   const waHtml = groupHtml(out, "whatsapp"), vapiHtml = groupHtml(out, "vapi");
   check("the WhatsApp lead is in the WhatsApp group",
     waHtml.includes("Bari") && !vapiHtml.includes("Bari"));
@@ -894,7 +904,8 @@ const groupHtml = (html, channel) => {
     && /id="hlGroupEmpty-vapi" hidden>/.test(out), out.slice(0, 400));
   check("group empty text: All says none yet, a grade says none of that grade",
     api.hlGroupEmptyText("whatsapp", "all") === "No WhatsApp leads yet."
-    && api.hlGroupEmptyText("vapi", "nurture") === "No nurture Vapi leads in this list.");
+    && api.hlGroupEmptyText("vapi", "all") === "No Clare calls yet."
+    && api.hlGroupEmptyText("vapi", "nurture") === "No nurture Clare calls in this list.");
 }
 
 // The groups survive a real load, and the filter keeps each group's note honest.
@@ -913,7 +924,7 @@ const groupHtml = (html, channel) => {
   check("the loaded tab is split into two groups",
     content.innerHTML.includes('id="hlGroup-whatsapp"') && content.innerHTML.includes('id="hlGroup-vapi"'));
   check("the counts are per group", content.innerHTML.includes('>WhatsApp</span><span class="hl-group-count">(2)</span>')
-    && content.innerHTML.includes('>Vapi</span><span class="hl-group-count">(1)</span>'));
+    && content.innerHTML.includes('>Clare calls (VAPI)</span><span class="hl-group-count">(1)</span>'));
   check("the badge still counts the whole list", badge.textContent === "3 leads · 2 hot", badge.textContent);
   auditMarkup("loaded two-group list markup", content.innerHTML);
 
@@ -926,12 +937,194 @@ const groupHtml = (html, channel) => {
   s.api.hlSetFilter("nurture");
   check("a filter that empties a group updates that group's own note",
     waNote.hidden === false && waNote.textContent === "No nurture WhatsApp leads in this list."
-    && vapiNote.hidden === false && vapiNote.textContent === "No nurture Vapi leads in this list.",
+    && vapiNote.hidden === false && vapiNote.textContent === "No nurture Clare calls in this list.",
     waNote.textContent + " | " + vapiNote.textContent);
   s.api.hlSetFilter("all");
   check("back to All: both group notes are hidden again",
     waNote.hidden === true && vapiNote.hidden === true);
   check("every fetch went to a dashboard endpoint", s.calls.fetch.every(c => ALLOWED_FETCH.has(c.url)));
+}
+
+// ------------------------------------------------------------------ which source
+// 26 Oct 2026 (Coleen): a separate Clare / VAPI section so she can find Clare's calls. A row
+// of buttons above the grades -- Both, Clare calls (VAPI), WhatsApp -- each with its count.
+//
+// WHAT MARKS A LEAD is the record's channel, read as the hook's recordChannel reads it
+// (vapi-kommo-hook lib/record.js): the Kommo scan writes channel "whatsapp" (callId
+// "wa-<leadId>"); a Clare call is written with channel "vapi" since 23 Sep and with NO channel
+// key before that -- most of the store. So "whatsapp" exactly is WhatsApp, and everything
+// else is a Clare call. Every record is then in exactly one source, and no button can hide a
+// lead from both.
+console.log("\n--- Both / Clare calls (VAPI) / WhatsApp ---");
+{
+  for (const k of ["all", "vapi", "whatsapp"])
+    check("source " + k + " is kept as it is", api.hlSourceKey(k) === k);
+  for (const bad of ["VAPI", "Vapi", "clare", "WhatsApp", " vapi", "closed", "x'); alert(1); //", "",
+                     null, undefined, 7, ["vapi"], { s: "vapi" }])
+    check("source " + JSON.stringify(bad) + " -> Both (hlSourceKey)", api.hlSourceKey(bad) === "all",
+      String(api.hlSourceKey(bad)));
+
+  const shapes = [
+    clean({ callId: "old-call" }),                          // a Clare call stored before 23 Sep
+    clean({ callId: "new-call", channel: "vapi" }),          // a Clare call since 23 Sep
+    wa({ callId: "wa-54494433" }),                           // the Kommo scan's WhatsApp lead
+    clean({ callId: "odd1", channel: "WhatsApp" }), clean({ callId: "odd2", channel: "sms" }),
+    clean({ callId: "odd3", channel: null }), clean({ callId: "odd4", channel: ["whatsapp"] }),
+    clean({ callId: "odd5", channel: EVIL }),
+  ];
+  check("a record with no channel is a Clare call (shown under Clare calls (VAPI), not WhatsApp)",
+    api.hlFromSource(shapes[0], "vapi") === true && api.hlFromSource(shapes[0], "whatsapp") === false);
+  check("channel 'vapi' is a Clare call",
+    api.hlFromSource(shapes[1], "vapi") === true && api.hlFromSource(shapes[1], "whatsapp") === false);
+  check("channel 'whatsapp' is WhatsApp",
+    api.hlFromSource(shapes[2], "whatsapp") === true && api.hlFromSource(shapes[2], "vapi") === false);
+  check("every record is in exactly one source, and in Both",
+    shapes.every(l => ["vapi", "whatsapp"].filter(s => api.hlFromSource(l, s)).length === 1
+                      && api.hlFromSource(l, "all") === true),
+    shapes.map(l => l.callId + ":" + ["vapi", "whatsapp"].filter(s => api.hlFromSource(l, s)).join("+")).join(" "));
+  check("an unknown source shows every record",
+    shapes.every(l => api.hlFromSource(l, "sms") === true && api.hlFromSource(l, undefined) === true));
+  check("empty notes name the source",
+    api.hlFilterEmptyText("warm") === "No warm leads in this list."
+    && api.hlFilterEmptyText("warm", "all") === "No warm leads in this list."
+    && api.hlFilterEmptyText("hot", "vapi") === "No hot Clare calls in this list."
+    && api.hlFilterEmptyText("all", "whatsapp") === "No WhatsApp leads in this list."
+    && api.hlFilterEmptyText("warm", "bogus") === "No warm leads in this list.");
+
+  // Newest first, as loadHotLeads sorts: 0 WhatsApp warm, 1 Clare hot (no channel), 2 Clare warm.
+  const mixed = [
+    wa({ callId: "wa1", grade: "warm", createdAt: "2026-10-26T05:00:00Z" }),
+    clean({ callId: "v1", grade: "hot", createdAt: "2026-10-26T04:00:00Z",
+            customer: { name: "Clare Caller", email: "", phone: "" } }),
+    clean({ callId: "v2", channel: "vapi", grade: "warm", appointment: null, createdAt: "2026-10-26T03:00:00Z",
+            customer: { name: "Second Caller", email: "", phone: "" } }),
+  ];
+  const sourceRow = h => (h.match(/<div class="hl-filters hl-sources">[\s\S]*?<\/div>/) || [""])[0];
+  out = api.hlRenderLeads(mixed, "all");
+  auditMarkup("source buttons: markup is only the renderer's own", out);
+  check("the source buttons are labelled exactly, each with its count",
+    sourceRow(out).includes(`id="hlSource-all" aria-pressed="true" onclick="hlSetSource('all')">Both (3)</button>`)
+    && sourceRow(out).includes(`id="hlSource-vapi" aria-pressed="false" onclick="hlSetSource('vapi')">Clare calls (VAPI) (2)</button>`)
+    && sourceRow(out).includes(`id="hlSource-whatsapp" aria-pressed="false" onclick="hlSetSource('whatsapp')">WhatsApp (1)</button>`),
+    sourceRow(out).slice(0, 600));
+  check("the source buttons come before the grade buttons",
+    out.indexOf('id="hlSource-all"') >= 0 && out.indexOf('id="hlSource-all"') < out.indexOf('id="hlFilter-all"'));
+  check("with no source given: Both, and neither group is hidden",
+    (sourceRow(out).match(/aria-pressed="true"/g) || []).length === 1
+    && /id="hlGroup-whatsapp">/.test(out) && /id="hlGroup-vapi">/.test(out));
+
+  out = api.hlRenderLeads(mixed, "all", undefined, "vapi");
+  auditMarkup("rendered under Clare calls (VAPI): markup", out);
+  check("rendered under Clare calls (VAPI): that button is pressed, and only that one",
+    /id="hlSource-vapi" aria-pressed="true"/.test(sourceRow(out))
+    && (sourceRow(out).match(/aria-pressed="true"/g) || []).length === 1);
+  check("rendered under Clare calls (VAPI), the WhatsApp group is drawn hidden",
+    /id="hlGroup-whatsapp" hidden>/.test(out) && /id="hlGroup-vapi">/.test(out), out.slice(0, 200));
+  check("rendered under a source, the grade counts are that source's",
+    ["All (2)", "Hot (1)", "Warm (1)", "Nurture (0)"].every(t => out.includes(">" + t + "</button>"))
+    && !out.includes(">All (3)</button>"));
+  check("rendered under a source, the source counts are still the whole list's",
+    sourceRow(out).includes(">Both (3)</button>") && sourceRow(out).includes(">WhatsApp (1)</button>"));
+  check("the hidden group's cards are still drawn, each with its index into the full list",
+    groupHtml(out, "whatsapp").includes('onclick="rerunHotLead(0)"')
+    && groupHtml(out, "vapi").includes('onclick="rerunHotLead(1)"')
+    && groupHtml(out, "vapi").includes('onclick="rerunHotLead(2)"'));
+
+  out = api.hlRenderLeads(mixed, "all", undefined, "whatsapp");
+  check("rendered under WhatsApp, the Clare calls group is drawn hidden",
+    /id="hlGroup-vapi" hidden>/.test(out) && /id="hlGroup-whatsapp">/.test(out));
+  // A hot Clare call is in the list, but not in the source shown: the note must still show.
+  out = api.hlRenderLeads(mixed, "hot", undefined, "whatsapp");
+  check("rendered: nothing of that grade in the source shown, and the note says so, naming the source",
+    /id="hlFilterEmpty">No hot WhatsApp leads in this list\.<\/div>/.test(out), out.slice(0, 900));
+  out = api.hlRenderLeads(mixed, "all", undefined, "x'); alert(1); //");
+  auditMarkup("a junk source: markup", out);
+  check("rendered with a junk source: Both, and neither group hidden",
+    /id="hlSource-all" aria-pressed="true"/.test(out)
+    && /id="hlGroup-whatsapp">/.test(out) && /id="hlGroup-vapi">/.test(out));
+}
+
+// The buttons on a loaded tab: no request, the other group hidden, the grade counts follow.
+{
+  const s = sandbox();
+  const content = s.el("hotLeadsContent");
+  s.el("hotLeadsBadge"); s.el("hotLeadsRefresh");
+  // One Clare call of each shape: no channel key (every record stored before 23 Sep) and
+  // channel "vapi" (since). Both belong under Clare calls (VAPI).
+  const leads = [
+    wa({ callId: "wa1", grade: "warm", createdAt: "2026-10-26T05:00:00Z" }),
+    clean({ callId: "v-old", grade: "hot", createdAt: "2026-10-26T04:00:00Z",
+            customer: { name: "Coleen Test", email: "", phone: "" } }),
+    wa({ callId: "wa2", grade: "hot", createdAt: "2026-10-26T03:00:00Z",
+         customer: { name: "Second Chat", email: "", phone: "" } }),
+    clean({ callId: "v-new", channel: "vapi", grade: "nurture", appointment: null,
+            createdAt: "2026-10-26T02:00:00Z", customer: { name: "Nurture Caller", email: "", phone: "" } }),
+  ];
+  s.respond(async () => reply(200, { status: "success", count: leads.length, leads }));
+  await s.api.loadHotLeads();
+  // 0 wa1 (warm, WhatsApp), 1 v-old (hot, Clare), 2 wa2 (hot, WhatsApp), 3 v-new (nurture, Clare)
+  check("the loaded tab draws the source buttons with their counts",
+    content.innerHTML.includes(">Both (4)</button>") && content.innerHTML.includes(">Clare calls (VAPI) (2)</button>")
+    && content.innerHTML.includes(">WhatsApp (2)</button>"));
+  const cards = [0, 1, 2, 3].map(i => s.el("hlCard-" + i));
+  const grp = { whatsapp: s.el("hlGroup-whatsapp"), vapi: s.el("hlGroup-vapi") };
+  const sb = Object.fromEntries(["all", "vapi", "whatsapp"].map(k => [k, s.el("hlSource-" + k)]));
+  const fb = Object.fromEntries(["all", "hot", "warm", "nurture"].map(k => [k, s.el("hlFilter-" + k)]));
+  const note = s.el("hlFilterEmpty");
+  const only = (row, key) => row[key].className.includes("is-active") && row[key].attrs["aria-pressed"] === "true"
+    && Object.keys(row).filter(k => k !== key).every(k => !row[k].className.includes("is-active")
+                                                         && row[k].attrs["aria-pressed"] === "false");
+  const gradeText = () => ["all", "hot", "warm", "nurture"].map(k => fb[k].textContent).join(" | ");
+  const n = s.calls.fetch.length;
+
+  s.api.hlSetSource("vapi");
+  check("Clare calls (VAPI) hides the WhatsApp group and shows Clare's",
+    grp.whatsapp.hidden === true && grp.vapi.hidden === false);
+  check("Clare calls (VAPI) presses that button, and only that one", only(sb, "vapi"));
+  check("a Clare call with no channel key is shown under Clare calls (VAPI)",
+    cards[1].hidden === false && grp.vapi.hidden === false);
+  check("grade counts are within the source: Clare calls",
+    gradeText() === "All (2) | Hot (1) | Warm (0) | Nurture (1)", gradeText());
+  check("the grade stays pressed when the source changes", only(fb, "all"));
+  s.api.hlSetFilter("warm");
+  check("Warm under Clare calls: nothing visible, and the note names the source",
+    note.hidden === false && note.textContent === "No warm Clare calls in this list.", note.textContent);
+  s.api.hlSetSource("whatsapp");
+  check("WhatsApp hides the Clare calls group and shows WhatsApp's",
+    grp.vapi.hidden === true && grp.whatsapp.hidden === false);
+  check("Warm under WhatsApp: the warm WhatsApp lead is shown, and the note is hidden",
+    cards[0].hidden === false && cards[2].hidden === true && note.hidden === true);
+  check("grade counts are within the source: WhatsApp",
+    gradeText() === "All (2) | Hot (1) | Warm (1) | Nurture (0)", gradeText());
+  check("the grade stays as it was (Warm) when the source changes", only(fb, "warm") && only(sb, "whatsapp"));
+  check("changing the source asks the server nothing", s.calls.fetch.length === n);
+
+  await s.api.loadHotLeads(true);
+  const html1 = content.innerHTML;
+  auditMarkup("source kept after Refresh: markup", html1);
+  check("the source is kept after Refresh",
+    /id="hlSource-whatsapp" aria-pressed="true"/.test(html1) && /id="hlGroup-vapi" hidden>/.test(html1)
+    && /id="hlGroup-whatsapp">/.test(html1) && /id="hlFilter-warm" aria-pressed="true"/.test(html1),
+    html1.slice(0, 600));
+  check("after Refresh the grade counts are still the source's",
+    html1.includes(">All (2)</button>") && html1.includes(">Warm (1)</button>") && !html1.includes(">All (4)</button>"));
+  // The source is the page's choice alone: the hook is asked exactly what it was asked
+  // before, so test records stay out (no include_test without ?hl_test=1) and no source
+  // parameter is invented.
+  check("the source adds nothing to the request: the Refresh asks exactly as before",
+    s.calls.fetch.length === n + 1 && s.calls.fetch[n].url === "/api/hot_leads?limit=200",
+    s.calls.fetch.slice(n).map(c => c.url).join(","));
+
+  for (const bad of ["VAPI", "x'); alert(1); //", undefined]) {
+    s.api.hlSetSource("vapi");
+    s.api.hlSetSource(bad);
+    check("source " + JSON.stringify(bad) + " -> Both",
+      grp.whatsapp.hidden === false && grp.vapi.hidden === false && only(sb, "all"));
+  }
+  s.api.hlSetFilter("all");
+  check("Both and All: every card and both groups are shown, and the counts are the whole list's",
+    cards.every(c => c.hidden === false) && gradeText() === "All (4) | Hot (2) | Warm (1) | Nurture (1)",
+    gradeText());
 }
 
 // ------------------------------------------------------------------ nothing vanishes
@@ -3032,6 +3225,8 @@ console.log("\n--- the tab is wired into the page ---");
   check("pane header names both sources", pane.includes("<span>Leads from Clare's calls and WhatsApp</span>"));
   check("pane says WhatsApp leads are listed in their own group",
     /Qualified <strong>WhatsApp<\/strong> leads from Kommo are listed in their own group/.test(pane));
+  check("pane names the source buttons",
+    /press\s+<strong>Clare calls \(VAPI\)<\/strong> or <strong>WhatsApp<\/strong> above the list/.test(pane));
   // Every hot caller is stored, with or without a state; warm and nurture only with one.
   check("explanation: every hot caller, and warm or nurture who gave a state; hot callers get a call booked",
     /Every hot caller from Clare's calls, and every warm or nurture caller who gave a\s+state/.test(pane)
