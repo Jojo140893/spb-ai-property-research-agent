@@ -103,10 +103,21 @@ def _fetch(remote, dest, timeout=120, min_bytes=1):
     So the copy lands on a fresh staging name beside `dest`, and replaces `dest` only once
     it is complete and at least `min_bytes` long. Returns (ok, why): when ok is False,
     `dest` is exactly as it was before the call.
+
+    AND IT NEVER RAISES ON A FILE IT CANNOT TOUCH. Its callers run inside a pull that has
+    already taken the bucket lock, and an exception there ends the run before the push that
+    gives the lock back (run_daily.py skips the push when the pull fails) -- the backup
+    laptop then stands down too, and nobody harvests that Melbourne day. Windows refuses
+    os.replace onto a file another program holds open without FILE_SHARE_DELETE (Excel with
+    vendors.csv open, or any plain open()), and refuses to delete a staging file that is in
+    use. Each of those is a missed copy, reported as one, with `dest` left as it was.
     """
     dest = Path(dest)
     staging = dest.with_name(f".{dest.name}.pulling")
-    staging.unlink(missing_ok=True)          # debris from a run that was killed mid-copy
+    try:
+        staging.unlink(missing_ok=True)      # debris from a run that was killed mid-copy
+    except OSError as exc:
+        return False, f"could not clear {staging.name} ({exc.strerror or exc})"
     try:
         p = _cli("storage", "cp", remote, _rel(staging), timeout=timeout)
         if p is None:
@@ -114,13 +125,21 @@ def _fetch(remote, dest, timeout=120, min_bytes=1):
         if p.returncode != 0 or not staging.exists():
             last = (p.stderr or p.stdout or "").strip().splitlines()
             return False, (last[-1][:160] if last else f"exit {p.returncode}")
-        size = staging.stat().st_size
-        if size < min_bytes:
-            return False, f"the bucket's copy is only {size} bytes"
-        os.replace(staging, dest)
+        try:
+            size = staging.stat().st_size
+            if size < min_bytes:
+                return False, f"the bucket's copy is only {size} bytes"
+            os.replace(staging, dest)        # a refused replace leaves `dest` untouched
+        except OSError as exc:
+            return False, f"could not replace {dest.name} ({exc.strerror or exc})"
         return True, ""
     finally:
-        staging.unlink(missing_ok=True)
+        try:
+            staging.unlink(missing_ok=True)
+        except OSError:
+            # Still in use. The next pull's first unlink retries it; until then a leftover
+            # only makes that copy refuse ("The file exists"), never lands in `dest`.
+            pass
 
 
 def _cli(*args, timeout=900):
@@ -255,9 +274,9 @@ def cmd_pull(args):
     finally:
         staged.unlink(missing_ok=True)
     print(f"   pulled {DB.stat().st_size:,} bytes, {rows:,} building row(s)")
-    SESSION_DIR.mkdir(exist_ok=True)
-    _sync_sessions("pull")
-    _sync_builder_csv("pull")
+    # The lock is this run's from here on, and only the push gives it back: nothing below may
+    # raise (see _sync_files).
+    _sync_files("pull")
     return 0
 
 
@@ -266,8 +285,7 @@ def cmd_push(args):
     if getattr(args, "files_only", False):
         # No database, and NO LOCK RELEASE: this can run while a harvest holds the lock,
         # and releasing someone else's lock would let a second runner start on top of it.
-        _sync_sessions("push")
-        _sync_builder_csv("push")
+        _sync_files("push")
         print("   files only — database and lock untouched")
         return 0
     if not DB.exists():
@@ -325,10 +343,29 @@ def cmd_push(args):
         print(f"     supabase storage mv {incoming} {REMOTE_DB} --linked --experimental --yes")
         return 1
     print(f"   pushed {DB.stat().st_size:,} bytes, {rows:,} building row(s)")
-    _sync_sessions("push")
-    _sync_builder_csv("push")
+    _sync_files("push")              # never raises, so the lock below is always released
     print("   lock released" if _clear_lock() else "   !! could not release the lock")
     return 0
+
+
+def _sync_files(direction):
+    """The sessions, then the builder CSV, in `direction`. Never fatal, not even when one RAISES.
+
+    A pull calls this after taking the bucket lock and a push before releasing it, so an
+    exception from either would strand the lock: run_daily.py does not push after a failed
+    pull, and a push that dies here never reaches _clear_lock(). Then the backup laptop sees
+    a fresh lock, stands down, and nobody harvests that Melbourne day -- for want of a cookie
+    file or a CSV, which cost one channel on one run at most. Both functions already report
+    their own failures; this catches what they did not foresee, says so, and carries on.
+    """
+    for label, sync in (("sessions", _sync_sessions), ("builder csv", _sync_builder_csv)):
+        try:
+            sync(direction)
+        except Exception as exc:                                      # noqa: BLE001
+            # ASCII only: this line must not itself raise on a console that cannot encode.
+            line = (f"   !! {label} {direction} failed ({type(exc).__name__}: {exc}) - "
+                    "carrying on without it")
+            print(line.encode("ascii", "replace").decode("ascii"))
 
 
 def _sync_sessions(direction):
@@ -339,6 +376,8 @@ def _sync_sessions(direction):
     checked. Files are copied one at a time because `cp -r` on the CLI takes a directory
     and this only ever wants the JSON.
     """
+    if direction == "pull":
+        SESSION_DIR.mkdir(exist_ok=True)     # was in cmd_pull, outside _sync_files's guard
     if not SESSION_DIR.exists():
         return
     if direction == "push":
