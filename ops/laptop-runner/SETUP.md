@@ -45,8 +45,9 @@ start** in either of these cases:
 - fewer than 6 hours remain before either midnight. A run takes up to about 4.5 hours.
 
 On Pakistan time, that means a run may start between **00:00 and 12:00** (AEDT) or between
-**00:00 and 13:00** (AEST). The refusal message says this, and `-Force` overrides it. The
-script never changes the machine's time zone, and you should not change it either.
+**00:00 and 13:00** (AEST). The refusal message says this. `-Force` does **not** override it;
+only `-IgnoreClock` does, and then the rows are dated as the message warns. The script never
+changes the machine's time zone, and you should not change it either.
 
 ---
 
@@ -82,7 +83,7 @@ script never changes the machine's time zone, and you should not change it eithe
 | What | Why the runner needs it | Who provides it | Where it is kept on Jazib's laptop |
 |---|---|---|---|
 | **A GitHub account with read access** to `Jojo140893/spb-ai-property-research-agent` | Cloning and fetching the code each night. Reading Actions runs for the "GitHub already published today" check. | The repo owner (Jojo140893) adds Jazib as a collaborator. Read access is enough. | `gh auth login` (gh's own store) plus `gh auth setup-git` |
-| **A Supabase access token** whose account can see project `dvivicgzphyxtxpkgvjn` | Pulling and pushing the shared database, sessions and builder list in bucket `spb-state`. Reading and writing the day marker and the lock. | Best: the org owner invites Jazib to the Supabase organisation, and Jazib creates his own token (Account > Access Tokens, named "SPB Jazib laptop"). This way it can be revoked on its own. Otherwise the owner creates the token and hands it over privately. | Credential Manager `SPB-PropertyAgent / supabase:access_token` |
+| **A Supabase access token** whose account can see project `dvivicgzphyxtxpkgvjn` | Pulling and pushing the shared database, sessions and builder list in bucket `spb-state`. Reading and writing the day marker and the lock. | Best: the org owner invites Jazib to the Supabase organisation with the **Developer** role (or higher), and Jazib creates his own token (Account > Access Tokens, named "SPB Jazib laptop"). This way it can be revoked on its own. A **Read-only** member can see the project, but the storage commands may be refused; the dry check's bucket line shows it. Otherwise the owner creates the token and hands it over privately. | Credential Manager `SPB-PropertyAgent / supabase:access_token` |
 | **A Vercel token** scoped to team `digitalx-solutions-projects` | Deploying the dashboard after the harvest. The team is on the **Hobby plan, which allows one member**, so Jazib cannot be invited. A Pro team would allow it. | The team's owner creates it at vercel.com/account/tokens: scope `digitalx-solutions-projects`, named "SPB Jazib laptop", with an expiry such as 90 days. | Credential Manager `vercel:token` |
 | **The E-Agent username and password** (required) | Harvesting E-Agent. Without them the run stops before harvesting. | Ahsan or Coleen. It is the same login as GitHub's `E_AGENT_*` secrets. | Credential Manager `e_agent:*` |
 | Proxima login: **leave it out** | Only used when the shared Proxima session in the bucket has expired. Each refused sign-in counts against the account. | | |
@@ -101,7 +102,9 @@ The runner also puts sensitive data on Jazib's disk, in `C:\SPB-runner\app`:
 His Windows account needs a password, and device encryption or BitLocker should be on.
 
 The Supabase token gives full access to every project that account can see. The Vercel token
-can deploy any project in the team. Revoke both when the backup is retired (step 10).
+can deploy any project in the team. Revoke both when the backup is retired (step 10). The
+Vercel token is never written to a log, but while a deploy runs it is on the `node.exe` command
+line, so anyone with an admin account on Jazib's laptop could read it from the process list.
 
 ---
 
@@ -135,7 +138,7 @@ Hard rules:
    dashboard.
 5. Install everything under C:\SPB-runner. Do not create or edit any other project files.
 6. If any command fails or the dry check prints FAIL, stop and show me the output. Do not
-   work around a failed check, and do not retry with -Force.
+   work around a failed check, and never use -Force or -IgnoreClock.
 
 Steps:
 A. Step 1 of SETUP.md: install Git, GitHub CLI, Node.js LTS, Python 3.11, the Vercel CLI and
@@ -161,11 +164,14 @@ G. Finish with a short report: each tool's version, the dry check result, and th
 Run these in Windows PowerShell on Jazib's laptop:
 
 ```powershell
-winget install -e --id Git.Git
-winget install -e --id GitHub.cli
-winget install -e --id OpenJS.NodeJS.LTS
-winget install -e --id Python.Python.3.11
+winget install -e --id Git.Git --accept-source-agreements --accept-package-agreements
+winget install -e --id GitHub.cli --accept-source-agreements --accept-package-agreements
+winget install -e --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements
+winget install -e --id Python.Python.3.11 --accept-source-agreements --accept-package-agreements
 ```
+
+The two `--accept-...` flags accept winget's source and package terms. Without them, a first
+winget run stops at a Y/N question, and an AI agent running it would hang there.
 
 Close PowerShell and open a new window, so the new PATH applies. Then install the Vercel CLI
 and the Supabase CLI. The Supabase CLI comes from its GitHub release, pinned to the version
@@ -264,6 +270,7 @@ It ends with `DRY CHECK PASSED`, or with a count of problems. Its log is
 |---|---|
 | `Supabase: ... cannot see the SPB project` | The token belongs to the wrong account, or Jazib is not in the org. Redo step 4 with `supabase`. |
 | `Vercel: ... cannot see the team` | The token is personal-scope. Make it again with the team scope, then rerun `laptop_logins.py vercel`. |
+| `bucket spb-state: not readable ...` | Above it, `has no builders/vendors.csv` means Ahsan pushes the builder list once (`python state_sync.py push` on his laptop). Anything else: Jazib's Supabase role is too low (see the access table), or the token is wrong. |
 | `git: cannot reach` / `gh: not signed in` | Repeat step 2. Check that Jazib has been added to the repository. |
 | `rapidocr-onnxruntime ...` / `Python ...` | The venv was not built on python.org 3.11. Delete `C:\SPB-runner\venv311` and run `install.ps1 -Python <path to python.exe>`. |
 
@@ -301,8 +308,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\SPB-runner\nightly.ps1 -N
 If the primary has already done the day, the run logs
 `another run already finished Melbourne day ...` and stops. That is the shared marker working.
 To harvest anyway, use `-Force` instead of `-Now`. A second harvest on the same day is safe:
-it starts from the database the first run pushed, as a manual GitHub re-run would. A full run
-takes 1.5 to 4.5 hours. Leave the laptop on and logged in.
+it starts from the database the first run pushed, as a manual GitHub re-run would. `-Force`
+still keeps to the 00:00-12:00 window. A full run takes 1.5 to 4.5 hours. Leave the laptop on
+and logged in.
 
 ## Step 8. Reading the result
 
@@ -325,6 +333,7 @@ A good run has these values in `last_run.json`: `run_daily_exit: 0`, `pushed: tr
 | `PARTIAL - channel(s) read nothing` | A source read 0 rows (often an expired portal session). The data still published. |
 | `DEGRADED - step(s) failed` | An optional data step failed. The data still published. |
 | `!! no 'lock released' line` | The push did not finish and the lock may still be held. Tell Ahsan. |
+| `deploy: REFUSED (the builder list was not pulled ...)` | The harvest ran without the builder list, so it was not published (it would have emptied the builder directory). No day marker was written, so the next trigger tries again. Run `nightly.ps1 -Check`. |
 | `login gate: ALARM ...` | The catalogue is public. Tell Ahsan at once. |
 
 A scheduled trigger that finds nothing to do (before 09:00 Melbourne, or the day already done
@@ -340,10 +349,13 @@ copy. When `main` changes them, the log says
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\SPB-runner\app\ops\laptop-runner\install.ps1 -Root C:\SPB-runner
 ```
 
+`install.ps1` refuses to run while a nightly is running on the same laptop.
+
 ## Step 10. Turning it off (when GitHub billing is fixed)
 
-Runs already stand down on days GitHub published, but switch the task off, and remove the
-logins when the backup is retired:
+Runs already stand down on days GitHub published, but switch the tasks off **on the day
+billing is fixed**. GitHub's cron fires in the same minute as the primary's 03:00 trigger, so
+the two would race for the bucket lock. Remove the logins when the backup is retired:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\SPB-runner\register_task.ps1 -Disable

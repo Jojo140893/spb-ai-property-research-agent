@@ -28,12 +28,18 @@ $App = Join-Path $Root "app"
 $Venv = Join-Path $Root "venv311"
 $Py = Join-Path $Venv "Scripts\python.exe"
 
+# Never under a running nightly: this checks app\ out with --force and pip-installs into the
+# venv that run is using. The nightly holds this mutex for its whole run.
+$mutex = New-Object System.Threading.Mutex($false, "Global\SPBNightlyLaptop")
+try { $got = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $got = $true }
+if (-not $got) { Stop-Install "a nightly run is in progress on this laptop - run install.ps1 again when it has finished" }
+
 # --- 1. the tools ----------------------------------------------------------------------------
 Step "1/6 tools"
 $need = [ordered]@{
-    "git.exe"      = "winget install -e --id Git.Git"
-    "gh.exe"       = "winget install -e --id GitHub.cli"
-    "node.exe"     = "winget install -e --id OpenJS.NodeJS.LTS"
+    "git.exe"      = "winget install -e --id Git.Git --accept-source-agreements --accept-package-agreements"
+    "gh.exe"       = "winget install -e --id GitHub.cli --accept-source-agreements --accept-package-agreements"
+    "node.exe"     = "winget install -e --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements"
     "vercel.cmd"   = "npm.cmd install -g vercel     (after Node; then open a new PowerShell window)"
     "supabase.exe" = "see SETUP.md step 1 (the Supabase CLI release download)"
 }
@@ -64,7 +70,7 @@ foreach ($c in $cands) {
     if ("$ver".Trim() -eq "3.11") { $base = $c; break }
 }
 if (-not $base) {
-    Stop-Install ("no python.org Python 3.11 found. Install it: winget install -e --id Python.Python.3.11 " +
+    Stop-Install ("no python.org Python 3.11 found. Install it: winget install -e --id Python.Python.3.11 --accept-source-agreements --accept-package-agreements " +
                   "(NOT 3.12/3.13, NOT the Microsoft Store one), then run this again, or pass -Python <path to python.exe>.")
 }
 Write-Host "  using $base"

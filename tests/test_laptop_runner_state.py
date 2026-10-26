@@ -75,6 +75,7 @@ def bucket(tmp_path, monkeypatch):
     monkeypatch.setattr(rs, "_code", lambda app: "3e9a17b Merge pull request #44")
     monkeypatch.setenv("COMPUTERNAME", "JAZIB-LAPTOP")
     fake.objects[rs.DB_NAME] = b"sqlite"
+    fake.objects["builders/vendors.csv"] = b"name,portal\n"
     return fake
 
 
@@ -212,4 +213,13 @@ def test_the_status_commands_never_write_to_the_bucket(bucket):
 def test_bucket_check_wants_the_database(bucket):
     assert run(bucket, "bucket-check") == 0
     del bucket.objects[rs.DB_NAME]
+    assert run(bucket, "bucket-check") == 1
+
+
+def test_bucket_check_wants_the_builder_list(bucket, capsys):
+    """A fresh laptop with no builder list would harvest no direct portals: the dry check says so."""
+    del bucket.objects["builders/vendors.csv"]
+    assert run(bucket, "bucket-check") == 1
+    assert "0 builders" in capsys.readouterr().out
+    bucket.objects["builders/other.csv"] = b"x"
     assert run(bucket, "bucket-check") == 1

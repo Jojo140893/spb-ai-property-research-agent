@@ -12,7 +12,8 @@
 #
 #   nightly.ps1              scheduled: once per Melbourne day, from 09:00 Melbourne
 #   nightly.ps1 -Now         run now whatever the hour (still skips a day already done)
-#   nightly.ps1 -Force       run even if the day is done, the clocks disagree or a lock is held
+#   nightly.ps1 -Force       run even if the day is done or a lock is held (NOT outside the clock window)
+#   nightly.ps1 -IgnoreClock run even when the clock rule below refuses (rows may be dated wrong)
 #   nightly.ps1 -Check       the dry check: proves every login and tool, changes nothing shared
 #   nightly.ps1 -SelfTest    tests this script's own clock rule, offline
 #   -Root <folder>           the runner folder (default: the one holding app\ beside this script)
@@ -35,6 +36,7 @@ param(
     [string]$Root = "",
     [switch]$Now,
     [switch]$Force,
+    [switch]$IgnoreClock,
     [switch]$Check,
     [switch]$SelfTest,
     [double]$MinHoursLeft = 6,
@@ -110,6 +112,19 @@ function Get-DeployCommand([bool]$WithToken, [string]$LogPath) {
     return "vercel deploy --prod --yes --scope $VercelScope$tok < nul >> `"$LogPath`" 2>&1"
 }
 
+# What a start does before any network call: "run", "silent" (exit 0, no log) or "refuse".
+# -Force skips the day-done and 09:00 gates but never the clock rule: SETUP tells people to
+# use -Force to harvest again, and at 18:00-23:59 Pakistan time that would date every row a
+# day early. Only -IgnoreClock overrides the clock.
+function Get-StartGate([bool]$Force, [bool]$Now, [bool]$IgnoreClock, [bool]$DoneHere, [int]$MelHour, [bool]$ClockOk) {
+    if (-not $Force) {
+        if ($DoneHere) { return "silent" }
+        if (-not $Now -and $MelHour -lt 9) { return "silent" }
+    }
+    if (-not $ClockOk -and -not $IgnoreClock) { return "refuse" }
+    return "run"
+}
+
 function Invoke-SelfTest {
     $pk = [System.TimeZoneInfo]::FindSystemTimeZoneById("Pakistan Standard Time")
     $cases = @(
@@ -142,6 +157,24 @@ function Invoke-SelfTest {
     $pass = $pkWindow -eq "start it between 00:00 and 12:00 on this laptop's clock"
     if (-not $pass) { $failed++ }
     Write-Host ("{0}  Pakistan in AEDT: '{1}'" -f $(if ($pass) { "PASS" } else { "FAIL" }), $pkWindow)
+
+    # Get-StartGate: Force, Now, IgnoreClock, DoneHere, MelHour, ClockOk
+    $gates = @(
+        @{ a = @($false, $false, $false, $false, 9, $true);  want = "run";    why = "scheduled, 09:00 Melbourne, clock fine" },
+        @{ a = @($false, $false, $false, $false, 8, $true);  want = "silent"; why = "scheduled before 09:00 Melbourne" },
+        @{ a = @($false, $false, $false, $true, 10, $true);  want = "silent"; why = "scheduled, this laptop already did the day" },
+        @{ a = @($false, $true,  $false, $false, 2, $false); want = "refuse"; why = "-Now outside the clock window" },
+        @{ a = @($true,  $false, $false, $true, 2, $false);  want = "refuse"; why = "-Force outside the clock window is still refused" },
+        @{ a = @($true,  $false, $true,  $true, 2, $false);  want = "run";    why = "-Force -IgnoreClock outside the window runs" },
+        @{ a = @($true,  $false, $false, $true, 10, $true);  want = "run";    why = "-Force on a day already done, clock fine" }
+    )
+    foreach ($g in $gates) {
+        $got = Get-StartGate $g.a[0] $g.a[1] $g.a[2] $g.a[3] $g.a[4] $g.a[5]
+        $pass = $got -eq $g.want
+        if (-not $pass) { $failed++ }
+        Write-Host ("{0}  start gate: {1} -> {2}{3}" -f $(if ($pass) { "PASS" } else { "FAIL" }), $g.why, $got,
+                    $(if ($pass) { "" } else { "  [wanted $($g.want)]" }))
+    }
 
     $env:SPB_VERCEL_TOKEN = "selftest-not-a-real-token-0123456789"
     $line = Get-DeployCommand $true "C:\x\nightly.log"
@@ -333,7 +366,7 @@ if ($Check) {
     if (Confirm-SupabaseLink) {
         Report "PASS" "app folder linked to the SPB Supabase project"
         $rc = Invoke-Py "`"$Helper`" --app `"$App`" bucket-check"
-        if ($rc -eq 0) { Report "PASS" "bucket spb-state readable: the shared database is there" } else { Report "FAIL" "bucket spb-state not readable (lines above)" }
+        if ($rc -eq 0) { Report "PASS" "bucket spb-state readable: the shared database and the builder list are there" } else { Report "FAIL" "bucket spb-state: not readable, or the database or builder list is missing (lines above)" }
         $rc = Invoke-Py "`"$Helper`" --app `"$App`" day-status --day $today"
         Report "INFO" $(if ($rc -eq 3) { "Melbourne day $today is already done (above): a run today would stand down" } elseif ($rc -eq 0) { "Melbourne day $today is not done yet" } else { "could not read the day marker" })
         $rc = Invoke-Py "`"$Helper`" --app `"$App`" lock-status --wait-hours $LockWaitHours"
@@ -378,14 +411,15 @@ try { $got = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException
 if (-not $got) { exit 0 }
 
 # --- gates, cheapest first ---------------------------------------------------------------
-if (-not $Force) {
-    if ((Test-Path $Done) -and ((Get-Content $Done -Raw).Trim() -eq $today)) { exit 0 }
-    if (-not $Now -and $mel.Hour -lt 9) { exit 0 }
-    if (-not $clock.Ok) {
-        Say "[REFUSED] not starting: $($clock.Reason) (-Force overrides this.)"
+$doneHere = (Test-Path $Done) -and ("$(Get-Content $Done -Raw)".Trim() -eq $today)
+switch (Get-StartGate $Force $Now $IgnoreClock $doneHere $mel.Hour $clock.Ok) {
+    "silent" { exit 0 }
+    "refuse" {
+        Say "[REFUSED] not starting: $($clock.Reason) (-Force does not override this; -IgnoreClock does, and dates the rows as above.)"
         exit 1
     }
 }
+if (-not $clock.Ok) { Say "!! -IgnoreClock: starting anyway, although $($clock.Reason)" }
 
 Say "SPB nightly (laptop $Machine) starting for Melbourne day $today - runner folder $Root"
 
@@ -537,7 +571,14 @@ Say "run_daily.py exited $rc"
 
 # --- publish, only on success (0 includes PARTIAL and DEGRADED, as on GitHub) ---------------
 $deploy = "skipped"
-if ($rc -eq 0) {
+# A fresh laptop whose first builder-list pull failed harvests no direct portals and would
+# publish an EMPTY builder directory (state_sync prints this line). Keep yesterday's dashboard
+# instead; no day marker is written, so the next trigger (or the other laptop) tries again.
+$noBuilders = Select-String -Path $Log -Pattern "this run will see 0 builders" -Quiet
+if ($rc -eq 0 -and $noBuilders) {
+    $deploy = "REFUSED (the builder list was not pulled, so this run saw 0 builders and would publish an empty builder directory)"
+    Say "deploy: $deploy"
+} elseif ($rc -eq 0) {
     $site = Join-Path $App "vercel_site"
     $link = Join-Path $site ".vercel\project.json"
     $want = $VercelProject | ConvertFrom-Json

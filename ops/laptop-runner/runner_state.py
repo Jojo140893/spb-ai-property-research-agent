@@ -159,7 +159,15 @@ def cmd_bucket_check(args):
     if DB_NAME not in names:
         print(f"!! the bucket {BUCKET} is visible but holds no {DB_NAME}: wrong project?")
         return 1
-    print(f"bucket {BUCKET}: {len(names)} entries, the shared database is there")
+    # Without it a fresh laptop harvests no direct portals, and nightly.ps1 refuses the deploy.
+    builders = ls(args.app, f"{ROOT_URI}builders/") if "builders/" in names else []
+    if builders is None:
+        return 1
+    if "vendors.csv" not in builders:
+        print(f"!! the bucket {BUCKET} has no builders/vendors.csv: a run here would see 0 builders. "
+              "Push it once from a laptop that has it: python state_sync.py push")
+        return 1
+    print(f"bucket {BUCKET}: {len(names)} entries, the shared database and the builder list are there")
     return 0
 
 

@@ -135,6 +135,20 @@ def test_a_pull_replaces_the_builder_csv_this_machine_already_has(cli, capsys):
     assert _leftovers(cli.app) == []
 
 
+def test_a_pull_keeps_the_copy_it_replaced(cli, capsys):
+    """On a dev checkout the local CSV can hold a hand edit not pushed yet: a pull must not lose it."""
+    local = cli.app / "drive_input" / "vendors.csv"
+    local.parent.mkdir()
+    local.write_text(OLD_CSV)
+    cli.objects["builders/vendors.csv"] = NEW_CSV.encode()
+
+    state_sync._sync_builder_csv("pull")
+
+    assert local.read_text() == NEW_CSV
+    assert (local.parent / ".vendors.csv.before-pull").read_text() == OLD_CSV
+    assert ".vendors.csv.before-pull" in capsys.readouterr().out
+
+
 def test_a_failed_first_pull_leaves_no_empty_csv_behind(cli, capsys):
     """An empty vendors.csv is worse than none: config picks it, and no pull replaced it."""
     state_sync._sync_builder_csv("pull")

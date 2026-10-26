@@ -24,7 +24,7 @@ WHAT RUNS
                               (read-only against Kommo). One laptop running it is enough.
 
 WHERE (the runner folder, e.g. C:\SPB-runner, or D:\Coleen\nightly on Ahsan's laptop)
-  nightly.ps1                 the nightly (-Check = dry check, -SelfTest, -Now, -Force)
+  nightly.ps1                 the nightly (-Check = dry check, -SelfTest, -Now, -Force, -IgnoreClock)
   runner_state.py             reads the bucket's day marker and lock, writes the marker,
                               checks the venv (env-check)
   laptop_logins.py            puts the logins into Credential Manager (the owner runs it)
@@ -64,7 +64,8 @@ BY HAND (Windows PowerShell)
   Dry check:    powershell -NoProfile -ExecutionPolicy Bypass -File <Root>\nightly.ps1 -Check
   Run now:      powershell -NoProfile -ExecutionPolicy Bypass -File <Root>\nightly.ps1 -Now
   Run again:    ... nightly.ps1 -Force   (even if the day is done; a second harvest the same
-                day is safe: it starts from the database the first one pushed)
+                day is safe: it starts from the database the first one pushed). -Force still
+                keeps the clock rule; only -IgnoreClock overrides that, and dates rows wrong.
 
 TURN IT OFF when GitHub billing is fixed
   The nightly already stands down on a day GitHub reached "Publish to Vercel", but switch it off:

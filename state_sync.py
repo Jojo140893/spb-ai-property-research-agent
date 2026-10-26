@@ -480,10 +480,21 @@ def _sync_builder_csv(direction):
         # Replacing the local copy, and only with a whole one: the CLI never overwrites a
         # local file, so a plain cp failed on every pull after the first (see _fetch).
         # 512 bytes is the floor push applies too.
+        # Replacing is new (the failing cp kept the local copy, by accident), and on a dev
+        # checkout that copy can hold a hand edit not pushed yet: keep it beside the new one.
+        kept = local.with_name(f".{local.name}.before-pull")
+        saved = False
+        if local.exists():
+            try:
+                shutil.copy2(local, kept)
+                saved = True
+            except OSError:
+                pass
         ok, why = _fetch(remote, local, timeout=180, min_bytes=512)
         if ok:
             unpulled.unlink(missing_ok=True)
-            print(f"   builder csv pulled: {local.name}")
+            print(f"   builder csv pulled: {local.name}"
+                  + (f" (the copy it replaced is kept as {kept.name})" if saved else ""))
             return
         unpulled.write_text(f"{datetime.now():%Y-%m-%d %H:%M:%S} {why}\n", encoding="utf-8")
         if local.exists() and local.stat().st_size >= 512:
