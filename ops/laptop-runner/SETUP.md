@@ -319,7 +319,7 @@ A good run has these values in `last_run.json`: `run_daily_exit: 0`, `pushed: tr
 | Last line of the log | Meaning |
 |---|---|
 | `another run already finished Melbourne day ...` / `GitHub's daily-harvest already published today` | Nothing to do. Correct for the backup on most days. |
-| `a harvest is running on another machine ... standing down` | The primary is still running. The 08:00 trigger checks again. |
+| `a harvest is running on another machine ... standing down` / `the pull was refused: another run holds the bucket lock` | The primary is still running. The 08:00 trigger checks again. |
 | `[REFUSED] not starting: ...` | It was started outside the clock window. The message says when to start it. |
 | `[ABORT] ...` | A login or tool is missing. Run `nightly.ps1 -Check`. |
 | `PARTIAL - channel(s) read nothing` | A source read 0 rows (often an expired portal session). The data still published. |
