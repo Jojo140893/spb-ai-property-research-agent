@@ -699,10 +699,17 @@
         .hl-ungraded { font-size: 0.78rem; color: var(--text-muted); font-style: italic; }
         .hl-filter.is-active { border-color: var(--accent-blue); background: var(--blue-light);
                                color: var(--accent-blue); font-weight: 600; }
+        /* Two rows of buttons since 26 Oct (Coleen): which source -- Clare's calls or
+           WhatsApp -- and, under it, which grade. A short label on each so the two "All"-ish
+           first buttons are not mistaken for one another. */
+        .hl-filters.hl-sources { margin-bottom: 0.45rem; }
+        .hl-filter-label { align-self: center; min-width: 3.6rem; font-size: 0.72rem; font-weight: 700;
+                           text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
         /* The filter hides cards rather than re-rendering them, so a Re-run in progress or
            its live results survive a change of filter. Said explicitly so a later display
-           rule on .prop-card cannot quietly un-hide them. */
-        .hl-card[hidden], .hl-notice[hidden] { display: none; }
+           rule on .prop-card cannot quietly un-hide them. The source buttons hide a whole
+           group the same way. */
+        .hl-card[hidden], .hl-notice[hidden], .hl-group[hidden] { display: none; }
         /* Said when the hook's answer was cut off at HL_LIMIT (see loadHotLeads). Amber only
            when the separate hot lookup failed, because then a hot caller may be missing. */
         .hl-cover { margin: 0 0 0.9rem; }
@@ -1189,7 +1196,8 @@
             <strong>Hot</strong> callers also get a discovery call booked.
             Qualified <strong>WhatsApp</strong> leads from Kommo are listed in their own group,
             above Clare's callers; they are answered in chat, so there is no call recording
-            and no summary to read.
+            and no summary to read. To see one source on its own, press
+            <strong>Clare calls (VAPI)</strong> or <strong>WhatsApp</strong> above the list.
         </p>
         <!-- Coleen, 28 Sep 2026: the Research tab's selection and report on every lead, notes
              and links per lead, and contact details only for whoever holds the password. -->
@@ -3049,6 +3057,8 @@ python state_sync.py push</pre>
     // Which grades the list shows. Applied to the list already loaded, so switching it asks
     // the server nothing, and it survives a Refresh.
     let HOT_LEADS_FILTER = 'all';        // 'all' | 'hot' | 'warm' | 'nurture'
+    // Which source the list shows (26 Oct), kept the same way: 'all' | 'vapi' | 'whatsapp'.
+    let HOT_LEADS_SOURCE = 'all';
 
     // The grades a record is stored for (15 Sep). A closed caller is not researched, so a
     // closed record, or a grade nobody wrote, has no place on this tab.
@@ -3068,11 +3078,36 @@ python state_sync.py push</pre>
     // renders is a lead nobody rings. The value returned is one of HL_CHANNELS, so an id or
     // a class built from it can never carry the record's own text.
     const HL_CHANNELS = ['whatsapp', 'vapi'];
-    const HL_CHANNEL_LABEL = { whatsapp: 'WhatsApp', vapi: 'Vapi' };
+    // The Vapi group was headed "Vapi" until 26 Oct, which does not say it is Clare. Coleen
+    // asked that day for a Clare / VAPI section she can find, so the heading and the source
+    // button say the same thing, and the sentences name them as she would.
+    const HL_CHANNEL_LABEL = { whatsapp: 'WhatsApp', vapi: 'Clare calls (VAPI)' };
+    const HL_CHANNEL_NOUN = { whatsapp: 'WhatsApp leads', vapi: 'Clare calls' };
     function hlChannel(lead) {
         if (!lead || typeof lead !== 'object') return 'vapi';
         return lead.channel === 'whatsapp' ? 'whatsapp' : 'vapi';
     }
+
+    // WHICH SOURCE IS SHOWN (Coleen, 26 Oct 2026: a separate Clare / VAPI section, so she can
+    // find Clare's calls among the WhatsApp leads). A row of buttons above the grades: Both,
+    // Clare calls (VAPI), WhatsApp, each with its count.
+    //
+    // A record's source is hlChannel and nothing else: the rule the groups already use, and
+    // the hook's recordChannel (lib/record.js) -- channel "whatsapp" exactly is WhatsApp, and
+    // every other record is a Clare call, including the many written before the channel key
+    // existed. So every record is in exactly one source, and no choice of the two buttons
+    // can hide a lead from both. Test records (test: true) are left out by the hook unless the
+    // page was opened with ?hl_test=1, and this changes nothing about that.
+    //
+    // Like the grade filter it works on the list already loaded, asks the server nothing,
+    // hides rather than re-renders (a whole group at a time), and is kept across a Refresh.
+    // Keys and labels are written here, never taken from a record.
+    const HL_SOURCES = ['all', 'vapi', 'whatsapp'];
+    const HL_SOURCE_LABEL = { all: 'Both', vapi: HL_CHANNEL_LABEL.vapi, whatsapp: HL_CHANNEL_LABEL.whatsapp };
+    const hlSourceKey = s => HL_SOURCES.includes(s) ? s : 'all';
+    // Whether a source shows a channel's group, and whether it shows one lead.
+    const hlSourceHas = (s, channel) => s === 'all' || s === channel;
+    const hlFromSource = (lead, s) => hlSourceHas(hlSourceKey(s), hlChannel(lead));
 
     // How many records the tab asks the hook for in one answer: the most it gives
     // (MAX_LIMIT in vapi-kommo-hook/lib/hot-leads.js). With no limit it gave the newest 50,
@@ -3844,23 +3879,46 @@ python state_sync.py push</pre>
 
     const hlFilterKey = f => HL_FILTERS.includes(f) ? f : 'all';
     const hlShows = (lead, f) => f === 'all' || hlGrade(lead) === f;
-    const hlFilterEmptyText = f => `No ${f} leads in this list.`;
+    // The note when nothing at all is visible. With one source chosen it names that source,
+    // or "No warm leads" would read as "no warm leads anywhere" while WhatsApp had three.
+    const hlFilterEmptyText = (f, s) => {
+        const src = hlSourceKey(s);
+        if (src === 'all') return `No ${f} leads in this list.`;
+        return `No ${f === 'all' ? '' : f + ' '}${HL_CHANNEL_NOUN[src]} in this list.`;
+    };
     // What a group with nobody visible in it says. Under All that is "there are none";
     // under a grade it is "there are some, none of them this grade" -- two different facts,
     // and a group that said neither would just be a heading with a gap under it.
     const hlGroupEmptyText = (channel, f) => f === 'all'
-        ? `No ${HL_CHANNEL_LABEL[channel]} leads yet.`
-        : `No ${f} ${HL_CHANNEL_LABEL[channel]} leads in this list.`;
+        ? `No ${HL_CHANNEL_NOUN[channel]} yet.`
+        : `No ${f} ${HL_CHANNEL_NOUN[channel]} in this list.`;
+
+    // A grade button's words: its label and how many of `list` have that grade.
+    const hlFilterLabel = (list, key) => `${key === 'all' ? 'All' : HL_GRADE_LABEL[key]} (`
+        + `${key === 'all' ? list.length : list.filter(l => hlGrade(l) === key).length})`;
 
     // All / Hot / Warm / Nurture, each with its count. Keys and labels come from HL_FILTERS,
-    // never from a record, so the onclick can only ever name one of the four.
+    // never from a record, so the onclick can only ever name one of the four. `list` is the
+    // leads of the source shown, so the counts are what each button would show.
     function hlFilterBar(list, f) {
-        const count = key => key === 'all' ? list.length : list.filter(l => hlGrade(l) === key).length;
-        return '<div class="hl-filters">' + HL_FILTERS.map(key => {
+        return '<div class="hl-filters hl-grades"><span class="hl-filter-label">Grade</span>' + HL_FILTERS.map(key => {
             const on = key === f;
             return `<button type="button" class="btn-ghost hl-filter${on ? ' is-active' : ''}" id="hlFilter-${key}"`
                  + ` aria-pressed="${on}" onclick="hlSetFilter('${key}')">`
-                 + `${key === 'all' ? 'All' : HL_GRADE_LABEL[key]} (${count(key)})</button>`;
+                 + `${hlFilterLabel(list, key)}</button>`;
+        }).join('') + '</div>';
+    }
+
+    // Both / Clare calls (VAPI) / WhatsApp. Each count is the whole list's, whatever grade is
+    // pressed: "WhatsApp (0)" is still the answer to "is the scan running?", and a source
+    // never reads as empty because of the grade below it.
+    function hlSourceBar(list, s) {
+        const count = key => key === 'all' ? list.length : list.filter(l => hlChannel(l) === key).length;
+        return '<div class="hl-filters hl-sources"><span class="hl-filter-label">Show</span>' + HL_SOURCES.map(key => {
+            const on = key === s;
+            return `<button type="button" class="btn-ghost hl-filter${on ? ' is-active' : ''}" id="hlSource-${key}"`
+                 + ` aria-pressed="${on}" onclick="hlSetSource('${key}')">`
+                 + `${HL_SOURCE_LABEL[key]} (${count(key)})</button>`;
         }).join('') + '</div>';
     }
 
@@ -3882,7 +3940,8 @@ python state_sync.py push</pre>
     }
 
     // cover: what loadHotLeads learned about whether the answer was cut off (hlCoverNote).
-    function hlRenderLeads(leads, filter, cover) {
+    // source: which source is shown (HL_SOURCES); anything else, or none, is Both.
+    function hlRenderLeads(leads, filter, cover, source) {
         const list = Array.isArray(leads) ? leads : [];
         const note = hlCoverNote(cover);
         if (!list.length) {
@@ -3893,18 +3952,19 @@ python state_sync.py push</pre>
                 a state, with their grade, contact details and the buildings the research picked
                 for them. Hot callers also get a discovery call booked.</div>`;
         }
-        const f = hlFilterKey(filter);
-        const shown = list.filter(l => hlShows(l, f)).length;
+        const f = hlFilterKey(filter), s = hlSourceKey(source);
+        const shown = list.filter(l => hlShows(l, f) && hlFromSource(l, s)).length;
         // EVERY card is rendered, the ones outside the filter hidden, and each keeps its
         // index in the full list: rerunHotLead(i) reads HOT_LEADS[i], so numbering the
         // filtered list instead would re-run the wrong caller's brief. The groups below
-        // only change the ORDER the cards are printed in, never the index they carry.
+        // only change the ORDER the cards are printed in, never the index they carry. The
+        // same holds for the source: the other source's group is drawn, hidden.
         const entries = list.map((lead, i) => ({ lead, i }));
-        return note + hlAccessBar() + hlFilterBar(list, f)
-             + `<div class="hl-notice" id="hlFilterEmpty"${shown ? ' hidden' : ''}>${hlFilterEmptyText(f)}</div>`
+        return note + hlAccessBar() + hlSourceBar(list, s) + hlFilterBar(list.filter(l => hlFromSource(l, s)), f)
+             + `<div class="hl-notice" id="hlFilterEmpty"${shown ? ' hidden' : ''}>${hlFilterEmptyText(f, s)}</div>`
              + `<div class="hl-groups">`
              + HL_CHANNELS.map(ch =>
-                   hlGroupBlock(ch, entries.filter(x => hlChannel(x.lead) === ch), f)).join('')
+                   hlGroupBlock(ch, entries.filter(x => hlChannel(x.lead) === ch), f, s)).join('')
              + `</div>`;
     }
 
@@ -3913,10 +3973,12 @@ python state_sync.py push</pre>
     // happened -- so mixing them by timestamp buried the new WhatsApp leads among the old
     // calls. Both groups are ALWAYS drawn, heading and count included: a group that
     // disappeared when it was empty is indistinguishable from a group that was never built,
-    // and "WhatsApp (0)" is the answer to "is the scan running?".
-    function hlGroupBlock(channel, entries, f) {
+    // and "WhatsApp (0)" is the answer to "is the scan running?". The one exception is a
+    // group the source buttons put out of view (26 Oct): it is drawn, hidden, and the source
+    // button over it carries its count.
+    function hlGroupBlock(channel, entries, f, s) {
         const visible = entries.filter(x => hlShows(x.lead, f)).length;
-        return `<div class="hl-group" id="hlGroup-${channel}">`
+        return `<div class="hl-group" id="hlGroup-${channel}"${hlSourceHas(hlSourceKey(s), channel) ? '' : ' hidden'}>`
              + `<div class="hl-group-head"><span class="hl-group-name">${HL_CHANNEL_LABEL[channel]}</span>`
              + `<span class="hl-group-count">(${entries.length})</span></div>`
              + `<div class="hl-notice hl-group-empty" id="hlGroupEmpty-${channel}"`
@@ -3930,30 +3992,53 @@ python state_sync.py push</pre>
     // rendering them again, so a Re-run still searching, or the live results it put on a
     // card, are still there when that card comes back into view. No request is made.
     function hlSetFilter(filter) {
-        const f = hlFilterKey(filter);
-        HOT_LEADS_FILTER = f;
+        HOT_LEADS_FILTER = hlFilterKey(filter);
+        hlApplyFilters();
+    }
+
+    // The source buttons (26 Oct). The same: the other source's group is hidden, not dropped,
+    // and the grade buttons' counts change to the source shown.
+    function hlSetSource(source) {
+        HOT_LEADS_SOURCE = hlSourceKey(source);
+        hlApplyFilters();
+    }
+
+    // Both rows of buttons, the cards, the groups and the notes, from HOT_LEADS_FILTER and
+    // HOT_LEADS_SOURCE. A card is hidden by its grade; a group by its source.
+    function hlApplyFilters() {
+        const f = hlFilterKey(HOT_LEADS_FILTER), s = hlSourceKey(HOT_LEADS_SOURCE);
+        const inSource = HOT_LEADS.filter(l => hlFromSource(l, s));
         HL_FILTERS.forEach(key => {
             const b = document.getElementById('hlFilter-' + key);
             if (!b) return;
             b.className = 'btn-ghost hl-filter' + (key === f ? ' is-active' : '');
             b.setAttribute('aria-pressed', String(key === f));
+            b.textContent = hlFilterLabel(inSource, key);
+        });
+        HL_SOURCES.forEach(key => {
+            const b = document.getElementById('hlSource-' + key);
+            if (!b) return;
+            b.className = 'btn-ghost hl-filter' + (key === s ? ' is-active' : '');
+            b.setAttribute('aria-pressed', String(key === s));
         });
         let shown = 0;
         const inGroup = { whatsapp: 0, vapi: 0 };
         HOT_LEADS.forEach((lead, i) => {
             const on = hlShows(lead, f);
-            if (on) { shown++; inGroup[hlChannel(lead)]++; }
+            if (on) { inGroup[hlChannel(lead)]++; if (hlFromSource(lead, s)) shown++; }
             const card = document.getElementById('hlCard-' + i);
             if (card) card.hidden = !on;
         });
         const empty = document.getElementById('hlFilterEmpty');
         if (empty) {
-            empty.textContent = hlFilterEmptyText(f);
+            empty.textContent = hlFilterEmptyText(f, s);
             empty.hidden = shown > 0;
         }
         // Each group's own note, or a heading with nothing under it reads as a group that
         // failed to render rather than one this filter empties.
         HL_CHANNELS.forEach(ch => {
+            const group = document.getElementById('hlGroup-' + ch);
+            if (group) group.hidden = !hlSourceHas(s, ch);
             const note = document.getElementById('hlGroupEmpty-' + ch);
             if (!note) return;
             note.textContent = hlGroupEmptyText(ch, f);
@@ -4166,7 +4251,7 @@ python state_sync.py push</pre>
                 : '0 leads';
             // Before the cards are drawn, so a draft this answer shows was saved is drawn empty.
             const arrived = hlSettleDrafts();
-            el.innerHTML = hlRenderLeads(HOT_LEADS, HOT_LEADS_FILTER, cover);
+            el.innerHTML = hlRenderLeads(HOT_LEADS, HOT_LEADS_FILTER, cover, HOT_LEADS_SOURCE);
             arrived.forEach((text, i) => hlNoteSay(i, text, false));
         } finally {
             if (btn && gen === HL_LOAD_GEN) btn.disabled = false;

@@ -76,6 +76,72 @@ def _staged(name):
     return APP / name
 
 
+def _rel(path):
+    """`path` (inside APP) as the CLI takes it: relative, with forward slashes."""
+    return Path(path).relative_to(APP).as_posix()
+
+
+def _fetch(remote, dest, timeout=120, min_bytes=1):
+    """Bucket object -> `dest` (a path inside APP), REPLACING whatever `dest` holds.
+
+    THE CLI NEVER OVERWRITES A LOCAL FILE, and it says so only in a line nobody reads.
+    `storage cp ss:///... <local>` opens the destination exclusively: when the file is
+    already there the copy fails with "failed to create file: open ...: The file exists."
+    before a byte is fetched. And a copy that fails after that open (a 404, a network blip)
+    leaves a 0-byte file behind. Measured with CLI 2.107.0 on 26 Oct 2026.
+
+    Nothing that runs on a fresh GitHub checkout ever sees this, which is why it went
+    unnoticed. A laptop keeps its checkout, so there:
+      * the builder CSV was pulled once (30 Sep, 4,598 bytes) and every later pull logged
+        "!! builder csv NOT pulled", ran on that 30 Sep copy, then PUSHED it back over the
+        bucket's;
+      * on a fresh laptop whose first pull fails, the empty file left behind is never
+        replaced: 0 builders, no direct portals and an empty builder directory, every night.
+    (It was not the Windows backslash in the relative path: `drive_input\\vendors.csv`
+    resolves to the same file, and the 30 Sep pull used exactly that path and worked.)
+
+    So the copy lands on a fresh staging name beside `dest`, and replaces `dest` only once
+    it is complete and at least `min_bytes` long. Returns (ok, why): when ok is False,
+    `dest` is exactly as it was before the call.
+
+    AND IT NEVER RAISES ON A FILE IT CANNOT TOUCH. Its callers run inside a pull that has
+    already taken the bucket lock, and an exception there ends the run before the push that
+    gives the lock back (run_daily.py skips the push when the pull fails) -- the backup
+    laptop then stands down too, and nobody harvests that Melbourne day. Windows refuses
+    os.replace onto a file another program holds open without FILE_SHARE_DELETE (Excel with
+    vendors.csv open, or any plain open()), and refuses to delete a staging file that is in
+    use. Each of those is a missed copy, reported as one, with `dest` left as it was.
+    """
+    dest = Path(dest)
+    staging = dest.with_name(f".{dest.name}.pulling")
+    try:
+        staging.unlink(missing_ok=True)      # debris from a run that was killed mid-copy
+    except OSError as exc:
+        return False, f"could not clear {staging.name} ({exc.strerror or exc})"
+    try:
+        p = _cli("storage", "cp", remote, _rel(staging), timeout=timeout)
+        if p is None:
+            return False, "the Supabase CLI did not run"
+        if p.returncode != 0 or not staging.exists():
+            last = (p.stderr or p.stdout or "").strip().splitlines()
+            return False, (last[-1][:160] if last else f"exit {p.returncode}")
+        try:
+            size = staging.stat().st_size
+            if size < min_bytes:
+                return False, f"the bucket's copy is only {size} bytes"
+            os.replace(staging, dest)        # a refused replace leaves `dest` untouched
+        except OSError as exc:
+            return False, f"could not replace {dest.name} ({exc.strerror or exc})"
+        return True, ""
+    finally:
+        try:
+            staging.unlink(missing_ok=True)
+        except OSError:
+            # Still in use. The next pull's first unlink retries it; until then a leftover
+            # only makes that copy refuse ("The file exists"), never lands in `dest`.
+            pass
+
+
 def _cli(*args, timeout=900):
     """Run the Supabase CLI. --experimental is required for every storage subcommand."""
     # --yes because `storage rm` PROMPTS ("Confirm deleting files in bucket spb-state?
@@ -98,6 +164,9 @@ def _read_lock():
     """The lock object as a dict, or None when the bucket has no lock."""
     local = _staged(".harvest.lock.read.json")
     try:
+        # A copy left by a run killed inside this block would make the CLI refuse ("The
+        # file exists"), and a refused read means "no lock": two runners at once.
+        local.unlink(missing_ok=True)
         p = _cli("storage", "cp", REMOTE_LOCK, local.name, timeout=120)
         if p is None or p.returncode != 0 or not local.exists():
             return None
@@ -184,6 +253,7 @@ def cmd_pull(args):
     # over the only database on this machine would be the worst outcome available.
     staged = _staged(".pulled.db")
     try:
+        staged.unlink(missing_ok=True)       # the CLI will not overwrite it (see _fetch)
         p = _cli("storage", "cp", REMOTE_DB, staged.name)
         if p is None or p.returncode != 0 or not staged.exists():
             print("!! download failed — local database untouched")
@@ -204,9 +274,9 @@ def cmd_pull(args):
     finally:
         staged.unlink(missing_ok=True)
     print(f"   pulled {DB.stat().st_size:,} bytes, {rows:,} building row(s)")
-    SESSION_DIR.mkdir(exist_ok=True)
-    _sync_sessions("pull")
-    _sync_builder_csv("pull")
+    # The lock is this run's from here on, and only the push gives it back: nothing below may
+    # raise (see _sync_files).
+    _sync_files("pull")
     return 0
 
 
@@ -215,8 +285,7 @@ def cmd_push(args):
     if getattr(args, "files_only", False):
         # No database, and NO LOCK RELEASE: this can run while a harvest holds the lock,
         # and releasing someone else's lock would let a second runner start on top of it.
-        _sync_sessions("push")
-        _sync_builder_csv("push")
+        _sync_files("push")
         print("   files only — database and lock untouched")
         return 0
     if not DB.exists():
@@ -274,10 +343,29 @@ def cmd_push(args):
         print(f"     supabase storage mv {incoming} {REMOTE_DB} --linked --experimental --yes")
         return 1
     print(f"   pushed {DB.stat().st_size:,} bytes, {rows:,} building row(s)")
-    _sync_sessions("push")
-    _sync_builder_csv("push")
+    _sync_files("push")              # never raises, so the lock below is always released
     print("   lock released" if _clear_lock() else "   !! could not release the lock")
     return 0
+
+
+def _sync_files(direction):
+    """The sessions, then the builder CSV, in `direction`. Never fatal, not even when one RAISES.
+
+    A pull calls this after taking the bucket lock and a push before releasing it, so an
+    exception from either would strand the lock: run_daily.py does not push after a failed
+    pull, and a push that dies here never reaches _clear_lock(). Then the backup laptop sees
+    a fresh lock, stands down, and nobody harvests that Melbourne day -- for want of a cookie
+    file or a CSV, which cost one channel on one run at most. Both functions already report
+    their own failures; this catches what they did not foresee, says so, and carries on.
+    """
+    for label, sync in (("sessions", _sync_sessions), ("builder csv", _sync_builder_csv)):
+        try:
+            sync(direction)
+        except Exception as exc:                                      # noqa: BLE001
+            # ASCII only: this line must not itself raise on a console that cannot encode.
+            line = (f"   !! {label} {direction} failed ({type(exc).__name__}: {exc}) - "
+                    "carrying on without it")
+            print(line.encode("ascii", "replace").decode("ascii"))
 
 
 def _sync_sessions(direction):
@@ -288,6 +376,8 @@ def _sync_sessions(direction):
     checked. Files are copied one at a time because `cp -r` on the CLI takes a directory
     and this only ever wants the JSON.
     """
+    if direction == "pull":
+        SESSION_DIR.mkdir(exist_ok=True)     # was in cmd_pull, outside _sync_files's guard
     if not SESSION_DIR.exists():
         return
     if direction == "push":
@@ -305,11 +395,14 @@ def _sync_sessions(direction):
             return
         names = [l.strip() for l in (p.stdout or "").splitlines()
                  if l.strip().endswith(".json")]
-        for name in names:
-            _cli("storage", "cp", f"{REMOTE_SESSIONS}/{name}",
-                 f"{SESSION_DIR.name}/{name}", timeout=120)
+        # REPLACING the local file (see _fetch): a plain cp kept every session this machine
+        # already had, so a laptop ran on its own old sessions and pushed them back.
+        missed = [name for name in names
+                  if not _fetch(f"{REMOTE_SESSIONS}/{name}", SESSION_DIR / name)[0]]
         if names:
-            print(f"   sessions pulled: {len(names)} file(s)")
+            print(f"   sessions pulled: {len(names) - len(missed)} file(s)")
+        if missed:
+            print(f"   !! {len(missed)} session(s) NOT pulled: {', '.join(missed[:5])}")
 
 
 def _sync_builder_csv(direction):
@@ -348,6 +441,10 @@ def _sync_builder_csv(direction):
     # writing the preferred path is what makes them pick it up.
     dest = config.DRIVE_INPUT_DIR / "vendors.csv"
     local = config.BUILDER_CSV_PATH if direction == "push" else dest
+    # Left beside the CSV by a pull that failed, removed by one that worked. A machine whose
+    # pull failed holds a copy that may be OLDER than the bucket's, and pushing it back is how
+    # the laptop runner sent its 30 Sep copy over the bucket's every night from 25 Oct.
+    unpulled = local.with_name(f".{local.name}.unpulled")
     if direction == "push":
         if not local.exists():
             print("   builder csv: nothing local to push")
@@ -357,9 +454,15 @@ def _sync_builder_csv(direction):
             print(f"   builder csv: {local.name} is only {local.stat().st_size} bytes — "
                   "refusing to push it over the real directory")
             return
+        # ... nor its possibly older copy. Edited by hand since that failed pull? Then it is
+        # deliberate, and goes.
+        if unpulled.exists() and unpulled.stat().st_mtime >= local.stat().st_mtime:
+            print("   builder csv: not pushed — this machine's last pull of it failed, so its "
+                  "copy may be older than the bucket's")
+            return
         # Relative name: the CLI rejects an absolute local path on Windows (see _staged).
         try:
-            rel = str(local.relative_to(APP))
+            rel = _rel(local)
         except ValueError:
             print(f"   builder csv: {local} is outside {APP}, not pushed")
             return
@@ -371,17 +474,38 @@ def _sync_builder_csv(direction):
     else:
         local.parent.mkdir(parents=True, exist_ok=True)
         try:
-            rel = str(local.relative_to(APP))
+            local.relative_to(APP)
         except ValueError:
             return
-        p = _cli("storage", "cp", remote, rel, timeout=180)
-        if p is not None and p.returncode == 0 and local.exists():
-            print(f"   builder csv pulled: {local.name}")
+        # Replacing the local copy, and only with a whole one: the CLI never overwrites a
+        # local file, so a plain cp failed on every pull after the first (see _fetch).
+        # 512 bytes is the floor push applies too.
+        # Replacing is new (the failing cp kept the local copy, by accident), and on a dev
+        # checkout that copy can hold a hand edit not pushed yet: keep it beside the new one.
+        kept = local.with_name(f".{local.name}.before-pull")
+        saved = False
+        if local.exists():
+            try:
+                shutil.copy2(local, kept)
+                saved = True
+            except OSError:
+                pass
+        ok, why = _fetch(remote, local, timeout=180, min_bytes=512)
+        if ok:
+            unpulled.unlink(missing_ok=True)
+            print(f"   builder csv pulled: {local.name}"
+                  + (f" (the copy it replaced is kept as {kept.name})" if saved else ""))
+            return
+        unpulled.write_text(f"{datetime.now():%Y-%m-%d %H:%M:%S} {why}\n", encoding="utf-8")
+        if local.exists() and local.stat().st_size >= 512:
+            kept = datetime.fromtimestamp(local.stat().st_mtime)
+            print(f"   !! builder csv NOT pulled ({why}) — using this machine's copy from "
+                  f"{kept:%d %b %Y %H:%M}, which may be out of date.")
         else:
             # Loud, because the run will otherwise succeed while visiting no portals and
             # publishing an empty builder directory.
-            print("   !! builder csv NOT pulled — this run will see 0 builders, visit no "
-                  "direct portals, and publish an empty builder directory.")
+            print(f"   !! builder csv NOT pulled ({why}) — this run will see 0 builders, "
+                  "visit no direct portals, and publish an empty builder directory.")
             print("      Push it once from the laptop:  python state_sync.py push")
 
 
@@ -398,6 +522,9 @@ def _remote_row_count():
     """
     local = _staged(".remote_check.db")
     try:
+        # Left over, it would make this answer None -- "could not tell" -- and wave a stale
+        # push through. The CLI will not overwrite it (see _fetch).
+        local.unlink(missing_ok=True)
         p = _cli("storage", "cp", REMOTE_DB, local.name, timeout=600)
         if p is None or p.returncode != 0 or not local.exists():
             return None

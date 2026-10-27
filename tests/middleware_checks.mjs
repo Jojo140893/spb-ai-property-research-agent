@@ -340,6 +340,28 @@ console.log("\n--- /r is public, and NOTHING else is ---");
         stock && stock.status === 401, "CATALOGUE EXPOSED");
 }
 
+console.log("\n--- the forgot-password routes stay shut while the feature is not set up ---");
+{
+  // 23 Oct 2026. Until the owner sets SPB_AUTH_SECRET, SPB_SMTP_PASSWORD and GITHUB_DISPATCH_TOKEN,
+  // the reset routes are paths like any other and the login page offers nothing new: a link to a
+  // feature that cannot work would be a dead end for Coleen. (tests/forgot_password_checks.mjs
+  // covers the feature switched on; this is the part that belongs beside the /r checks.)
+  for (const p of ["/forgot", "/reset"]) {
+    const res = await call(req(p, { accept: "text/html" }));
+    check(`GET ${p} -> the login redirect, like any page`, res && res.status === 302,
+          res ? "status " + res.status : "SERVED WITHOUT AUTH");
+  }
+  for (const p of ["/api/reset_code", "/api/reset_password", "/api/reset_check"]) {
+    const res = await call(req(p, { method: "POST" }));
+    check(`POST ${p} -> 401, not passed to its function`, res && res.status === 401,
+          res ? "status " + res.status : "PASSED THROUGH WITHOUT AUTH");
+  }
+  const page = await call(req("/login", { accept: "text/html" }));
+  const login = await page.text();
+  check("the login page has no Forgot password link", !login.includes("/forgot"));
+  check("  ...and no password-epoch header", page.headers.get("x-spb-auth-epoch") === null);
+}
+
 console.log("\n--- signing out ---");
 {
   const res = await call(req("/logout", { cookie, accept: "text/html" }));

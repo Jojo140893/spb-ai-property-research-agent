@@ -523,6 +523,53 @@ MUTANTS = {
     "a forced load while one is out is skipped": (
         "if (HOT_LEADS_STATE === 'loading' && !force) return;", "if (HOT_LEADS_STATE === 'loading') return;",
         "a Refresh sent before Lock and answered after it"),
+
+    # --- Coleen, 26 Oct 2026: Both / Clare calls (VAPI) / WhatsApp, above the grades ----------
+    # Every record stored before 23 Sep is a Clare call with NO channel key, so reading the key
+    # itself puts most of Clare's calls under neither button.
+    "a Clare call with no channel key is not under Clare calls (VAPI)": (
+        "const hlFromSource = (lead, s) => hlSourceHas(hlSourceKey(s), hlChannel(lead));",
+        "const hlFromSource = (lead, s) => hlSourceHas(hlSourceKey(s), lead && lead.channel);",
+        "a record with no channel is a Clare call"),
+    "any source string is trusted": (
+        "const hlSourceKey = s => HL_SOURCES.includes(s) ? s : 'all';", "const hlSourceKey = s => String(s);",
+        "-> Both (hlSourceKey)"),
+    "the label is not Clare calls (VAPI)": (
+        "vapi: 'Clare calls (VAPI)' }", "vapi: 'Vapi' }",
+        "the source buttons are labelled exactly"),
+    "a source button does not hide the other group": (
+        "if (group) group.hidden = !hlSourceHas(s, ch);", "if (group) group.hidden = false;",
+        "Clare calls (VAPI) hides the WhatsApp group"),
+    "a list drawn under a source draws the other group": (
+        "${hlSourceHas(hlSourceKey(s), channel) ? '' : ' hidden'}>`", "${''}>`",
+        "rendered under Clare calls (VAPI), the WhatsApp group is drawn hidden"),
+    "the pressed source button is not marked": (
+        "b.className = 'btn-ghost hl-filter' + (key === s ? ' is-active' : '');", "b.className = 'btn-ghost hl-filter';",
+        "Clare calls (VAPI) presses that button, and only that one"),
+    "Refresh forgets the source": (
+        "el.innerHTML = hlRenderLeads(HOT_LEADS, HOT_LEADS_FILTER, cover, HOT_LEADS_SOURCE);",
+        "el.innerHTML = hlRenderLeads(HOT_LEADS, HOT_LEADS_FILTER, cover);",
+        "the source is kept after Refresh"),
+    "the grade counts ignore a source pressed": (
+        "b.textContent = hlFilterLabel(inSource, key);", "b.textContent = hlFilterLabel(HOT_LEADS, key);",
+        "grade counts are within the source"),
+    "the grade counts drawn ignore the source": (
+        "hlFilterBar(list.filter(l => hlFromSource(l, s)), f)", "hlFilterBar(list, f)",
+        "rendered under a source, the grade counts are that source's"),
+    # A hot Clare call kept "No hot leads" hidden while WhatsApp alone was shown, with no
+    # card visible under it.
+    "the empty note counts leads the source hides": (
+        "if (on) { inGroup[hlChannel(lead)]++; if (hlFromSource(lead, s)) shown++; }",
+        "if (on) { inGroup[hlChannel(lead)]++; shown++; }",
+        "Warm under Clare calls: nothing visible"),
+    "the empty note drawn counts leads the source hides": (
+        "const shown = list.filter(l => hlShows(l, f) && hlFromSource(l, s)).length;",
+        "const shown = list.filter(l => hlShows(l, f)).length;",
+        "rendered: nothing of that grade in the source shown"),
+    "the empty note does not name the source": (
+        "return `No ${f === 'all' ? '' : f + ' '}${HL_CHANNEL_NOUN[src]} in this list.`;",
+        "return `No ${f} leads in this list.`;",
+        "the note names the source"),
 }
 
 
