@@ -20,9 +20,9 @@ the certificate check and nothing else.
   * a stalled read costs one message, not every message after it;
   * the third mail login in the repo, api/_spb_auth.send_mail, is held to checking too.
 """
-import email
 import imaplib
 import importlib
+import importlib.util
 import logging
 import smtplib
 import socket
@@ -317,6 +317,9 @@ def test_the_inbox_context_requires_a_certificate_and_the_name(monkeypatch):
             pass
 
     monkeypatch.setattr(imaplib, "IMAP4_SSL", _Capture)
+    # With the machine's store emptied, Google's roots can only have come from mail_tls --
+    # a store that already holds them would let a plain create_default_context() pass.
+    monkeypatch.setattr(ssl.SSLContext, "load_default_certs", lambda self, purpose=None: None)
     assert _inbox_source()._connect() is not None
     ctx = seen["ssl_context"]
     assert isinstance(ctx, ssl.SSLContext), "no context: imaplib's unverified default"
@@ -328,13 +331,14 @@ def test_the_inbox_context_requires_a_certificate_and_the_name(monkeypatch):
 
 def test_the_inbox_is_gmail_unless_told_otherwise(monkeypatch):
     """The default host is where the app password goes when nothing sets IMAP_HOST -- every
-    hand-run entry point. It was Hostinger's, the provider the mailbox left on 12 Aug."""
+    hand-run entry point. It was Hostinger's, the provider the mailbox left on 12 Aug.
+    Read from a private copy of the module, so the one every other test uses is untouched."""
     monkeypatch.delenv("IMAP_HOST", raising=False)
-    fresh = importlib.reload(email_inbox)
-    try:
-        assert fresh.IMAP_HOST == "imap.gmail.com"
-    finally:
-        importlib.reload(email_inbox)
+    spec = importlib.util.spec_from_file_location("email_inbox_default_probe",
+                                                  email_inbox.__file__)
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    assert probe.IMAP_HOST == "imap.gmail.com"
 
 
 # --- a stalled read mid-sweep (EmailStocklistSource.search) -------------------------------
@@ -346,28 +350,35 @@ def _plain_message(n: int) -> bytes:
 
 
 class _Box:
-    """An inbox connection that stalls on one message and then behaves as a timed-out
-    socket does: imaplib's file object refuses every later read."""
+    """An inbox connection, addressed by UID, that stalls on one message and then behaves
+    as a timed-out socket does: imaplib's file object refuses every later read."""
 
-    def __init__(self, name, ids, fetched, stall_at=None):
+    def __init__(self, name, ids, fetched, stall_at=None, validity=b"1"):
         self.name, self.ids, self.fetched, self.stall_at = name, ids, fetched, stall_at
+        self.validity = validity
         self.dead = self.shut = False
 
     def select(self, mailbox, readonly=False):
         assert readonly, "the inbox must only ever be opened read-only"
         return "OK", [str(len(self.ids)).encode()]
 
-    def search(self, charset, criteria):
-        return "OK", [b" ".join(self.ids)]
+    def response(self, code):
+        assert code == "UIDVALIDITY"
+        return code, [self.validity]
 
-    def fetch(self, mid, parts):
+    def uid(self, command, *args):
+        if command == "SEARCH":
+            return "OK", [b" ".join(self.ids)]
+        assert command == "FETCH", command
+        mid = args[0]
         self.fetched.append((self.name, mid.decode()))
         if self.dead:
             raise OSError("cannot read from timed out object")
         if mid == self.stall_at:
             self.dead = True
             raise TimeoutError("The read operation timed out")
-        return "OK", [(b"%s (RFC822 {1}" % mid, _plain_message(int(mid))), b")"]
+        return "OK", [(b"%s (UID %s RFC822 {1}" % (mid, mid), _plain_message(int(mid))),
+                      b")"]
 
     def shutdown(self):
         self.shut = True
@@ -397,41 +408,84 @@ def _sweep(monkeypatch, boxes):
 IDS = [b"1", b"2", b"3", b"4", b"5"]
 
 
-def test_a_stalled_read_costs_that_message_not_the_rest(monkeypatch, caplog):
+def _sweep_log(monkeypatch, caplog, boxes):
+    with caplog.at_level(logging.INFO, logger="spb.source.email"):
+        _rows, connects = _sweep(monkeypatch, boxes)
+    return connects, caplog.text
+
+
+def test_a_stalled_read_reconnects_and_tries_that_message_again(monkeypatch, caplog):
+    """The line may die before the message was even asked for; the message was never at
+    fault, so the fresh connection is given it once more."""
     fetched = []
     first = _Box("first", IDS, fetched, stall_at=b"4")
     second = _Box("second", IDS, fetched)
-    with caplog.at_level(logging.INFO, logger="spb.source.email"):
-        _rows, connects = _sweep(monkeypatch, [first, second])
+    connects, log = _sweep_log(monkeypatch, caplog, [first, second])
     assert connects == 2
     assert fetched == [("first", "5"), ("first", "4"),
-                       ("second", "3"), ("second", "2"), ("second", "1")]
+                       ("second", "4"), ("second", "3"), ("second", "2"), ("second", "1")]
     assert first.shut, "the dead connection was not let go"
-    assert "message 4 could not be read" in caplog.text
-    assert "scanned 5 message(s), 0 relevant, 1 unreadable" in caplog.text
+    assert "scanned 5 message(s), 0 relevant, 0 unreadable" in log
+
+
+def test_a_message_that_stalls_twice_costs_that_message_not_the_rest(monkeypatch, caplog):
+    fetched = []
+    boxes = [_Box("b%d" % i, IDS, fetched, stall_at=b"4") for i in range(3)]
+    connects, log = _sweep_log(monkeypatch, caplog, boxes)
+    assert connects == 3
+    assert fetched == [("b0", "5"), ("b0", "4"), ("b1", "4"),
+                       ("b2", "3"), ("b2", "2"), ("b2", "1")]
+    assert "message 4 could not be read — its stock is NOT in this harvest" in log
+    assert "scanned 5 message(s), 0 relevant, 1 unreadable" in log
+    assert "lost the connection" not in log
 
 
 def test_a_connection_that_will_not_come_back_says_how_much_was_not_read(monkeypatch, caplog):
     fetched = []
     first = _Box("first", IDS, fetched, stall_at=b"4")
-    with caplog.at_level(logging.INFO, logger="spb.source.email"):
-        _rows, connects = _sweep(monkeypatch, [first])
+    connects, log = _sweep_log(monkeypatch, caplog, [first])
     assert connects == 2
     # Nothing more is sent down a connection that can no longer be read.
     assert fetched == [("first", "5"), ("first", "4")]
-    assert "after 2 of 5 message(s)" in caplog.text and "the 3 not read" in caplog.text
-    assert "scanned 5 message(s), 0 relevant, 4 unreadable" in caplog.text
+    assert ("after 2 of 5 message(s) and could not get it back — the 3 not read"
+            in log), log
+    assert "scanned 5 message(s), 0 relevant, 4 unreadable" in log
 
 
-def test_reconnects_are_capped(monkeypatch, caplog):
+def test_reconnects_are_capped_and_the_log_says_it_gave_up(monkeypatch, caplog):
     fetched = []
-    boxes = [_Box("b%d" % i, IDS, fetched, stall_at=mid)
-             for i, mid in enumerate([b"5", b"4", b"3", b"2"])]
-    with caplog.at_level(logging.INFO, logger="spb.source.email"):
-        _rows, connects = _sweep(monkeypatch, boxes)
+    boxes = [_Box("b0", IDS, fetched, stall_at=b"5"), _Box("b1", IDS, fetched, stall_at=b"5"),
+             _Box("b2", IDS, fetched, stall_at=b"4"), _Box("b3", IDS, fetched)]
+    connects, log = _sweep_log(monkeypatch, caplog, boxes)
     assert connects == 1 + email_inbox.IMAP_RECONNECTS
-    assert fetched == [("b0", "5"), ("b1", "4"), ("b2", "3")]
-    assert "scanned 5 message(s), 0 relevant, 5 unreadable" in caplog.text
+    assert fetched == [("b0", "5"), ("b1", "5"), ("b2", "4")]
+    assert "after 2 of 5 message(s) and gave up after 2 reconnect(s) — the 3 not read" in log
+    assert "scanned 5 message(s), 0 relevant, 5 unreadable" in log
+
+
+def test_the_last_message_is_retried_but_nothing_reconnects_for_nothing(monkeypatch, caplog):
+    fetched = []
+    boxes = [_Box("b0", IDS, fetched, stall_at=b"1"), _Box("b1", IDS, fetched, stall_at=b"1"),
+             _Box("b2", IDS, fetched)]
+    connects, log = _sweep_log(monkeypatch, caplog, boxes)
+    # One reconnect to retry message 1; when that fails too, nothing is left to read, so
+    # no third connection (and no LOGIN) is made just to close it again.
+    assert connects == 2
+    assert fetched[-2:] == [("b0", "1"), ("b1", "1")]
+    assert "scanned 5 message(s), 0 relevant, 1 unreadable" in log
+    assert "lost the connection" not in log
+
+
+def test_a_changed_uidvalidity_stops_the_sweep_rather_than_read_other_messages(
+        monkeypatch, caplog):
+    fetched = []
+    boxes = [_Box("b0", IDS, fetched, stall_at=b"4"), _Box("b1", IDS, fetched, validity=b"2")]
+    connects, log = _sweep_log(monkeypatch, caplog, boxes)
+    assert connects == 2
+    assert fetched == [("b0", "5"), ("b0", "4")], "read through ids that name other mail"
+    assert boxes[1].shut, "the reopened connection was not let go"
+    assert "UIDVALIDITY changed" in log and "could not get it back" in log
+    assert "scanned 5 message(s), 0 relevant, 4 unreadable" in log
 
 
 # --- the failure alert (run_daily._alert) ---------------------------------------------
@@ -475,6 +529,8 @@ def test_the_alert_context_requires_a_certificate_and_the_name(monkeypatch, caps
             pass
 
     monkeypatch.setattr(smtplib, "SMTP_SSL", _Capture)
+    # Emptied, as in the inbox's test: Google's roots must come from mail_tls.
+    monkeypatch.setattr(ssl.SSLContext, "load_default_certs", lambda self, purpose=None: None)
     _alert_env(monkeypatch, 465)
     run_daily._alert("subject", "body")
     assert "sent to someone@example.com" in capsys.readouterr().out

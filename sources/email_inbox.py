@@ -49,8 +49,8 @@ IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
 # Seconds a single socket read may sit idle — not a cap on the whole sweep. There was no
 # timeout at all, so a server that stopped answering held the run until the job was
 # killed. A timeout leaves the connection unreadable for good (every later read raises
-# "cannot read from timed out object"), so search() reconnects and carries on from the
-# next message: one stall costs that message's stock, not the rest of the sweep.
+# "cannot read from timed out object"), so search() reconnects, tries that message once
+# more and carries on: a stall costs at most that message, not the rest of the sweep.
 IMAP_TIMEOUT = 120
 # Reconnects one sweep may make before it stops and says how much it did not read.
 IMAP_RECONNECTS = 2
@@ -102,6 +102,15 @@ def _drop(box) -> None:
         box.shutdown()
     except Exception:                                                   # noqa: BLE001
         pass
+
+
+def _uid_validity(box) -> Optional[bytes]:
+    """The inbox's UIDVALIDITY from the last SELECT, or None if the server did not say."""
+    try:
+        _code, data = box.response("UIDVALIDITY")
+    except Exception:                                                   # noqa: BLE001
+        return None
+    return data[0] if data and data[0] else None
 
 
 def _sender_domain(from_hdr: str) -> str:
@@ -161,17 +170,25 @@ class EmailStocklistSource(PropertySource):
             logger.error("Email: IMAP connection/login failed on %s:%s — %s", IMAP_HOST, IMAP_PORT, e)
             return None
 
-    def _reopen(self) -> Optional[imaplib.IMAP4_SSL]:
-        """A fresh connection with the inbox selected read-only, or None."""
-        logger.warning("Email: reconnecting to carry on from the next message.")
+    def _reopen(self, validity) -> Optional[imaplib.IMAP4_SSL]:
+        """A fresh connection with the inbox selected read-only, or None. None too if the
+        inbox's UIDVALIDITY is not the one the sweep's UIDs came from: they would name
+        other messages."""
+        logger.warning("Email: reconnecting to the inbox.")
         box = self._connect()
         if box is None:
             return None
         try:
             typ, _ = box.select("INBOX", readonly=True)  # READ-ONLY, as in search()
-            if typ == "OK":
+            now = _uid_validity(box)
+            if typ != "OK":
+                logger.error("Email: the inbox would not reopen (%s).", typ)
+            elif validity is not None and now != validity:
+                logger.error("Email: the inbox's UIDVALIDITY changed (%s -> %s), so the "
+                             "message ids from before the reconnect no longer hold.",
+                             validity, now)
+            else:
                 return box
-            logger.error("Email: the inbox would not reopen (%s).", typ)
         except Exception as e:                                          # noqa: BLE001
             logger.error("Email: the inbox would not reopen — %s", e)
         _drop(box)
@@ -395,60 +412,77 @@ class EmailStocklistSource(PropertySource):
         scanned = matched = failed = 0
         try:
             box.select("INBOX", readonly=True)          # READ-ONLY: never mutate the mailbox
+            validity = _uid_validity(box)
             since = (datetime.now() - timedelta(days=self.days_back)).strftime("%d-%b-%Y")
-            typ, data = box.search(None, f'(SINCE "{since}")')
+            # BY UID, NOT SEQUENCE NUMBER. Sequence numbers belong to one session, and the
+            # sweep may reconnect (below): the new session numbers the inbox afresh, so
+            # mail archived or moved since the SEARCH made the old numbers read some
+            # messages twice and skip others without a word. UIDs hold across sessions
+            # for as long as UIDVALIDITY does, which _reopen checks.
+            typ, data = box.uid("SEARCH", None, f'(SINCE "{since}")')
             ids = data[0].split() if data and data[0] else []
             logger.info("Email: %d message(s) since %s", len(ids), since)
             pending = list(reversed(ids))               # newest first
             reconnects = 0
+            retried = set()
             while pending:
                 mid = pending.pop(0)
                 scanned += 1
+                shown = mid.decode() if isinstance(mid, bytes) else mid
                 # ONE LOST MESSAGE IS ABOUT A HUNDRED LISTINGS against a channel of a few
                 # hundred — comfortably inside the collapse floor, so nothing downstream
                 # would ever flag it. Both branches used to `continue` in silence, and
                 # `typ` was assigned and never checked, so an imaplib 'NO' landed in the
                 # bare except as a TypeError and vanished the same way.
                 try:
-                    typ, raw = box.fetch(mid, "(RFC822)")
+                    typ, raw = box.uid("FETCH", mid, "(RFC822)")
                     if typ != "OK" or not raw or not raw[0]:
                         failed += 1
                         logger.warning("Email: message %s could not be fetched (%s) — "
-                                       "its stock is NOT in this harvest.",
-                                       mid.decode() if isinstance(mid, bytes) else mid,
-                                       typ)
+                                       "its stock is NOT in this harvest.", shown, typ)
                         continue
                     msg = email.message_from_bytes(raw[0][1])
                 except (OSError, imaplib.IMAP4.abort) as e:
-                    # THE CONNECTION FAILED, NOT THE MESSAGE. After a read times out
-                    # (OSError) or the line drops (IMAP4.abort), every later command on
+                    # THE CONNECTION FAILED, NOT NECESSARILY THE MESSAGE. After a read times
+                    # out (OSError) or the line drops (IMAP4.abort), every later command on
                     # this connection fails too, and the catch-all below counted each one
                     # as one more unreadable message: a single stall lost every older
                     # message in the sweep, under a log that read like bad attachments
-                    # (27 Oct 2026). So: reconnect and carry on from the next message.
-                    # Sequence numbers carry over -- the mailbox is opened read-only and
-                    # they move only if someone deletes mail in those few seconds.
-                    failed += 1
-                    logger.warning("Email: message %s could not be read (%s) — its stock "
-                                   "is NOT in this harvest.",
-                                   mid.decode() if isinstance(mid, bytes) else mid, e)
+                    # (27 Oct 2026). So: reconnect, try this message once more -- the line
+                    # may have died before it was even asked for -- and carry on. A
+                    # reconnect is made only when something is left to read.
+                    logger.warning("Email: the connection failed reading message %s (%s).",
+                                   shown, e)
+                    again = mid not in retried
                     _drop(box)
-                    box = self._reopen() if reconnects < IMAP_RECONNECTS else None
-                    reconnects += 1
-                    if box is None:
+                    box = None
+                    capped = reconnects >= IMAP_RECONNECTS
+                    if (again or pending) and not capped:
+                        reconnects += 1
+                        box = self._reopen(validity)
+                    if box is not None and again:
+                        retried.add(mid)
+                        pending.insert(0, mid)
+                        scanned -= 1
+                        continue
+                    failed += 1
+                    logger.warning("Email: message %s could not be read — its stock is NOT "
+                                   "in this harvest.", shown)
+                    if box is not None:
+                        continue
+                    if pending:
                         logger.error("Email: lost the connection to the inbox after %d of %d "
-                                     "message(s) and could not get it back — the %d not read "
-                                     "are NOT in this harvest.",
-                                     scanned, len(ids), len(pending))
+                                     "message(s) and %s — the %d not read are NOT in this "
+                                     "harvest.", scanned, len(ids),
+                                     "gave up after %d reconnect(s)" % reconnects if capped
+                                     else "could not get it back", len(pending))
                         scanned += len(pending)
                         failed += len(pending)
-                        break
-                    continue
+                    break
                 except Exception as e:                                  # noqa: BLE001
                     failed += 1
                     logger.warning("Email: message %s could not be read (%s) — its stock "
-                                   "is NOT in this harvest.",
-                                   mid.decode() if isinstance(mid, bytes) else mid, e)
+                                   "is NOT in this harvest.", shown, e)
                     continue
                 from_hdr = _decode(msg.get("From"))
                 subject = _decode(msg.get("Subject"))
