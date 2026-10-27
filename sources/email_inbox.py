@@ -52,8 +52,10 @@ IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
 # "cannot read from timed out object"), so search() reconnects, tries that message once
 # more and carries on: a stall costs at most that message, not the rest of the sweep.
 IMAP_TIMEOUT = 120
-# Reconnects one sweep may make before it stops and says how much it did not read.
-IMAP_RECONNECTS = 2
+# Reconnects one sweep may make before it stops and says how much it did not read. Three,
+# so a message that fails on every connection (two: the failure, then its retry) still
+# leaves one for a stall later in the sweep.
+IMAP_RECONNECTS = 3
 
 
 def _open_imap(host: str, port: int) -> imaplib.IMAP4_SSL:
@@ -420,6 +422,12 @@ class EmailStocklistSource(PropertySource):
             # messages twice and skip others without a word. UIDs hold across sessions
             # for as long as UIDVALIDITY does, which _reopen checks.
             typ, data = box.uid("SEARCH", None, f'(SINCE "{since}")')
+            if typ != "OK":
+                # A NO comes back as ('NO', [its text]); split, its words were fetched
+                # as message ids. Reading nothing makes the channel's silence visible.
+                logger.error("Email: the inbox search was refused (%s %s) — nothing read.",
+                             typ, data)
+                data = None
             ids = data[0].split() if data and data[0] else []
             logger.info("Email: %d message(s) since %s", len(ids), since)
             pending = list(reversed(ids))               # newest first
@@ -436,6 +444,11 @@ class EmailStocklistSource(PropertySource):
                 # bare except as a TypeError and vanished the same way.
                 try:
                     typ, raw = box.uid("FETCH", mid, "(RFC822)")
+                    # Only the (header, literal) pairs: imaplib files every untagged FETCH
+                    # under one key, so a flag change another session made ('* 3 FETCH
+                    # (FLAGS (\Seen))') can come back first, as plain bytes, and raw[0][1]
+                    # was then an int. spb_mail_mcp guards the same way.
+                    raw = [p for p in (raw or []) if isinstance(p, tuple) and len(p) == 2]
                     if typ != "OK" or not raw or not raw[0]:
                         failed += 1
                         logger.warning("Email: message %s could not be fetched (%s) — "

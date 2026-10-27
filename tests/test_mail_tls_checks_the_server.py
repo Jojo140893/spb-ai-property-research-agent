@@ -454,13 +454,56 @@ def test_a_connection_that_will_not_come_back_says_how_much_was_not_read(monkeyp
 
 def test_reconnects_are_capped_and_the_log_says_it_gave_up(monkeypatch, caplog):
     fetched = []
-    boxes = [_Box("b0", IDS, fetched, stall_at=b"5"), _Box("b1", IDS, fetched, stall_at=b"5"),
-             _Box("b2", IDS, fetched, stall_at=b"4"), _Box("b3", IDS, fetched)]
+    stalls = [b"5", b"5", b"4", b"4"]
+    boxes = [_Box("b%d" % i, IDS, fetched, stall_at=mid) for i, mid in enumerate(stalls)]
+    boxes.append(_Box("spare", IDS, fetched))
     connects, log = _sweep_log(monkeypatch, caplog, boxes)
+    assert email_inbox.IMAP_RECONNECTS == 3
     assert connects == 1 + email_inbox.IMAP_RECONNECTS
-    assert fetched == [("b0", "5"), ("b1", "5"), ("b2", "4")]
-    assert "after 2 of 5 message(s) and gave up after 2 reconnect(s) — the 3 not read" in log
+    assert fetched == [("b0", "5"), ("b1", "5"), ("b2", "4"), ("b3", "4")]
+    assert "after 2 of 5 message(s) and gave up after 3 reconnect(s) — the 3 not read" in log
     assert "scanned 5 message(s), 0 relevant, 5 unreadable" in log
+
+
+def test_a_message_that_always_fails_leaves_a_reconnect_for_a_later_stall(monkeypatch, caplog):
+    fetched = []
+    boxes = [_Box("b0", IDS, fetched, stall_at=b"4"), _Box("b1", IDS, fetched, stall_at=b"4"),
+             _Box("b2", IDS, fetched, stall_at=b"2"), _Box("b3", IDS, fetched)]
+    connects, log = _sweep_log(monkeypatch, caplog, boxes)
+    assert connects == 4
+    assert fetched == [("b0", "5"), ("b0", "4"), ("b1", "4"),
+                       ("b2", "3"), ("b2", "2"), ("b3", "2"), ("b3", "1")]
+    assert "scanned 5 message(s), 0 relevant, 1 unreadable" in log
+    assert "lost the connection" not in log
+
+
+def test_a_flag_change_from_another_session_does_not_cost_the_message(monkeypatch, caplog):
+    """'* 3 FETCH (FLAGS (\\Seen))' filed ahead of the message under imaplib's one FETCH
+    key: plain bytes, so raw[0][1] was an int and the message was counted unreadable."""
+    fetched = []
+    box = _Box("b0", IDS, fetched)
+    real = box.uid
+
+    def uid(command, *args):
+        typ, data = real(command, *args)
+        if command == "FETCH":
+            data = [b"3 (FLAGS (\\Seen))"] + data
+        return typ, data
+
+    box.uid = uid
+    connects, log = _sweep_log(monkeypatch, caplog, [box])
+    assert connects == 1
+    assert "scanned 5 message(s), 0 relevant, 0 unreadable" in log
+
+
+def test_a_refused_search_reads_nothing_and_says_so(monkeypatch, caplog):
+    fetched = []
+    box = _Box("b0", IDS, fetched)
+    box.uid = lambda command, *args: ("NO", [b"[UNAVAILABLE] Try again later"])
+    connects, log = _sweep_log(monkeypatch, caplog, [box])
+    assert fetched == [], "the words of the refusal were fetched as message ids"
+    assert "the inbox search was refused" in log
+    assert "scanned 0 message(s), 0 relevant, 0 unreadable" in log
 
 
 def test_the_last_message_is_retried_but_nothing_reconnects_for_nothing(monkeypatch, caplog):
