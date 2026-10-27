@@ -41,7 +41,6 @@ Exit code is non-zero if a step fails, so Task Scheduler shows the run as failed
 import argparse
 import json
 import os
-import ssl
 import subprocess
 import sys
 import time
@@ -245,10 +244,14 @@ def _open_smtp(host: str, port: int):
 
     smtplib.SMTP_SSL without a context uses ssl._create_stdlib_context() on 3.11 and
     3.12, which checks neither the certificate nor the hostname — and the next thing
-    _alert does is log in with the digital@ inbox app password.
+    _alert does is log in with the digital@ inbox app password. mail_tls adds the roots
+    the Windows store does not list (see there). Imported here, not at the top: if it
+    cannot be imported, _alert says so instead of run_daily failing to start.
     """
     import smtplib
-    return smtplib.SMTP_SSL(host, port, timeout=30, context=ssl.create_default_context())
+
+    from mail_tls import verified_context
+    return smtplib.SMTP_SSL(host, port, timeout=30, context=verified_context())
 
 
 def _alert(subject: str, body: str) -> None:
