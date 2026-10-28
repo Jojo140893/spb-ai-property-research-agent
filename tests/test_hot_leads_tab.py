@@ -746,6 +746,39 @@ MUTANTS = {
     "the Kommo count stays while the list is read again": (
         "hlSwitchCount('kommo', '…');", "",
         "… while it is read"),
+    # 28 Oct 2026, review: the access bar is on App records, hidden while All Kommo leads is
+    # shown, so the Kommo list carries its own access line.
+    "the Kommo list has no access line": (
+        "klAccessLine() + scopes + klWarnings()", "scopes + klWarnings()",
+        "the Kommo list says its contact details are hidden"),
+    "Unlock on App records puts the cursor in a box still hidden": (
+        "        hlSwitchTo('records');\n        const box = document.getElementById('hlUnlockPass');\n"
+        "        if (box && typeof box.focus === 'function') box.focus();",
+        "        const box = document.getElementById('hlUnlockPass');\n"
+        "        if (box && typeof box.focus === 'function') box.focus();\n        hlSwitchTo('records');",
+        "Unlock on App records switches to App records, then puts the cursor"),
+    "the Kommo list never offers Lock": (
+        "        if (KL_VIEW === 'full') {\n            line =", "        if (false) {\n            line =",
+        "the Kommo list says full contact details are showing"),
+    "the Kommo list's Lock stays live while Lock is out": (
+        "document.getElementById('hlLockBtn'), document.getElementById('klLockBtn')",
+        "document.getElementById('hlLockBtn')",
+        "both Lock buttons wait for the answer"),
+    "a failed Lock is said only on the hidden App records card": (
+        "['hlAccessMsg', 'klAccessMsg'].forEach", "['hlAccessMsg'].forEach",
+        "a Lock that fails on the Kommo list says why there"),
+    "a refused Lock leaves its buttons off": (
+        "        press(false);\n        hlAccessSay((data && data.message)", "        hlAccessSay((data && data.message)",
+        "its Lock works again"),
+    "the Kommo list takes the password setting from App records' answer": (
+        "} else if (KL_UNLOCK === 'password') {", "} else if (HL_ACCESS.unlock === 'password') {",
+        "comes from its own answer, before App records has answered"),
+    "the Kommo list does not keep its answer's password setting": (
+        "            KL_UNLOCK = a.unlock;\n", "",
+        "comes from its own answer, before App records has answered"),
+    "with no password set the Kommo list still offers Unlock": (
+        "} else if (KL_UNLOCK === 'password') {", "} else if (true) {",
+        "no contact-details password set: the Kommo list says"),
 }
 
 

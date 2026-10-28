@@ -101,6 +101,8 @@ SHARED = [
     "klMore",
     # 28 Oct 2026 (Ahsan): the switch at the top of the tab -- App records or All Kommo leads.
     "hlSwitchTo",
+    # 28 Oct 2026, review: the Kommo list's way to the password box on App records.
+    "klGoUnlock",
 ]
 
 

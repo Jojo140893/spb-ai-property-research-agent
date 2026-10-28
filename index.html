@@ -5079,17 +5079,24 @@ python state_sync.py push</pre>
     }
 
     // ------------------------------------------------ contact details (Coleen, 28 Sep 2026)
+    // Into the access bar, and into the All Kommo leads list's own access line (klAccessLine,
+    // 28 Oct 2026): only one of the two lists is on screen, and either may have sent it.
     function hlAccessSay(text, isError) {
-        const msg = document.getElementById('hlAccessMsg');
-        if (!msg) return;
-        msg.className = 'hl-msg' + (isError ? ' hl-msg-err' : '');
-        msg.textContent = text;
+        ['hlAccessMsg', 'klAccessMsg'].forEach(id => {
+            const msg = document.getElementById(id);
+            if (!msg) return;
+            msg.className = 'hl-msg' + (isError ? ' hl-msg-err' : '');
+            msg.textContent = text;
+        });
     }
     // POST /api/contact_unlock, then the list again: whether contact details show is the
     // server's answer (a cookie it set), never something this page decides. A wrong
-    // password is 403, NOT 401 -- 401 on this page means the sign-in expired.
-    async function hlAccessPost(body, btn) {
-        if (btn) btn.disabled = true;
+    // password is 403, NOT 401 -- 401 on this page means the sign-in expired. btns: every
+    // button that sends the same thing (Lock has two, the bar's and the Kommo list's), all
+    // off while it is out and back on if it fails.
+    async function hlAccessPost(body, ...btns) {
+        const press = off => btns.forEach(b => { if (b) b.disabled = off; });
+        press(true);
         hlAccessSay(body.lock ? 'Locking…' : 'Checking the password…', false);
         let res = null;
         try {
@@ -5102,7 +5109,7 @@ python state_sync.py push</pre>
             res = null;
         }
         if (!res) {
-            if (btn) btn.disabled = false;
+            press(false);
             hlAccessSay('Could not reach the dashboard. Check the connection and try again.', true);
             return false;
         }
@@ -5114,17 +5121,17 @@ python state_sync.py push</pre>
         let data = null;
         try { data = await res.json(); } catch (e) { data = null; }
         if (res.ok && data && data.status === 'success' && data.contact === (body.lock ? 'masked' : 'full')) {
-            // The Kommo list below carries contact details too, so Unlock and Lock switch it as
-            // well -- once it has been asked for -- and it goes FIRST (28 Oct 2026, review):
-            // loadKommoLeads clears the card before it reads, so after Lock no number stays on
-            // it while the list above is read (20 s at worst, twice for a list cut short), and
-            // a read of it still out in the old view is dropped. Both awaited, so Lock's
-            // promise ends with both lists masked.
+            // The All Kommo leads list carries contact details too, so Unlock and Lock switch
+            // it as well -- once it has been asked for -- and it goes FIRST (28 Oct 2026,
+            // review): loadKommoLeads clears the card before it reads, so after Lock no number
+            // stays on it while the App records list is read (20 s at worst, twice for a list
+            // cut short), and a read of it still out in the old view is dropped. Both awaited,
+            // so Lock's promise ends with both lists masked.
             const kommo = KL_STATE !== 'idle' ? loadKommoLeads(true, true) : null;
             await Promise.all([loadHotLeads(true), kommo]);
             return true;
         }
-        if (btn) btn.disabled = false;
+        press(false);
         hlAccessSay((data && data.message) ? String(data.message) : `The dashboard answered ${res.status}.`, true);
         return false;
     }
@@ -5139,18 +5146,20 @@ python state_sync.py push</pre>
         }
         return hlAccessPost({ password }, document.getElementById('hlUnlockBtn'));
     }
+    // The access bar's Lock, and the All Kommo leads list's (klAccessLine): whichever was pressed,
+    // both wait for the answer, and both lists are read again masked.
     function hlLock() {
-        return hlAccessPost({ lock: true }, document.getElementById('hlLockBtn'));
+        return hlAccessPost({ lock: true }, document.getElementById('hlLockBtn'), document.getElementById('klLockBtn'));
     }
 
     // ------------------------------------------------ All Kommo leads (28 Oct 2026)
-    /* EVERY LEAD IN KOMMO, NOT ONLY THE ONES THE APP HAS A RECORD FOR. The list above is the
-     * hook's records: hot callers, warm or nurture callers who gave a state, and WhatsApp
-     * chats that answered the questions. A WhatsApp chat that stopped before them, a
+    /* EVERY LEAD IN KOMMO, NOT ONLY THE ONES THE APP HAS A RECORD FOR. The App records list
+     * is the hook's records: hot callers, warm or nurture callers who gave a state, and
+     * WhatsApp chats that answered the questions. A WhatsApp chat that stopped before them, a
      * RingCentral SMS, a Clare call with no state or no answer, a Facebook comment and a lead
      * added by hand were in Kommo and on no screen of this dashboard. GET /api/kommo_leads
      * reads them from Kommo live, one page of 250 at a time (the hook's read-only GET
-     * /api/kommo-leads), masked by the same rules as the list above.
+     * /api/kommo-leads), masked by the same rules as the App records list.
      *
      * ITS OWN STATE, ITS OWN CARD IDS. hlApplyFilters walks hlCard-<i> for every HOT_LEADS
      * index, so a Kommo card under that prefix would be hidden and shown by the other list's
@@ -5183,6 +5192,9 @@ python state_sync.py push</pre>
     // 'full' only when every page on the list said so: the answer's own view, not HL_ACCESS --
     // the two lists are asked for at the same moment, and either may land first.
     let KL_VIEW = 'masked';
+    // Whether the contact-details password is set, from this list's own answers too (the
+    // proxy's contactUnlock, as on the App records list): 'password' | 'not-configured'.
+    let KL_UNLOCK = 'not-configured';
     // Why the page after KL_PAGE could not be read, when the ones before it could: the list
     // keeps what it has, and Retry (klMore) asks for that page again.
     let KL_MORE_FAILED = '';
@@ -5334,7 +5346,8 @@ python state_sync.py push</pre>
                  hasMore: data.hasMore === true,
                  recordsComplete: data.recordsComplete === true,
                  errors: (Array.isArray(data.errors) ? data.errors : []).filter(x => typeof x === 'string' && x),
-                 contact: data.contact === 'full' ? 'full' : 'masked' };
+                 contact: data.contact === 'full' ? 'full' : 'masked',
+                 unlock: data.contactUnlock === 'password' ? 'password' : 'not-configured' };
     }
 
     // Pages from `from` on, one at a time, while the hook says there are more: at most
@@ -5356,6 +5369,7 @@ python state_sync.py push</pre>
             a.errors.forEach(x => { if (!KL_ERRORS.includes(x)) KL_ERRORS.push(x); });
             if (!a.recordsComplete) KL_RECORDS_COMPLETE = false;
             KL_VIEW = ((KL_PAGE === 0 || KL_VIEW === 'full') && a.contact === 'full') ? 'full' : 'masked';
+            KL_UNLOCK = a.unlock;
             KL_PAGE = page;
             KL_HAS_MORE = a.hasMore;
             if (!a.hasMore) return { kind: 'done' };
@@ -5432,6 +5446,7 @@ python state_sync.py push</pre>
         KL_ERRORS = [];
         KL_RECORDS_COMPLETE = true;
         KL_VIEW = 'masked';
+        KL_UNLOCK = 'not-configured';
         KL_MORE_FAILED = '';
         if (btn) btn.disabled = true;
         if (badge) badge.textContent = 'loading';
@@ -5535,8 +5550,8 @@ python state_sync.py push</pre>
                     + (phone ? (tel ? `<a href="${esc(tel)}">${esc(phone)}</a>` : `<span>${esc(phone)}</span>`)
                              : muted('No phone in Kommo'));
         } else {
-            // Masked, as the list above: the server sent phoneLast3 / hasEmail / hasPhone, and a
-            // lead that still carried a full value would not show it either.
+            // Masked, as on the App records list: the server sent phoneLast3 / hasEmail /
+            // hasPhone, and a lead that still carried a full value would not show it either.
             contact = hlMaskedContact(c);
         }
         const link = hlExtLink(k.leadUrl, 'Open in Kommo', 'Opens this lead in Kommo');
@@ -5598,6 +5613,42 @@ python state_sync.py push</pre>
         return '';
     }
 
+    // WHERE THE LOCK IS, FROM THIS LIST TOO (28 Oct 2026, review). The access bar -- the
+    // password box, Unlock and Lock -- is drawn on the App records list (hlAccessBar), which
+    // the switch hides while this list is shown, and remembers that way across page views. So
+    // this list says for itself whether its contact details are showing, from its own answers
+    // (KL_VIEW, KL_UNLOCK), never from the other list's, which may not have landed. Hidden: a
+    // button to App records, with the cursor in the password box there -- one password box on
+    // the page, not two. Showing: Lock, the bar's own hlLock, which locks both lists. Fixed
+    // words, ids and handlers only; it is drawn first, as the bar is on the App records list.
+    function klAccessLine() {
+        let line;
+        if (KL_VIEW === 'full') {
+            line = '<span class="hl-access-state"><strong>Full contact details are showing</strong> on this browser.</span>'
+                 + '<button type="button" class="btn-ghost" id="klLockBtn" onclick="hlLock()">Lock contact details</button>';
+        } else if (KL_UNLOCK === 'password') {
+            line = '<span class="hl-access-state">Contact details are hidden: each lead shows only the last 3 '
+                 + 'digits of the mobile.</span>'
+                 + '<button type="button" class="btn-ghost" id="klUnlockBtn" onclick="klGoUnlock()">Unlock on App records</button>';
+        } else {
+            line = '<span class="hl-access-state">Contact details are hidden: each lead shows only the last 3 '
+                 + 'digits of the mobile. No contact-details password is set on this dashboard, so they '
+                 + 'cannot be unlocked here.</span>';
+        }
+        return `<div class="hl-access kl-access" id="klAccess">${line}`
+             + '<div class="hl-msg" id="klAccessMsg" role="status" aria-live="polite"></div></div>';
+    }
+
+    // Unlock on App records: that list FIRST, as App record does (a hidden box cannot take the
+    // cursor), then the cursor in its password box. With no box there -- that list still
+    // being read, not readable, or already unlocked -- the switch alone, and its card says why.
+    function klGoUnlock() {
+        hlSwitchTo('records');
+        const box = document.getElementById('hlUnlockPass');
+        if (box && typeof box.focus === 'function') box.focus();
+        return !!box;
+    }
+
     // The whole card from KL_* state, into #kommoLeadsContent; the markup is returned too.
     function klRender() {
         const el = document.getElementById('kommoLeadsContent');
@@ -5607,7 +5658,7 @@ python state_sync.py push</pre>
             key => `klSetScope('${key}')`);
         let html;
         if (!KL_LEADS.length) {
-            html = scopes + klWarnings() + `<div class="hl-notice">${KL_SCOPE === 'all'
+            html = klAccessLine() + scopes + klWarnings() + `<div class="hl-notice">${KL_SCOPE === 'all'
                 ? 'No leads in Kommo.' : 'No leads in Incoming leads right now.'}</div>` + klMoreNote();
         } else {
             // A column button only for a column with leads on this list, and the one pressed.
@@ -5626,7 +5677,7 @@ python state_sync.py push</pre>
                 key, id: 'klRecords-' + key, on: f.record === key,
                 text: `${KL_RECORD_LABEL[key]} (${klCount({ record: key })})` }));
             const shown = KL_LEADS.map((lead, n) => ({ lead, n })).filter(x => klPasses(x.lead, f));
-            html = scopes + klWarnings()
+            html = klAccessLine() + scopes + klWarnings()
                  + klBar('Column', 'kl-columns', columns, key => `klSetColumn(${key})`)
                  + klBar('Source', 'kl-sources', sources, key => `klSetSource('${key}')`)
                  + klBar('Record', 'kl-records', records, key => `klSetRecord('${key}')`)

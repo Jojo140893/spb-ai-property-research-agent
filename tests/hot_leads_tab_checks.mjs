@@ -94,7 +94,9 @@ const EXPORTS = ["hlSafeUrl", "hlTelHref", "hlMailHref", "hlMoney", "hlWhen", "h
   "loadKommoLeads", "klRender", "klSetScope", "klSetColumn", "klSetSource", "klSetRecord",
   "klShowRecord", "klMore", "klLeadCard", "klSortNewest", "klMerge", "klLeadId", "klUrl",
   // 28 Oct (Ahsan): the switch at the top of the tab, one list at a time.
-  "hlSwitchTo"];
+  "hlSwitchTo",
+  // 28 Oct, review: the Kommo list's own access line, while App records (and its bar) is hidden.
+  "klGoUnlock"];
 
 // The tab's two reads -- every grade, and hot callers on their own -- each with and without
 // include_test=1, and the research. The bare "/api/hot_leads" the hot-only tab used is NOT
@@ -184,7 +186,7 @@ function sandbox(search, extra = {}) {
       " picksMap: () => hlPicksLoad(), live: () => HL_LIVE," +
       " kl: () => ({ leads: KL_LEADS, columns: KL_COLUMNS, state: KL_STATE, scope: KL_SCOPE, page: KL_PAGE," +
       " hasMore: KL_HAS_MORE, errors: KL_ERRORS, recordsComplete: KL_RECORDS_COMPLETE, filter: KL_FILTER," +
-      " view: KL_VIEW }), shownList: () => HL_SWITCH, filters: () => [HOT_LEADS_FILTER, HOT_LEADS_SOURCE] })",
+      " view: KL_VIEW, unlock: KL_UNLOCK }), shownList: () => HL_SWITCH, filters: () => [HOT_LEADS_FILTER, HOT_LEADS_SOURCE] })",
       ctx, { filename: "index.html#hot-leads" });
   } catch (err) {
     console.log("  FAIL  the tab's code runs as the page loads"
@@ -232,7 +234,9 @@ const ONCLICK = new RegExp("^(rerunHotLead\\(\\d+\\)|loadHotLeads\\(true\\)|hlSe
   // 28 Oct: the Kommo card's buttons, keys and numbers only.
   + "|loadKommoLeads\\(true\\)|klSetScope\\('(incoming|all)'\\)|klSetColumn\\(-?\\d+\\)"
   + "|klSetSource\\('(all|whatsapp|clare|ringcentral_sms|facebook|manual|other)'\\)"
-  + "|klSetRecord\\('(all|yes|no)'\\)|klShowRecord\\(\\d+\\)|klMore\\(\\))$");
+  + "|klSetRecord\\('(all|yes|no)'\\)|klShowRecord\\(\\d+\\)|klMore\\(\\)"
+  // 28 Oct, review: the Kommo list's way to the password box on App records (its Lock is hlLock()).
+  + "|klGoUnlock\\(\\))$");
 const INPUT_TYPES = new Set(["checkbox", "text", "url", "password"]);
 const decode = s => s.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">")
   .replace(/&#39;/g, "'").replace(/&amp;/g, "&");
@@ -3289,10 +3293,12 @@ const klUrls = s => s.calls.fetch.map(c => c.url).filter(u => u.startsWith("/api
 console.log("\n--- the markup auditor knows the Kommo card's handlers ---");
 check("auditor flags a Kommo onclick outside its exact shapes",
   ["klSetScope('pipeline')", "klSetSource('sms')", "klSetRecord('maybe')", "klShowRecord('x')", "klMore(1)",
-   "klSetColumn(1); alert(1)", "loadKommoLeads()"].every(o => markupProblems(`<button onclick="${o}">x</button>`).length > 0));
+   "klSetColumn(1); alert(1)", "loadKommoLeads()", "klGoUnlock('x')", "klGoUnlock(); alert(1)"]
+    .every(o => markupProblems(`<button onclick="${o}">x</button>`).length > 0));
 check("auditor passes the Kommo handlers in their exact shapes",
   ["klSetScope('all')", "klSetColumn(-1)", "klSetColumn(3)", "klSetSource('ringcentral_sms')", "klSetRecord('no')",
-   "klShowRecord(12)", "klMore()", "loadKommoLeads(true)"].every(o => markupProblems(`<button onclick="${o}">x</button>`).length === 0));
+   "klShowRecord(12)", "klMore()", "loadKommoLeads(true)", "klGoUnlock()"]
+    .every(o => markupProblems(`<button onclick="${o}">x</button>`).length === 0));
 
 console.log("\n--- All Kommo leads: the first read ---");
 {
@@ -4224,6 +4230,115 @@ console.log("\n--- the switch: App record switches to App records first, then sc
   check("App record with no card in App records says so on the Kommo card, and stays on All Kommo leads",
     no === false && r.shown() === "kommo" && seen.length === 1 && msgGone.textContent.includes("not in the App records list"),
     JSON.stringify([no, r.shown(), seen.length, msgGone.textContent]));
+}
+
+// 28 Oct 2026, review: the access bar -- the password box, Unlock, Lock -- is drawn on App
+// records, which the switch hides while All Kommo leads is shown, and remembers that way. So
+// the Kommo list carries its own access line, from its own answer: hidden, a way to the
+// password box; showing, Lock. klLine() is that line as the Kommo card has it, "" when it has none.
+const klLine = r => (r.content.innerHTML.match(/<div class="hl-access kl-access" id="klAccess">[\s\S]*?id="klAccessMsg"[^>]*><\/div><\/div>/)
+  || [""])[0];
+console.log("\n--- the switch: contact details can be unlocked and locked from All Kommo leads ---");
+{
+  const store = memoryStorage();
+  store._map.set(SW_KEY, "kommo");
+  const r = swRig({ localStorage: store });
+  let view = "masked", holdLock = false, letGo = null;
+  r.respond(async url => {
+    if (url === "/api/contact_unlock") {
+      view = view === "masked" ? "full" : "masked";
+      const ans = reply(200, { status: "success", contact: view });
+      return holdLock ? new Promise(go => { letGo = () => go(ans); }) : ans;
+    }
+    if (url.startsWith("/api/hot_leads")) return reply(200, { status: "success", contact: view, contactUnlock: "password", leads: SW_HOT });
+    return reply(200, klPage(SW_KOMMO, { contact: view }));
+  });
+  await swOpen(r);
+  const h = r.content.innerHTML;
+  check("opened on All Kommo leads, masked: the Kommo list says its contact details are hidden, above its filters",
+    r.shown() === "kommo" && klLine(r).includes("Contact details are hidden") && h.indexOf('id="klAccess"') >= 0
+    && h.indexOf('id="klAccess"') < h.indexOf('id="klScope-incoming"'), klLine(r) || h.slice(0, 300));
+  check("... with a way to the password box, Unlock on App records, and no Lock",
+    /<button type="button" class="btn-ghost" id="klUnlockBtn" onclick="klGoUnlock\(\)">Unlock on App records<\/button>/.test(klLine(r))
+    && !klLine(r).includes("hlLock()"), klLine(r));
+  auditMarkup("the Kommo list's access line, hidden: clean markup", klLine(r));
+  const focused = [];
+  r.el("hlUnlockPass", { value: "", focus: () => focused.push(r.recCard.hidden ? "while hidden" : "shown") });
+  const fetches = r.calls.fetch.length;
+  const went = r.api.klGoUnlock();
+  check("Unlock on App records switches to App records, then puts the cursor in its password box",
+    went === true && r.shown() === "records" && r.pressed() === "true,false" && JSON.stringify(focused) === '["shown"]'
+    && store._map.get(SW_KEY) === "records" && r.calls.fetch.length === fetches,
+    JSON.stringify([went, r.shown(), focused, store._map.get(SW_KEY)]));
+  r.el("hlUnlockPass", { value: "right one" }); r.el("hlUnlockBtn"); r.el("hlAccessMsg");
+  await r.api.hlUnlock();
+  r.api.hlSwitchTo("kommo");
+  check("unlocked, the Kommo list says full contact details are showing, with Lock, and no Unlock",
+    r.api.kl().view === "full" && klLine(r).includes("<strong>Full contact details are showing</strong>")
+    && /<button type="button" class="btn-ghost" id="klLockBtn" onclick="hlLock\(\)">Lock contact details<\/button>/.test(klLine(r))
+    && !klLine(r).includes("klGoUnlock"), klLine(r));
+  auditMarkup("the Kommo list's access line, showing: clean markup", klLine(r));
+  // Lock pressed on the Kommo list, its answer held: the bar's Lock is on the hidden card.
+  const klLock = r.el("klLockBtn"), barLock = r.el("hlLockBtn"), klMsg = r.el("klAccessMsg");
+  holdLock = true;
+  const locking = r.api.hlLock();
+  await settle();
+  check("Lock pressed on the Kommo list: both Lock buttons wait for the answer, and the Kommo list says so",
+    letGo !== null && klLock.disabled === true && barLock.disabled === true && klMsg.textContent === "Locking…",
+    JSON.stringify([letGo !== null, klLock.disabled, barLock.disabled, klMsg.textContent]));
+  holdLock = false;
+  letGo();
+  const locked = await locking;
+  check("... then both lists are masked again, All Kommo leads still shown, with its way to the password box",
+    locked === true && r.shown() === "kommo" && r.api.kl().view === "masked" && klLine(r).includes('onclick="klGoUnlock()"')
+    && !klLine(r).includes("Full contact details") && r.api.access().contact === "masked",
+    JSON.stringify([locked, r.shown(), r.api.kl().view, klLine(r)]));
+}
+{
+  // A Lock that fails, pressed on the Kommo list: the reason is said there, not only on the
+  // hidden App records card, and the button can be pressed again.
+  const r = swRig();
+  r.respond(async url => url === "/api/contact_unlock" ? reply(500, { status: "error", message: "the lock could not be set" })
+    : url.startsWith("/api/hot_leads") ? reply(200, { status: "success", contact: "full", contactUnlock: "password", leads: SW_HOT })
+    : reply(200, klPage(SW_KOMMO, { contact: "full" })));
+  await swOpen(r);
+  r.api.hlSwitchTo("kommo");
+  const klLock = r.el("klLockBtn"), klMsg = r.el("klAccessMsg");
+  const ok = await r.api.hlLock();
+  check("a Lock that fails on the Kommo list says why there, and its Lock works again",
+    ok === false && klMsg.textContent === "the lock could not be set" && /\bhl-msg-err\b/.test(klMsg.className)
+    && klLock.disabled === false && r.shown() === "kommo", JSON.stringify([ok, klMsg.textContent, klMsg.className, klLock.disabled]));
+  r.respond(async () => { throw new TypeError("Failed to fetch"); });
+  const again = await r.api.hlLock();
+  check("... and so does one that could not reach the dashboard",
+    again === false && /Could not reach the dashboard/.test(klMsg.textContent) && klLock.disabled === false, klMsg.textContent);
+}
+{
+  // Whether a password is set comes from the Kommo list's own answer: App records may not have
+  // answered yet, or at all.
+  const r = swRig();
+  const held = [];
+  r.respond(url => url.startsWith("/api/hot_leads")
+    ? new Promise(go => held.push(() => go(reply(200, { status: "success", contactUnlock: "password", leads: SW_HOT }))))
+    : reply(200, klPage(SW_KOMMO)));
+  const opening = swOpen(r);
+  await settle();
+  check("the Kommo list's way to the password box comes from its own answer, before App records has answered",
+    held.length === 1 && klLine(r).includes('onclick="klGoUnlock()"') && r.api.kl().unlock === "password",
+    JSON.stringify([held.length, klLine(r)]));
+  while (held.length) held.shift()();
+  await opening;
+  r.respond(async url => url.startsWith("/api/hot_leads")
+    ? reply(200, { status: "success", contactUnlock: "not-configured", leads: SW_HOT })
+    : reply(200, klPage(SW_KOMMO, { contactUnlock: "not-configured" })));
+  await r.api.loadKommoLeads(true);
+  check("no contact-details password set: the Kommo list says they cannot be unlocked here, with no button to a box that is not there",
+    klLine(r).includes("No contact-details password is set on this dashboard") && !klLine(r).includes("<button"), klLine(r));
+  r.respond(async () => reply(200, klPage([], { contactUnlock: "password" })));
+  await r.api.loadKommoLeads(true);
+  check("an empty Kommo list still carries the line, above its scope buttons",
+    klLine(r).includes('onclick="klGoUnlock()"') && r.content.innerHTML.indexOf('id="klAccess"') < r.content.innerHTML.indexOf('id="klScope-incoming"')
+    && r.content.innerHTML.includes("No leads in Incoming leads right now."), r.content.innerHTML.slice(0, 300));
 }
 
 // ------------------------------------------------------------------ the page itself
