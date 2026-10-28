@@ -613,11 +613,19 @@ IS_AVAILABLE = frozenset({
 # plan's shorter list (the search's words plus eoi/hold, minus titled/open/selling/
 # released) joins 4 fewer lines, e.g. Creation Homes' "Under Contract 8 LAND ONLY ..."
 # (id 9843).
+#
+# "EXCLUSIVE" (28 Oct 2026). repair_rows.find_exclusive_status stores Available on an
+# Exclusive status cell, but the word stays in Aldrich's and EVO's identity text
+# ("Beveridge Exclusive Bristol 11"), so a lot that flips Exclusive -> Sold is inserted as a
+# new row. Stripped here, the two captures are one line and the Available one is retired
+# tonight instead of after the 14-day withdrawal window. "Aplace Exclusive" and "EVO
+# Exclusive" are the status cell whole, the way those lists print it. Measured on the 28 Oct
+# database: 0 new retirements today.
 STATUS_WORDS = frozenset(
     (NOT_AVAILABLE | IS_AVAILABLE | {
         "available", "not available", "unavailable", "on hold", "hold", "under offer",
         "sold", "reserved", "leased", "tbc", "eoi", "under contract", "deposit taken",
-        "sold out"})
+        "sold out", "exclusive", "aplace exclusive", "evo exclusive"})
     - {"titled", "open", "selling", "released", "in stock", "for sale", "now selling"})
 
 

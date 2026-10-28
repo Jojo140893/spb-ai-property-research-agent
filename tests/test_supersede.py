@@ -525,11 +525,57 @@ def test_status_words_are_the_searchs_own_vocabulary():
     import supersede_duplicates as sd
     assert set(sd.NOT_AVAILABLE) == set(_candidates.NOT_AVAILABLE)
     assert set(sd.IS_AVAILABLE) == set(_candidates.IS_AVAILABLE)
+    # "exclusive" is stripped from the line (28 Oct 2026) but is in neither set: the
+    # repair stores the search's own word, Available, so the search needs no new one.
+    assert "exclusive" in sd.STATUS_WORDS
+    assert "exclusive" not in sd.IS_AVAILABLE and "exclusive" not in sd.NOT_AVAILABLE
     # The stage/title words are part of the line, never stripped as a status.
     for w in ("titled", "released", "selling", "open"):
         assert w not in sd.STATUS_WORDS, w
     assert sd.status_free_text("Lot 7 Titled ON HOLD $500,000") == \
         sd.status_free_text("Lot 7 Titled Available $500,000") == "lot 7 titled $500,000"
+
+
+# Aldrich Homes' Beveridge lot 2243 (id 30070) and EVO's Tarneit lot 777 (id 29510), as the
+# 28 Oct 2026 lists print them. The documents are stand-ins.
+_ALDRICH_DOC = "https://sheets.example.test/aldrich-homes-vic"
+_ALDRICH = ("2243 Ooranya Estate Beveridge {} Bristol 11 $183,000 $305,055 $488,055 "
+            "JAN 2027 West")
+_EVO = ("West 777 Harlow Tarneit {} Carlton 18 Elevate $307,500 $358,650 $666,150 NA "
+        "$666,150 Titled North")
+
+
+def test_an_exclusive_status_cell_is_a_status_word():
+    """Ahsan, 28 Oct 2026: "fix the Exclusive issue". repair_rows stores Available on an
+    Exclusive status cell, but the word stays in Aldrich's and EVO's identity text, so a
+    lot that flips Exclusive -> Sold is inserted as a new row. Stripped from the line,
+    the two reads are one line and the status pass can join them."""
+    import supersede_duplicates as sd
+    assert sd.status_free_text(_ALDRICH.format("Exclusive")) == \
+        sd.status_free_text(_ALDRICH.format("Sold"))
+    assert sd.status_free_text(_EVO.format("EVO Exclusive")) == \
+        sd.status_free_text(_EVO.format("Available"))
+    assert "exclusive" not in sd.status_free_text(_EVO.format("EVO Exclusive"))
+    assert sd.status_free_text("$444,610 $974,610 Aplace Exclusive $2k initial deposit") == \
+        sd.status_free_text("$444,610 $974,610 Reserved $2k initial deposit")
+    # Only the whole word: "exclusively" is part of the line.
+    assert "exclusively" in sd.status_free_text("Lot 7 offered exclusively $500,000")
+
+
+def test_an_exclusive_capture_is_retired_when_the_lot_reads_sold():
+    """The Exclusive capture, stored Available by repair_rows, and a newer Sold read of the
+    same line on the same list at the same price are one lot: the Available capture goes
+    tonight, not after the 14-day withdrawal window."""
+    common = dict(doc=_ALDRICH_DOC, price=488_055.0, state="VIC", suburb="Beveridge")
+    rows = [
+        _capture(30070, _ALDRICH.format("Exclusive"), "Available", "28/10/2026",
+                 "2026-10-28T11:40:00", **common),
+        _capture(30990, _ALDRICH.format("Sold"), "Sold", "04/11/2026",
+                 "2026-11-04T11:41:00", **common),
+    ]
+    base, status = _retirements(rows)
+    assert base == {}, f"the three passes were never able to join these: {base}"
+    assert status == {30070: 30990}, status
 
 
 def test_the_review_label_never_carries_the_link():
@@ -826,6 +872,9 @@ def run_all():
         ("a later stated status wins", test_a_later_stated_status_still_retires_the_available_capture),
         ("Volos lot reaches the search", test_the_volos_lot_still_reaches_the_search_after_the_pass),
         ("status words are the search's", test_status_words_are_the_searchs_own_vocabulary),
+        ("Exclusive is a status word", test_an_exclusive_status_cell_is_a_status_word),
+        ("Exclusive capture retired on Sold",
+         test_an_exclusive_capture_is_retired_when_the_lot_reads_sold),
         ("review label has no link", test_the_review_label_never_carries_the_link),
         ("status pass switch", test_the_status_pass_switch_is_off_unless_turned_on),
     ]
