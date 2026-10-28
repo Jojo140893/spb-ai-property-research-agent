@@ -570,6 +570,42 @@ MUTANTS = {
         "return `No ${f === 'all' ? '' : f + ' '}${HL_CHANNEL_NOUN[src]} in this list.`;",
         "return `No ${f} leads in this list.`;",
         "the note names the source"),
+    # --- All Kommo leads (28 Oct 2026) ---------------------------------------------------
+    # Every lead in Kommo, through /api/kommo_leads: a card's name is whatever someone typed
+    # on it in Kommo, and its link is Kommo's.
+    "the Kommo card's name is not escaped": (
+        '<span class="hl-name kl-name">${esc(name)}</span>', '<span class="hl-name kl-name">${name}</span>',
+        "hostile Kommo lead: markup"),
+    "the Kommo card's own name is not escaped on its second line": (
+        '<div class="kl-cardname">Card: ${esc(cardName)}</div>', '<div class="kl-cardname">Card: ${cardName}</div>',
+        "hostile Kommo lead: markup"),
+    "a masked Kommo card shows the contact details": (
+        "const full = KL_VIEW === 'full';", "const full = true;", "masked Kommo view"),
+    "the Kommo link skips hlSafeUrl": (
+        "const link = hlExtLink(k.leadUrl, 'Open in Kommo', 'Opens this lead in Kommo');",
+        'const link = `<a href="${esc(k.leadUrl)}" target="_blank" rel="noopener noreferrer">Open in Kommo</a>`;',
+        "hostile Kommo lead: markup"),
+    # hlApplyFilters hides hlCard-<i> for every HOT_LEADS index: under that prefix the list
+    # above's buttons would hide and show the Kommo cards.
+    "Kommo cards use the hot-leads card ids": (
+        '<div class="prop-card kl-card" id="klCard-${n}">', '<div class="prop-card kl-card" id="hlCard-${n}">',
+        "never hlCard-"),
+    "the Kommo card opens on every column": (
+        "let KL_SCOPE = 'incoming';", "let KL_SCOPE = 'all';", "scope=incoming&page=1"),
+    # Pages are ordered by lead id, so a lead that arrives mid-read is read twice.
+    "the Kommo pages are not de-duplicated": (
+        "if (ids.has(id)) return;", "if (false) return;", "duplicates removed by lead id"),
+    # hlSortNewest drops a record with no grade: most Kommo leads have none.
+    "the Kommo list is sorted by hlSortNewest": (
+        "KL_LEADS = klSortNewest(klMerge(KL_LEADS, a.leads));",
+        "KL_LEADS = hlSortNewest(klMerge(KL_LEADS, a.leads));",
+        "ungraded ones too"),
+    "Unlock leaves the Kommo list in the view it had": (
+        "if (KL_STATE !== 'idle') await loadKommoLeads(true);", "", "Unlock reloads the Kommo list"),
+    "a Kommo list half masked is drawn full": (
+        "KL_VIEW = ((KL_PAGE === 0 || KL_VIEW === 'full') && a.contact === 'full') ? 'full' : 'masked';",
+        "KL_VIEW = a.contact === 'full' ? 'full' : KL_VIEW;",
+        "a list half masked is a masked list"),
 }
 
 
@@ -614,6 +650,12 @@ PAGE_MUTANTS = {
         "const client = given ? String(given.client ?? '').trim() : _v('clientName');",
         "const client = String((given || {}).client ?? '').trim();",
         "the Research tab's call (no 4th argument) still reads its form"),
+    # 28 Oct 2026: opening the tab reads the Kommo card too; without it the card sits on
+    # "Loading Kommo leads…" until someone finds its Refresh.
+    "the nav button does not read the Kommo list": (
+        "onclick=\"showTab('hotLeadsTab', this); loadHotLeads(); loadKommoLeads();\"",
+        "onclick=\"showTab('hotLeadsTab', this); loadHotLeads();\"",
+        "loadKommoLeads()"),
 }
 
 
