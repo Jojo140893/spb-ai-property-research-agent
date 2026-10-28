@@ -102,13 +102,13 @@ const EXPORTS = ["hlSafeUrl", "hlTelHref", "hlMailHref", "hlMoney", "hlWhen", "h
 // only through the dashboard, which holds the service key, so the tab never names it.
 //
 // 28 OCT: the Kommo card's own reads, every one a literal the page writes: Incoming leads,
-// and every column page by page (four at a time, then Load more for the fifth).
+// and every column page by page (four at a time, then Load more, up to the 40-page cap).
 const ALLOWED_FETCH = new Set([
   "/api/hot_leads?limit=200", "/api/hot_leads?limit=200&include_test=1",
   "/api/hot_leads?limit=200&grade=hot", "/api/hot_leads?limit=200&grade=hot&include_test=1",
   "/api/research", "/api/contact_unlock", "/api/lead_notes", "/api/narrative",
   "/api/kommo_leads?scope=incoming&page=1",
-  ...[1, 2, 3, 4, 5].map(p => "/api/kommo_leads?scope=all&page=" + p)]);
+  ...Array.from({ length: 40 }, (_, i) => "/api/kommo_leads?scope=all&page=" + (i + 1))]);
 
 // A localStorage that behaves like the browser's (strings in, strings out), or one that
 // throws on every call, as a private window or blocked storage does.
@@ -143,6 +143,10 @@ function sandbox(search, extra = {}) {
   const ctx = vm.createContext({
     URL, URLSearchParams, console, TextEncoder, TextDecoder, Blob, Response,
     CompressionStream, DecompressionStream, btoa, atob, setTimeout, clearTimeout,
+    // 28 Oct: the Kommo card aborts a read that Unlock or Lock takes over. The stub fetch
+    // below does not honour the signal -- an answer already on its way -- so a check can see
+    // both that the read was aborted and what the page does if it lands anyway.
+    AbortController,
     ...(search === undefined ? {} : { location: { search, origin: "https://dashboard.invalid" } }),
     window: win,
     // The Research tab's selection. Nothing on this tab may ever write to it.
@@ -3389,8 +3393,8 @@ console.log("\n--- All Kommo leads: hostile text ---");
   check("hostile Kommo lead: the source and grade it claims are not drawn",
     !h.includes("&lt;b&gt;x&lt;/b&gt;") && h.includes(">Other source</span>") && !h.includes("pill-hot"));
   check("hostile Kommo lead: the hook's notes are escaped", h.includes("contacts: HTTP 429 &lt;img"));
-  check("hostile Kommo lead: a record button carries the lead's place, never its callId",
-    /onclick="klShowRecord\(\d+\)"/.test(h) && !h.includes("alert(1); //"));
+  check("hostile Kommo lead: a record button carries the lead's Kommo id, never its callId",
+    /id="klRecordBtn-401" onclick="klShowRecord\(401\)"/.test(h) && !h.includes("alert(1); //"));
 }
 
 console.log("\n--- All Kommo leads: a lead cut down by the masking ---");
@@ -3448,7 +3452,7 @@ console.log("\n--- All Kommo leads: column, source and record filters ---");
                            ["klSetRecord", "maybe"], ["klSetSource", undefined]]) {
     s.api[fn](bad);
   }
-  check("anything but a known filter is All", JSON.stringify(s.api.kl().filter) === '{"column":-1,"source":"all","record":"all"}'
+  check("anything but a known filter is All", JSON.stringify(s.api.kl().filter) === '{"column":null,"source":"all","record":"all"}'
     && shownIds() === "601,602,603,604,605,606", JSON.stringify(s.api.kl().filter));
   check("filters ask the server nothing", klUrls(s).length === 1);
 }
@@ -3538,11 +3542,12 @@ console.log("\n--- All Kommo leads: App record ---");
   const scrolled = [];
   const hot1 = s.el("hlCard-1", { className: "prop-card hl-card", hidden: true, scrollIntoView: o => scrolled.push(o) });
   s.el("hlCard-0");
-  const found = s.api.kl().leads.findIndex(l => l.callId === "call-2");
-  const gone = s.api.kl().leads.findIndex(l => l.callId === "wa-gone");
+  // Each button and its message by the Kommo lead id (28 Oct 2026, review), not its place.
+  const found = 1001, gone = 1002;
   const msgFound = s.el("klMsg-" + found), msgGone = s.el("klMsg-" + gone);
-  check("App record buttons for the two leads with a record",
-    (s.content.innerHTML.match(/onclick="klShowRecord\(\d+\)"/g) || []).length === 2);
+  check("App record buttons for the two leads with a record, by Kommo lead id",
+    (s.content.innerHTML.match(/onclick="klShowRecord\(\d+\)"/g) || []).length === 2
+    && s.content.innerHTML.includes('onclick="klShowRecord(1001)"') && s.content.innerHTML.includes('id="klMsg-1002"'));
   const ok = s.api.klShowRecord(found);
   check("klShowRecord scrolls to the record's card above, with both filters back on All",
     ok === true && scrolled.length === 1 && hot1.hidden === false && /kl-flash/.test(hot1.className)
@@ -3552,7 +3557,8 @@ console.log("\n--- All Kommo leads: App record ---");
     no === false && msgGone.textContent.includes("not in the list above") && msgGone.textContent.includes("newest 200")
     && scrolled.length === 1, msgGone.textContent);
   check("klShowRecord of a lead with no record, or no lead, does nothing harmful",
-    s.api.klShowRecord(99) === false && s.api.klShowRecord("0") === false);
+    s.api.klShowRecord(99) === false && s.api.klShowRecord("1001") === false && s.api.klShowRecord(0) === false
+    && s.api.klShowRecord(1e21) === false);
 }
 
 console.log("\n--- All Kommo leads: failures stay on the Kommo card ---");
@@ -3633,9 +3639,11 @@ console.log("\n--- Unlock and Lock switch the Kommo list too, once it is open --
   const n = s.calls.fetch.length;
   await s.api.hlUnlock();
   const after = s.calls.fetch.slice(n).map(c => c.url);
-  check("Unlock reloads the Kommo list once it was loaded, after the list above",
-    JSON.stringify(after) === JSON.stringify(["/api/contact_unlock", "/api/hot_leads?limit=200",
-      "/api/kommo_leads?scope=incoming&page=1"]) && s.content.innerHTML.includes('href="tel:+61412345678"'), JSON.stringify(after));
+  // Kommo first (28 Oct 2026, review): its read clears the card, which must not wait on the
+  // list above. The two are different endpoints; only Kommo reads are kept one at a time.
+  check("Unlock reloads the Kommo list once it was loaded, started before the list above",
+    JSON.stringify(after) === JSON.stringify(["/api/contact_unlock", "/api/kommo_leads?scope=incoming&page=1",
+      "/api/hot_leads?limit=200"]) && s.content.innerHTML.includes('href="tel:+61412345678"'), JSON.stringify(after));
   s.el("hlLockBtn");
   await s.api.hlLock();
   check("Lock masks the Kommo list again", !s.content.innerHTML.includes("tel:") && s.content.innerHTML.includes("Mobile ending 678"));
@@ -3665,6 +3673,263 @@ console.log("\n--- Unlock and Lock switch the Kommo list too, once it is open --
   await refresh;
   check("a Kommo Refresh sent before Lock and answered after it draws nothing: the card stays masked",
     !s.content.innerHTML.includes("tel:") && s.content.innerHTML.includes("Mobile ending 678") && s.btn.disabled === false);
+}
+
+// 28 Oct 2026, review: what the Kommo card shows WHILE Lock's reads are out, not only once
+// they land. A WhatsApp lead's card and contact are named by the number, so the full view
+// shows it as a name as well as a tel: link. A rig whose Kommo and hot-leads answers can each
+// be held: { s, held: { kommo: [], hot: [] }, hold: { kommo, hot }, shows() }.
+const WA_NUMBER = "+61 412 345 678";
+function klLockRig() {
+  const s = klRig(undefined, { localStorage: memoryStorage() });
+  const r = { s, view: "full", hold: { kommo: false, hot: false }, held: { kommo: [], hot: [] } };
+  const keep = (which, ans, opts) => r.hold[which]
+    ? new Promise(go => r.held[which].push({ go: () => go(ans), opts })) : ans;
+  s.respond(async (url, opts) => {
+    if (url === "/api/contact_unlock") { r.view = "masked"; return reply(200, { status: "success", contact: "masked" }); }
+    if (url.startsWith("/api/hot_leads"))
+      return keep("hot", reply(200, { status: "success", contact: r.view, contactUnlock: "password", leads: [clean()] }), opts);
+    const full = r.view === "full";
+    return keep("kommo", reply(200, klPage([klLead(1501, full
+      ? { cardName: WA_NUMBER, customer: { name: WA_NUMBER, email: "jo.citizen@example.com", phone: "+61412345678" } }
+      : { cardName: "[hidden]", customer: { name: "[hidden]", email: "", phone: "", phoneLast3: "678", hasEmail: true, hasPhone: true } })],
+      { contact: r.view })), opts);
+  });
+  // Anything on the Kommo card that shows the contact: a link, or the number as a name.
+  r.shows = () => ["tel:", "mailto:", WA_NUMBER, "412 345 678"].filter(x => s.content.innerHTML.includes(x));
+  return r;
+}
+const settle = async () => { for (let i = 0; i < 25; i++) await new Promise(go => setImmediate(go)); };
+{
+  const r = klLockRig(), s = r.s;
+  await s.api.loadHotLeads();
+  await s.api.loadKommoLeads();
+  check("the Lock race's control: unlocked, the Kommo card shows the number, as a link and as a name",
+    r.shows().length === 4, JSON.stringify(r.shows()));
+  r.hold.hot = true; r.hold.kommo = true;
+  s.el("hlLockBtn"); s.el("hlAccessMsg");
+  const locking = s.api.hlLock();
+  await settle();
+  check("Lock clears the Kommo card at once, while the list above and the Kommo list are both read: no tel:, no mailto:, no number as a name",
+    r.held.hot.length === 1 && r.held.kommo.length === 1 && r.shows().length === 0,
+    JSON.stringify([r.held.hot.length, r.held.kommo.length, r.shows()]));
+  // A page that never asked (Kommo after the list above) has nothing held: the checks go on.
+  const release = list => { while (list.length) list.shift().go(); };
+  release(r.held.kommo);
+  await settle();
+  release(r.held.kommo);                  // a Kommo read that only started once the list above landed
+  check("... the masked Kommo list is drawn while the list above is still being read",
+    r.held.hot.length === 1 && r.shows().length === 0 && s.content.innerHTML.includes("Mobile ending 678"),
+    s.content.innerHTML.slice(0, 300));
+  release(r.held.hot);
+  await settle();
+  release(r.held.kommo);
+  const locked = await locking;
+  check("... and Lock's promise ends with both lists masked", locked === true && r.shows().length === 0
+    && s.content.innerHTML.includes("Mobile ending 678") && !s.hot.innerHTML.includes("tel:"));
+}
+{
+  // The stale page lands FIRST: a Refresh sent unlocked, answered after Lock but before
+  // Lock's own read. klMerge keeps the first copy of a lead, so in the other order the
+  // masked copy wins anyway; in this one only the generation guard stands in the way.
+  const r = klLockRig(), s = r.s;
+  await s.api.loadHotLeads();
+  await s.api.loadKommoLeads();
+  r.hold.kommo = true;
+  const refresh = s.api.loadKommoLeads(true);
+  await settle();
+  s.el("hlLockBtn"); s.el("hlAccessMsg");
+  const locking = s.api.hlLock();
+  await settle();
+  const none = { go: () => {}, opts: {} };
+  const [stale = none, fresh = none] = r.held.kommo;
+  const signal = x => (x.opts && x.opts.signal) || {};
+  check("Lock drops the Kommo read still out: its fetch is aborted, Lock's own is not",
+    r.held.kommo.length === 2 && signal(stale).aborted === true && signal(fresh).aborted === false,
+    JSON.stringify([r.held.kommo.length, signal(stale).aborted, signal(fresh).aborted]));
+  stale.go();
+  await refresh;
+  await settle();
+  check("a stale full Kommo page landing BEFORE Lock's masked one draws nothing: no tel:, no number as a name",
+    r.shows().length === 0 && s.api.kl().leads.length === 0 && s.api.kl().view === "masked",
+    JSON.stringify(r.shows()) + " " + s.content.innerHTML.slice(0, 200));
+  fresh.go();
+  r.hold.kommo = false;
+  for (const x of r.held.kommo.slice(2)) x.go();
+  await locking;
+  check("... and Lock's masked page is drawn, Refresh usable again",
+    r.shows().length === 0 && s.content.innerHTML.includes("Mobile ending 678") && s.btn.disabled === false);
+}
+
+console.log("\n--- All Kommo leads: one Kommo read at a time ---");
+{
+  // Kommo allows about 7 requests a second for the whole account and the call webhook needs
+  // its share: a Refresh, a scope button or a second Load more while a read is out asks
+  // nothing (28 Oct 2026, review).
+  const s = klRig();
+  let open = 0, most = 0, hold = false;
+  const held = [];
+  s.respond(async url => {
+    const p = Number(url.match(/page=(\d+)$/)[1]);
+    const ans = reply(200, klPage([klLead(1700 - p)], { hasMore: true, scope: "all", page: p }));
+    open++; most = Math.max(most, open);
+    const done = () => { open--; return ans; };
+    return hold ? new Promise(go => held.push(() => go(done()))) : done();
+  });
+  await s.api.klSetScope("all");
+  hold = true;
+  const more = s.api.klMore();
+  await settle();
+  check("Load more disables the Kommo Refresh while it reads", held.length === 1 && s.btn.disabled === true);
+  const asked = klUrls(s).length;
+  // Not awaited: a press that did read would wait on its held answer.
+  const pressed = [s.api.loadKommoLeads(true), s.api.klSetScope("incoming"), s.api.klMore()];
+  await settle();
+  check("Refresh, a scope button and Load more ask nothing while Load more is out",
+    klUrls(s).length === asked && most === 1 && s.api.kl().scope === "all", JSON.stringify(klUrls(s).slice(asked)));
+  hold = false;
+  while (held.length) { held.shift()(); await settle(); }
+  await more;
+  await Promise.all(pressed);
+  check("... and Refresh is usable again once Load more lands", s.btn.disabled === false && most === 1
+    && s.api.kl().state === "ok" && s.api.kl().page === 8, JSON.stringify([s.btn.disabled, most, s.api.kl().page]));
+}
+
+console.log("\n--- All Kommo leads: App record while Load more re-sorts the list ---");
+{
+  // Page 5 brings a lead dated after B (an import), and page 6 is still out: the drawn cards
+  // are the ones before Load more, and KL_LEADS is already in another order.
+  const s = klRig();
+  const held = [];
+  s.respond(async url => {
+    if (url.startsWith("/api/hot_leads")) return reply(200, { status: "success", leads: [
+      clean({ callId: "call-A", createdAt: "2026-09-15T00:10:00Z" }),
+      clean({ callId: "call-B", grade: "warm", createdAt: "2026-09-14T00:10:00Z" })] });
+    const p = Number(url.match(/page=(\d+)$/)[1]);
+    const page = leads => reply(200, klPage(leads, { hasMore: true, scope: "all", page: p }));
+    if (p === 1) return page([
+      klLead(1899, { callId: "call-B", hasRecord: true, cardName: "Lead B", createdAt: "2026-10-20T00:00:00.000Z" }),
+      klLead(1898, { callId: "call-A", hasRecord: true, cardName: "Lead A", createdAt: "2026-10-19T00:00:00.000Z" })]);
+    if (p <= 4) return page([klLead(1800 + p, { createdAt: `2026-10-0${p}T00:00:00.000Z` })]);
+    if (p === 5) return page([klLead(1900, { cardName: "Imported, dated after B", createdAt: "2026-10-27T00:00:00.000Z" })]);
+    return new Promise(go => held.push(() => go(reply(200, klPage([], { scope: "all", page: p })))));
+  });
+  await s.api.loadHotLeads();
+  await s.api.klSetScope("all");
+  const arg = (s.content.innerHTML.match(/Lead B[\s\S]*?onclick="klShowRecord\((\d+)\)"/) || [])[1];
+  const more = s.api.klMore();
+  await settle();
+  const scrolled = [];
+  const hotB = s.el("hlCard-1", { className: "prop-card hl-card", scrollIntoView: () => scrolled.push("B") });
+  s.el("hlCard-0", { className: "prop-card hl-card", scrollIntoView: () => scrolled.push("A") });
+  const msgB = s.el("klMsg-" + arg);
+  const ok = held.length === 1 ? s.api.klShowRecord(Number(arg)) : null;
+  check("App record pressed while Load more re-sorts the list goes to that lead's own record",
+    arg === "1899" && ok === true && JSON.stringify(scrolled) === '["B"]' && /kl-flash/.test(hotB.className)
+    && msgB.textContent === "", JSON.stringify([arg, held.length, ok, scrolled, msgB.textContent]));
+  held.shift()();
+  await more;
+}
+
+console.log("\n--- All Kommo leads: columns over several pages ---");
+{
+  // A cold hook instance whose pipelines read failed answers with its four KNOWN_COLUMNS
+  // (no pipeline name) and a "pipelines:" note. Pages 1-4 brought the real pipeline.
+  const s = klRig();
+  const VIEWING = { pipelineId: 13102035, pipelineName: "SPB", statusId: 101025951, statusName: "Viewing booked", sort: 40, closed: false };
+  const CONTRACT = { pipelineId: 13102035, pipelineName: "SPB", statusId: 101025955, statusName: "Contract sent", sort: 50, closed: false };
+  const REAL = [KL_COLS[0], KL_COLS[1], VIEWING, CONTRACT, KL_COLS[2], KL_COLS[3]];
+  const KNOWN = KL_COLS.map(c => ({ ...c, pipelineName: null }));
+  const at = [VIEWING, CONTRACT, KL_COLS[2], KL_COLS[0]];
+  s.respond(async url => {
+    const p = Number(url.match(/page=(\d+)$/)[1]);
+    if (p <= 4) return reply(200, klPage([klLead(2000 + p, {}, { statusId: at[p - 1].statusId, statusName: at[p - 1].statusName })],
+      { hasMore: true, scope: "all", page: p, columns: REAL }));
+    return reply(200, klPage([klLead(2005, {}, { statusId: VIEWING.statusId, statusName: VIEWING.statusName })],
+      { scope: "all", page: 5, columns: KNOWN, errors: ["pipelines: HTTP 429"] }));
+  });
+  await s.api.klSetScope("all");
+  s.api.klSetColumn(2);
+  check("the columns' control: Viewing booked is pressed", /aria-pressed="true" onclick="klSetColumn\(2\)">Viewing booked \(1\)/.test(s.content.innerHTML));
+  await s.api.klMore();
+  const cols = s.api.kl().columns;
+  const shownIds = () => [...s.content.innerHTML.matchAll(/leads\/detail\/(\d+)"/g)].map(m => m[1]).join(",");
+  check("a page with the hook's fallback columns is merged, not swapped in: every column stays, with its pipeline's name",
+    cols.map(c => c.statusId).join() === REAL.map(c => c.statusId).join() && cols.every(c => c.pipelineName === "SPB"),
+    JSON.stringify(cols.map(c => [c.statusId, c.pipelineName])));
+  check("... the pressed column is still Viewing booked, with both its leads",
+    /aria-pressed="true" onclick="klSetColumn\(2\)">Viewing booked \(2\)/.test(s.content.innerHTML) && shownIds() === "2005,2001",
+    shownIds());
+  s.api.klSetColumn(-1);
+  check("... and the leads of the other columns keep their buttons",
+    ["Contract sent (1)", "Closed - won (1)", "Incoming leads (1)"].every(t => s.content.innerHTML.includes(">" + t + "</button>")));
+}
+{
+  // A Refresh whose answer no longer has the pressed column: All again, not an empty list
+  // under a button that is no longer drawn.
+  const s = klRig();
+  let cols = KL_COLS;
+  s.respond(async () => reply(200, klPage([klLead(2101, {}, { statusId: 142 }), klLead(2102)], { columns: cols })));
+  await s.api.loadKommoLeads();
+  s.api.klSetColumn(2);
+  const pressed = s.api.kl().filter.column;
+  cols = KL_COLS.filter(c => c.statusId !== 142);
+  await s.api.loadKommoLeads(true);
+  const h = s.content.innerHTML;
+  check("a column pressed before a Refresh whose answer no longer has it is All again",
+    pressed === "13102035:142" && s.api.kl().filter.column === null && klCards(h) === 2
+    && /id="klColumn-all" aria-pressed="true"/.test(h), JSON.stringify([pressed, s.api.kl().filter]));
+}
+
+console.log("\n--- All Kommo leads: the failed page's message, the 40-page cap, klUrl ---");
+{
+  // The message after "could not be read" is the server's (or the hook's) words.
+  const s = klRig();
+  s.respond(async url => url.endsWith("page=1")
+    ? reply(200, klPage([klLead(2201)], { hasMore: true, scope: "all" }))
+    : reply(502, { status: "error", message: '<img src=x onerror="alert(1)">' }));
+  await s.api.klSetScope("all");
+  const h = s.content.innerHTML;
+  auditMarkup("a failed page's message from the server is text on the Retry note", h);
+  check("... drawn escaped", h.includes("Page 2 could not be read") && !/<img/i.test(h)
+    && h.includes("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;"));
+}
+{
+  // api/kommo_leads.py reads any page past 40 as page 1, so asking for 41 would read page 1
+  // again and again. Page 2 fails once, so the presses after its Retry are not in step with
+  // 40: the last one reads 38-40 and must stop there.
+  const s = klRig();
+  let fail2 = true;
+  s.respond(async url => {
+    const p = Number(url.match(/page=(\d+)$/)[1]);
+    if (p === 2 && fail2) { fail2 = false; return reply(502, { status: "error", message: "kommo-leads answered HTTP 502" }); }
+    return reply(200, klPage([klLead(3000 - p)], { hasMore: true, scope: "all", page: p }));
+  });
+  await s.api.klSetScope("all");
+  for (let n = 0; n < 15 && s.api.kl().page < 40; n++) await s.api.klMore();
+  const asked = klUrls(s).map(u => Number(u.match(/page=(\d+)$/)[1]));
+  check("All columns stops at page 40: every page asked for once (page 2 again after it failed), never page 1 again",
+    JSON.stringify(asked) === JSON.stringify([1, 2, ...Array.from({ length: 39 }, (_, i) => i + 2)]) && s.api.kl().page === 40,
+    JSON.stringify(asked.slice(-6)) + " page " + s.api.kl().page);
+  const h = s.content.innerHTML;
+  check("... and says the list stops at 40 pages, with no Load more", h.includes("this list stops at 40 pages")
+    && !h.includes("klMore()") && klCards(h) === 40, String(klCards(h)));
+  const before = klUrls(s).length;
+  const moreBtn = s.el("klMoreBtn");
+  await s.api.klMore();
+  check("Load more at page 40 asks nothing and touches nothing", klUrls(s).length === before
+    && moreBtn.textContent === "" && moreBtn.disabled === false && s.btn.disabled === false && s.api.kl().state === "ok");
+}
+{
+  const s = klRig();
+  const u = (scope, page) => s.api.klUrl(scope, page);
+  check("klUrl writes only the two scopes and pages 1 to 40, whatever it is handed",
+    u("all", 40) === "/api/kommo_leads?scope=all&page=40" && u("incoming", 1) === "/api/kommo_leads?scope=incoming&page=1"
+    && u("ALL", 2) === "/api/kommo_leads?scope=incoming&page=2" && u("all&x=1", 3) === "/api/kommo_leads?scope=incoming&page=3"
+    && u(undefined, 2) === "/api/kommo_leads?scope=incoming&page=2" && u("all", 41) === "/api/kommo_leads?scope=all&page=1"
+    && u("all", 0) === "/api/kommo_leads?scope=all&page=1" && u("all", 2.5) === "/api/kommo_leads?scope=all&page=1"
+    && u("all", "2") === "/api/kommo_leads?scope=all&page=1",
+    JSON.stringify([u("ALL", 2), u("all", 41)]));
 }
 
 // ------------------------------------------------------------------ the page itself
