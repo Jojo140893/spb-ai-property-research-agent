@@ -3553,8 +3553,9 @@ console.log("\n--- All Kommo leads: App record ---");
     ok === true && scrolled.length === 1 && hot1.hidden === false && /kl-flash/.test(hot1.className)
     && msgFound.textContent === "", JSON.stringify([ok, scrolled.length, hot1.hidden, hot1.className]));
   const no = s.api.klShowRecord(gone);
-  check("klShowRecord says so when the record is not in the list above",
-    no === false && msgGone.textContent.includes("not in the list above") && msgGone.textContent.includes("newest 200")
+  // 28 Oct 2026: "the list above" until the switch at the top put one list on screen at a time.
+  check("klShowRecord says so when the record is not in the App records list",
+    no === false && msgGone.textContent.includes("not in the App records list") && msgGone.textContent.includes("newest 200")
     && scrolled.length === 1, msgGone.textContent);
   check("klShowRecord of a lead with no record, or no lead, does nothing harmful",
     s.api.klShowRecord(99) === false && s.api.klShowRecord("1001") === false && s.api.klShowRecord(0) === false
@@ -3964,11 +3965,13 @@ console.log("\n--- the tab is wired into the page ---");
   for (const id of ["hotLeadsBadge", "hotLeadsRefresh", "hotLeadsContent"])
     check("pane has #" + id, pane.includes('id="' + id + '"'));
   check("Refresh forces a reload", /id="hotLeadsRefresh"[^>]*onclick="loadHotLeads\(true\)"/.test(pane));
-  // 28 Oct: the list above is the app's records; every Kommo lead is in the card below it.
+  // 28 Oct: the list above is the app's records; every Kommo lead is in the other card, which
+  // the switch at the top of the tab shows in its place (Ahsan, the same day) -- not "below".
   const words = s => new RegExp(s.split(" ").join("\\s+"));
-  check("pane says every lead in Kommo is under All Kommo leads below",
+  check("pane says every lead in Kommo is under All Kommo leads, at the top of the tab",
     words("These are the leads the app has a record for; <strong>every</strong> lead in Kommo, researched or not, "
-          + "is under <strong>All Kommo leads</strong> below.").test(pane));
+          + "is under <strong>All Kommo leads</strong> at the top of the tab.").test(pane)
+    && !words("<strong>All Kommo leads</strong> below.").test(pane));
   check("the Kommo card is headed All Kommo leads and sits below the list, inside the pane",
     pane.includes('<div class="panel-card" id="kommoLeadsCard">') && pane.includes("<span>All Kommo leads</span>")
     && pane.indexOf('id="kommoLeadsCard"') > pane.indexOf('id="hotLeadsContent"'));

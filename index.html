@@ -812,7 +812,6 @@
         .hl-link-add input[type=text] { flex: 1 1 150px; }
         /* All Kommo leads (28 Oct 2026): the tab's second card, every lead in Kommo. Built on
            the .hl-* rules above; these add only what a Kommo card has and a record's does not. */
-        #kommoLeadsCard { margin-top: 1.5rem; }
         .kl-card { padding: 1rem 1.25rem; }
         .kl-cardname { font-size: 0.82rem; color: var(--text-muted); margin-top: 0.15rem; overflow-wrap: anywhere; }
         .kl-where { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.2rem; overflow-wrap: anywhere; }
@@ -820,8 +819,16 @@
         .kl-links { align-items: center; }
         .kl-record { font-size: 0.78rem; padding: 0.25rem 0.65rem; }
         .kl-more { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; margin-top: 1rem; }
-        /* App record: the card in the list above it jumps to, lit for a moment. */
+        /* App record: the card in the App records list it jumps to, lit for a moment. */
         .hl-card.kl-flash { box-shadow: 0 0 0 3px var(--accent-blue); transition: box-shadow 0.3s ease; }
+        /* The switch at the top of the tab (28 Oct 2026, Ahsan): App records or All Kommo leads,
+           one card shown at a time, so the list chosen has its own filters at the top of the
+           page. The filter buttons' look (.hl-filter, .is-active), a size up because it picks
+           the whole list. The hidden card is said explicitly, as a hidden lead card is, so a
+           later display rule on .panel-card cannot show both again. */
+        .hl-switch { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0 0 1rem; }
+        .hl-switch .hl-filter { font-size: 0.9rem; padding: 0.55rem 1rem; max-width: 100%; }
+        #hotLeadsTab > .panel-card[hidden] { display: none; }
 
         .json-code {
             font-family: 'JetBrains Mono', monospace;
@@ -909,6 +916,9 @@
                into a very long scroll for no gain -- the checkbox itself is enlarged
                and the row keeps its density. */
             .builder-table button, .builder-table select { min-height: 0; }
+            /* Clare's Leads: the two list buttons at the top share a row while they fit, and
+               each takes a whole row once they wrap, so neither is left a stub at the edge. */
+            .hl-switch .hl-filter { flex: 1 1 auto; }
         }
     </style>
 </head>
@@ -1192,7 +1202,20 @@
      webhook has run the research, and for a hot caller booked the discovery call: who, how
      to reach them, and the three buildings to open with. -->
 <div id="hotLeadsTab" class="view-pane">
-    <div class="panel-card">
+    <!-- 28 Oct 2026 (Ahsan: "the tabs should be controlled at the top of the page; it is
+         difficult to control at the bottom"). The two cards were stacked, so the Kommo list's
+         filters sat under every app record. One is shown at a time, chosen here, above both:
+         hlSwitchTo hides the other card, never empties it, and asks the server nothing. Each
+         count is the number its card's badge shows, "…" until that list has answered. -->
+    <div class="hl-switch" id="hlSwitch" role="group" aria-label="Which leads to list">
+        <button type="button" class="btn-ghost hl-filter is-active" id="hlSwitch-records"
+                aria-pressed="true" aria-controls="hotLeadsCard"
+                onclick="hlSwitchTo('records')">App records (…)</button>
+        <button type="button" class="btn-ghost hl-filter" id="hlSwitch-kommo"
+                aria-pressed="false" aria-controls="kommoLeadsCard"
+                onclick="hlSwitchTo('kommo')">All Kommo leads (…)</button>
+    </div>
+    <div class="panel-card" id="hotLeadsCard">
         <div class="panel-header" style="flex-wrap:wrap; gap:0.5rem;">
             <span>Leads from Clare's calls and WhatsApp</span>
             <span style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
@@ -1211,7 +1234,7 @@
             and no summary to read. To see one source on its own, press
             <strong>Clare calls (VAPI)</strong> or <strong>WhatsApp</strong> above the list.
             These are the leads the app has a record for; <strong>every</strong> lead in Kommo,
-            researched or not, is under <strong>All Kommo leads</strong> below.
+            researched or not, is under <strong>All Kommo leads</strong> at the top of the tab.
         </p>
         <!-- Coleen, 28 Sep 2026: the Research tab's selection and report on every lead, notes
              and links per lead, and contact details only for whoever holds the password. -->
@@ -1226,8 +1249,8 @@
     </div>
     <!-- 28 Oct 2026: every lead in Kommo, not only the ones the app has a record for, read
          live through /api/kommo_leads (the hook reads Kommo, GET only) and masked by the same
-         rules as the list above. Its own ids (kommoLeads*, klCard-<n>), so the list above's
-         filters never touch it. -->
+         rules as the App records list. Its own ids (kommoLeads*, klCard-<n>), so that list's
+         filters never touch it. Hidden while App records is chosen at the top (hlSwitchTo). -->
     <div class="panel-card" id="kommoLeadsCard">
         <div class="panel-header" style="flex-wrap:wrap; gap:0.5rem;">
             <span>All Kommo leads</span>
@@ -1242,7 +1265,8 @@
             RingCentral SMS, Clare calls with no state or no answer, Facebook comments and leads
             added by hand. They are not researched. It opens on <strong>Incoming leads</strong>;
             press <strong>All columns</strong> for every column. A lead the app has a record for
-            has an <strong>App record</strong> button that jumps to its card above.
+            has an <strong>App record</strong> button that switches to <strong>App records</strong>
+            and jumps to its card.
         </p>
         <div id="kommoLeadsContent" style="font-size:0.9rem;">Loading Kommo leads…</div>
     </div>
@@ -4224,6 +4248,7 @@ python state_sync.py push</pre>
             if (all.kind === 'unreachable') {
                 HOT_LEADS_STATE = 'idle';
                 if (badge) badge.textContent = 'unavailable';
+                hlSwitchCount('records', '');
                 el.innerHTML = `<div class="hl-notice"><strong>Could not reach the dashboard.</strong>
                     Check the connection, then press Refresh.</div>`;
                 return;
@@ -4232,6 +4257,7 @@ python state_sync.py push</pre>
             if (all.kind === 'failed') {
                 HOT_LEADS_STATE = 'loaded';
                 if (badge) badge.textContent = 'unavailable';
+                hlSwitchCount('records', '');
                 el.innerHTML = hlUnavailable(all.status, all.message || `The server answered ${all.status}.`);
                 return;
             }
@@ -4285,6 +4311,7 @@ python state_sync.py push</pre>
             if (badge) badge.textContent = HOT_LEADS.length
                 ? `${HOT_LEADS.length}${more} lead${HOT_LEADS.length === 1 && !more ? '' : 's'} · ${hot}${hotMore} hot`
                 : '0 leads';
+            hlSwitchCount('records', `${HOT_LEADS.length}${more}`);
             // Before the cards are drawn, so a draft this answer shows was saved is drawn empty.
             const arrived = hlSettleDrafts();
             el.innerHTML = hlRenderLeads(HOT_LEADS, HOT_LEADS_FILTER, cover, HOT_LEADS_SOURCE);
@@ -5129,7 +5156,7 @@ python state_sync.py push</pre>
      * index, so a Kommo card under that prefix would be hidden and shown by the other list's
      * buttons; these are klCard-<n>, n being the lead's place in KL_LEADS. No notes block:
      * the hook keeps notes beside a record, and most of these have none. A lead that has a
-     * record gets an "App record" button that jumps to its card above.
+     * record gets an "App record" button that switches to App records and jumps to its card.
      *
      * Every string on these cards is Kommo's, typed by a person or a chat bot: the card's name,
      * the column's name, the contact. So nothing goes into HTML without esc(), the Kommo link
@@ -5338,8 +5365,8 @@ python state_sync.py push</pre>
 
     // After klLoadPages, for the first load and for Load more alike. A failure with nothing
     // loaded is the whole card's notice; a failure after some pages keeps them and says which
-    // page is missing, with a Retry. Only #kommoLeadsContent and its badge are touched: the
-    // list above is drawn by loadHotLeads and nothing here.
+    // page is missing, with a Retry. Only #kommoLeadsContent, its badge and its count on the
+    // switch are touched: the App records list is drawn by loadHotLeads and nothing here.
     function klSettle(r) {
         const el = document.getElementById('kommoLeadsContent');
         const badge = document.getElementById('kommoLeadsBadge');
@@ -5353,9 +5380,10 @@ python state_sync.py push</pre>
             }
         }
         if (!KL_PAGE && r.kind === 'unreachable') {
-            // Not remembered, as on the list above: opening the tab again tries again.
+            // Not remembered, as on the App records list: opening the tab again tries again.
             KL_STATE = 'idle';
             if (badge) badge.textContent = 'unavailable';
+            hlSwitchCount('kommo', '');
             el.innerHTML = `<div class="hl-notice"><strong>Could not reach the dashboard.</strong>
                 Check the connection, then press Refresh.</div>`;
             return;
@@ -5363,6 +5391,7 @@ python state_sync.py push</pre>
         if (!KL_PAGE && r.kind === 'failed') {
             KL_STATE = 'failed';
             if (badge) badge.textContent = 'unavailable';
+            hlSwitchCount('kommo', '');
             el.innerHTML = hlUnavailable(r.status, r.message || `The server answered ${r.status}.`);
             return;
         }
@@ -5374,6 +5403,7 @@ python state_sync.py push</pre>
         if (KL_FILTER.column !== null && !KL_COLUMNS.some(c => klColumnKey(c) === KL_FILTER.column)) KL_FILTER = { ...KL_FILTER, column: null };
         const n = KL_LEADS.length, more = KL_HAS_MORE ? '+' : '';
         if (badge) badge.textContent = `${n.toLocaleString('en-AU')}${more} lead${n === 1 && !more ? '' : 's'}`;
+        hlSwitchCount('kommo', `${n.toLocaleString('en-AU')}${more}`);
         klRender();
     }
 
@@ -5405,6 +5435,7 @@ python state_sync.py push</pre>
         KL_MORE_FAILED = '';
         if (btn) btn.disabled = true;
         if (badge) badge.textContent = 'loading';
+        hlSwitchCount('kommo', '…');
         el.innerHTML = '<p style="color:var(--text-muted);">Reading '
                      + `${KL_SCOPE === 'all' ? 'every column' : 'Incoming leads'} from Kommo…</p>`;
         try {
@@ -5607,12 +5638,14 @@ python state_sync.py push</pre>
         return html;
     }
 
-    // App record: the lead's card in the list above, by callId. Both of that list's filters go
-    // back to All first, or the card could be hidden under one; then it is scrolled to and
-    // lit for a moment. Not found -- older than the newest HL_LIMIT, a test record, or that
-    // list not loaded -- says so on this card instead. `leadId` is the Kommo lead id the
-    // button was drawn with, looked up again here, so a list re-sorted under the drawn cards
-    // (Load more) still finds the lead whose button it is.
+    // App record: the lead's card in the App records list, by callId. That list is hidden while
+    // this one is shown (the switch at the top), so it is switched to FIRST: nothing is
+    // scrolled to, or filtered, while it cannot be seen. Then both of its filters go back to
+    // All, or the card could be hidden under one, and it is scrolled to and lit for a moment.
+    // Not found -- older than the newest HL_LIMIT, a test record, or that list not loaded --
+    // says so on this card instead, and the switch stays where it is. `leadId` is the Kommo
+    // lead id the button was drawn with, looked up again here, so a list re-sorted under the
+    // drawn cards (Load more) still finds the lead whose button it is.
     function klShowRecord(leadId) {
         const lead = (Number.isSafeInteger(leadId) && leadId > 0) ? KL_LEADS.find(l => klLeadId(l) === leadId) : null;
         const id = (lead && typeof lead === 'object' && typeof lead.callId === 'string') ? lead.callId : '';
@@ -5620,11 +5653,12 @@ python state_sync.py push</pre>
         const i = hlIndexOf(id);
         const card = i >= 0 ? document.getElementById('hlCard-' + i) : null;
         if (!card) {
-            if (msg) msg.textContent = `This lead's record is not in the list above (older than the newest ${HL_LIMIT}, `
+            if (msg) msg.textContent = `This lead's record is not in the App records list (older than the newest ${HL_LIMIT}, `
                                      + 'or a test record).';
             return false;
         }
         if (msg) msg.textContent = '';
+        hlSwitchTo('records');
         hlSetSource('all');
         hlSetFilter('all');
         if (typeof card.scrollIntoView === 'function') card.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -5633,6 +5667,76 @@ python state_sync.py push</pre>
         setTimeout(() => { card.className = unlit(); }, 1600);
         return true;
     }
+
+    // ------------------------------------------------ the switch at the top (28 Oct 2026)
+    /* ONE LIST AT A TIME, CHOSEN AT THE TOP OF THE TAB (Ahsan: "the tabs should be controlled
+     * at the top of the page; it is difficult to control at the bottom"). The two cards were
+     * stacked, so the Kommo list's filters sat under every app record. Now
+     * [ App records (N) ] [ All Kommo leads (N) ] sits above both, and exactly one card is
+     * shown: the other is hidden, never emptied or drawn again, so its filters, a Re-run in
+     * progress and anything typed into it are as they were when it comes back. Switching asks
+     * the server nothing. The nav button still reads both lists, so both counts are there to
+     * choose by.
+     *
+     * Each count is the number its card's badge shows (hlSwitchCount, beside every badge
+     * update): '…' until that list has answered, and no number at all when it could not be
+     * read -- the card says why, and the switch is no place for an error.
+     *
+     * The viewer's last choice is kept in localStorage, a convenience and nothing more. Read
+     * once, as the page loads, so a private window or blocked storage -- which throws on the
+     * read itself -- opens on App records and the rest of the script still runs; a write that
+     * throws still switches, it is only not remembered. Keys, labels and card ids are written
+     * here; nothing of a lead's reaches the switch.
+     */
+    const HL_SWITCHES = ['records', 'kommo'];
+    const HL_SWITCH_LABEL = { records: 'App records', kommo: 'All Kommo leads' };
+    const HL_SWITCH_CARD = { records: 'hotLeadsCard', kommo: 'kommoLeadsCard' };
+    const HL_SWITCH_STORE = 'spb.leadslist.v1';
+    const HL_SWITCH_COUNT = { records: '…', kommo: '…' };
+
+    // The list remembered, or App records for anything else: nothing stored, a value from
+    // another version, or storage that throws.
+    function hlSwitchStored() {
+        let v = null;
+        try { v = localStorage.getItem(HL_SWITCH_STORE); } catch (e) { v = null; }
+        return HL_SWITCHES.includes(v) ? v : 'records';
+    }
+    let HL_SWITCH = hlSwitchStored();
+
+    // Both buttons and both cards from HL_SWITCH and HL_SWITCH_COUNT. aria-pressed says which
+    // list is shown, as on the filter buttons; the card not chosen is hidden, not removed.
+    function hlPaintSwitch() {
+        HL_SWITCHES.forEach(key => {
+            const on = key === HL_SWITCH;
+            const b = document.getElementById('hlSwitch-' + key);
+            if (b) {
+                b.className = 'btn-ghost hl-filter' + (on ? ' is-active' : '');
+                b.setAttribute('aria-pressed', String(on));
+                b.textContent = HL_SWITCH_LABEL[key] + (HL_SWITCH_COUNT[key] ? ` (${HL_SWITCH_COUNT[key]})` : '');
+            }
+            const pane = document.getElementById(HL_SWITCH_CARD[key]);
+            if (pane) pane.hidden = !on;
+        });
+    }
+
+    // The two buttons, and klShowRecord. Anything but a known list is App records.
+    function hlSwitchTo(list) {
+        HL_SWITCH = HL_SWITCHES.includes(list) ? list : 'records';
+        try { localStorage.setItem(HL_SWITCH_STORE, HL_SWITCH); } catch (e) { /* not remembered, still switched */ }
+        hlPaintSwitch();
+    }
+
+    // Beside a badge update: `count` is the number that badge now shows, '…' while its list
+    // is read, or '' when it could not be.
+    function hlSwitchCount(list, count) {
+        if (!HL_SWITCHES.includes(list)) return;
+        HL_SWITCH_COUNT[list] = String(count ?? '');
+        hlPaintSwitch();
+    }
+
+    // Once as the page loads (the script comes after the tab's markup), so the tab opens on
+    // the list remembered.
+    hlPaintSwitch();
     // HOT-LEADS-END
 
     async function loadVendorAssets() {

@@ -99,6 +99,8 @@ SHARED = [
     "klSetRecord",
     "klShowRecord",
     "klMore",
+    # 28 Oct 2026 (Ahsan): the switch at the top of the tab -- App records or All Kommo leads.
+    "hlSwitchTo",
 ]
 
 
