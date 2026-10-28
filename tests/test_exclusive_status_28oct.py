@@ -70,7 +70,11 @@ def test_exclusive_in_a_status_cell_is_seen(line):
     "Caboolture Central Springs Exclusive - Owner Occ",
     "Caboolture Central Springs Exclusive: Owner Occ",
     "Caboolture Central Springs Exclusive \u2013 Owner Occ",
+    "Caboolture Central Springs Exclusive \u2014 Owner Occ",
     "SMSF Ready Exclusive Packages",                                # a list title
+    "Lot 9 Beveridge EXCLUSIVE PACKAGE $600,000",
+    "Beveridge Exclusive Lot 4 $600,000",
+    "Lot 5 Beveridge $450,000 exclusive of GST",
     "HOUSE AND LAND STOCKLIST - EXCLUSIVE LOTS",                    # the APLACE page title
     "Ripley APLACE EXCLUSIVES",                                     # the APLACE banner
     "Lot 7 is not on hold exclusively $929,000",
@@ -153,11 +157,121 @@ def test_what_this_pass_never_touches():
         _row(5, EVO_SETTLED, status="Settled", previous="On Hold"),
         _row(6, ALDRICH, superseded_by="v2:newer"),                      # retired
         _row(7, "Lot 3 Unit 3, Exclusive Ave, Beveridge, VIC, 3753", channel="Proxima"),
-        _row(8, ALDRICH, doc=""),                   # no document to judge by
+        _row(8, ALDRICH, doc=""),                   # no document to judge by...
         _row(9, ALDRICH, doc=None),
+        _sibling(11, doc=""),                       # ...even beside an Available row
         _row(10, ""),                               # no line
     ]
     assert _plan(rows) == {}
+
+
+# ------------------------------------------------------------------ the same lot on two lists
+
+_OLD = "https://drive.example.test/evo-16oct.pdf"
+_NEW = "https://drive.example.test/evo-23oct.pdf"
+TRUGANINA = ("West 2235 Grandview Truganina EVO Exclusive Carlton 18 Elevate $300,000 "
+             "$325,480 $625,480 NA $625,480 Settled West 220")
+
+
+def _lot(id_, text, doc, status=None, **kw):
+    kw.setdefault("builder_name", "EVO Homes")
+    kw.setdefault("suburb", "Truganina")
+    kw.setdefault("price", 625480.0)
+    return _row(id_, text, status=status, doc=doc, **kw)
+
+
+def test_a_newer_list_that_says_on_hold_wins():
+    """Review, 28 Oct: 29512/29513 'Settled' (EVO's title column) on the 16 Oct list, and
+    30032/30033 On Hold on the 23 Oct list. Without the lot rule both showed as Available."""
+    rows = [_sibling(1, doc=_OLD), _lot(2, TRUGANINA, _OLD, "Settled", lot_number="2235"),
+            _sibling(30, doc=_NEW),
+            _lot(31, TRUGANINA.replace("EVO Exclusive", "On Hold"), _NEW, "On Hold",
+                 lot_number="2235")]
+    assert _plan(rows) == {}
+    # the same rows without the On Hold capture: the lot is planned, so the rule decided it
+    assert _plan(rows[:3]) == {2: ("Settled", "Available")}
+
+
+def test_any_capture_that_says_sold_wins_even_an_older_one():
+    """Aldrich 16472 (Armstrong Creek lot 1010, $636,550, 24 Sep list) has a Sold capture,
+    22910, at $619,740 on the 1 Oct list. The lot number joins them; the price does not have
+    to. Here the Sold list is made the OLDER one, so only the gone rule can decide."""
+    sold = _row(22910, ALDRICH.replace("Exclusive", "Sold"), status="Sold", doc=_OLD,
+                date_checked="01/09/2026", suburb="Armstrong Creek", lot_number="1010",
+                price=619740.0)
+    rows = [sold, _sibling(1, date_checked="24/09/2026"),
+            _row(16472, ALDRICH, date_checked="24/09/2026", suburb="Armstrong Creek",
+                 lot_number="1010", price=636550.0)]
+    assert _plan(rows) == {}
+    assert _plan(rows[1:]) == {16472: (None, "Available")}
+
+
+def test_only_the_newest_list_of_a_lot_is_written():
+    """Kalkallo 29515/29516 (16 Oct) and 30036/30037 (23 Oct): no lot number was read, so
+    builder, suburb and price join them, and only the newer upload is written. A 'Settled'
+    misread on the older list is not a statement that the lot is gone."""
+    kal = dict(suburb="Kalkallo", price=615430.0)
+    rows = [_sibling(1, doc=_OLD), _lot(5, EVO_SETTLED, _OLD, "Settled", **kal),
+            _sibling(30, doc=_NEW), _lot(36, EVO_SETTLED, _NEW, "Settled", **kal),
+            # the same lot in a second design on the newer list: both are written
+            _lot(37, EVO_SETTLED.replace("Richmond 13", "Carlton 18"), _NEW, **kal),
+            # another lot, only on the older list: written
+            _lot(6, EVO_SETTLED.replace("60405", "61538"), _OLD, **dict(kal, price=639330.0))]
+    assert _plan(rows) == {36: ("Settled", "Available"), 37: (None, "Available"),
+                           6: (None, "Available")}
+
+
+def test_a_lists_age_is_its_latest_check_not_its_first_id():
+    """Review, 28 Oct: unchanged lines keep their id when they move onto a newer upload, so
+    the newer list can hold the lower ids. APLACE Morayfield 16746 (3 Sep list) and 16754
+    (24 Sep list): the 24 Sep capture is the one written."""
+    sep3, sep24 = "https://drive.example.test/aplace-3sep.pdf", \
+        "https://drive.example.test/aplace-24sep.pdf"
+    line = ("Morayfield 395 Kangaroo Paw Street Kinma Valley TITLED 336 Rectangular $540,000 "
+            "Cascades $392,980 $932,980 Aplace Exclusive")
+    kw = dict(builder_name="APLACE by Glenville", price=932980.0)
+    rows = [_sibling(5, doc=sep24, date_checked="24/09/2026"),     # a carried-over low id
+            _sibling(100, doc=sep3, date_checked="03/09/2026"),
+            _row(16746, line, doc=sep3, date_checked="03/09/2026", suburb="Morayfield", **kw),
+            _row(16754, line, doc=sep24, date_checked="24/09/2026", suburb=None, **kw)]
+    assert _plan(rows) == {16754: (None, "Available")}
+
+
+def test_a_newer_list_that_states_nothing_shows_the_lot_itself():
+    """A silent list shows its blank rows "by the sheet", so the older Exclusive capture of
+    the same package must not be written as well (APLACE Hervey Bay 9469 and 12189). The
+    suburb differs between the uploads, as APLACE's does: the line joins them."""
+    old, silent = "https://drive.example.test/aplace-21aug.pdf", \
+        "https://drive.example.test/aplace-16oct.pdf"
+    line = "Riverbend 186 Tidal Circuit Picton A (Dual-Key) $1,215,000"
+    kw = dict(builder_name="APLACE by Glenville", price=1215000.0)
+    rows = [_sibling(1, doc=old, date_checked="21/08/2026"),
+            _row(1281, line + " Aplace Exclusive", doc=old, date_checked="21/08/2026",
+                 suburb="BRISBANE SOUTH", **kw),
+            _row(12173, line, doc=silent, date_checked="16/10/2026", suburb="Riverbend", **kw)]
+    assert _plan(rows) == {}
+    assert _plan(rows[:2]) == {1281: (None, "Available")}
+
+
+def test_one_lists_two_captures_of_a_package_are_written_once():
+    """APLACE prints some packages on two pages (19613 and 19625, one space apart)."""
+    line = "Lilywood 534 Landings Boulevard{} Lilywood Wallaman A $893,520 Aplace Exclusive"
+    kw = dict(builder_name="APLACE by Glenville", price=893520.0, suburb="Lilywood")
+    rows = [_sibling(1), _row(19613, line.format(""), **kw), _row(19625, line.format(" "), **kw),
+            # another design of the same street address is another package
+            _row(19626, line.format("").replace("Wallaman A", "Wallaman B"), **kw)]
+    assert set(_plan(rows)) == {19625, 19626}
+
+
+def test_a_lot_another_list_already_shows_is_left():
+    rows = [_sibling(1, doc=_OLD),
+            _lot(2, TRUGANINA.replace("EVO Exclusive", "Available"), _OLD, "Available",
+                 lot_number="2235"),
+            _sibling(30, doc=_NEW), _lot(31, TRUGANINA, _NEW, lot_number="2235")]
+    assert _plan(rows) == {}
+    # on the SAME list, an Available design of the lot does not stop it
+    rows[3]["source_url"] = _OLD
+    assert _plan(rows) == {31: (None, "Available")}
 
 
 def test_a_settled_read_off_the_title_column_is_planned_with_its_old_value():
@@ -237,6 +351,19 @@ def test_the_nightly_repair_writes_available_not_settled(tmp_path, monkeypatch):
     assert got == {1: ("Available", None), 2: ("Available", None),
                    3: ("Available", "Settled")}, got
     assert "2 Exclusive status cell(s) read as Available" in report, report
+
+
+def test_withdrawn_on_the_line_wins_through_the_nightly(tmp_path, monkeypatch):
+    """Review, 28 Oct: parse_availability does not know Withdrawn, but the sold-word pass
+    (13) does. Only its 'Settled' gives way to 18; any other word it reads is a statement."""
+    gone = ALDRICH.replace("JAN 2027", "Withdrawn")
+    path = _db(tmp_path, _evo_rows() + [(4, gone, None, None, _EVO_DOC),
+                                        (5, gone.replace("Withdrawn", "WITHDRAWN")
+                                             .replace("2243", "2244"), None, None, _EVO_DOC)])
+    got, report = _main(path, monkeypatch, True)
+    assert got[4] == ("Withdrawn", None) and got[5] == ("Withdrawn", None), got
+    assert got[2] == ("Available", None), got
+    assert "ids: 2,3" in report, report
 
 
 def test_the_rollback_switch_restores_the_old_behaviour(tmp_path, monkeypatch):

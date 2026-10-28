@@ -66,13 +66,14 @@ _GONE_WORDS = (
     (re.compile(r"\bexchanged\b", re.I), "Not Available"),
 )
 # Where a status cell can be: never the first word of the line (Silkwood's remark column
-# always leads with it), never followed by "-", ":", OFFER, PACKAGE(S), LOTS, RELEASE or TO
-# ("EXCLUSIVE OFFER - PRICE NEGOTIABLE", "SMSF Ready Exclusive Packages", "STOCKLIST -
-# EXCLUSIVE LOTS"). The word boundary keeps out "EXCLUSIVES" and "exclusively". Measured on
-# the 28 Oct database: every Aldrich, EVO and APLACE occurrence, live and superseded, and
-# none of the 42 Silkwood rows.
+# always leads with it), never followed by a dash, ":", OFFER, PACKAGE(S), LOT(S), RELEASE,
+# TO or OF ("EXCLUSIVE OFFER - PRICE NEGOTIABLE", "SMSF Ready Exclusive Packages",
+# "STOCKLIST - EXCLUSIVE LOTS", "exclusive of GST"). The word boundary keeps out "EXCLUSIVES"
+# and "exclusively". Measured on the 28 Oct database: every Aldrich, EVO and APLACE
+# occurrence, live and superseded, and none of the 42 Silkwood rows.
 _EXCLUSIVE_CELL = re.compile(
-    r"(?<=\S) exclusive\b(?!\s*[-:\u2013]|\s+(?:offer|packages?|lots?|release|to)\b)", re.I)
+    r"(?<=\S) exclusive\b(?!\s*[-:\u2013\u2014]|\s+(?:offer|packages?|lots?|release|to|of)\b)",
+    re.I)
 # DEPOSIT IS MOSTLY ABOUT MONEY, NOT STATUS: it is on 310 live rows, and nearly all of them
 # read "- 5% DEPOSIT", "$5k initial deposit and balance of 5%", "5% LAND DEPOSIT REQUIRED"
 # or "Interest on Deposit." Only an upper-case DEPOSIT standing in a status cell -- right
