@@ -27,6 +27,14 @@ function check(name, cond, detail) {
 function throwsNot(name, fn) {
   try { fn(); check(name, true); } catch (e) { check(name, false, "threw " + e); }
 }
+// A throw nothing here caught is a FAIL line with its own words, not only a stack trace (28 Oct
+// 2026): a page that dies on, say, storage that throws then fails on what it died of.
+for (const ev of ["uncaughtException", "unhandledRejection"]) {
+  process.on(ev, err => {
+    console.log("  FAIL  the checks ran to the end  -> " + ((err && err.stack) || err));
+    process.exit(1);
+  });
+}
 
 // ------------------------------------------------------------------ the slice
 const BEGIN = "    // HOT-LEADS-BEGIN";
@@ -84,7 +92,11 @@ const EXPORTS = ["hlSafeUrl", "hlTelHref", "hlMailHref", "hlMoney", "hlWhen", "h
   "openGeneratedReport", "comparisonDocument", "unpackShare", "slim",
   // 28 Oct: the "All Kommo leads" card, every lead in Kommo through /api/kommo_leads.
   "loadKommoLeads", "klRender", "klSetScope", "klSetColumn", "klSetSource", "klSetRecord",
-  "klShowRecord", "klMore", "klLeadCard", "klSortNewest", "klMerge", "klLeadId", "klUrl"];
+  "klShowRecord", "klMore", "klLeadCard", "klSortNewest", "klMerge", "klLeadId", "klUrl",
+  // 28 Oct (Ahsan): the switch at the top of the tab, one list at a time.
+  "hlSwitchTo",
+  // 28 Oct, review: the Kommo list's own access line, while App records (and its bar) is hidden.
+  "klGoUnlock"];
 
 // The tab's two reads -- every grade, and hot callers on their own -- each with and without
 // include_test=1, and the research. The bare "/api/hot_leads" the hot-only tab used is NOT
@@ -163,13 +175,24 @@ function sandbox(search, extra = {}) {
     },
     ...extra,
   });
-  const api = vm.runInContext(
-    [escMatch[0], ...Object.values(OTHER), block].join("\n") + "\n;({" + EXPORTS.join(", ") +
-    ", leads: () => HOT_LEADS, access: () => HL_ACCESS, notesMap: () => HL_NOTES," +
-    " picksMap: () => hlPicksLoad(), live: () => HL_LIVE," +
-    " kl: () => ({ leads: KL_LEADS, columns: KL_COLUMNS, state: KL_STATE, scope: KL_SCOPE, page: KL_PAGE," +
-    " hasMore: KL_HAS_MORE, errors: KL_ERRORS, recordsComplete: KL_RECORDS_COMPLETE, filter: KL_FILTER," +
-    " view: KL_VIEW }) })", ctx, { filename: "index.html#hot-leads" });
+  // 28 Oct 2026: the block reads the remembered list (the switch at the top) as it loads. It
+  // loads inside the page's one script element, so a throw here is every tab dead, not this
+  // one: a FAIL with its words, whatever storage the sandbox was given.
+  let api;
+  try {
+    api = vm.runInContext(
+      [escMatch[0], ...Object.values(OTHER), block].join("\n") + "\n;({" + EXPORTS.join(", ") +
+      ", leads: () => HOT_LEADS, access: () => HL_ACCESS, notesMap: () => HL_NOTES," +
+      " picksMap: () => hlPicksLoad(), live: () => HL_LIVE," +
+      " kl: () => ({ leads: KL_LEADS, columns: KL_COLUMNS, state: KL_STATE, scope: KL_SCOPE, page: KL_PAGE," +
+      " hasMore: KL_HAS_MORE, errors: KL_ERRORS, recordsComplete: KL_RECORDS_COMPLETE, filter: KL_FILTER," +
+      " view: KL_VIEW, unlock: KL_UNLOCK }), shownList: () => HL_SWITCH, filters: () => [HOT_LEADS_FILTER, HOT_LEADS_SOURCE] })",
+      ctx, { filename: "index.html#hot-leads" });
+  } catch (err) {
+    console.log("  FAIL  the tab's code runs as the page loads"
+      + ("localStorage" in extra ? "" : ", with no localStorage at all") + "  -> " + err);
+    process.exit(1);
+  }
   const el = (id, props = {}) => {
     const o = { id, innerHTML: "", textContent: "", className: "", disabled: false, hidden: false,
                 attrs: {}, setAttribute(k, v) { this.attrs[k] = String(v); }, ...props };
@@ -211,7 +234,9 @@ const ONCLICK = new RegExp("^(rerunHotLead\\(\\d+\\)|loadHotLeads\\(true\\)|hlSe
   // 28 Oct: the Kommo card's buttons, keys and numbers only.
   + "|loadKommoLeads\\(true\\)|klSetScope\\('(incoming|all)'\\)|klSetColumn\\(-?\\d+\\)"
   + "|klSetSource\\('(all|whatsapp|clare|ringcentral_sms|facebook|manual|other)'\\)"
-  + "|klSetRecord\\('(all|yes|no)'\\)|klShowRecord\\(\\d+\\)|klMore\\(\\))$");
+  + "|klSetRecord\\('(all|yes|no)'\\)|klShowRecord\\(\\d+\\)|klMore\\(\\)"
+  // 28 Oct, review: the Kommo list's way to the password box on App records (its Lock is hlLock()).
+  + "|klGoUnlock\\(\\))$");
 const INPUT_TYPES = new Set(["checkbox", "text", "url", "password"]);
 const decode = s => s.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">")
   .replace(/&#39;/g, "'").replace(/&amp;/g, "&");
@@ -3268,10 +3293,12 @@ const klUrls = s => s.calls.fetch.map(c => c.url).filter(u => u.startsWith("/api
 console.log("\n--- the markup auditor knows the Kommo card's handlers ---");
 check("auditor flags a Kommo onclick outside its exact shapes",
   ["klSetScope('pipeline')", "klSetSource('sms')", "klSetRecord('maybe')", "klShowRecord('x')", "klMore(1)",
-   "klSetColumn(1); alert(1)", "loadKommoLeads()"].every(o => markupProblems(`<button onclick="${o}">x</button>`).length > 0));
+   "klSetColumn(1); alert(1)", "loadKommoLeads()", "klGoUnlock('x')", "klGoUnlock(); alert(1)"]
+    .every(o => markupProblems(`<button onclick="${o}">x</button>`).length > 0));
 check("auditor passes the Kommo handlers in their exact shapes",
   ["klSetScope('all')", "klSetColumn(-1)", "klSetColumn(3)", "klSetSource('ringcentral_sms')", "klSetRecord('no')",
-   "klShowRecord(12)", "klMore()", "loadKommoLeads(true)"].every(o => markupProblems(`<button onclick="${o}">x</button>`).length === 0));
+   "klShowRecord(12)", "klMore()", "loadKommoLeads(true)", "klGoUnlock()"]
+    .every(o => markupProblems(`<button onclick="${o}">x</button>`).length === 0));
 
 console.log("\n--- All Kommo leads: the first read ---");
 {
@@ -3553,8 +3580,9 @@ console.log("\n--- All Kommo leads: App record ---");
     ok === true && scrolled.length === 1 && hot1.hidden === false && /kl-flash/.test(hot1.className)
     && msgFound.textContent === "", JSON.stringify([ok, scrolled.length, hot1.hidden, hot1.className]));
   const no = s.api.klShowRecord(gone);
-  check("klShowRecord says so when the record is not in the list above",
-    no === false && msgGone.textContent.includes("not in the list above") && msgGone.textContent.includes("newest 200")
+  // 28 Oct 2026: "the list above" until the switch at the top put one list on screen at a time.
+  check("klShowRecord says so when the record is not in the App records list",
+    no === false && msgGone.textContent.includes("not in the App records list") && msgGone.textContent.includes("newest 200")
     && scrolled.length === 1, msgGone.textContent);
   check("klShowRecord of a lead with no record, or no lead, does nothing harmful",
     s.api.klShowRecord(99) === false && s.api.klShowRecord("1001") === false && s.api.klShowRecord(0) === false
@@ -3932,6 +3960,396 @@ console.log("\n--- All Kommo leads: the failed page's message, the 40-page cap, 
     JSON.stringify([u("ALL", 2), u("all", 41)]));
 }
 
+// ------------------------------------------------------------------ the switch at the top
+// 28 Oct 2026 (Ahsan: "the tabs should be controlled at the top of the page; it is difficult to
+// control at the bottom"). [ App records (N) ] [ All Kommo leads (N) ] above both cards, and
+// exactly one card shown. A rig with both lists' elements, the two buttons and the two cards;
+// shown() names the one card not hidden ("both" or "none" otherwise), pressed() the two
+// buttons' aria-pressed.
+function swRig(extra) {
+  const s = klRig(undefined, extra);
+  const r = { ...s, rec: s.el("hlSwitch-records"), kom: s.el("hlSwitch-kommo"),
+              recCard: s.el("hotLeadsCard"), komCard: s.el("kommoLeadsCard") };
+  r.shown = () => r.recCard.hidden === r.komCard.hidden ? (r.recCard.hidden ? "none" : "both")
+    : (r.recCard.hidden ? "kommo" : "records");
+  r.pressed = () => [r.rec.attrs["aria-pressed"], r.kom.attrs["aria-pressed"]].join(",");
+  return r;
+}
+// A filter button whose every repaint is logged with whether App records was hidden at that
+// moment: hlApplyFilters repainting it while the list cannot be seen is a filter applied to a
+// hidden list.
+function swWatch(r, id) {
+  const o = r.el(id, { className: "btn-ghost hl-filter" });
+  const writes = [];
+  let v = o.className;
+  Object.defineProperty(o, "className", {
+    get: () => v, set: x => { writes.push({ id, recHidden: r.recCard.hidden }); v = x; } });
+  return writes;
+}
+// Two app records (hot, warm), and four Kommo leads: the warm record's, two with none, and one
+// whose record is not among the app's.
+const SW_HOT = [clean({ callId: "call-1" }), clean({ callId: "call-2", grade: "warm", createdAt: "2026-09-14T00:10:00Z" })];
+const SW_KOMMO = [klLead(4001, { callId: "call-2", hasRecord: true, cardName: "Has a record" }),
+                  klLead(4002, { cardName: "SMS lead", source: "ringcentral_sms" }),
+                  klLead(4003, { cardName: "Comment", source: "facebook" }),
+                  klLead(4004, { callId: "wa-gone", hasRecord: true, cardName: "Record not listed" })];
+const swAnswer = (hot = SW_HOT, kommo = SW_KOMMO) => async url => url.startsWith("/api/hot_leads")
+  ? reply(200, { status: "success", leads: hot }) : reply(200, klPage(kommo));
+// Opening the tab: the nav button's two reads, as it makes them.
+const swOpen = r => Promise.all([r.api.loadHotLeads(), r.api.loadKommoLeads()]);
+const SW_KEY = "spb.leadslist.v1";
+
+console.log("\n--- the switch: App records first, one card at a time ---");
+{
+  const r = swRig();
+  const held = [];
+  r.respond(url => new Promise(go => held.push(() => go(swAnswer()(url)))));
+  const opening = swOpen(r);
+  await settle();
+  check("opening the tab reads both lists, and both counts say … until they answer",
+    held.length === 2 && r.rec.textContent === "App records (…)" && r.kom.textContent === "All Kommo leads (…)",
+    JSON.stringify([held.length, r.rec.textContent, r.kom.textContent]));
+  check("the tab opens on App records: its card shown, the Kommo card hidden, App records pressed",
+    r.shown() === "records" && r.pressed() === "true,false" && /\bis-active\b/.test(r.rec.className)
+    && !/\bis-active\b/.test(r.kom.className) && r.api.shownList() === "records",
+    JSON.stringify([r.shown(), r.pressed(), r.rec.className, r.kom.className]));
+  while (held.length) held.shift()();
+  await opening;
+  check("each count is the number its list's badge shows",
+    r.rec.textContent === "App records (2)" && r.kom.textContent === "All Kommo leads (4)"
+    && r.hotBadge.textContent.startsWith("2 leads") && r.badge.textContent === "4 leads",
+    JSON.stringify([r.rec.textContent, r.kom.textContent, r.hotBadge.textContent, r.badge.textContent]));
+  // A filter pressed in each list, and a mark on each list's markup that any redraw would wipe.
+  r.api.hlSetFilter("warm");
+  r.api.klSetSource("facebook");
+  r.hot.innerHTML += "<!--kept-->";
+  r.content.innerHTML += "<!--kept-->";
+  const fetches = r.calls.fetch.length, kl = JSON.stringify(r.api.kl().filter);
+  const writes = ["hlFilter-all", "hlFilter-warm", "hlSource-all"].map(id => swWatch(r, id));
+  r.api.hlSwitchTo("kommo");
+  check("All Kommo leads: exactly one card, the Kommo one, and All Kommo leads pressed",
+    r.shown() === "kommo" && r.pressed() === "false,true" && /\bis-active\b/.test(r.kom.className)
+    && !/\bis-active\b/.test(r.rec.className) && r.api.shownList() === "kommo",
+    JSON.stringify([r.shown(), r.pressed(), r.rec.className, r.kom.className]));
+  check("... and both counts stay", r.rec.textContent === "App records (2)" && r.kom.textContent === "All Kommo leads (4)",
+    JSON.stringify([r.rec.textContent, r.kom.textContent]));
+  r.api.hlSwitchTo("records");
+  check("App records again: exactly one card, the other way round", r.shown() === "records" && r.pressed() === "true,false",
+    JSON.stringify([r.shown(), r.pressed()]));
+  check("switching asks the server nothing and draws neither list again",
+    r.calls.fetch.length === fetches && r.hot.innerHTML.endsWith("<!--kept-->") && r.content.innerHTML.endsWith("<!--kept-->"),
+    JSON.stringify(r.calls.fetch.slice(fetches).map(c => c.url)));
+  check("switching leaves both lists' filters as they were, and repaints no filter button",
+    JSON.stringify(r.api.filters()) === '["warm","all"]' && JSON.stringify(r.api.kl().filter) === kl
+    && writes.flat().length === 0, JSON.stringify([r.api.filters(), r.api.kl().filter, writes.flat()]));
+  let junk = [];
+  for (const bad of ["KOMMO", "kommo ", "kommo'); alert(1); //", undefined, null, 1, ["kommo"], "all"]) {
+    r.api.hlSwitchTo("kommo");
+    r.api.hlSwitchTo(bad);
+    if (r.shown() !== "records" || r.api.shownList() !== "records") junk.push(String(bad));
+  }
+  check("anything but a known list is App records", junk.length === 0, JSON.stringify(junk));
+}
+
+console.log("\n--- the switch: each count follows its list ---");
+{
+  const r = swRig();
+  let hot = SW_HOT, kommo = SW_KOMMO;
+  let holdKommo = false, go = null;
+  r.respond(url => (holdKommo && url.startsWith("/api/kommo_leads"))
+    ? new Promise(done => { go = () => done(swAnswer(hot, kommo)(url)); }) : swAnswer(hot, kommo)(url));
+  await swOpen(r);
+  hot = [...SW_HOT, clean({ callId: "call-3", grade: "nurture", createdAt: "2026-09-13T00:10:00Z" })];
+  kommo = [...SW_KOMMO, klLead(4005), klLead(4006)];
+  await r.api.loadHotLeads(true);
+  check("Refresh of App records: its count follows, the other stays",
+    r.rec.textContent === "App records (3)" && r.kom.textContent === "All Kommo leads (4)",
+    JSON.stringify([r.rec.textContent, r.kom.textContent]));
+  holdKommo = true;
+  const refreshing = r.api.loadKommoLeads(true);
+  await settle();
+  check("Refresh of All Kommo leads: … while it is read, as its badge says loading",
+    r.kom.textContent === "All Kommo leads (…)" && r.badge.textContent === "loading", r.kom.textContent);
+  holdKommo = false;
+  go();
+  await refreshing;
+  check("... then its new count", r.kom.textContent === "All Kommo leads (6)" && r.rec.textContent === "App records (3)",
+    JSON.stringify([r.rec.textContent, r.kom.textContent]));
+  // More than one answer holds: the badge's "+", on the switch too.
+  r.respond(async url => {
+    if (url.startsWith("/api/hot_leads")) return reply(200, { status: "success", leads: url.includes("grade=hot") ? []
+      : Array.from({ length: 200 }, (_, i) => clean({ callId: "many-" + i, grade: "warm" })) });
+    const p = Number(url.match(/page=(\d+)$/)[1]);
+    return reply(200, klPage([klLead(4100 + p)], { hasMore: true, scope: "all", page: p }));
+  });
+  await r.api.loadHotLeads(true);
+  await r.api.klSetScope("all");
+  check("a list cut short counts with its badge's +: App records (200+), All Kommo leads (4+)",
+    r.rec.textContent === "App records (200+)" && r.kom.textContent === "All Kommo leads (4+)"
+    && r.hotBadge.textContent.startsWith("200+ leads") && r.badge.textContent === "4+ leads",
+    JSON.stringify([r.rec.textContent, r.kom.textContent, r.hotBadge.textContent, r.badge.textContent]));
+}
+{
+  const r = swRig();
+  r.respond(async url => url.startsWith("/api/hot_leads")
+    ? reply(502, { status: "error", message: "hot-leads answered HTTP 502" })
+    : reply(502, { status: "error", message: "kommo-leads answered HTTP 502" }));
+  await swOpen(r);
+  const calm = () => [r.rec.textContent, r.kom.textContent].every(t => !/unavailable|error|fail|502|\(\)/i.test(t));
+  check("a list that could not be read: its button shows no number and nothing alarming (its card says why)",
+    r.rec.textContent === "App records" && r.kom.textContent === "All Kommo leads" && calm()
+    && r.hotBadge.textContent === "unavailable" && r.badge.textContent === "unavailable",
+    JSON.stringify([r.rec.textContent, r.kom.textContent]));
+  // Both lists read first, so each button has a number to lose (28 Oct 2026, review): after the
+  // 502 both were already blank, and loadHotLeads puts no "…" up before it reads, so a records
+  // count left standing by an unreachable read could not be told from one that was cleared.
+  r.respond(swAnswer());
+  await Promise.all([r.api.loadHotLeads(true), r.api.loadKommoLeads(true)]);
+  check("the unreachable check's control: Refresh of both lists, and both buttons have their number",
+    r.rec.textContent === "App records (2)" && r.kom.textContent === "All Kommo leads (4)",
+    JSON.stringify([r.rec.textContent, r.kom.textContent]));
+  r.respond(async () => { throw new TypeError("Failed to fetch"); });
+  await Promise.all([r.api.loadHotLeads(true), r.api.loadKommoLeads(true)]);
+  check("... the same when the dashboard could not be reached: a number each list had is gone, not left standing",
+    r.rec.textContent === "App records" && r.kom.textContent === "All Kommo leads" && calm()
+    && r.hotBadge.textContent === "unavailable" && r.badge.textContent === "unavailable",
+    JSON.stringify([r.rec.textContent, r.kom.textContent]));
+  r.respond(swAnswer());
+  await swOpen(r);
+  check("... and the numbers come back with the lists, the next time the tab is opened",
+    r.rec.textContent === "App records (2)" && r.kom.textContent === "All Kommo leads (4)",
+    JSON.stringify([r.rec.textContent, r.kom.textContent]));
+}
+{
+  // Unlocked, each list has one lead more, so the counts show that Unlock and Lock read again.
+  const r = swRig({ localStorage: memoryStorage() });
+  let view = "masked";
+  r.respond(async url => {
+    if (url === "/api/contact_unlock") { view = view === "masked" ? "full" : "masked"; return reply(200, { status: "success", contact: view }); }
+    const more = view === "full";
+    if (url.startsWith("/api/hot_leads")) return reply(200, { status: "success", contact: view, contactUnlock: "password",
+      leads: more ? [...SW_HOT, clean({ callId: "call-9", grade: "warm", createdAt: "2026-09-12T00:10:00Z" })] : SW_HOT });
+    return reply(200, klPage(more ? [...SW_KOMMO, klLead(4009)] : SW_KOMMO, { contact: view }));
+  });
+  await swOpen(r);
+  r.el("hlUnlockPass", { value: "right one" }); r.el("hlUnlockBtn"); r.el("hlAccessMsg"); r.el("hlLockBtn");
+  await r.api.hlUnlock();
+  check("Unlock reads both lists again, and both counts follow",
+    r.rec.textContent === "App records (3)" && r.kom.textContent === "All Kommo leads (5)",
+    JSON.stringify([r.rec.textContent, r.kom.textContent]));
+  await r.api.hlLock();
+  check("... and so does Lock", r.rec.textContent === "App records (2)" && r.kom.textContent === "All Kommo leads (4)",
+    JSON.stringify([r.rec.textContent, r.kom.textContent]));
+  check("Unlock and Lock leave App records shown, where the password box is", r.shown() === "records", r.shown());
+}
+
+console.log("\n--- the switch: the last choice is remembered, and storage that throws changes nothing else ---");
+{
+  const store = memoryStorage();
+  const a = swRig({ localStorage: store });
+  a.respond(swAnswer());
+  await swOpen(a);
+  a.api.hlSwitchTo("kommo");
+  check("a choice is kept in localStorage under its own key, and nothing else is",
+    store._map.get(SW_KEY) === "kommo" && JSON.stringify([...store._map.keys()]) === JSON.stringify([SW_KEY]),
+    JSON.stringify([...store._map]));
+  // The next page view: the same browser's storage, a fresh page.
+  const b = swRig({ localStorage: store });
+  b.respond(swAnswer());
+  await swOpen(b);
+  check("the next page view opens on the list remembered: All Kommo leads",
+    b.shown() === "kommo" && b.pressed() === "false,true" && b.api.shownList() === "kommo",
+    JSON.stringify([b.shown(), b.pressed()]));
+  check("... with both lists still read, so both counts are there",
+    b.rec.textContent === "App records (2)" && b.kom.textContent === "All Kommo leads (4)"
+    && klUrls(b).length === 1 && b.calls.fetch.some(c => c.url.startsWith("/api/hot_leads")),
+    JSON.stringify([b.rec.textContent, b.kom.textContent]));
+  b.api.hlSwitchTo("records");
+  check("App records pressed is remembered too", store._map.get(SW_KEY) === "records", store._map.get(SW_KEY));
+}
+{
+  const odd = [];
+  for (const junk of ["KOMMO", "kommo ", "<b>kommo</b>", '"kommo"', "all", ""]) {
+    const store = memoryStorage();
+    store._map.set(SW_KEY, junk);
+    const r = swRig({ localStorage: store });
+    r.respond(swAnswer());
+    await swOpen(r);
+    if (r.shown() !== "records") odd.push(junk);
+  }
+  check("anything else stored opens on App records", odd.length === 0, JSON.stringify(odd));
+}
+{
+  // A private window, or blocked site data: every read and every write throws.
+  const r = swRig({ localStorage: memoryStorage(true) });
+  r.respond(swAnswer());
+  await swOpen(r);
+  check("storage that throws: the tab opens on App records, both lists read and counted",
+    r.shown() === "records" && r.rec.textContent === "App records (2)" && r.kom.textContent === "All Kommo leads (4)",
+    JSON.stringify([r.shown(), r.rec.textContent, r.kom.textContent]));
+  const threw = [];
+  for (const to of ["kommo", "records", "kommo"]) {
+    try { r.api.hlSwitchTo(to); } catch (e) { threw.push(String(e)); }
+  }
+  check("storage that throws: switching still switches, both ways, it is only not remembered",
+    threw.length === 0 && r.shown() === "kommo" && r.pressed() === "false,true", JSON.stringify(threw));
+  r.el("hlCard-1", { className: "prop-card hl-card", scrollIntoView: () => {} });
+  let shown = null;
+  try { shown = r.api.klShowRecord(4001); } catch (e) { shown = String(e); }
+  check("storage that throws: App record still switches to App records", shown === true && r.shown() === "records", String(shown));
+}
+{
+  // No localStorage at all: the sandbox's default, and what a page with none would see.
+  const r = swRig();
+  r.respond(swAnswer());
+  await swOpen(r);
+  let threw = null;
+  try { r.api.hlSwitchTo("kommo"); } catch (e) { threw = e; }
+  check("no localStorage at all: App records first, and switching still works",
+    threw === null && r.shown() === "kommo", String(threw));
+}
+
+console.log("\n--- the switch: App record switches to App records first, then scrolls ---");
+{
+  const store = memoryStorage();
+  const r = swRig({ localStorage: store });
+  r.respond(swAnswer());
+  await swOpen(r);
+  r.api.hlSetFilter("hot");                   // the warm record's card is hidden under Hot
+  r.api.hlSwitchTo("kommo");
+  const writes = ["hlFilter-all", "hlFilter-hot", "hlSource-all"].map(id => swWatch(r, id));
+  const seen = [];
+  const card = r.el("hlCard-1", { className: "prop-card hl-card", hidden: true,
+    scrollIntoView: () => seen.push({ rec: r.recCard.hidden, kommo: r.komCard.hidden, card: card.hidden }) });
+  r.el("hlCard-0", { className: "prop-card hl-card" });
+  const msg = r.el("klMsg-4001");
+  const ok = r.api.klShowRecord(4001);
+  check("App record switches to App records, then scrolls to the record's card and lights it",
+    ok === true && seen.length === 1 && seen[0].rec === false && seen[0].kommo === true && seen[0].card === false
+    && r.shown() === "records" && r.pressed() === "true,false" && /kl-flash/.test(card.className) && msg.textContent === "",
+    JSON.stringify([ok, seen, r.shown(), r.pressed()]));
+  check("the hidden list never receives a filter click: App records' filters go back to All only once it is shown",
+    writes.flat().length > 0 && writes.flat().every(w => w.recHidden === false)
+    && JSON.stringify(r.api.filters()) === '["all","all"]', JSON.stringify([writes.flat(), r.api.filters()]));
+  check("... and the switch is remembered as a press of App records would be", store._map.get(SW_KEY) === "records",
+    store._map.get(SW_KEY));
+  r.api.hlSwitchTo("kommo");
+  const msgGone = r.el("klMsg-4004");
+  const no = r.api.klShowRecord(4004);
+  check("App record with no card in App records says so on the Kommo card, and stays on All Kommo leads",
+    no === false && r.shown() === "kommo" && seen.length === 1 && msgGone.textContent.includes("not in the App records list"),
+    JSON.stringify([no, r.shown(), seen.length, msgGone.textContent]));
+}
+
+// 28 Oct 2026, review: the access bar -- the password box, Unlock, Lock -- is drawn on App
+// records, which the switch hides while All Kommo leads is shown, and remembers that way. So
+// the Kommo list carries its own access line, from its own answer: hidden, a way to the
+// password box; showing, Lock. klLine() is that line as the Kommo card has it, "" when it has none.
+const klLine = r => (r.content.innerHTML.match(/<div class="hl-access kl-access" id="klAccess">[\s\S]*?id="klAccessMsg"[^>]*><\/div><\/div>/)
+  || [""])[0];
+console.log("\n--- the switch: contact details can be unlocked and locked from All Kommo leads ---");
+{
+  const store = memoryStorage();
+  store._map.set(SW_KEY, "kommo");
+  const r = swRig({ localStorage: store });
+  let view = "masked", holdLock = false, letGo = null;
+  r.respond(async url => {
+    if (url === "/api/contact_unlock") {
+      view = view === "masked" ? "full" : "masked";
+      const ans = reply(200, { status: "success", contact: view });
+      return holdLock ? new Promise(go => { letGo = () => go(ans); }) : ans;
+    }
+    if (url.startsWith("/api/hot_leads")) return reply(200, { status: "success", contact: view, contactUnlock: "password", leads: SW_HOT });
+    return reply(200, klPage(SW_KOMMO, { contact: view }));
+  });
+  await swOpen(r);
+  const h = r.content.innerHTML;
+  check("opened on All Kommo leads, masked: the Kommo list says its contact details are hidden, above its filters",
+    r.shown() === "kommo" && klLine(r).includes("Contact details are hidden") && h.indexOf('id="klAccess"') >= 0
+    && h.indexOf('id="klAccess"') < h.indexOf('id="klScope-incoming"'), klLine(r) || h.slice(0, 300));
+  check("... with a way to the password box, Unlock on App records, and no Lock",
+    /<button type="button" class="btn-ghost" id="klUnlockBtn" onclick="klGoUnlock\(\)">Unlock on App records<\/button>/.test(klLine(r))
+    && !klLine(r).includes("hlLock()"), klLine(r));
+  auditMarkup("the Kommo list's access line, hidden: clean markup", klLine(r));
+  const focused = [];
+  r.el("hlUnlockPass", { value: "", focus: () => focused.push(r.recCard.hidden ? "while hidden" : "shown") });
+  const fetches = r.calls.fetch.length;
+  const went = r.api.klGoUnlock();
+  check("Unlock on App records switches to App records, then puts the cursor in its password box",
+    went === true && r.shown() === "records" && r.pressed() === "true,false" && JSON.stringify(focused) === '["shown"]'
+    && store._map.get(SW_KEY) === "records" && r.calls.fetch.length === fetches,
+    JSON.stringify([went, r.shown(), focused, store._map.get(SW_KEY)]));
+  r.el("hlUnlockPass", { value: "right one" }); r.el("hlUnlockBtn"); r.el("hlAccessMsg");
+  await r.api.hlUnlock();
+  r.api.hlSwitchTo("kommo");
+  check("unlocked, the Kommo list says full contact details are showing, with Lock, and no Unlock",
+    r.api.kl().view === "full" && klLine(r).includes("<strong>Full contact details are showing</strong>")
+    && /<button type="button" class="btn-ghost" id="klLockBtn" onclick="hlLock\(\)">Lock contact details<\/button>/.test(klLine(r))
+    && !klLine(r).includes("klGoUnlock"), klLine(r));
+  auditMarkup("the Kommo list's access line, showing: clean markup", klLine(r));
+  // Lock pressed on the Kommo list, its answer held: the bar's Lock is on the hidden card.
+  const klLock = r.el("klLockBtn"), barLock = r.el("hlLockBtn"), klMsg = r.el("klAccessMsg");
+  holdLock = true;
+  const locking = r.api.hlLock();
+  await settle();
+  check("Lock pressed on the Kommo list: both Lock buttons wait for the answer, and the Kommo list says so",
+    letGo !== null && klLock.disabled === true && barLock.disabled === true && klMsg.textContent === "Locking…",
+    JSON.stringify([letGo !== null, klLock.disabled, barLock.disabled, klMsg.textContent]));
+  holdLock = false;
+  letGo();
+  const locked = await locking;
+  check("... then both lists are masked again, All Kommo leads still shown, with its way to the password box",
+    locked === true && r.shown() === "kommo" && r.api.kl().view === "masked" && klLine(r).includes('onclick="klGoUnlock()"')
+    && !klLine(r).includes("Full contact details") && r.api.access().contact === "masked",
+    JSON.stringify([locked, r.shown(), r.api.kl().view, klLine(r)]));
+}
+{
+  // A Lock that fails, pressed on the Kommo list: the reason is said there, not only on the
+  // hidden App records card, and the button can be pressed again.
+  const r = swRig();
+  r.respond(async url => url === "/api/contact_unlock" ? reply(500, { status: "error", message: "the lock could not be set" })
+    : url.startsWith("/api/hot_leads") ? reply(200, { status: "success", contact: "full", contactUnlock: "password", leads: SW_HOT })
+    : reply(200, klPage(SW_KOMMO, { contact: "full" })));
+  await swOpen(r);
+  r.api.hlSwitchTo("kommo");
+  const klLock = r.el("klLockBtn"), klMsg = r.el("klAccessMsg");
+  const ok = await r.api.hlLock();
+  check("a Lock that fails on the Kommo list says why there, and its Lock works again",
+    ok === false && klMsg.textContent === "the lock could not be set" && /\bhl-msg-err\b/.test(klMsg.className)
+    && klLock.disabled === false && r.shown() === "kommo", JSON.stringify([ok, klMsg.textContent, klMsg.className, klLock.disabled]));
+  r.respond(async () => { throw new TypeError("Failed to fetch"); });
+  const again = await r.api.hlLock();
+  check("... and so does one that could not reach the dashboard",
+    again === false && /Could not reach the dashboard/.test(klMsg.textContent) && klLock.disabled === false, klMsg.textContent);
+}
+{
+  // Whether a password is set comes from the Kommo list's own answer: App records may not have
+  // answered yet, or at all.
+  const r = swRig();
+  const held = [];
+  r.respond(url => url.startsWith("/api/hot_leads")
+    ? new Promise(go => held.push(() => go(reply(200, { status: "success", contactUnlock: "password", leads: SW_HOT }))))
+    : reply(200, klPage(SW_KOMMO)));
+  const opening = swOpen(r);
+  await settle();
+  check("the Kommo list's way to the password box comes from its own answer, before App records has answered",
+    held.length === 1 && klLine(r).includes('onclick="klGoUnlock()"') && r.api.kl().unlock === "password",
+    JSON.stringify([held.length, klLine(r)]));
+  while (held.length) held.shift()();
+  await opening;
+  r.respond(async url => url.startsWith("/api/hot_leads")
+    ? reply(200, { status: "success", contactUnlock: "not-configured", leads: SW_HOT })
+    : reply(200, klPage(SW_KOMMO, { contactUnlock: "not-configured" })));
+  await r.api.loadKommoLeads(true);
+  check("no contact-details password set: the Kommo list says they cannot be unlocked here, with no button to a box that is not there",
+    klLine(r).includes("No contact-details password is set on this dashboard") && !klLine(r).includes("<button"), klLine(r));
+  r.respond(async () => reply(200, klPage([], { contactUnlock: "password" })));
+  await r.api.loadKommoLeads(true);
+  check("an empty Kommo list still carries the line, above its scope buttons",
+    klLine(r).includes('onclick="klGoUnlock()"') && r.content.innerHTML.indexOf('id="klAccess"') < r.content.innerHTML.indexOf('id="klScope-incoming"')
+    && r.content.innerHTML.includes("No leads in Incoming leads right now."), r.content.innerHTML.slice(0, 300));
+}
+
 // ------------------------------------------------------------------ the page itself
 console.log("\n--- the tab is wired into the page ---");
 {
@@ -3964,11 +4382,13 @@ console.log("\n--- the tab is wired into the page ---");
   for (const id of ["hotLeadsBadge", "hotLeadsRefresh", "hotLeadsContent"])
     check("pane has #" + id, pane.includes('id="' + id + '"'));
   check("Refresh forces a reload", /id="hotLeadsRefresh"[^>]*onclick="loadHotLeads\(true\)"/.test(pane));
-  // 28 Oct: the list above is the app's records; every Kommo lead is in the card below it.
+  // 28 Oct: the list above is the app's records; every Kommo lead is in the other card, which
+  // the switch at the top of the tab shows in its place (Ahsan, the same day) -- not "below".
   const words = s => new RegExp(s.split(" ").join("\\s+"));
-  check("pane says every lead in Kommo is under All Kommo leads below",
+  check("pane says every lead in Kommo is under All Kommo leads, at the top of the tab",
     words("These are the leads the app has a record for; <strong>every</strong> lead in Kommo, researched or not, "
-          + "is under <strong>All Kommo leads</strong> below.").test(pane));
+          + "is under <strong>All Kommo leads</strong> at the top of the tab.").test(pane)
+    && !words("<strong>All Kommo leads</strong> below.").test(pane));
   check("the Kommo card is headed All Kommo leads and sits below the list, inside the pane",
     pane.includes('<div class="panel-card" id="kommoLeadsCard">') && pane.includes("<span>All Kommo leads</span>")
     && pane.indexOf('id="kommoLeadsCard"') > pane.indexOf('id="hotLeadsContent"'));
@@ -3977,6 +4397,47 @@ console.log("\n--- the tab is wired into the page ---");
   for (const id of ["kommoLeadsBadge", "kommoLeadsRefresh", "kommoLeadsContent"])
     check("pane has #" + id, pane.includes('id="' + id + '"'));
   check("the Kommo Refresh forces a reload", /id="kommoLeadsRefresh"[^>]*onclick="loadKommoLeads\(true\)"/.test(pane));
+}
+
+console.log("\n--- the switch is at the top of the tab ---");
+{
+  const pane = (html.match(/<div id="hotLeadsTab" class="view-pane">([\s\S]*?)\n<\/div>/) || [, ""])[1];
+  const bare = pane.replace(/<!--[\s\S]*?-->/g, "").trim();
+  const words = s => new RegExp(s.split(" ").join("\\s+"));
+  const sw = (bare.match(/^<div class="hl-switch" id="hlSwitch" role="group" aria-label="[^"]+">([\s\S]*?)<\/div>/) || [, null])[1];
+  check("the switch is the first thing in the tab, with nothing above it", sw !== null, bare.slice(0, 160));
+  check("... and above both cards: App records, then All Kommo leads",
+    bare.indexOf('id="hlSwitch"') >= 0 && bare.indexOf('id="hlSwitch"') < bare.indexOf('id="hotLeadsCard"')
+    && bare.indexOf('id="hotLeadsCard"') < bare.indexOf('id="kommoLeadsCard"'));
+  const btns = [...String(sw).matchAll(/<button([^>]*)>([^<]*)<\/button>/g)]
+    .map(m => ({ attrs: m[1].replace(/\s+/g, " "), text: m[2] }));
+  const attr = (b, k) => ((b.attrs.match(new RegExp(` ${k}="([^"]*)"`)) || [, null])[1]);
+  check("two buttons, App records first, each saying … until its list has answered",
+    btns.length === 2 && btns[0].text === "App records (…)" && btns[1].text === "All Kommo leads (…)", JSON.stringify(btns));
+  check("a toggle for a screen reader: aria-pressed on both, App records pressed, each naming the card it shows",
+    btns.length === 2 && attr(btns[0], "aria-pressed") === "true" && attr(btns[1], "aria-pressed") === "false"
+    && attr(btns[0], "aria-controls") === "hotLeadsCard" && attr(btns[1], "aria-controls") === "kommoLeadsCard"
+    && attr(btns[0], "type") === "button" && attr(btns[1], "type") === "button"
+    && /\bis-active\b/.test(attr(btns[0], "class") || "") && !/\bis-active\b/.test(attr(btns[1], "class") || "")
+    && /\bhl-filter\b/.test(attr(btns[1], "class") || ""), JSON.stringify(btns));
+  check("the buttons call hlSwitchTo with their own key and nothing else",
+    btns.length === 2 && attr(btns[0], "onclick") === "hlSwitchTo('records')" && attr(btns[1], "onclick") === "hlSwitchTo('kommo')",
+    JSON.stringify(btns.map(b => attr(b, "onclick"))));
+  check("the cards it shows and hides are the tab's two",
+    pane.includes('<div class="panel-card" id="hotLeadsCard">') && pane.includes('<div class="panel-card" id="kommoLeadsCard">'));
+  check("the Kommo card says App record switches to App records",
+    words("has an <strong>App record</strong> button that switches to <strong>App records</strong> and jumps to its card.").test(pane)
+    && !/jumps to its card above/.test(pane));
+  const css = (html.match(/<style>([\s\S]*?)<\/style>/) || [, ""])[1];
+  const rule = sel => ((css.match(new RegExp("^\\s*" + sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + " \\{([^}]*)\\}", "m"))
+    || [, ""])[1]);
+  check("the switch wraps at phone width instead of running off the screen", /flex-wrap:\s*wrap/.test(rule(".hl-switch")),
+    rule(".hl-switch"));
+  check("a hidden card stays hidden whatever display rule .panel-card is given later",
+    /display:\s*none/.test(rule("#hotLeadsTab > .panel-card[hidden]")));
+  const phone = (css.match(/@media \(max-width: 480px\) \{([\s\S]*)$/) || [, ""])[1];
+  check("at phone width each switch button takes its share of the row, a whole row once they wrap",
+    /\.hl-switch \.hl-filter \{ flex: 1 1 auto; \}/.test(phone));
 }
 
 console.log("\n" + (fail === 0 ? "ALL " + pass + " CHECKS PASSED" : pass + " passed, " + fail + " FAILED"));

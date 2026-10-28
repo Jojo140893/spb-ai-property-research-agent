@@ -663,6 +663,129 @@ MUTANTS = {
     "klUrl passes any scope through": (
         "return `/api/kommo_leads?scope=${s}&page=${p}`;", "return `/api/kommo_leads?scope=${scope}&page=${p}`;",
         "klUrl writes only"),
+    # --- the switch at the top (28 Oct 2026, Ahsan: "the tabs should be controlled at the top
+    # of the page") -- one list at a time, App records first, the choice remembered ----------
+    "both cards are shown": (
+        "if (pane) pane.hidden = !on;", "if (pane) pane.hidden = false;",
+        "exactly one card"),
+    "the tab opens on All Kommo leads": (
+        "return HL_SWITCHES.includes(v) ? v : 'records';", "return HL_SWITCHES.includes(v) ? v : 'kommo';",
+        "the tab opens on App records"),
+    "any stored value is trusted": (
+        "return HL_SWITCHES.includes(v) ? v : 'records';", "return v || 'records';",
+        "anything else stored opens on App records"),
+    "any key handed to the switch is trusted": (
+        "HL_SWITCH = HL_SWITCHES.includes(list) ? list : 'records';", "HL_SWITCH = String(list);",
+        "anything but a known list is App records"),
+    # The read runs as the page loads, in the page's one script element: unguarded, a private
+    # window's storage takes every tab down with it.
+    "the remembered list is read unguarded": (
+        "try { v = localStorage.getItem(HL_SWITCH_STORE); } catch (e) { v = null; }",
+        "v = localStorage.getItem(HL_SWITCH_STORE);",
+        "the tab's code runs as the page loads"),
+    "the choice is not remembered": (
+        "try { localStorage.setItem(HL_SWITCH_STORE, HL_SWITCH); } catch (e) { /* not remembered, still switched */ }", "",
+        "a choice is kept in localStorage"),
+    # App record switches too, and the checks before the switch's own run it with no storage.
+    "the choice is written unguarded": (
+        "try { localStorage.setItem(HL_SWITCH_STORE, HL_SWITCH); } catch (e) { /* not remembered, still switched */ }",
+        "localStorage.setItem(HL_SWITCH_STORE, HL_SWITCH);",
+        "localStorage is not defined"),
+    "the list shown is not pressed for a screen reader": (
+        "b.setAttribute('aria-pressed', String(on));", "b.setAttribute('aria-pressed', 'false');",
+        "App records pressed"),
+    "the list shown is not highlighted": (
+        "b.className = 'btn-ghost hl-filter' + (on ? ' is-active' : '');", "b.className = 'btn-ghost hl-filter';",
+        "App records pressed"),
+    "switching reads the Kommo list again": (
+        "try { localStorage.setItem(HL_SWITCH_STORE, HL_SWITCH); } catch (e) { /* not remembered, still switched */ }",
+        "try { localStorage.setItem(HL_SWITCH_STORE, HL_SWITCH); } catch (e) { /* not remembered, still switched */ }"
+        " if (HL_SWITCH === 'kommo') loadKommoLeads(true);",
+        "switching asks the server nothing"),
+    "switching draws the Kommo list again": (
+        "try { localStorage.setItem(HL_SWITCH_STORE, HL_SWITCH); } catch (e) { /* not remembered, still switched */ }",
+        "try { localStorage.setItem(HL_SWITCH_STORE, HL_SWITCH); } catch (e) { /* not remembered, still switched */ }"
+        " if (KL_STATE === 'ok') klRender();",
+        "draws neither list again"),
+    "switching resets App records' filters": (
+        "try { localStorage.setItem(HL_SWITCH_STORE, HL_SWITCH); } catch (e) { /* not remembered, still switched */ }",
+        "try { localStorage.setItem(HL_SWITCH_STORE, HL_SWITCH); } catch (e) { /* not remembered, still switched */ }"
+        " hlSetFilter('all');",
+        "repaints no filter button"),
+    # App record's card is in the list the switch hides while the Kommo list is shown.
+    "App record does not switch to App records": (
+        "        hlSwitchTo('records');\n        hlSetSource('all');", "        hlSetSource('all');",
+        "App record switches to App records, then scrolls"),
+    "App record filters App records while it is hidden": (
+        "hlSwitchTo('records');\n        hlSetSource('all');\n        hlSetFilter('all');",
+        "hlSetSource('all');\n        hlSetFilter('all');\n        hlSwitchTo('records');",
+        "the hidden list never receives a filter click"),
+    "App record scrolls before it switches": (
+        "hlSwitchTo('records');\n        hlSetSource('all');\n        hlSetFilter('all');\n"
+        "        if (typeof card.scrollIntoView === 'function') card.scrollIntoView({ behavior: 'smooth', block: 'center' });",
+        "hlSetSource('all');\n        hlSetFilter('all');\n"
+        "        if (typeof card.scrollIntoView === 'function') card.scrollIntoView({ behavior: 'smooth', block: 'center' });\n"
+        "        hlSwitchTo('records');",
+        "App record switches to App records, then scrolls"),
+    # Each count is the number its list's badge shows, '…' while it is read, none when it failed.
+    "the App records count is not its badge's": (
+        "hlSwitchCount('records', `${HOT_LEADS.length}${more}`);", "",
+        "each count is the number its list's badge shows"),
+    "the All Kommo leads count is not its badge's": (
+        "        hlSwitchCount('kommo', `${n.toLocaleString('en-AU')}${more}`);\n", "",
+        "each count is the number its list's badge shows"),
+    "a count leaves out its badge's +": (
+        "hlSwitchCount('records', `${HOT_LEADS.length}${more}`);", "hlSwitchCount('records', `${HOT_LEADS.length}`);",
+        "counts with its badge's +"),
+    "a list that failed puts an alarm on the switch": (
+        "hlSwitchCount('kommo', '');", "hlSwitchCount('kommo', 'unavailable');",
+        "nothing alarming"),
+    "a list that failed keeps the count it had": (
+        "hlSwitchCount('records', '');", "",
+        "could not be read: its button shows no number"),
+    "the Kommo count stays while the list is read again": (
+        "hlSwitchCount('kommo', '…');", "",
+        "… while it is read"),
+    # 28 Oct 2026, review: the one unreachable branch on its own (the mutant above takes both
+    # records '' calls at once). Anchored on the line after it, so it matches that branch only.
+    "an unreachable App records read leaves its old count on the switch": (
+        "                hlSwitchCount('records', '');\n"
+        "                el.innerHTML = `<div class=\"hl-notice\"><strong>Could not reach the dashboard.</strong>",
+        "                el.innerHTML = `<div class=\"hl-notice\"><strong>Could not reach the dashboard.</strong>",
+        "the same when the dashboard could not be reached"),
+    # 28 Oct 2026, review: the access bar is on App records, hidden while All Kommo leads is
+    # shown, so the Kommo list carries its own access line.
+    "the Kommo list has no access line": (
+        "klAccessLine() + scopes + klWarnings()", "scopes + klWarnings()",
+        "the Kommo list says its contact details are hidden"),
+    "Unlock on App records puts the cursor in a box still hidden": (
+        "        hlSwitchTo('records');\n        const box = document.getElementById('hlUnlockPass');\n"
+        "        if (box && typeof box.focus === 'function') box.focus();",
+        "        const box = document.getElementById('hlUnlockPass');\n"
+        "        if (box && typeof box.focus === 'function') box.focus();\n        hlSwitchTo('records');",
+        "Unlock on App records switches to App records, then puts the cursor"),
+    "the Kommo list never offers Lock": (
+        "        if (KL_VIEW === 'full') {\n            line =", "        if (false) {\n            line =",
+        "the Kommo list says full contact details are showing"),
+    "the Kommo list's Lock stays live while Lock is out": (
+        "document.getElementById('hlLockBtn'), document.getElementById('klLockBtn')",
+        "document.getElementById('hlLockBtn')",
+        "both Lock buttons wait for the answer"),
+    "a failed Lock is said only on the hidden App records card": (
+        "['hlAccessMsg', 'klAccessMsg'].forEach", "['hlAccessMsg'].forEach",
+        "a Lock that fails on the Kommo list says why there"),
+    "a refused Lock leaves its buttons off": (
+        "        press(false);\n        hlAccessSay((data && data.message)", "        hlAccessSay((data && data.message)",
+        "its Lock works again"),
+    "the Kommo list takes the password setting from App records' answer": (
+        "} else if (KL_UNLOCK === 'password') {", "} else if (HL_ACCESS.unlock === 'password') {",
+        "comes from its own answer, before App records has answered"),
+    "the Kommo list does not keep its answer's password setting": (
+        "            KL_UNLOCK = a.unlock;\n", "",
+        "comes from its own answer, before App records has answered"),
+    "with no password set the Kommo list still offers Unlock": (
+        "} else if (KL_UNLOCK === 'password') {", "} else if (true) {",
+        "no contact-details password set: the Kommo list says"),
 }
 
 
@@ -713,6 +836,34 @@ PAGE_MUTANTS = {
         "onclick=\"showTab('hotLeadsTab', this); loadHotLeads(); loadKommoLeads();\"",
         "onclick=\"showTab('hotLeadsTab', this); loadHotLeads();\"",
         "loadKommoLeads()"),
+    # 28 Oct 2026 (Ahsan): the switch at the top of the tab, in the markup and the stylesheet.
+    "something sits above the switch": (
+        '    <div class="hl-switch" id="hlSwitch" role="group"',
+        '    <p>Pick a list:</p>\n    <div class="hl-switch" id="hlSwitch" role="group"',
+        "the switch is the first thing in the tab"),
+    "the switch is not a toggle for a screen reader": (
+        'aria-pressed="true" aria-controls="hotLeadsCard"', 'aria-controls="hotLeadsCard"',
+        "a toggle for a screen reader"),
+    "a switch button does more than switch": (
+        "onclick=\"hlSwitchTo('kommo')\"", "onclick=\"hlSwitchTo('kommo'); loadKommoLeads(true)\"",
+        "the buttons call hlSwitchTo with their own key"),
+    "the switch does not wrap": (
+        ".hl-switch { display: flex; flex-wrap: wrap;", ".hl-switch { display: flex; flex-wrap: nowrap;",
+        "the switch wraps at phone width"),
+    "at phone width the switch buttons keep their own widths": (
+        ".hl-switch .hl-filter { flex: 1 1 auto; }", ".hl-switch .hl-filter { }",
+        "at phone width each switch button"),
+    "a later display rule can show the hidden card": (
+        "        #hotLeadsTab > .panel-card[hidden] { display: none; }\n", "",
+        "a hidden card stays hidden"),
+    "the tab still says every Kommo lead is below": (
+        "is under <strong>All Kommo leads</strong> at the top of the tab.",
+        "is under <strong>All Kommo leads</strong> below.",
+        "at the top of the tab"),
+    "the Kommo card still says App record jumps to its card above": (
+        "switches to <strong>App records</strong>\n            and jumps to its card.",
+        "jumps to its card above.",
+        "the Kommo card says App record switches to App records"),
 }
 
 
