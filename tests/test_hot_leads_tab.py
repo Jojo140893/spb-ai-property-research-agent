@@ -85,34 +85,25 @@ MUTANTS = {
     "the filter does not hide the other grades": (
         "if (card) card.hidden = !on;", "if (card) card.hidden = false;",
         "filter Warm hides"),
-    # 23 Sep: the cards are printed inside their channel's group, so these two anchors moved
-    # from hlRenderLeads into hlGroupBlock and the entries list it is handed. What they
-    # protect did not move: a card is hidden by the filter, not dropped, and it carries its
-    # index into the FULL list.
+    # 23 Sep the cards moved into their channel's group, and on 28 Oct back into one list,
+    # sorted, so these two anchors moved with them. What they protect did not move: a card is
+    # hidden by the filter, not dropped, and it carries its index into the FULL list.
     "Refresh forgets the filter": (
-        "hlLeadCard(x.lead, x.i, !hlShows(x.lead, f))", "hlLeadCard(x.lead, x.i, false)",
+        "hlLeadCard(x.lead, x.i, !(hlShows(x.lead, f) && hlFromSource(x.lead, s)))",
+        "hlLeadCard(x.lead, x.i, false)",
         "kept after Refresh"),
     # Numbering the filtered list would send the wrong caller's brief to Re-run.
     "cards are numbered by their place in the filtered list": (
-        "const entries = list.map((lead, i) => ({ lead, i }));",
-        "const entries = list.filter(l => hlShows(l, f)).map((lead, i) => ({ lead, i }));",
+        "const entries = list.map((lead, i) => ({ lead, i, at: hlAt(lead) }))",
+        "const entries = list.filter(l => hlShows(l, f)).map((lead, i) => ({ lead, i, at: hlAt(lead) }))",
         "re-run from a filtered list"),
     # --- the WhatsApp / Vapi split (23 Sep) --------------------------------------------
     # EVERY RECORD IN THE STORE PREDATES THE channel FIELD, so a default of anything but
-    # 'vapi' moves the entire tab into the WhatsApp group on the day this ships.
-    "a record with no channel is grouped as WhatsApp": (
+    # 'vapi' labels the entire tab WhatsApp on the day this ships.
+    "a record with no channel is labelled WhatsApp": (
         "return lead.channel === 'whatsapp' ? 'whatsapp' : 'vapi';",
         "return lead.channel === 'vapi' ? 'vapi' : 'whatsapp';",
-        "grouped as Vapi"),
-    "the two channels are not split, every card is printed in both groups": (
-        "entries.filter(x => hlChannel(x.lead) === ch)", "entries",
-        "printed once"),
-    # A group that says nothing when it is empty is indistinguishable from one that failed
-    # to render -- and "is the WhatsApp scan running at all?" is the question it answers.
-    "an empty group is silent": (
-        "${visible ? ' hidden' : ''}>${hlGroupEmptyText(channel, f)}</div>",
-        "${visible ? ' hidden' : ' hidden'}>${hlGroupEmptyText(channel, f)}</div>",
-        "empty group says so"),
+        "a record with no channel is a Clare call (hlChannel)"),
     # The Kommo tag is written after question 2 of 8, so a fully answered WhatsApp lead can
     # carry no tag at all. Dropping it deletes it from the tab with nothing to say so.
     "an ungraded WhatsApp lead is dropped from the list": (
@@ -537,12 +528,14 @@ MUTANTS = {
     "the label is not Clare calls (VAPI)": (
         "vapi: 'Clare calls (VAPI)' }", "vapi: 'Vapi' }",
         "the source buttons are labelled exactly"),
-    "a source button does not hide the other group": (
-        "if (group) group.hidden = !hlSourceHas(s, ch);", "if (group) group.hidden = false;",
-        "Clare calls (VAPI) hides the WhatsApp group"),
-    "a list drawn under a source draws the other group": (
-        "${hlSourceHas(hlSourceKey(s), channel) ? '' : ' hidden'}>`", "${''}>`",
-        "rendered under Clare calls (VAPI), the WhatsApp group is drawn hidden"),
+    # 28 Oct: one list, so a source hides each of its cards, where it hid a group before.
+    "a source button does not hide the other source's cards": (
+        "const on = hlShows(lead, f) && hlFromSource(lead, s);", "const on = hlShows(lead, f);",
+        "Clare calls (VAPI) hides the WhatsApp cards"),
+    "a list drawn under a source shows the other source's cards": (
+        "hlLeadCard(x.lead, x.i, !(hlShows(x.lead, f) && hlFromSource(x.lead, s)))",
+        "hlLeadCard(x.lead, x.i, !hlShows(x.lead, f))",
+        "rendered under Clare calls (VAPI), the WhatsApp card is drawn hidden"),
     "the pressed source button is not marked": (
         "b.className = 'btn-ghost hl-filter' + (key === s ? ' is-active' : '');", "b.className = 'btn-ghost hl-filter';",
         "Clare calls (VAPI) presses that button, and only that one"),
@@ -559,8 +552,8 @@ MUTANTS = {
     # A hot Clare call kept "No hot leads" hidden while WhatsApp alone was shown, with no
     # card visible under it.
     "the empty note counts leads the source hides": (
-        "if (on) { inGroup[hlChannel(lead)]++; if (hlFromSource(lead, s)) shown++; }",
-        "if (on) { inGroup[hlChannel(lead)]++; shown++; }",
+        "const on = hlShows(lead, f) && hlFromSource(lead, s);\n            if (on) shown++;",
+        "const on = hlShows(lead, f) && hlFromSource(lead, s);\n            if (hlShows(lead, f)) shown++;",
         "Warm under Clare calls: nothing visible"),
     "the empty note drawn counts leads the source hides": (
         "const shown = list.filter(l => hlShows(l, f) && hlFromSource(l, s)).length;",
@@ -570,6 +563,57 @@ MUTANTS = {
         "return `No ${f === 'all' ? '' : f + ' '}${HL_CHANNEL_NOUN[src]} in this list.`;",
         "return `No ${f} leads in this list.`;",
         "the note names the source"),
+    # --- one list, newest first (Ahsan, 28 Oct 2026) ---------------------------------------
+    # The WhatsApp group above Clare's callers kept that morning's two callers at cards 27 and
+    # 28 of 33. Each of these puts some of that back.
+    "the list is grouped by source again, WhatsApp first": (
+        ".sort((a, b) => (b.at - a.at) || (a.i - b.i));",
+        ".sort((a, b) => ((hlChannel(b.lead) === 'whatsapp') - (hlChannel(a.lead) === 'whatsapp'))"
+        " || (b.at - a.at) || (a.i - b.i));",
+        "a newer Clare call is drawn above an older WhatsApp lead"),
+    "the list is drawn in the order it was handed": (
+        ".sort((a, b) => (b.at - a.at) || (a.i - b.i));", ";",
+        "handed in another order, the list is still drawn newest first"),
+    "the list is oldest first": (
+        ".sort((a, b) => (b.at - a.at) || (a.i - b.i));", ".sort((a, b) => (a.at - b.at) || (a.i - b.i));",
+        "one list, newest first, WhatsApp and Clare calls mixed"),
+    "a tie is drawn the other way round": (
+        ".sort((a, b) => (b.at - a.at) || (a.i - b.i));", ".sort((a, b) => (b.at - a.at) || (b.i - a.i));",
+        "the same time: the order it was handed in"),
+    "a lead with no time goes first": (
+        "if (!iso) return -Infinity;", "if (!iso) return Infinity;",
+        "no time it can show: last"),
+    "a lead is sorted by a time its card does not show": (
+        "const iso = (lead && typeof lead === 'object') ? lead.createdAt : undefined;",
+        "const iso = (lead && typeof lead === 'object') ? ((lead.appointment && lead.appointment.start)"
+        " || lead.createdAt) : undefined;",
+        "hlAt is the card's createdAt, as hlWhen reads it"),
+    # Sorted, the place on the screen is not the index: numbering by it re-runs the wrong brief.
+    "cards are numbered by their place on the screen": (
+        "entries.map(x => hlLeadCard(x.lead, x.i,", "entries.map((x, k) => hlLeadCard(x.lead, k,",
+        "a card keeps its index into the full list, not its place on the screen"),
+    "a card has no source pill": (
+        '<span class="pill pill-muted hl-src">${HL_CHANNEL_PILL[ch]}</span>', "",
+        "each card is labelled with its source"),
+    "a cut-down card has no source pill": (
+        '<span class="pill pill-muted hl-src">${HL_CHANNEL_PILL[ch]}</span>',
+        "${cut ? '' : `<span class=\"pill pill-muted hl-src\">${HL_CHANNEL_PILL[ch]}</span>`}",
+        "a cut-down card is labelled with its source"),
+    "the source pills are the wrong way round": (
+        "const HL_CHANNEL_PILL = { whatsapp: 'WhatsApp', vapi: 'Clare call' };",
+        "const HL_CHANNEL_PILL = { whatsapp: 'Clare call', vapi: 'WhatsApp' };",
+        "each card is labelled with its source"),
+    "the source buttons show the other source's cards": (
+        "const on = hlShows(lead, f) && hlFromSource(lead, s);",
+        "const on = hlShows(lead, f) && hlFromSource(lead, s === 'vapi' ? 'whatsapp' : s === 'whatsapp' ? 'vapi' : s);",
+        "WhatsApp shows only the WhatsApp cards"),
+    "the list's empty note is never shown": (
+        "id=\"hlFilterEmpty\"${shown ? ' hidden' : ''}", "id=\"hlFilterEmpty\"${' hidden'}",
+        "WhatsApp pressed with none: the list's empty note says so"),
+    # A source hides the card itself now, not a group around it.
+    "App record leaves the source pressed": (
+        "        hlSetSource('all');\n        hlSetFilter('all');", "        hlSetFilter('all');",
+        "App record finds a Clare call hidden under WhatsApp"),
     # --- All Kommo leads (28 Oct 2026) ---------------------------------------------------
     # Every lead in Kommo, through /api/kommo_leads: a card's name is whatever someone typed
     # on it in Kommo, and its link is Kommo's.

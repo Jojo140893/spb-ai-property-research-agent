@@ -78,9 +78,9 @@ const EXPORTS = ["hlSafeUrl", "hlTelHref", "hlMailHref", "hlMoney", "hlWhen", "h
   "hlRecCard", "hlRecsBlock", "hlLiveBlock", "hlAppointment", "hlLeadCard", "hlRenderLeads",
   "hlSortNewest", "hlUnavailable", "loadHotLeads", "rerunHotLead", "hlGrade", "hlSetFilter",
   "hlMergeLeads", "hlCoverNote", "hlLocationNote",
-  // 23 Sep: WhatsApp leads from the Kommo scan share the tab with Clare's callers, in
-  // their own group.
-  "hlChannel", "hlUnresolvedNote", "hlGroupEmptyText", "hlGroupBlock",
+  // 23 Sep: WhatsApp leads from the Kommo scan share the tab with Clare's callers -- in
+  // their own group until 28 Oct, in one list newest first since (hlAt is the time it sorts by).
+  "hlChannel", "hlUnresolvedNote", "hlAt",
   // 26 Oct (Coleen): Both / Clare calls (VAPI) / WhatsApp, above the grades.
   "hlSetSource", "hlSourceKey", "hlFromSource", "hlSourceBar", "hlFilterEmptyText",
   // 28 Sep (Coleen): the Research tab's selection and report on every lead, notes and links
@@ -846,9 +846,13 @@ console.log("\n--- All / Hot / Warm / Nurture ---");
 // 23 Sep: a WhatsApp lead the Kommo bot has qualified is written to the same store as
 // Clare's callers, carrying channel:"whatsapp". EVERY RECORD WRITTEN BEFORE THAT FIELD
 // EXISTED HAS NO channel AT ALL, so a missing one must read as Vapi -- the whole tab is
-// those records, and a different default would move all of them into the wrong group on the
-// day this ships. The two are worked differently, so they are listed apart.
-console.log("\n--- WhatsApp and Vapi are two groups ---");
+// those records, and a different default would label all of them with the wrong source on
+// the day this ships.
+//
+// 28 Oct (Ahsan): ONE LIST, NEWEST FIRST. The two were groups from 23 Sep, WhatsApp above
+// Clare, and that day's two Clare callers sat at cards 27 and 28 of 33 under every WhatsApp
+// lead. Now they are mixed by the time each card shows, and each card says its source.
+console.log("\n--- WhatsApp and Clare calls: one list, newest first ---");
 
 // The measured shape of a qualified WhatsApp card (23 Sep): no call, so no recording, no
 // duration and no summary -- the message bodies are unreachable (leads/{id}/notes answers
@@ -870,17 +874,42 @@ const wa = (over = {}) => clean({
   ...over,
 });
 
-// WhatsApp is drawn first and Vapi last, so a group runs to the next group marker or the end.
-const groupHtml = (html, channel) => {
-  const i = html.indexOf(`id="hlGroup-${channel}"`);
-  if (i < 0) return "";
-  const j = html.indexOf('id="hlGroup-', i + 1);
-  return j < 0 ? html.slice(i) : html.slice(i, j);
+// The cards in the order they are drawn: each card runs from its opening tag to the next
+// card's. i is the index it carries (hlCard-<i>, rerunHotLead(i)), src every source pill on it.
+const drawn = h => {
+  const at = [...String(h).matchAll(/<div class="prop-card hl-card" id="hlCard-(\d+)"( hidden)?>/g)];
+  return at.map((m, k) => {
+    const body = String(h).slice(m.index, k + 1 < at.length ? at[k + 1].index : undefined);
+    return { i: Number(m[1]), hidden: !!m[2], body,
+             name: (body.match(/<span class="hl-name">([^<]*)<\/span>/) || [, null])[1],
+             src: [...body.matchAll(/<span class="pill pill-muted hl-src">([^<]*)<\/span>/g)].map(x => x[1]) };
+  });
 };
+const order = h => drawn(h).map(c => c.name).join(" > ");
+const shownNames = h => drawn(h).filter(c => !c.hidden).map(c => c.name).join(" > ");
+// The pill a lead's card must carry: the record's channel as hlChannel reads it, in the words
+// the All Kommo leads list uses for the same two sources.
+const pillFor = lead => (lead && lead.channel === "whatsapp" ? "WhatsApp" : "Clare call");
+
+// Ahsan's morning, 28 Oct 2026 (AEDT, UTC+11): Clare callers at 1:07 pm and 11:36 am, and the
+// newest WhatsApp lead at 10:33 am -- and the two callers were cards 27 and 28 of 33. In the
+// order loadHotLeads keeps HOT_LEADS, newest first: 0 Clare hot (no channel key), 1 Clare warm,
+// 2 WhatsApp warm, 3 WhatsApp hot, 4 Clare nurture from the day before.
+const person = name => ({ customer: { name, email: "", phone: "" } });
+const morning = [
+  clean({ callId: "v-107", createdAt: "2026-10-28T02:07:00Z", ...person("Caller 1:07 pm") }),
+  clean({ callId: "v-1136", channel: "vapi", grade: "warm", appointment: null,
+          createdAt: "2026-10-28T00:36:00Z", ...person("Caller 11:36 am") }),
+  wa({ callId: "wa-1033", createdAt: "2026-10-27T23:33:00Z", ...person("Chat 10:33 am") }),
+  wa({ callId: "wa-0900", grade: "hot", createdAt: "2026-10-27T22:00:00Z", ...person("Chat 9:00 am") }),
+  clean({ callId: "v-yday", channel: "vapi", grade: "nurture", appointment: null,
+          createdAt: "2026-10-27T05:00:00Z", ...person("Caller yesterday") }),
+];
+const NEWEST_FIRST = "Caller 1:07 pm > Caller 11:36 am > Chat 10:33 am > Chat 9:00 am > Caller yesterday";
 
 {
   check("channel 'whatsapp' -> whatsapp", api.hlChannel({ channel: "whatsapp" }) === "whatsapp");
-  check("a record with no channel is grouped as Vapi (hlChannel)",
+  check("a record with no channel is a Clare call (hlChannel)",
     api.hlChannel({ callId: "x" }) === "vapi" && api.hlChannel(clean()) === "vapi");
   for (const c of ["vapi", "WhatsApp", "WHATSAPP", "whatsapp ", " whatsapp", "", null, undefined,
                    7, EVIL, ["whatsapp"], { channel: "whatsapp" }])
@@ -890,102 +919,150 @@ const groupHtml = (html, channel) => {
     api.hlChannel(null) === "vapi" && api.hlChannel(undefined) === "vapi"
     && api.hlChannel("whatsapp") === "vapi");
 
-  const mixed = [
-    wa({ callId: "wa1", createdAt: "2026-09-22T23:10:00Z" }),
-    clean({ callId: "v1", createdAt: "2026-09-22T22:00:00Z",
-            customer: { name: "Clare Caller", email: "", phone: "" } }),
-    clean({ callId: "v2", channel: "vapi", grade: "warm", appointment: null,
-            createdAt: "2026-09-22T21:00:00Z",
-            customer: { name: "Second Caller", email: "", phone: "" } }),
-  ];
-  out = api.hlRenderLeads(mixed, "all");
-  auditMarkup("two groups: markup is only the renderer's own", out);
-  check("both groups are drawn, WhatsApp first",
-    out.indexOf('id="hlGroup-whatsapp"') >= 0
-    && out.indexOf('id="hlGroup-whatsapp"') < out.indexOf('id="hlGroup-vapi"'),
-    out.slice(0, 200));
-  // 26 Oct: the Vapi group is headed as its source button is, "Clare calls (VAPI)".
-  check("each group has a heading and a count",
-    out.includes('<span class="hl-group-name">WhatsApp</span><span class="hl-group-count">(1)</span>')
-    && out.includes('<span class="hl-group-name">Clare calls (VAPI)</span><span class="hl-group-count">(2)</span>'));
-  const waHtml = groupHtml(out, "whatsapp"), vapiHtml = groupHtml(out, "vapi");
-  check("the WhatsApp lead is in the WhatsApp group",
-    waHtml.includes("Bari") && !vapiHtml.includes("Bari"));
-  check("a record with no channel is grouped as Vapi, not WhatsApp",
-    vapiHtml.includes("Clare Caller") && !waHtml.includes("Clare Caller"));
-  check("split into two groups: every card is printed once, in its channel's group",
-    [0, 1, 2].every(i => (out.match(new RegExp('id="hlCard-' + i + '"', "g")) || []).length === 1)
-    && waHtml.includes('id="hlCard-0"')
-    && vapiHtml.includes('id="hlCard-1"') && vapiHtml.includes('id="hlCard-2"'),
-    [0, 1, 2].map(i => (out.match(new RegExp('id="hlCard-' + i + '"', "g")) || []).length).join(","));
-  // Grouping changes the order cards are PRINTED in, never the index they carry:
-  // rerunHotLead(i) reads HOT_LEADS[i].
-  check("a card keeps its index into the full list, not its place in its group",
-    vapiHtml.includes('onclick="rerunHotLead(1)"') && vapiHtml.includes('onclick="rerunHotLead(2)"')
-    && !vapiHtml.includes('onclick="rerunHotLead(0)"')
-    && waHtml.includes('onclick="rerunHotLead(0)"'));
+  out = api.hlRenderLeads(morning, "all");
+  auditMarkup("one list: markup is only the renderer's own", out);
+  check("one list, newest first, WhatsApp and Clare calls mixed", order(out) === NEWEST_FIRST, order(out));
+  const place = (h, name) => drawn(h).findIndex(c => c.name === name);
+  check("a newer Clare call is drawn above an older WhatsApp lead",
+    place(out, "Caller 11:36 am") >= 0 && place(out, "Caller 11:36 am") < place(out, "Chat 10:33 am"));
+  check("a newer WhatsApp lead is drawn above an older Clare call",
+    place(out, "Chat 9:00 am") >= 0 && place(out, "Chat 9:00 am") < place(out, "Caller yesterday"));
+  check("every card is printed once, in the one list",
+    [0, 1, 2, 3, 4].every(i => (out.match(new RegExp('id="hlCard-' + i + '"', "g")) || []).length === 1)
+    && drawn(out).length === 5 && (out.match(/class="hl-list"/g) || []).length === 1
+    && out.indexOf('<div class="hl-list" id="hlList">') >= 0
+    && out.indexOf('<div class="hl-list" id="hlList">') < out.indexOf('id="hlCard-'),
+    drawn(out).map(c => c.i).join(","));
+  // 23 Sep - 28 Oct the list was two groups, each with a heading, a count and its own note.
+  check("no group block, group heading or group note is left",
+    !/hl-group|hlGroup/.test(out) && !/>Clare calls \(VAPI\)<\/span>/.test(out), (out.match(/.{60}hl-?[gG]roup.{60}/) || [""])[0]);
+  check("each card is labelled with its source, once: WhatsApp or Clare call",
+    drawn(out).every(c => c.src.length === 1 && c.src[0] === pillFor(morning[c.i]))
+    && drawn(out).filter(c => c.src[0] === "WhatsApp").map(c => c.name).join(",") === "Chat 10:33 am,Chat 9:00 am",
+    drawn(out).map(c => c.name + ":" + c.src.join("+")).join(" | "));
+  check("the source pill sits beside the grade pill, in the card's head",
+    drawn(out).every(c => new RegExp('<div class="hl-head">\\s*<span class="hl-name">[^<]*</span>\\s*'
+      + '<span class="pill pill-muted hl-src">[^<]*</span>\\s*<span class="pill pill-(hot|warm|nurture)">').test(c.body)),
+    (drawn(out)[0] || { body: "" }).body.slice(0, 300));
   // Nobody CALLED a WhatsApp lead. Its time is when the bot's last question was answered, so
   // it says "Qualified". The only label check before 24 Sep used a Clare card, so the wrong
   // word on every WhatsApp card went unnoticed.
+  const waCards = drawn(out).filter(c => morning[c.i].channel === "whatsapp");
+  const vapiCards = drawn(out).filter(c => morning[c.i].channel !== "whatsapp");
   check("a WhatsApp card says Qualified, never Called",
-    /class="hl-when">Qualified /.test(waHtml) && !/class="hl-when">Called /.test(waHtml),
-    (waHtml.match(/class="hl-when">[^<]*/) || [""])[0]);
+    waCards.length === 2 && waCards.every(c => /class="hl-when">Qualified /.test(c.body) && !/class="hl-when">Called /.test(c.body)),
+    waCards.map(c => (c.body.match(/class="hl-when">[^<]*/) || [""])[0]).join(" | "));
   check("a Vapi card still says Called",
-    /class="hl-when">Called /.test(vapiHtml) && !/class="hl-when">Qualified /.test(vapiHtml));
+    vapiCards.length === 3 && vapiCards.every(c => /class="hl-when">Called /.test(c.body) && !/class="hl-when">Qualified /.test(c.body)));
+  check("the time a card is sorted by is the time it shows",
+    drawn(out).every((c, k, all) => k === 0 || api.hlAt(morning[all[k - 1].i]) >= api.hlAt(morning[c.i]))
+    && drawn(out).every(c => c.body.includes('class="hl-when">' + (morning[c.i].channel === "whatsapp" ? "Qualified " : "Called ")
+                                             + api.hlWhen(morning[c.i].createdAt) + "</span>")));
 
+  // Handed in any other order, it is still drawn newest first -- and each card keeps the index
+  // it has in the list it was handed: rerunHotLead(i) reads HOT_LEADS[i], so numbering the
+  // sorted list instead would re-run the wrong caller's brief.
+  const shuffled = [morning[4], morning[2], morning[0], morning[3], morning[1]];
+  out = api.hlRenderLeads(shuffled, "all");
+  check("handed in another order, the list is still drawn newest first", order(out) === NEWEST_FIRST, order(out));
+  check("a card keeps its index into the full list, not its place on the screen",
+    drawn(out).map(c => c.i).join(",") === "2,4,1,3,0"
+    && drawn(out).every(c => shuffled[c.i].customer.name === c.name && c.body.includes(`onclick="rerunHotLead(${c.i})"`)
+                             && c.src[0] === pillFor(shuffled[c.i])),
+    drawn(out).map(c => c.i + ":" + c.name).join(" | "));
+
+  // Two cards showing the same time stay in the order they were handed in (HOT_LEADS: the
+  // hook's order, which hlSortNewest keeps), whichever their sources; a card with no time it
+  // can show goes last.
+  const tie = [
+    wa({ callId: "wa-t", createdAt: "2026-10-28T01:00:00Z", ...person("Tie chat") }),
+    clean({ callId: "v-none", createdAt: "next tuesday", ...person("Undated caller") }),
+    clean({ callId: "v-t", createdAt: "2026-10-28T12:00:00.000+11:00", ...person("Tie caller") }),
+    wa({ callId: "wa-none", createdAt: undefined, ...person("Undated chat") }),
+    clean({ callId: "v-early", createdAt: "2026-10-28T00:59:59Z", ...person("Earlier caller") }),
+  ];
+  out = api.hlRenderLeads(tie, "all");
+  check("the same time: the order it was handed in; no time it can show: last",
+    order(out) === "Tie chat > Tie caller > Earlier caller > Undated caller > Undated chat", order(out));
+  out = api.hlRenderLeads([tie[2], tie[0]], "all");
+  check("the same time the other way round: still the order it was handed in, not WhatsApp first",
+    order(out) === "Tie caller > Tie chat", order(out));
+  check("hlAt is the card's createdAt, as hlWhen reads it",
+    api.hlAt(morning[0]) === Date.UTC(2026, 9, 28, 2, 7)
+    && api.hlAt(clean({ createdAt: "2026-10-28T13:07:00+11:00" })) === Date.UTC(2026, 9, 28, 2, 7)
+    && api.hlAt(null) === -Infinity && api.hlAt("2026-10-28T02:07:00Z") === -Infinity
+    && [undefined, null, "", 0, "next tuesday", {}, "2026-10-28T02:07:00Z", 1761617220000, [2026]]
+         .every(v => (api.hlAt({ createdAt: v }) === -Infinity) === (api.hlWhen(v) === "")));
+
+  // The list's one empty note. The groups each had their own; now nothing visible in the list
+  // is said once, above it, naming the grade and the source.
   out = api.hlRenderLeads([clean({ callId: "v1" })], "all");
-  auditMarkup("empty WhatsApp group: markup", out);
-  check("an empty group says so rather than vanishing",
-    out.includes('id="hlGroup-whatsapp"')
-    && out.includes('<span class="hl-group-name">WhatsApp</span><span class="hl-group-count">(0)</span>')
-    && /id="hlGroupEmpty-whatsapp">No WhatsApp leads yet\.<\/div>/.test(out), out.slice(0, 300));
-  check("the group that has leads does not show its empty note",
-    /id="hlGroupEmpty-vapi" hidden>/.test(out));
-
-  out = api.hlRenderLeads([wa({ callId: "wa1", grade: "warm" }), clean({ callId: "v1", grade: "hot" })], "hot");
-  check("a group emptied by the filter says which filter emptied it",
-    /id="hlGroupEmpty-whatsapp">No hot WhatsApp leads in this list\.<\/div>/.test(out)
-    && /id="hlGroupEmpty-vapi" hidden>/.test(out), out.slice(0, 400));
-  check("group empty text: All says none yet, a grade says none of that grade",
-    api.hlGroupEmptyText("whatsapp", "all") === "No WhatsApp leads yet."
-    && api.hlGroupEmptyText("vapi", "all") === "No Clare calls yet."
-    && api.hlGroupEmptyText("vapi", "nurture") === "No nurture Clare calls in this list.");
+  auditMarkup("no WhatsApp leads: markup", out);
+  check("no WhatsApp leads at all: the WhatsApp button says (0), and nothing is drawn for an empty source",
+    out.includes(`onclick="hlSetSource('whatsapp')">WhatsApp (0)</button>`) && /id="hlFilterEmpty" hidden>/.test(out)
+    && drawn(out).length === 1 && !/hlGroup|hl-group/.test(out));
+  out = api.hlRenderLeads([clean({ callId: "v1" })], "all", undefined, "whatsapp");
+  check("WhatsApp pressed with none: the list's empty note says so, and the Clare card is drawn hidden",
+    /id="hlFilterEmpty">No WhatsApp leads in this list\.<\/div>/.test(out) && /id="hlCard-0" hidden>/.test(out), out.slice(0, 400));
+  out = api.hlRenderLeads([wa({ callId: "wa1", grade: "warm" }), clean({ callId: "v1", grade: "hot" })], "warm", undefined, "vapi");
+  check("a grade and a source with nothing in common: one note, naming both",
+    /id="hlFilterEmpty">No warm Clare calls in this list\.<\/div>/.test(out)
+    && (out.match(/in this list\./g) || []).length === 1 && drawn(out).every(c => c.hidden), out.slice(0, 400));
 }
 
-// The groups survive a real load, and the filter keeps each group's note honest.
+// The one list on a real load: the source and grade buttons, their counts and the note, all
+// as before -- a button only hides cards in the list, each by its own index.
 {
   const s = sandbox();
   const content = s.el("hotLeadsContent"), badge = s.el("hotLeadsBadge");
   s.el("hotLeadsRefresh");
-  s.respond(async () => reply(200, { status: "success", count: 3, leads: [
-    wa({ callId: "wa1", grade: "warm", createdAt: "2026-09-22T23:10:00Z" }),
-    clean({ callId: "v1", grade: "hot", createdAt: "2026-09-22T22:00:00Z",
-            customer: { name: "Clare Caller", email: "", phone: "" } }),
-    wa({ callId: "wa2", grade: "hot", createdAt: "2026-09-22T21:00:00Z",
-         customer: { name: "Second Chat", email: "", phone: "" } }),
-  ] }));
+  // The hook's order is not trusted (hlSortNewest sorts), so it is answered out of order.
+  s.respond(async () => reply(200, { status: "success", count: 5,
+    leads: [morning[3], morning[1], morning[4], morning[0], morning[2]] }));
   await s.api.loadHotLeads();
-  check("the loaded tab is split into two groups",
-    content.innerHTML.includes('id="hlGroup-whatsapp"') && content.innerHTML.includes('id="hlGroup-vapi"'));
-  check("the counts are per group", content.innerHTML.includes('>WhatsApp</span><span class="hl-group-count">(2)</span>')
-    && content.innerHTML.includes('>Clare calls (VAPI)</span><span class="hl-group-count">(1)</span>'));
-  check("the badge still counts the whole list", badge.textContent === "3 leads · 2 hot", badge.textContent);
-  auditMarkup("loaded two-group list markup", content.innerHTML);
+  const h0 = content.innerHTML;
+  auditMarkup("loaded one-list markup", h0);
+  check("the loaded tab is one list, newest first, each card numbered by its place in HOT_LEADS",
+    order(h0) === NEWEST_FIRST && drawn(h0).map(c => c.i).join(",") === "0,1,2,3,4"
+    && s.api.leads().map(l => l.callId).join(",") === morning.map(l => l.callId).join(","), order(h0));
+  check("the badge still counts the whole list", badge.textContent === "5 leads · 2 hot", badge.textContent);
+  const sourceRow0 = (h0.match(/<div class="hl-filters hl-sources">[\s\S]*?<\/div>/) || [""])[0];
+  check("the source buttons and their counts are as before",
+    [">Both (5)</button>", ">Clare calls (VAPI) (3)</button>", ">WhatsApp (2)</button>"].every(t => sourceRow0.includes(t)),
+    sourceRow0.slice(0, 600));
+  check("the grade buttons and their counts are as before",
+    ["All (5)", "Hot (2)", "Warm (2)", "Nurture (1)"].every(t => h0.includes(">" + t + "</button>")));
 
-  const cards = [0, 1, 2].map(i => s.el("hlCard-" + i));
-  const waNote = s.el("hlGroupEmpty-whatsapp"), vapiNote = s.el("hlGroupEmpty-vapi");
+  const card = Object.fromEntries(s.api.leads().map((l, i) => [l.customer.name, s.el("hlCard-" + i)]));
+  const visibleNames = () => Object.keys(card).filter(n => card[n].hidden === false).join(", ");
+  const fb = ["all", "hot", "warm", "nurture"].map(k => s.el("hlFilter-" + k));
+  const gradeText = () => fb.map(b => b.textContent).join(" | ");
+  const note = s.el("hlFilterEmpty");
+  const n = s.calls.fetch.length;
+
+  s.api.hlSetSource("whatsapp");
+  check("WhatsApp shows only the WhatsApp cards, in their places in the list",
+    visibleNames() === "Chat 10:33 am, Chat 9:00 am" && note.hidden === true, visibleNames());
+  check("WhatsApp: the grade counts are WhatsApp's, as before", gradeText() === "All (2) | Hot (1) | Warm (1) | Nurture (0)", gradeText());
+  s.api.hlSetSource("vapi");
+  check("Clare calls (VAPI) shows only the Clare cards, the one with no channel key among them",
+    visibleNames() === "Caller 1:07 pm, Caller 11:36 am, Caller yesterday" && note.hidden === true, visibleNames());
+  check("Clare calls: the grade counts are Clare's, as before", gradeText() === "All (3) | Hot (1) | Warm (1) | Nurture (1)", gradeText());
   s.api.hlSetFilter("hot");
-  check("filter Hot: the WhatsApp group keeps its hot lead and hides its warm one",
-    cards[0].hidden === true && cards[2].hidden === false && waNote.hidden === true,
-    cards.map(c => (c.hidden ? "-" : "V")).join(""));
+  check("Clare calls and Hot: only the hot Clare call", visibleNames() === "Caller 1:07 pm", visibleNames());
+  s.api.hlSetSource("whatsapp");
   s.api.hlSetFilter("nurture");
-  check("a filter that empties a group updates that group's own note",
-    waNote.hidden === false && waNote.textContent === "No nurture WhatsApp leads in this list."
-    && vapiNote.hidden === false && vapiNote.textContent === "No nurture Clare calls in this list.",
-    waNote.textContent + " | " + vapiNote.textContent);
+  check("WhatsApp and Nurture: nothing shows, and the list's one note says so",
+    visibleNames() === "" && note.hidden === false && note.textContent === "No nurture WhatsApp leads in this list.",
+    visibleNames() + " | " + note.textContent);
+  s.api.hlSetSource("all");
+  check("Both and Nurture: the nurture Clare call shows again, and the note goes",
+    visibleNames() === "Caller yesterday" && note.hidden === true, visibleNames());
   s.api.hlSetFilter("all");
-  check("back to All: both group notes are hidden again",
-    waNote.hidden === true && vapiNote.hidden === true);
+  check("Both and All: every card shows, and the counts are the whole list's",
+    visibleNames() === "Caller 1:07 pm, Caller 11:36 am, Chat 10:33 am, Chat 9:00 am, Caller yesterday"
+    && gradeText() === "All (5) | Hot (2) | Warm (2) | Nurture (1)" && note.hidden === true, visibleNames());
+  check("the buttons ask the server nothing", s.calls.fetch.length === n);
   check("every fetch went to a dashboard endpoint", s.calls.fetch.every(c => ALLOWED_FETCH.has(c.url)));
 }
 
@@ -1053,42 +1130,45 @@ console.log("\n--- Both / Clare calls (VAPI) / WhatsApp ---");
     sourceRow(out).slice(0, 600));
   check("the source buttons come before the grade buttons",
     out.indexOf('id="hlSource-all"') >= 0 && out.indexOf('id="hlSource-all"') < out.indexOf('id="hlFilter-all"'));
-  check("with no source given: Both, and neither group is hidden",
+  // 28 Oct: one list, so a source hides cards, not a group (shownNames: the cards not hidden).
+  check("with no source given: Both, and no card is hidden",
     (sourceRow(out).match(/aria-pressed="true"/g) || []).length === 1
-    && /id="hlGroup-whatsapp">/.test(out) && /id="hlGroup-vapi">/.test(out));
+    && drawn(out).length === 3 && shownNames(out) === "Bari > Clare Caller > Second Caller", shownNames(out));
 
   out = api.hlRenderLeads(mixed, "all", undefined, "vapi");
   auditMarkup("rendered under Clare calls (VAPI): markup", out);
   check("rendered under Clare calls (VAPI): that button is pressed, and only that one",
     /id="hlSource-vapi" aria-pressed="true"/.test(sourceRow(out))
     && (sourceRow(out).match(/aria-pressed="true"/g) || []).length === 1);
-  check("rendered under Clare calls (VAPI), the WhatsApp group is drawn hidden",
-    /id="hlGroup-whatsapp" hidden>/.test(out) && /id="hlGroup-vapi">/.test(out), out.slice(0, 200));
+  check("rendered under Clare calls (VAPI), the WhatsApp card is drawn hidden and Clare's are not",
+    /id="hlCard-0" hidden>/.test(out) && /id="hlCard-1">/.test(out) && /id="hlCard-2">/.test(out)
+    && shownNames(out) === "Clare Caller > Second Caller", shownNames(out));
   check("rendered under a source, the grade counts are that source's",
     ["All (2)", "Hot (1)", "Warm (1)", "Nurture (0)"].every(t => out.includes(">" + t + "</button>"))
     && !out.includes(">All (3)</button>"));
   check("rendered under a source, the source counts are still the whole list's",
     sourceRow(out).includes(">Both (3)</button>") && sourceRow(out).includes(">WhatsApp (1)</button>"));
-  check("the hidden group's cards are still drawn, each with its index into the full list",
-    groupHtml(out, "whatsapp").includes('onclick="rerunHotLead(0)"')
-    && groupHtml(out, "vapi").includes('onclick="rerunHotLead(1)"')
-    && groupHtml(out, "vapi").includes('onclick="rerunHotLead(2)"'));
+  check("the hidden source's card is still drawn, in its place, each card with its index into the full list",
+    drawn(out).map(c => c.i + (c.hidden ? "-" : "V")).join(",") === "0-,1V,2V"
+    && drawn(out).every(c => c.body.includes(`onclick="rerunHotLead(${c.i})"`) && c.src[0] === pillFor(mixed[c.i])),
+    drawn(out).map(c => c.i + (c.hidden ? "-" : "V")).join(","));
 
   out = api.hlRenderLeads(mixed, "all", undefined, "whatsapp");
-  check("rendered under WhatsApp, the Clare calls group is drawn hidden",
-    /id="hlGroup-vapi" hidden>/.test(out) && /id="hlGroup-whatsapp">/.test(out));
+  check("rendered under WhatsApp, the Clare cards are drawn hidden",
+    /id="hlCard-1" hidden>/.test(out) && /id="hlCard-2" hidden>/.test(out) && /id="hlCard-0">/.test(out)
+    && shownNames(out) === "Bari", shownNames(out));
   // A hot Clare call is in the list, but not in the source shown: the note must still show.
   out = api.hlRenderLeads(mixed, "hot", undefined, "whatsapp");
   check("rendered: nothing of that grade in the source shown, and the note says so, naming the source",
     /id="hlFilterEmpty">No hot WhatsApp leads in this list\.<\/div>/.test(out), out.slice(0, 900));
   out = api.hlRenderLeads(mixed, "all", undefined, "x'); alert(1); //");
   auditMarkup("a junk source: markup", out);
-  check("rendered with a junk source: Both, and neither group hidden",
+  check("rendered with a junk source: Both, and no card hidden",
     /id="hlSource-all" aria-pressed="true"/.test(out)
-    && /id="hlGroup-whatsapp">/.test(out) && /id="hlGroup-vapi">/.test(out));
+    && drawn(out).length === 3 && !/id="hlCard-\d+" hidden/.test(out));
 }
 
-// The buttons on a loaded tab: no request, the other group hidden, the grade counts follow.
+// The buttons on a loaded tab: no request, the other source's cards hidden, the grade counts follow.
 {
   const s = sandbox();
   const content = s.el("hotLeadsContent");
@@ -1111,7 +1191,9 @@ console.log("\n--- Both / Clare calls (VAPI) / WhatsApp ---");
     content.innerHTML.includes(">Both (4)</button>") && content.innerHTML.includes(">Clare calls (VAPI) (2)</button>")
     && content.innerHTML.includes(">WhatsApp (2)</button>"));
   const cards = [0, 1, 2, 3].map(i => s.el("hlCard-" + i));
-  const grp = { whatsapp: s.el("hlGroup-whatsapp"), vapi: s.el("hlGroup-vapi") };
+  // Which cards show, by index: "V" shown, "-" hidden. Since 28 Oct a source hides each of
+  // its cards in the one list, where it hid a group before.
+  const visible = () => cards.map(c => (c.hidden ? "-" : "V")).join("");
   const sb = Object.fromEntries(["all", "vapi", "whatsapp"].map(k => [k, s.el("hlSource-" + k)]));
   const fb = Object.fromEntries(["all", "hot", "warm", "nurture"].map(k => [k, s.el("hlFilter-" + k)]));
   const note = s.el("hlFilterEmpty");
@@ -1122,11 +1204,9 @@ console.log("\n--- Both / Clare calls (VAPI) / WhatsApp ---");
   const n = s.calls.fetch.length;
 
   s.api.hlSetSource("vapi");
-  check("Clare calls (VAPI) hides the WhatsApp group and shows Clare's",
-    grp.whatsapp.hidden === true && grp.vapi.hidden === false);
+  check("Clare calls (VAPI) hides the WhatsApp cards and shows Clare's", visible() === "-V-V", visible());
   check("Clare calls (VAPI) presses that button, and only that one", only(sb, "vapi"));
-  check("a Clare call with no channel key is shown under Clare calls (VAPI)",
-    cards[1].hidden === false && grp.vapi.hidden === false);
+  check("a Clare call with no channel key is shown under Clare calls (VAPI)", cards[1].hidden === false);
   check("grade counts are within the source: Clare calls",
     gradeText() === "All (2) | Hot (1) | Warm (0) | Nurture (1)", gradeText());
   check("the grade stays pressed when the source changes", only(fb, "all"));
@@ -1134,8 +1214,7 @@ console.log("\n--- Both / Clare calls (VAPI) / WhatsApp ---");
   check("Warm under Clare calls: nothing visible, and the note names the source",
     note.hidden === false && note.textContent === "No warm Clare calls in this list.", note.textContent);
   s.api.hlSetSource("whatsapp");
-  check("WhatsApp hides the Clare calls group and shows WhatsApp's",
-    grp.vapi.hidden === true && grp.whatsapp.hidden === false);
+  check("WhatsApp hides the Clare calls cards, and shows WhatsApp's of the grade pressed", visible() === "V---", visible());
   check("Warm under WhatsApp: the warm WhatsApp lead is shown, and the note is hidden",
     cards[0].hidden === false && cards[2].hidden === true && note.hidden === true);
   check("grade counts are within the source: WhatsApp",
@@ -1147,9 +1226,9 @@ console.log("\n--- Both / Clare calls (VAPI) / WhatsApp ---");
   const html1 = content.innerHTML;
   auditMarkup("source kept after Refresh: markup", html1);
   check("the source is kept after Refresh",
-    /id="hlSource-whatsapp" aria-pressed="true"/.test(html1) && /id="hlGroup-vapi" hidden>/.test(html1)
-    && /id="hlGroup-whatsapp">/.test(html1) && /id="hlFilter-warm" aria-pressed="true"/.test(html1),
-    html1.slice(0, 600));
+    /id="hlSource-whatsapp" aria-pressed="true"/.test(html1) && /id="hlFilter-warm" aria-pressed="true"/.test(html1)
+    && drawn(html1).map(c => c.i + (c.hidden ? "-" : "V")).join(",") === "0V,1-,2-,3-",
+    drawn(html1).map(c => c.i + (c.hidden ? "-" : "V")).join(","));
   check("after Refresh the grade counts are still the source's",
     html1.includes(">All (2)</button>") && html1.includes(">Warm (1)</button>") && !html1.includes(">All (4)</button>"));
   // The source is the page's choice alone: the hook is asked exactly what it was asked
@@ -1159,14 +1238,14 @@ console.log("\n--- Both / Clare calls (VAPI) / WhatsApp ---");
     s.calls.fetch.length === n + 1 && s.calls.fetch[n].url === "/api/hot_leads?limit=200",
     s.calls.fetch.slice(n).map(c => c.url).join(","));
 
+  // Still under Warm: Both shows the warm WhatsApp lead, where Clare calls shows nobody.
   for (const bad of ["VAPI", "x'); alert(1); //", undefined]) {
     s.api.hlSetSource("vapi");
     s.api.hlSetSource(bad);
-    check("source " + JSON.stringify(bad) + " -> Both",
-      grp.whatsapp.hidden === false && grp.vapi.hidden === false && only(sb, "all"));
+    check("source " + JSON.stringify(bad) + " -> Both", visible() === "V---" && only(sb, "all"), visible());
   }
   s.api.hlSetFilter("all");
-  check("Both and All: every card and both groups are shown, and the counts are the whole list's",
+  check("Both and All: every card is shown, and the counts are the whole list's",
     cards.every(c => c.hidden === false) && gradeText() === "All (4) | Hot (2) | Warm (1) | Nurture (1)",
     gradeText());
 }
@@ -1201,9 +1280,11 @@ console.log("\n--- a WhatsApp lead is never dropped for its grade ---");
   check("an ungraded Vapi card carries no such marker",
     !api.hlLeadCard(clean({ grade: "closed" }), 0).includes("hl-ungraded"));
   out = api.hlRenderLeads([noTag], "all");
-  check("an ungraded WhatsApp lead is shown under All, in the WhatsApp group",
+  check("an ungraded WhatsApp lead is shown under All, labelled WhatsApp",
     /id="hlCard-0">/.test(out) && !/id="hlCard-0" hidden/.test(out)
-    && groupHtml(out, "whatsapp").includes('id="hlCard-0"'));
+    && drawn(out).length === 1 && drawn(out)[0].src.join("+") === "WhatsApp");
+  check("an ungraded WhatsApp card's source pill sits where it would beside a grade",
+    /<span class="pill pill-muted hl-src">WhatsApp<\/span>\s*<span class="hl-ungraded">Not graded yet<\/span>/.test(out));
 }
 
 // ------------------------------------------------------------------ searched as written
@@ -2811,6 +2892,35 @@ console.log("\n--- a cut-down lead draws nothing it does not have ---");
   check("... under the access bar that says the same",
     h.includes("No contact-details password is set on this dashboard, so they cannot be unlocked here."));
 }
+{
+  // 28 Oct review: the one list mixes both sources, and a cut-down lead keeps its channel
+  // (api/_contact.py hard_masked), so its card is labelled like any other. One of each: a
+  // WhatsApp lead, and a Clare call with no channel key at all.
+  const s = sandbox(undefined, { localStorage: memoryStorage() });
+  const content = s.el("hotLeadsContent"); s.el("hotLeadsBadge"); s.el("hotLeadsRefresh");
+  const hidden = { name: "[hidden]", email: "", phone: "", phoneLast3: "678", hasEmail: true, hasPhone: true };
+  const cuts = [
+    { callId: "call-cut4", grade: "hot", createdAt: "2026-10-28T02:07:00.000Z",
+      kommo: { leadUrl: "https://spb.kommo.com/leads/detail/21345679" }, customer: hidden, maskFailed: true },
+    { callId: "wa-cut", channel: "whatsapp", grade: "warm", createdAt: "2026-10-27T23:33:00.000Z",
+      kommo: { leadUrl: "https://spb.kommo.com/leads/detail/21345680" }, customer: hidden, maskFailed: true },
+  ];
+  s.respond(async () => reply(200, { status: "success", contact: "masked", contactUnlock: "password",
+                                     leads: cuts, notesHidden: ["call-cut4", "wa-cut"] }));
+  await s.api.loadHotLeads();
+  const cards = drawn(content.innerHTML);
+  check("both cut-down cards are drawn, cut down",
+    cards.length === 2 && cards.every(c => c.body.includes(`id="hlCut-${c.i}"`)),
+    cards.map(c => c.i + ":" + c.body.includes("hlCut-")).join(","));
+  check("a cut-down card is labelled with its source, once: WhatsApp or Clare call",
+    cards.length === 2 && cards.every(c => c.src.length === 1 && c.src[0] === pillFor(cuts[c.i]))
+    && cards.map(c => c.src[0]).sort().join(",") === "Clare call,WhatsApp",
+    cards.map(c => c.i + ":" + c.src.join("+")).join(" | "));
+  check("... beside its grade pill, in the card's head",
+    cards.length === 2 && cards.every(c => new RegExp('<div class="hl-head">\\s*<span class="hl-name">[^<]*</span>\\s*'
+      + '<span class="pill pill-muted hl-src">[^<]*</span>\\s*<span class="pill pill-(hot|warm)">').test(c.body)),
+    (cards[0] || { body: "" }).body.slice(0, 300));
+}
 
 console.log("\n--- what is typed while a save is out stays ---");
 {
@@ -3587,6 +3697,42 @@ console.log("\n--- All Kommo leads: App record ---");
   check("klShowRecord of a lead with no record, or no lead, does nothing harmful",
     s.api.klShowRecord(99) === false && s.api.klShowRecord("1001") === false && s.api.klShowRecord(0) === false
     && s.api.klShowRecord(1e21) === false);
+}
+
+// 28 Oct 2026: one list. A source button now hides each of its cards where it hid a group, so
+// App record has to put the source back to Both, or it scrolls to a card that stays hidden: a
+// Clare call while WhatsApp is pressed, or a WhatsApp lead while Clare calls is.
+{
+  const s = klRig();
+  s.respond(async url => {
+    if (url.startsWith("/api/hot_leads")) return reply(200, { status: "success", leads: [
+      wa({ callId: "wa-5001", createdAt: "2026-10-27T23:33:00Z" }),
+      clean({ callId: "call-9", grade: "warm", appointment: null, createdAt: "2026-10-28T02:07:00Z" })] });
+    return reply(200, klPage([
+      klLead(1301, { callId: "call-9", hasRecord: true, source: "clare", cardName: "Clare's caller" }),
+      klLead(1302, { callId: "wa-5001", hasRecord: true, source: "whatsapp", cardName: "WhatsApp chat" })]));
+  });
+  await s.api.loadHotLeads();
+  await s.api.loadKommoLeads();
+  check("App record's two leads on App records: the newer Clare call above the WhatsApp lead, each labelled",
+    drawn(s.hot.innerHTML).map(c => c.i + ":" + c.src.join("+")).join(",") === "0:Clare call,1:WhatsApp",
+    drawn(s.hot.innerHTML).map(c => c.i + ":" + c.src.join("+")).join(","));
+  const scrolled = [];
+  const cards = [0, 1].map(i => s.el("hlCard-" + i, { className: "prop-card hl-card", scrollIntoView: () => scrolled.push(i) }));
+  s.el("klMsg-1301"); s.el("klMsg-1302");
+  s.api.hlSetSource("whatsapp");
+  const before = cards.map(c => (c.hidden ? "-" : "V")).join("");
+  const ok = s.api.klShowRecord(1301);
+  check("App record finds a Clare call hidden under WhatsApp: the source goes back to Both, and the card shows",
+    before === "-V" && ok === true && cards.every(c => c.hidden === false) && s.api.filters()[1] === "all"
+    && scrolled.join(",") === "0" && /kl-flash/.test(cards[0].className),
+    JSON.stringify([before, ok, cards.map(c => c.hidden), s.api.filters(), scrolled]));
+  s.api.hlSetSource("vapi");
+  s.api.hlSetFilter("hot");
+  const ok2 = s.api.klShowRecord(1302);
+  check("App record finds a WhatsApp lead hidden under Clare calls and Hot: both filters back to All, the card shows",
+    ok2 === true && cards.every(c => c.hidden === false) && s.api.filters().join(",") === "all,all"
+    && scrolled.join(",") === "0,1", JSON.stringify([ok2, cards.map(c => c.hidden), s.api.filters(), scrolled]));
 }
 
 console.log("\n--- All Kommo leads: failures stay on the Kommo card ---");
@@ -4368,8 +4514,13 @@ console.log("\n--- the tab is wired into the page ---");
   const pane = (html.match(/<div id="hotLeadsTab" class="view-pane">([\s\S]*?)\n<\/div>/) || [, ""])[1];
   check("pane exists", pane.length > 0);
   check("pane header names both sources", pane.includes("<span>Leads from Clare's calls and WhatsApp</span>"));
-  check("pane says WhatsApp leads are listed in their own group",
-    /Qualified <strong>WhatsApp<\/strong> leads from Kommo are listed in their own group/.test(pane));
+  // 28 Oct (Ahsan): one list, newest first, each card labelled -- no longer "in their own
+  // group, above Clare's callers", which is what kept that morning's callers at the bottom.
+  check("pane says WhatsApp leads are listed too, answered in chat",
+    /Qualified <strong>WhatsApp<\/strong> leads from Kommo are listed too; they are\s+answered in chat, so there is no call recording and no summary to read\./.test(pane));
+  check("pane says all leads are in one list, newest first, each labelled with its source",
+    /All leads are in one list, newest first, each labelled with its source:\s+<strong>Clare call<\/strong> or <strong>WhatsApp<\/strong>\./.test(pane)
+    && !/own group/.test(pane) && !/above Clare's callers/.test(pane));
   check("pane names the source buttons",
     /press\s+<strong>Clare calls \(VAPI\)<\/strong> or <strong>WhatsApp<\/strong> above the list/.test(pane));
   // Every hot caller is stored, with or without a state; warm and nurture only with one.
