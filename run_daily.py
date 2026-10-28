@@ -239,6 +239,21 @@ def _benchmark_basis_report() -> None:
         print(f"         {st['reason']}")
 
 
+def _open_smtp(host: str, port: int):
+    """The TLS connection the alert is sent over, with the server's certificate checked.
+
+    smtplib.SMTP_SSL without a context uses ssl._create_stdlib_context() on 3.11 and
+    3.12, which checks neither the certificate nor the hostname — and the next thing
+    _alert does is log in with the digital@ inbox app password. mail_tls adds the roots
+    the Windows store does not list (see there). Imported here, not at the top: if it
+    cannot be imported, _alert says so instead of run_daily failing to start.
+    """
+    import smtplib
+
+    from mail_tls import verified_context
+    return smtplib.SMTP_SSL(host, port, timeout=30, context=verified_context())
+
+
 def _alert(subject: str, body: str) -> None:
     """Tell someone the run failed, rather than leaving it in a log nobody opens.
 
@@ -256,7 +271,6 @@ def _alert(subject: str, body: str) -> None:
               flush=True)
         return
     try:
-        import smtplib
         from email.message import EmailMessage
 
         from secrets_store import get_credentials
@@ -271,7 +285,7 @@ def _alert(subject: str, body: str) -> None:
         msg.set_content(body)
         host = os.environ.get("SPB_SMTP_HOST", "smtp.gmail.com")
         port = int(os.environ.get("SPB_SMTP_PORT", "465"))
-        with smtplib.SMTP_SSL(host, port, timeout=30) as smtp:
+        with _open_smtp(host, port) as smtp:
             smtp.login(user, password)
             smtp.send_message(msg)
         print(f"  [alert] sent to {to}", flush=True)

@@ -87,7 +87,7 @@ changes the machine's time zone, and you should not change it either.
 | **A Vercel token** scoped to team `digitalx-solutions-projects` | Deploying the dashboard after the harvest. The team is on the **Hobby plan, which allows one member**, so Jazib cannot be invited. A Pro team would allow it. | The team's owner creates it at vercel.com/account/tokens: scope `digitalx-solutions-projects`, named "SPB Jazib laptop", with an expiry such as 90 days. | Credential Manager `vercel:token` |
 | **The E-Agent username and password** (required) | Harvesting E-Agent. Without them the run stops before harvesting. | Ahsan or Coleen. It is the same login as GitHub's `E_AGENT_*` secrets. | Credential Manager `e_agent:*` |
 | Proxima login: **leave it out** | Only used when the shared Proxima session in the bucket has expired. Each refused sign-in counts against the account. | | |
-| digital@ inbox: **not on laptops yet** | `sources/email_inbox.py` does not verify Gmail's certificate until PR #42 merges. | | |
+| digital@ inbox: **only on the laptop that reads it (Ahsan's)** | The Gmail app password for digital@. Since PR #42 the inbox checks Gmail's certificate first. One laptop is enough: the 7-day sweep catches up. | Ahsan | Credential Manager `email_inbox:*` |
 | WhatsApp scan key: **not needed** | Ahsan's laptop already runs the scan. Two scanners only double the calls. | | |
 
 Jazib types every login into hidden prompts himself (step 4). **No one pastes a token into

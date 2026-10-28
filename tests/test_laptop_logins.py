@@ -102,8 +102,13 @@ def test_a_malformed_stored_token_is_reported_not_run(vault, clis, capsys):
     assert "not a plain token" in capsys.readouterr().out
 
 
-def test_the_inbox_stays_off_until_the_tls_fix_is_merged():
-    assert lg.INBOX_ENABLED is False and "inbox" not in lg.STEPS
+def test_the_inbox_login_can_be_stored_now_the_tls_fix_is_in():
+    """PR #42 checks Gmail's certificate before LOGIN, so the step is offered. It must
+    name the vault keys the inbox sweep reads (secrets_store email_inbox)."""
+    import mail_tls                                   # the fix this step waited for
+    assert mail_tls.verified_context
+    assert lg.INBOX_ENABLED is True and "inbox" in lg.STEPS
+    assert "email_inbox:username" in lg.MANAGED and "email_inbox:password" in lg.MANAGED
 
 
 def test_forget_removes_every_managed_login(vault, capsys):

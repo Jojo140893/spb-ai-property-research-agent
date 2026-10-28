@@ -25,10 +25,11 @@ would have to see what you type.
                when that session has expired. Each refused sign-in counts against the account
                (30 Sep: 3 refusals in a day), so leave it out unless asked.
     hook       optional: the WhatsApp scan's key, only on a laptop that runs whatsapp_scan.ps1.
-    inbox      OFF (INBOX_ENABLED below): sources/email_inbox.py connects to Gmail without
-               checking its certificate (imaplib's default) until PR #42 is merged, so the
-               app password must not go through it. The inbox reads nothing on a laptop
-               meanwhile; the 7-day sweep catches up on the next GitHub night.
+    inbox      the digital@ inbox's Gmail APP password (myaccount.google.com/apppasswords on
+               that account), not its account password. Only on the laptop that should read
+               the inbox. Without it the sweep falls back to the login in the vendor CSV,
+               which Gmail has refused since 25 Oct, and reads nothing. Safe to store since
+               PR #42: sources/email_inbox.py checks Gmail's certificate and name first.
 """
 import getpass
 import json
@@ -45,8 +46,8 @@ SPB_REF = "dvivicgzphyxtxpkgvjn"
 VERCEL_SCOPE = "digitalx-solutions-projects"
 VERCEL_PROJECT = "vercel_site"       # the dashboard's Vercel project
 
-# Flip to True once PR #42 (TLS-verified IMAP in sources/email_inbox.py) is on main.
-INBOX_ENABLED = False
+# On since PR #42 (TLS-verified IMAP in sources/email_inbox.py). False hides the step again.
+INBOX_ENABLED = True
 
 # Tokens go on a command line (the Vercel CLI takes --token, and vercel is a .cmd shim that
 # cmd.exe parses), so anything but a plain token is refused rather than passed through.

@@ -31,7 +31,7 @@ def test_it_sends_when_a_recipient_is_set(monkeypatch):
     sent = {}
 
     class _FakeSMTP:
-        def __init__(self, host, port, timeout=None):
+        def __init__(self, host, port, timeout=None, context=None):
             sent["host"] = host
             sent["port"] = port
 

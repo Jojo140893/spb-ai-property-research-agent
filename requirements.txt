@@ -16,6 +16,10 @@ keyring>=24.0.0
 # and the run reported success at step 1 having read almost nothing.
 openpyxl>=3.1.0
 requests>=2.31.0
+# mail_tls imports it directly: the roots every mail login trusts beyond the machine's
+# store. requests already pulls it in, but its floor (2023) would leave a laptop venv on
+# whatever bundle it was built with; this floor makes pip bring old venvs forward.
+certifi>=2026.10.19
 
 # Reads a price list that was exported as a PICTURE. 57 of 143 E-Agent stocklists on
 # 27 Aug held one image and no text at all, so no text reader could recover them and

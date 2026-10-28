@@ -20,7 +20,7 @@ Design rules:
 
 Config (env or vault):
     EMAIL_INBOX_USERNAME / EMAIL_INBOX_PASSWORD
-    IMAP_HOST (default imap.hostinger.com)  IMAP_PORT (default 993, SSL)
+    IMAP_HOST (default imap.gmail.com)  IMAP_PORT (default 993, SSL)
 """
 
 import email
@@ -35,12 +35,41 @@ from typing import Any, Dict, List, Optional, Tuple
 from sources.base import PropertySource, read_date
 from sources.spreadsheet_extract import extract_stocklist
 from sources.adaptive_extract import parse_fields, _clean
+from mail_tls import verified_context
 from secrets_store import get_credentials
 
 logger = logging.getLogger("spb.source.email")
 
-IMAP_HOST = os.getenv("IMAP_HOST", "imap.hostinger.com")
+# Gmail, not Hostinger. The mailbox moved to Google Workspace on 12 Aug; both runners set
+# IMAP_HOST=imap.gmail.com, but every hand-run entry point (harvest_buildings.py,
+# attach_email_brochures.py, run_daily.py --email-only) fell back to Hostinger and sent it
+# LOGIN with the Gmail app password (27 Oct 2026).
+IMAP_HOST = os.getenv("IMAP_HOST", "imap.gmail.com")
 IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
+# Seconds a single socket read may sit idle — not a cap on the whole sweep. There was no
+# timeout at all, so a server that stopped answering held the run until the job was
+# killed. A timeout leaves the connection unreadable for good (every later read raises
+# "cannot read from timed out object"), so search() reconnects, tries that message once
+# more and carries on: a stall costs at most that message, not the rest of the sweep.
+IMAP_TIMEOUT = 120
+# Reconnects one sweep may make before it stops and says how much it did not read. Three,
+# so a message that fails on every connection (two: the failure, then its retry) still
+# leaves one for a stall later in the sweep.
+IMAP_RECONNECTS = 3
+
+
+def _open_imap(host: str, port: int) -> imaplib.IMAP4_SSL:
+    """The TLS connection to the inbox, with the server's certificate AND name checked.
+
+    Without an explicit ssl_context, imaplib on Python 3.11 and 3.12 falls back to
+    ssl._create_stdlib_context(), which checks neither. Anything that answered on
+    IMAP_HOST:993 — a hostile Wi-Fi, a poisoned DNS reply — completed the handshake
+    with any certificate at all and was then sent the digital@ app password by LOGIN.
+    create_default_context() refuses that handshake before a single command is sent;
+    mail_tls.verified_context() is that plus the roots Windows does not list (see there).
+    """
+    return imaplib.IMAP4_SSL(host, port, ssl_context=verified_context(),
+                             timeout=IMAP_TIMEOUT)
 
 # xlsm included: every sibling module accepts it (e_agent, remote_stocklist) and
 # extract_stocklist dispatches on the PK magic bytes, so it parses identically.
@@ -67,6 +96,23 @@ def _decode(raw: Optional[str]) -> str:
     except Exception:
         return str(raw)
     return _clean(" ".join(out))
+
+
+def _drop(box) -> None:
+    """Let go of a connection that may already be dead. shutdown() sends nothing."""
+    try:
+        box.shutdown()
+    except Exception:                                                   # noqa: BLE001
+        pass
+
+
+def _uid_validity(box) -> Optional[bytes]:
+    """The inbox's UIDVALIDITY from the last SELECT, or None if the server did not say."""
+    try:
+        _code, data = box.response("UIDVALIDITY")
+    except Exception:                                                   # noqa: BLE001
+        return None
+    return data[0] if data and data[0] else None
 
 
 def _sender_domain(from_hdr: str) -> str:
@@ -117,7 +163,7 @@ class EmailStocklistSource(PropertySource):
                            "Run: python setup_credentials.py email_inbox")
             return None
         try:
-            box = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+            box = _open_imap(IMAP_HOST, IMAP_PORT)
             box.login(self.username, self.password)
             logger.info("Email: connected to %s as %s (credentials from %s)",
                         IMAP_HOST, self.username, self.cred_source)
@@ -125,6 +171,30 @@ class EmailStocklistSource(PropertySource):
         except Exception as e:
             logger.error("Email: IMAP connection/login failed on %s:%s — %s", IMAP_HOST, IMAP_PORT, e)
             return None
+
+    def _reopen(self, validity) -> Optional[imaplib.IMAP4_SSL]:
+        """A fresh connection with the inbox selected read-only, or None. None too if the
+        inbox's UIDVALIDITY is not the one the sweep's UIDs came from: they would name
+        other messages."""
+        logger.warning("Email: reconnecting to the inbox.")
+        box = self._connect()
+        if box is None:
+            return None
+        try:
+            typ, _ = box.select("INBOX", readonly=True)  # READ-ONLY, as in search()
+            now = _uid_validity(box)
+            if typ != "OK":
+                logger.error("Email: the inbox would not reopen (%s).", typ)
+            elif validity is not None and now != validity:
+                logger.error("Email: the inbox's UIDVALIDITY changed (%s -> %s), so the "
+                             "message ids from before the reconnect no longer hold.",
+                             validity, now)
+            else:
+                return box
+        except Exception as e:                                          # noqa: BLE001
+            logger.error("Email: the inbox would not reopen — %s", e)
+        _drop(box)
+        return None
 
     def _relevant(self, from_hdr: str, subject: str, has_data_attachment: bool,
                   attachment_names: str = "") -> Tuple[bool, str]:
@@ -344,32 +414,88 @@ class EmailStocklistSource(PropertySource):
         scanned = matched = failed = 0
         try:
             box.select("INBOX", readonly=True)          # READ-ONLY: never mutate the mailbox
+            validity = _uid_validity(box)
             since = (datetime.now() - timedelta(days=self.days_back)).strftime("%d-%b-%Y")
-            typ, data = box.search(None, f'(SINCE "{since}")')
+            # BY UID, NOT SEQUENCE NUMBER. Sequence numbers belong to one session, and the
+            # sweep may reconnect (below): the new session numbers the inbox afresh, so
+            # mail archived or moved since the SEARCH made the old numbers read some
+            # messages twice and skip others without a word. UIDs hold across sessions
+            # for as long as UIDVALIDITY does, which _reopen checks.
+            typ, data = box.uid("SEARCH", None, f'(SINCE "{since}")')
+            if typ != "OK":
+                # A NO comes back as ('NO', [its text]); split, its words were fetched
+                # as message ids. Reading nothing makes the channel's silence visible.
+                logger.error("Email: the inbox search was refused (%s %s) — nothing read.",
+                             typ, data)
+                data = None
             ids = data[0].split() if data and data[0] else []
             logger.info("Email: %d message(s) since %s", len(ids), since)
-            for mid in reversed(ids):                   # newest first
+            pending = list(reversed(ids))               # newest first
+            reconnects = 0
+            retried = set()
+            while pending:
+                mid = pending.pop(0)
                 scanned += 1
+                shown = mid.decode() if isinstance(mid, bytes) else mid
                 # ONE LOST MESSAGE IS ABOUT A HUNDRED LISTINGS against a channel of a few
                 # hundred — comfortably inside the collapse floor, so nothing downstream
                 # would ever flag it. Both branches used to `continue` in silence, and
                 # `typ` was assigned and never checked, so an imaplib 'NO' landed in the
                 # bare except as a TypeError and vanished the same way.
                 try:
-                    typ, raw = box.fetch(mid, "(RFC822)")
+                    typ, raw = box.uid("FETCH", mid, "(RFC822)")
+                    # Only the (header, literal) pairs: imaplib files every untagged FETCH
+                    # under one key, so a flag change another session made ('* 3 FETCH
+                    # (FLAGS (\Seen))') can come back first, as plain bytes, and raw[0][1]
+                    # was then an int. spb_mail_mcp guards the same way.
+                    raw = [p for p in (raw or []) if isinstance(p, tuple) and len(p) == 2]
                     if typ != "OK" or not raw or not raw[0]:
                         failed += 1
                         logger.warning("Email: message %s could not be fetched (%s) — "
-                                       "its stock is NOT in this harvest.",
-                                       mid.decode() if isinstance(mid, bytes) else mid,
-                                       typ)
+                                       "its stock is NOT in this harvest.", shown, typ)
                         continue
                     msg = email.message_from_bytes(raw[0][1])
+                except (OSError, imaplib.IMAP4.abort) as e:
+                    # THE CONNECTION FAILED, NOT NECESSARILY THE MESSAGE. After a read times
+                    # out (OSError) or the line drops (IMAP4.abort), every later command on
+                    # this connection fails too, and the catch-all below counted each one
+                    # as one more unreadable message: a single stall lost every older
+                    # message in the sweep, under a log that read like bad attachments
+                    # (27 Oct 2026). So: reconnect, try this message once more -- the line
+                    # may have died before it was even asked for -- and carry on. A
+                    # reconnect is made only when something is left to read.
+                    logger.warning("Email: the connection failed reading message %s (%s).",
+                                   shown, e)
+                    again = mid not in retried
+                    _drop(box)
+                    box = None
+                    capped = reconnects >= IMAP_RECONNECTS
+                    if (again or pending) and not capped:
+                        reconnects += 1
+                        box = self._reopen(validity)
+                    if box is not None and again:
+                        retried.add(mid)
+                        pending.insert(0, mid)
+                        scanned -= 1
+                        continue
+                    failed += 1
+                    logger.warning("Email: message %s could not be read — its stock is NOT "
+                                   "in this harvest.", shown)
+                    if box is not None:
+                        continue
+                    if pending:
+                        logger.error("Email: lost the connection to the inbox after %d of %d "
+                                     "message(s) and %s — the %d not read are NOT in this "
+                                     "harvest.", scanned, len(ids),
+                                     "gave up after %d reconnect(s)" % reconnects if capped
+                                     else "could not get it back", len(pending))
+                        scanned += len(pending)
+                        failed += len(pending)
+                    break
                 except Exception as e:                                  # noqa: BLE001
                     failed += 1
                     logger.warning("Email: message %s could not be read (%s) — its stock "
-                                   "is NOT in this harvest.",
-                                   mid.decode() if isinstance(mid, bytes) else mid, e)
+                                   "is NOT in this harvest.", shown, e)
                     continue
                 from_hdr = _decode(msg.get("From"))
                 subject = _decode(msg.get("Subject"))
@@ -394,10 +520,11 @@ class EmailStocklistSource(PropertySource):
         except Exception as e:
             logger.error("Email: inbox scan failed — %s", e)
         finally:
-            try:
-                box.close(); box.logout()
-            except Exception:
-                pass
+            if box is not None:
+                try:
+                    box.close(); box.logout()
+                except Exception:
+                    pass
 
         logger.info("Email: scanned %d message(s), %d relevant, %d unreadable, "
                     "%d listing(s).", scanned, matched, failed, len(out))

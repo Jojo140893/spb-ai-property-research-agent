@@ -45,8 +45,8 @@ _API_KEYS = (
     #
     # On Google Workspace this is an APP PASSWORD, not the account password: Gmail
     # refuses a normal password over IMAP. Generate one at
-    # myaccount.google.com/apppasswords (needs 2-Step Verification on that account),
-    # and set IMAP_HOST=imap.gmail.com.
+    # myaccount.google.com/apppasswords (needs 2-Step Verification on that account).
+    # imap.gmail.com is the default IMAP_HOST (it was Hostinger's until 27 Oct 2026).
     ("email_inbox", "digital@ inbox (Gmail app password, not the account password)"),
     # E-Agent's "Search All H&L" site, eagent.mekooflow.com (7 Oct 2026). Its login is a
     # COMPANY name and a password from E-Agent's BDM, not the E-Agent member email, so it
