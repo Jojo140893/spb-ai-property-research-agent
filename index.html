@@ -683,17 +683,11 @@
         .pill-warm { background: var(--amber-bg); color: var(--amber-yellow); border: 1px solid rgba(180, 83, 9, 0.2); }
         .pill-nurture { background: var(--blue-light); color: var(--accent-blue); border: 1px solid rgba(30, 64, 175, 0.18); }
         .hl-filters { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0 0 0.9rem; }
-        /* TWO GROUPS since 23 Sep: WhatsApp leads from the Kommo scan, and Clare's callers.
-           The heading and its count are drawn even for a group with nobody in it, because
-           "no WhatsApp leads" and "the WhatsApp group is not rendering" look identical once
-           the heading goes with it. */
-        .hl-groups { display: flex; flex-direction: column; gap: 1.6rem; }
-        .hl-group-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4rem;
-                         margin: 0 0 0.6rem; }
-        .hl-group-name { font-size: 0.78rem; font-weight: 700; text-transform: uppercase;
-                         letter-spacing: 0.04em; color: var(--text-heading); }
-        .hl-group-count { font-size: 0.8rem; color: var(--text-muted); }
-        .hl-group-empty { margin: 0 0 0.6rem; }
+        /* ONE LIST since 28 Oct, newest first, WhatsApp leads and Clare's callers mixed (the
+           two groups of 23 Sep put every WhatsApp lead above the newest call). So each card
+           says where it came from: the grey pill and the words the All Kommo leads list uses
+           for the same two sources (.kl-src). */
+        .hl-src { font-weight: 600; }
         /* A WhatsApp lead whose Kommo tag is not written yet. Grey, not a pill: it is the
            absence of a grade, not a fourth one. */
         .hl-ungraded { font-size: 0.78rem; color: var(--text-muted); font-style: italic; }
@@ -707,9 +701,9 @@
                            text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
         /* The filter hides cards rather than re-rendering them, so a Re-run in progress or
            its live results survive a change of filter. Said explicitly so a later display
-           rule on .prop-card cannot quietly un-hide them. The source buttons hide a whole
-           group the same way. */
-        .hl-card[hidden], .hl-notice[hidden], .hl-group[hidden] { display: none; }
+           rule on .prop-card cannot quietly un-hide them. The source buttons hide cards the
+           same way. */
+        .hl-card[hidden], .hl-notice[hidden] { display: none; }
         /* Said when the hook's answer was cut off at HL_LIMIT (see loadHotLeads). Amber only
            when the separate hot lookup failed, because then a hot caller may be missing. */
         .hl-cover { margin: 0 0 0.9rem; }
@@ -1229,10 +1223,11 @@
             state, newest first &mdash; each with their grade, contact details and the three
             buildings the research picked for them (the research needs a state).
             <strong>Hot</strong> callers also get a discovery call booked.
-            Qualified <strong>WhatsApp</strong> leads from Kommo are listed in their own group,
-            above Clare's callers; they are answered in chat, so there is no call recording
-            and no summary to read. To see one source on its own, press
-            <strong>Clare calls (VAPI)</strong> or <strong>WhatsApp</strong> above the list.
+            Qualified <strong>WhatsApp</strong> leads from Kommo are listed too; they are
+            answered in chat, so there is no call recording and no summary to read.
+            All leads are in one list, newest first, each labelled with its source:
+            <strong>Clare call</strong> or <strong>WhatsApp</strong>. To see one source on its
+            own, press <strong>Clare calls (VAPI)</strong> or <strong>WhatsApp</strong> above the list.
             These are the leads the app has a record for; <strong>every</strong> lead in Kommo,
             researched or not, is under <strong>All Kommo leads</strong> at the top of the tab.
         </p>
@@ -3131,18 +3126,22 @@ python state_sync.py push</pre>
     // which writes channel:"whatsapp" on the record.
     //
     // A MISSING channel IS NOT "UNKNOWN" -- IT IS CLARE. Every record already in the store
-    // was written before this field existed, so a default of anything but 'vapi' would move
-    // the entire tab into the wrong group the moment this ships. Only the exact string
-    // 'whatsapp' groups as WhatsApp; a record carrying anything else (a typo, a channel
-    // added later, a hostile value) is still LISTED, under Vapi, because a group nobody
-    // renders is a lead nobody rings. The value returned is one of HL_CHANNELS, so an id or
-    // a class built from it can never carry the record's own text.
-    const HL_CHANNELS = ['whatsapp', 'vapi'];
+    // was written before this field existed, so a default of anything but 'vapi' would label
+    // the entire tab with the wrong source the moment this ships. Only the exact string
+    // 'whatsapp' counts as WhatsApp; a record carrying anything else (a typo, a channel
+    // added later, a hostile value) is still LISTED, as a Clare call, because a source
+    // nobody shows is a lead nobody rings. The value returned is 'whatsapp' or 'vapi', so an
+    // id, a class or a label looked up from it can never carry the record's own text.
+    //
     // The Vapi group was headed "Vapi" until 26 Oct, which does not say it is Clare. Coleen
-    // asked that day for a Clare / VAPI section she can find, so the heading and the source
-    // button say the same thing, and the sentences name them as she would.
+    // asked that day for a Clare / VAPI section she can find, so the source button says
+    // "Clare calls (VAPI)", and the sentences name them as she would. The groups went on
+    // 28 Oct (one list, newest first: see hlRenderLeads), and each card says its own source
+    // instead, in the pill the All Kommo leads list draws for the same two (KL_SOURCE_LABEL),
+    // so a lead is "Clare call" or "WhatsApp" on both lists.
     const HL_CHANNEL_LABEL = { whatsapp: 'WhatsApp', vapi: 'Clare calls (VAPI)' };
     const HL_CHANNEL_NOUN = { whatsapp: 'WhatsApp leads', vapi: 'Clare calls' };
+    const HL_CHANNEL_PILL = { whatsapp: 'WhatsApp', vapi: 'Clare call' };
     function hlChannel(lead) {
         if (!lead || typeof lead !== 'object') return 'vapi';
         return lead.channel === 'whatsapp' ? 'whatsapp' : 'vapi';
@@ -3152,20 +3151,20 @@ python state_sync.py push</pre>
     // find Clare's calls among the WhatsApp leads). A row of buttons above the grades: Both,
     // Clare calls (VAPI), WhatsApp, each with its count.
     //
-    // A record's source is hlChannel and nothing else: the rule the groups already use, and
-    // the hook's recordChannel (lib/record.js) -- channel "whatsapp" exactly is WhatsApp, and
-    // every other record is a Clare call, including the many written before the channel key
-    // existed. So every record is in exactly one source, and no choice of the two buttons
+    // A record's source is hlChannel and nothing else: the rule each card's source pill uses,
+    // and the hook's recordChannel (lib/record.js) -- channel "whatsapp" exactly is WhatsApp,
+    // and every other record is a Clare call, including the many written before the channel
+    // key existed. So every record is in exactly one source, and no choice of the two buttons
     // can hide a lead from both. Test records (test: true) are left out by the hook unless the
     // page was opened with ?hl_test=1, and this changes nothing about that.
     //
     // Like the grade filter it works on the list already loaded, asks the server nothing,
-    // hides rather than re-renders (a whole group at a time), and is kept across a Refresh.
-    // Keys and labels are written here, never taken from a record.
+    // hides rather than re-renders (card by card, in the one list), and is kept across a
+    // Refresh. Keys and labels are written here, never taken from a record.
     const HL_SOURCES = ['all', 'vapi', 'whatsapp'];
     const HL_SOURCE_LABEL = { all: 'Both', vapi: HL_CHANNEL_LABEL.vapi, whatsapp: HL_CHANNEL_LABEL.whatsapp };
     const hlSourceKey = s => HL_SOURCES.includes(s) ? s : 'all';
-    // Whether a source shows a channel's group, and whether it shows one lead.
+    // Whether a source shows a channel, and whether it shows one lead.
     const hlSourceHas = (s, channel) => s === 'all' || s === channel;
     const hlFromSource = (lead, s) => hlSourceHas(hlSourceKey(s), hlChannel(lead));
 
@@ -3239,6 +3238,16 @@ python state_sync.py push</pre>
         }).formatToParts(d).forEach(part => { p[part.type] = part.value; });
         return `${p.weekday} ${p.day} ${p.month}, ${p.hour}:${p.minute} `
              + String(p.dayPeriod || '').toLowerCase();
+    }
+
+    // The time a lead's card shows, as a number to sort by: its createdAt, read exactly as
+    // hlWhen reads it -- "Qualified" on a WhatsApp card, "Called" on a Clare card, the same
+    // field either way. -Infinity when the card shows no time, so an undated lead goes last.
+    function hlAt(lead) {
+        const iso = (lead && typeof lead === 'object') ? lead.createdAt : undefined;
+        if (!iso) return -Infinity;
+        const t = new Date(iso).getTime();
+        return isNaN(t) ? -Infinity : t;
     }
 
     // A missing count is '-', never a guess. 0 is a real answer (no car space) and shows.
@@ -3857,7 +3866,8 @@ python state_sync.py push</pre>
              + '<div class="hl-msg" id="hlAccessMsg" role="status" aria-live="polite"></div></div>';
     }
 
-    // hidden: the card is rendered but out of the current filter (see hlSetFilter).
+    // hidden: the card is rendered but out of the current grade or source (see hlSetFilter,
+    // hlSetSource).
     // view: { contact, notes, notesError, draft } -- what hlViewFor reads from the last
     // /api/hot_leads answer when it is not given. Contact details are full ONLY when view
     // says contact 'full'; anything else, including no view at all, is masked.
@@ -3904,9 +3914,12 @@ python state_sync.py push</pre>
         // booked, "No buildings were recommended", and a Re-run "No brief was captured". So none
         // of that is drawn: one line says it is hidden. The notes block has its own notice.
         const cut = !full && L.maskFailed === true;
+        // The source pill (28 Oct): the one list mixes both sources, so every card says which,
+        // cut down or not -- a cut-down lead keeps its channel (api/_contact.py hard_masked).
         return `<div class="prop-card hl-card" id="hlCard-${n}"${hidden ? ' hidden' : ''}>
             <div class="hl-head">
                 <span class="hl-name">${esc(name)}</span>
+                <span class="pill pill-muted hl-src">${HL_CHANNEL_PILL[ch]}</span>
                 ${g ? `<span class="pill pill-${g}">${HL_GRADE_LABEL[g]}</span>`
                     : (ch === 'whatsapp' ? '<span class="hl-ungraded">Not graded yet</span>' : '')}
                 ${when ? `<span class="hl-when">${ch === 'whatsapp' ? 'Qualified' : 'Called'} ${esc(when)}</span>` : ''}
@@ -3939,19 +3952,14 @@ python state_sync.py push</pre>
 
     const hlFilterKey = f => HL_FILTERS.includes(f) ? f : 'all';
     const hlShows = (lead, f) => f === 'all' || hlGrade(lead) === f;
-    // The note when nothing at all is visible. With one source chosen it names that source,
-    // or "No warm leads" would read as "no warm leads anywhere" while WhatsApp had three.
+    // The note when nothing at all is visible -- the list's one empty note since the groups,
+    // and their own notes, went (28 Oct). With one source chosen it names that source, or
+    // "No warm leads" would read as "no warm leads anywhere" while WhatsApp had three.
     const hlFilterEmptyText = (f, s) => {
         const src = hlSourceKey(s);
         if (src === 'all') return `No ${f} leads in this list.`;
         return `No ${f === 'all' ? '' : f + ' '}${HL_CHANNEL_NOUN[src]} in this list.`;
     };
-    // What a group with nobody visible in it says. Under All that is "there are none";
-    // under a grade it is "there are some, none of them this grade" -- two different facts,
-    // and a group that said neither would just be a heading with a gap under it.
-    const hlGroupEmptyText = (channel, f) => f === 'all'
-        ? `No ${HL_CHANNEL_NOUN[channel]} yet.`
-        : `No ${f} ${HL_CHANNEL_NOUN[channel]} in this list.`;
 
     // A grade button's words: its label and how many of `list` have that grade.
     const hlFilterLabel = (list, key) => `${key === 'all' ? 'All' : HL_GRADE_LABEL[key]} (`
@@ -4014,38 +4022,27 @@ python state_sync.py push</pre>
         }
         const f = hlFilterKey(filter), s = hlSourceKey(source);
         const shown = list.filter(l => hlShows(l, f) && hlFromSource(l, s)).length;
-        // EVERY card is rendered, the ones outside the filter hidden, and each keeps its
-        // index in the full list: rerunHotLead(i) reads HOT_LEADS[i], so numbering the
-        // filtered list instead would re-run the wrong caller's brief. The groups below
-        // only change the ORDER the cards are printed in, never the index they carry. The
-        // same holds for the source: the other source's group is drawn, hidden.
-        const entries = list.map((lead, i) => ({ lead, i }));
+        // ONE LIST, NEWEST FIRST (Ahsan, 28 Oct 2026: "make the App records list one list
+        // sorted newest first ... each card labelled with its source"). From 23 Sep the
+        // WhatsApp leads were a group drawn above Clare's callers, so a call that had just
+        // ended sat under every WhatsApp lead: that day's two callers were cards 27 and 28 of
+        // 33, and it looked as if nothing new had come in. Now the order is the time each
+        // card shows (hlAt), the newest at the top whichever source it came from, and each
+        // card says its source in a pill (hlLeadCard). A tie keeps the order of HOT_LEADS,
+        // which hlSortNewest left as the hook gave it. "WhatsApp (0)" on the source button is
+        // still the answer to "is the scan running?".
+        //
+        // EVERY card is rendered, the ones outside the grade or the source hidden, and each
+        // keeps its index in the full list: rerunHotLead(i) reads HOT_LEADS[i], so numbering
+        // the filtered or the sorted list instead would re-run the wrong caller's brief. The
+        // sort changes only the ORDER the cards are printed in, never the index they carry.
+        const entries = list.map((lead, i) => ({ lead, i, at: hlAt(lead) }))
+            .sort((a, b) => (b.at - a.at) || (a.i - b.i));
         return note + hlAccessBar() + hlSourceBar(list, s) + hlFilterBar(list.filter(l => hlFromSource(l, s)), f)
              + `<div class="hl-notice" id="hlFilterEmpty"${shown ? ' hidden' : ''}>${hlFilterEmptyText(f, s)}</div>`
-             + `<div class="hl-groups">`
-             + HL_CHANNELS.map(ch =>
-                   hlGroupBlock(ch, entries.filter(x => hlChannel(x.lead) === ch), f, s)).join('')
+             + `<div class="hl-list" id="hlList">`
+             + entries.map(x => hlLeadCard(x.lead, x.i, !(hlShows(x.lead, f) && hlFromSource(x.lead, s)))).join('')
              + `</div>`;
-    }
-
-    // ONE GROUP: WhatsApp leads, or Clare's callers. They are worked differently -- one is a
-    // chat the bot finished and nobody has spoken to, the other a call that has already
-    // happened -- so mixing them by timestamp buried the new WhatsApp leads among the old
-    // calls. Both groups are ALWAYS drawn, heading and count included: a group that
-    // disappeared when it was empty is indistinguishable from a group that was never built,
-    // and "WhatsApp (0)" is the answer to "is the scan running?". The one exception is a
-    // group the source buttons put out of view (26 Oct): it is drawn, hidden, and the source
-    // button over it carries its count.
-    function hlGroupBlock(channel, entries, f, s) {
-        const visible = entries.filter(x => hlShows(x.lead, f)).length;
-        return `<div class="hl-group" id="hlGroup-${channel}"${hlSourceHas(hlSourceKey(s), channel) ? '' : ' hidden'}>`
-             + `<div class="hl-group-head"><span class="hl-group-name">${HL_CHANNEL_LABEL[channel]}</span>`
-             + `<span class="hl-group-count">(${entries.length})</span></div>`
-             + `<div class="hl-notice hl-group-empty" id="hlGroupEmpty-${channel}"`
-             + `${visible ? ' hidden' : ''}>${hlGroupEmptyText(channel, f)}</div>`
-             + `<div class="hl-list">`
-             + entries.map(x => hlLeadCard(x.lead, x.i, !hlShows(x.lead, f))).join('')
-             + `</div></div>`;
     }
 
     // The filter buttons. Hides and shows the cards already on the page instead of
@@ -4056,15 +4053,16 @@ python state_sync.py push</pre>
         hlApplyFilters();
     }
 
-    // The source buttons (26 Oct). The same: the other source's group is hidden, not dropped,
-    // and the grade buttons' counts change to the source shown.
+    // The source buttons (26 Oct). The same: the other source's cards are hidden, not
+    // dropped, and the grade buttons' counts change to the source shown.
     function hlSetSource(source) {
         HOT_LEADS_SOURCE = hlSourceKey(source);
         hlApplyFilters();
     }
 
-    // Both rows of buttons, the cards, the groups and the notes, from HOT_LEADS_FILTER and
-    // HOT_LEADS_SOURCE. A card is hidden by its grade; a group by its source.
+    // Both rows of buttons, the cards and the note, from HOT_LEADS_FILTER and
+    // HOT_LEADS_SOURCE. A card is hidden by its grade or by its source: each card on its
+    // own, by its index into HOT_LEADS, since the groups that hid a source whole went (28 Oct).
     function hlApplyFilters() {
         const f = hlFilterKey(HOT_LEADS_FILTER), s = hlSourceKey(HOT_LEADS_SOURCE);
         const inSource = HOT_LEADS.filter(l => hlFromSource(l, s));
@@ -4082,10 +4080,9 @@ python state_sync.py push</pre>
             b.setAttribute('aria-pressed', String(key === s));
         });
         let shown = 0;
-        const inGroup = { whatsapp: 0, vapi: 0 };
         HOT_LEADS.forEach((lead, i) => {
-            const on = hlShows(lead, f);
-            if (on) { inGroup[hlChannel(lead)]++; if (hlFromSource(lead, s)) shown++; }
+            const on = hlShows(lead, f) && hlFromSource(lead, s);
+            if (on) shown++;
             const card = document.getElementById('hlCard-' + i);
             if (card) card.hidden = !on;
         });
@@ -4094,16 +4091,6 @@ python state_sync.py push</pre>
             empty.textContent = hlFilterEmptyText(f, s);
             empty.hidden = shown > 0;
         }
-        // Each group's own note, or a heading with nothing under it reads as a group that
-        // failed to render rather than one this filter empties.
-        HL_CHANNELS.forEach(ch => {
-            const group = document.getElementById('hlGroup-' + ch);
-            if (group) group.hidden = !hlSourceHas(s, ch);
-            const note = document.getElementById('hlGroupEmpty-' + ch);
-            if (!note) return;
-            note.textContent = hlGroupEmptyText(ch, f);
-            note.hidden = inGroup[ch] > 0;
-        });
     }
 
     // Newest first. The endpoint already sorts, but the order a consultant works down
