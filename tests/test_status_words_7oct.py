@@ -13,8 +13,10 @@ row was stored with no availability and kept off every recommendation:
     too, so they sat in "needs confirming" when the line itself says they are gone.
 
 Decisions taken by the owner (7 Oct): typos read as Available; DEPOSIT, CONTRACT ISSUED and
-EXCHANGED read as Not Available. EOI, RESALE and 'Exclusive' are Coleen's call and are NOT
-changed here -- this file pins that they still read as nothing.
+EXCHANGED read as Not Available. EOI and RESALE are Coleen's call and are NOT changed here
+-- this file pins that they still read as nothing. So does 'Exclusive', to the parser: since
+28 Oct 2026 (Ahsan: "fix the Exclusive issue") it is decided per document, never by the line
+alone, by repair_rows.find_exclusive_status (tests/test_exclusive_status_28oct.py).
 
 DEPOSIT IS NARROW ON PURPOSE. The word is on 310 live rows and almost all of them are about
 money, not status: "- 5% DEPOSIT", "$5k initial deposit and balance of 5%", "5% LAND
@@ -69,6 +71,7 @@ def test_the_new_words_are_read(line, want):
     ("LOT 1850 COLEDALE DRIVE , MELTON - 5% DEPOSIT", None),
     ("LOT 5532 VERDAY BLVD, TARNEIT - 10% DEPOSIT", None),
     ("LOT 134 MOHIT RISE, CRAIGIEBURN - ONLY 5% LAND DEPOSIT REQUIRED", None),
+    # (Exclusive here is find_exclusive_status's to read, per document; not the parser's)
     ("Aplace Exclusive $5k initial deposit and balance of 5% at contract signing", None),
     ("$1k Build Deposit, Balance of Land Deposit at Unconditional Available", "Available"),
     ("Stage 16 - POS Deposit", None),
@@ -79,7 +82,8 @@ def test_the_new_words_are_read(line, want):
     ("Lot 7 $5,000 DEPOSIT Secures $650,000", None),
     ("Lot 7 2,000 DEPOSIT $650,000", None),
     ("Lot 7 $650,000 Build 10% DEPOSIT", None),
-    # Coleen's call, so unchanged: these still read as nothing
+    # EOI and RESALE are Coleen's call, so unchanged; Exclusive is decided per document by
+    # repair_rows.find_exclusive_status (28 Oct 2026). To the parser all still read as nothing
     ("Aplace Exclusive 4 | 2 | 2 $444,610 $974,610", None),
     ("Lot 31 EOI $612,000", None),
     ("Lot 31 RESALE $612,000", None),
@@ -130,7 +134,7 @@ def test_the_repair_reads_the_new_words_off_stored_rows():
              status="For Sale"),
         # a retired row is left alone
         _row(7, "311 Avallable Signature", superseded_by="v2:abc"),
-        # Coleen's call: unchanged
+        # not this pass's: Exclusive is find_exclusive_status's, per document (28 Oct 2026)
         _row(8, "Aplace Exclusive 4 | 2 | 2 $444,610"),
     ]
     got = {r["id"]: (old, new) for r, old, new in RR.find_status_words_reread(rows)}

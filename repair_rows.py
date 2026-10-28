@@ -63,8 +63,8 @@ import config
 # The marker this repair writes and record_building recognises. Imported rather than
 # retyped: two spellings of it would silently stop a re-listed lot coming back.
 from database import HASH_RECIPE_VERSION, WITHDRAWN_FROM_SOURCE
-from sources.feature_extract import (parse_availability, parse_availability_before_7oct,
-                                     parse_postcode)
+from sources.feature_extract import (exclusive_status_cell, parse_availability,
+                                     parse_availability_before_7oct, parse_postcode)
 from sources.scraper_base import MIN_PLAUSIBLE_PRICE, normalise_money_spacing
 
 # A state that rests on nothing but the postcode cannot survive the postcode being
@@ -1166,6 +1166,210 @@ def apply_status_words_reread(conn, plan):
     return written
 
 
+# The rollback for find_exclusive_status: SPB_EXCLUSIVE_STATUS=0 plans nothing, so section 13
+# reads these rows as it did before 28 Oct 2026. Rows already written are put back with
+#   UPDATE buildings SET availability_status=status_previous
+#   WHERE id IN (<the ids section 18 printed>) AND availability_status='Available'
+EXCLUSIVE_STATUS_ENV = "SPB_EXCLUSIVE_STATUS"
+_OFF_WORDS = {"0", "off", "false", "no"}
+
+
+def exclusive_status_on(environ=None):
+    """ON unless SPB_EXCLUSIVE_STATUS is 0/off/false/no (case-insensitive)."""
+    env = os.environ if environ is None else environ
+    return str(env.get(EXCLUSIVE_STATUS_ENV, "") or "").strip().lower() not in _OFF_WORDS
+
+
+def _is_available_words():
+    """api/_candidates.IS_AVAILABLE, the words the search reads as "can be bought today".
+
+    Asked of the search for the reason _is_shown gives: this pass must judge "the list
+    states Available" exactly as the search's doc_statements does, not by a copy.
+    """
+    global _IS_AVAILABLE
+    if _IS_AVAILABLE is None:
+        api = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api")
+        if api not in sys.path:
+            sys.path.insert(0, api)
+        from _candidates import IS_AVAILABLE
+        _IS_AVAILABLE = frozenset(IS_AVAILABLE)
+    return _IS_AVAILABLE
+
+
+_IS_AVAILABLE = None
+
+
+def find_exclusive_status(rows):
+    """[(row, old, "Available")]: live rows saying Exclusive in a status cell, on a list
+    that states Available.
+
+    THE OWNER'S DECISION. Ahsan, 28 Oct 2026: "fix the Exclusive issue". Until then
+    Exclusive was left unread as Coleen's call (7 Oct). Aldrich's Beveridge lots 2243-2245
+    (ids 30070-30072) read "... Ooranya Estate Beveridge Exclusive Bristol 11 $183,000 ...",
+    the slot where 138 lines of the same list say Available. Stored with no status on a list
+    that states Available, the search hid them as document_states_available, and a Beveridge
+    VIC <= $500k search returned nothing. EOI, RESALE, APLACE "General", "EOI Received" and
+    "8% Leaseback" are NOT decided by this, and stay exactly as they were.
+
+    PER DOCUMENT, NOT A PARSER RULE. A global "Exclusive is Available" (measured 28 Oct)
+    gives 283 rows a status and makes 51 sibling rows that show today vanish: a list that
+    states nothing is shown "by the sheet", and one Available row turns the whole list into
+    one that states it. So the word counts only where the row's own document (source_url,
+    which build_web hashes into source_doc) already has a LIVE row stated in IS_AVAILABLE --
+    the search's doc_statements[0] -- and only where nothing else on the line is a status
+    word (parse_availability finds none, so a gone word always wins). Measured: 100 rows on
+    10 documents (APLACE 79, Aldrich 11, EVO 5 blank and 5 'Settled'), and no sibling row
+    changes how the search treats it. With the lot rules below, 84 on the shared database of
+    28 Oct 13:11 (APLACE 78, Aldrich 5, EVO 1), after the 5 Beveridge rows (12018, 12019,
+    30070-30072) were written Available by hand that afternoon.
+
+    'SETTLED' WITH NO status_previous IS A MISREAD, NOT A STATUS. On EVO lists Settled is
+    the title column ("... NA $625,480 Settled West 220"); find_sold_word_without_status
+    read it out of lot_address onto the only 5 live 'Settled' rows (29512, 29513, 29515,
+    30036, 30037), all EVO Exclusive lines, and wrote no status_previous. Any other stored
+    status, and a 'Settled' something else wrote, is left as it is.
+
+    THE SAME LOT ON ANOTHER LIST. Each upload of a builder's list is a new source_url, and
+    supersession and the 14-day withdrawal both work per document, so nothing joins two
+    uploads of one lot. Review, 28 Oct: EVO's 16 Oct list has Truganina 2235/2236 'Settled'
+    (29512/29513), and its 23 Oct list has the same lots On Hold (30032/30033); Kalkallo's
+    two lots were on both lists, so they showed twice. So a lot (_lot_key) is left as it is
+    when
+      - any other live capture of it states it gone (NOT_AVAILABLE, a title-column
+        'Settled' misread excepted): 29512, 29513, and Aldrich 16472 (Sold as 22910);
+      - another list already shows it Available: that card is the one the search shows
+        (Kalkallo 29515/29516 and 30036/30037: EVO's 9 Oct list shows both lots);
+      - the row is not on the newest list that has the lot at all, whatever that list
+        says. A newer list that states nothing shows its own capture "by the sheet", and
+        one that says something else decides. A list's age is its latest date_checked,
+        then its highest id -- not its first id: unchanged lines keep their id when they
+        move onto a newer upload, so the 28 Oct EVO list holds ids from August.
+    And one list's two captures of the same package (APLACE prints some on two pages) are
+    written once. Left alone, a lot stays hidden exactly as before 28 Oct.
+
+    NOT UNDONE LATER. Once written, a row is a stated Available like any other: a newer
+    upload that says the lot is gone does not put it back, and an Available written here
+    blocks a newer Exclusive capture of the lot under the second rule. Old lists stay live
+    for weeks. A status that pass 13 or 16 writes onto another capture the same night is not
+    seen until the next night (0 rows on 28 Oct).
+
+    Judged on the rows as loaded: a list whose Available rows are all retired later in the
+    same run still has its Exclusive rows written this once. The harvest still stores these
+    rows blank; this pass (step 4/7) fills them the same night, before the build, and a
+    later read never blanks a stored status (database.record_building). Identity is not
+    touched: availability_status is not hashed. Proxima's status is the portal's own field.
+    """
+    is_available = _is_available_words()
+    not_available = _not_available_words()
+    stating = {str(r["source_url"] or "").strip() for r in rows
+               if not r["superseded_by"]
+               and str(r["availability_status"] or "").strip().lower() in is_available}
+    stating.discard("")
+    found = []
+    for r in rows:
+        if r["superseded_by"]:
+            continue
+        if str(r["source_channel"] or "") in _STATUS_IS_A_FIELD:
+            continue
+        if str(r["source_url"] or "").strip() not in stating:
+            continue
+        stored = r["availability_status"]
+        said = str(stored or "").strip().lower()
+        if said and not _settled_misread(r):
+            continue
+        text = str(r["source_text"] or "")
+        if not text.strip() or parse_availability(text) is not None:
+            continue
+        if exclusive_status_cell(text):
+            found.append((r, stored, "Available"))
+    if not found:
+        return []
+
+    # Each document's age: its latest date_checked, then its highest id, retired rows included.
+    age = {}
+    for r in rows:
+        doc = str(r["source_url"] or "").strip()
+        if doc:
+            age[doc] = max(age.get(doc, ("", -1)), (_iso(r.get("date_checked")), r["id"]))
+    gone, shown, newest = set(), collections.defaultdict(set), {}
+    for r in rows:
+        key = _lot_key(r)
+        doc = str(r["source_url"] or "").strip()
+        if key is None or r["superseded_by"] or not doc:
+            continue
+        newest[key] = max(newest.get(key, ("", -1)), age[doc])
+        said = str(r["availability_status"] or "").strip().lower()
+        if said in not_available and not _settled_misread(r):
+            gone.add(key)
+        elif said in is_available:
+            shown[key].add(doc)
+    keep, seen = set(), set()
+    for r, _old, _new in sorted(found, reverse=True,
+                                key=lambda p: (_iso(p[0].get("date_checked")), p[0]["id"])):
+        key = _lot_key(r)
+        doc = str(r["source_url"]).strip()
+        if key is not None and (key in gone or shown[key] - {doc} or age[doc] != newest[key]):
+            continue
+        package = (doc, _line_key(r))
+        if package[1] is not None:
+            if package in seen:
+                continue
+            seen.add(package)
+        keep.add(r["id"])
+    return [p for p in found if p[0]["id"] in keep]
+
+
+def _settled_misread(r):
+    """A 'Settled' with no status_previous on an Exclusive line: EVO's title column, read
+    by find_sold_word_without_status (see find_exclusive_status). Not a statement."""
+    return (str(r["availability_status"] or "").strip().lower() == "settled"
+            and not r.get("status_previous")
+            and exclusive_status_cell(str(r["source_text"] or "")))
+
+
+def _lot_key(r):
+    """(builder, suburb, lot) -- or, where no lot number or suburb was read, the builder and
+    the line itself (_line_key). None when the row cannot be told apart from its neighbours.
+
+    Not the suburb on a line with no lot number: APLACE stores a region on one upload and
+    the place on the next ('BRISBANE SOUTH' 1281, 'Riverbend' 12173, the same package), and
+    leaves it blank on some (9493). EVO's Kalkallo lines have no lot number read either."""
+    builder = str(r.get("builder_name") or "").strip().lower()
+    if not builder:
+        return None
+    suburb = str(r.get("suburb") or "").strip().lower()
+    lot = re.sub(r"\s+", "", str(r.get("lot_number") or "")).lower()
+    if lot and suburb:
+        return (builder, suburb, "lot", lot)
+    line = _line_key(r)
+    return (builder, "line") + line if line else None
+
+
+def _line_key(r):
+    """(the line before its first price, status words and spaces taken out, price) -- the
+    same package on any list, whatever status it states -- or None."""
+    from supersede_duplicates import status_free_text
+    head = re.sub(r"\s+", "", status_free_text(str(r.get("source_text") or "").split("$", 1)[0]))
+    try:
+        price = round(float(r.get("price") or 0))
+    except (TypeError, ValueError):
+        price = 0
+    return (head, price) if head and price > 0 else None
+
+
+def _not_available_words():
+    """api/_candidates.NOT_AVAILABLE, for the reason _is_available_words gives."""
+    global _NOT_AVAILABLE
+    if _NOT_AVAILABLE is None:
+        _is_available_words()
+        from _candidates import NOT_AVAILABLE
+        _NOT_AVAILABLE = frozenset(NOT_AVAILABLE)
+    return _NOT_AVAILABLE
+
+
+_NOT_AVAILABLE = None
+
+
 def find_source_url_backfill(rows):
     """[(row, url)]: live rows that name no source document although their link is known.
 
@@ -2140,7 +2344,20 @@ def main(apply_changes):
     print(f"\n14. email sentences stored as listings: {len(prose)}")
     for r in prose[:4]:
         print(f"     ${float(r['price'] or 0):>9,.0f}  {str(r['lot_address'])[:58]!r}")
+    # 18 is planned before 13 is printed, because its rows are taken out of 13: on EVO
+    # lists "Settled" is the title column, and 13's write is unconditional, so it would
+    # stamp Settled onto tonight's new Exclusive rows before 18 could read them.
+    exclusive_on = exclusive_status_on()
+    # Only 'Settled' gives way: any other word 13 reads off the row (Withdrawn, which
+    # parse_availability does not know) is a statement, and that row leaves 18 instead.
+    exclusive = find_exclusive_status(rows) if exclusive_on else []
     sold_words = find_sold_word_without_status(rows)
+    gone_first = {r["id"] for r, status in sold_words
+                  if str(status or "").strip().lower() != "settled"}
+    exclusive = [p for p in exclusive if p[0]["id"] not in gone_first]
+    exclusive_ids = {r["id"] for r, _old, _new in exclusive}
+    taken_from_13 = sum(1 for r, _status in sold_words if r["id"] in exclusive_ids)
+    sold_words = [(r, status) for r, status in sold_words if r["id"] not in exclusive_ids]
     print(f"\n13. rows that SAY sold where a person reads, with no status set: "
           f"{len(sold_words)}")
     for r, status in sold_words[:5]:
@@ -2152,6 +2369,21 @@ def main(apply_changes):
     for r, old, new in status_words[:5]:
         print(f"     {str(old or '(blank)'):10} -> {new:14} "
               f"{str(r['source_text'] or '')[:56]}")
+    print(f"\n18. Exclusive in a status cell, on a list that states Available "
+          f"(-> Available): {len(exclusive)}")
+    if not exclusive_on:
+        print(f"     OFF ({EXCLUSIVE_STATUS_ENV}="
+              f"{os.environ.get(EXCLUSIVE_STATUS_ENV, '')!r})")
+    if exclusive:
+        builders = collections.Counter(str(r["builder_name"] or "?") for r, _o, _n in exclusive)
+        print(f"     by builder: {dict(builders.most_common())}")
+        if taken_from_13:
+            print(f"     {taken_from_13} of them taken out of 13 (a 'Settled' there is "
+                  f"EVO's title column)")
+        print(f"     ids: {','.join(str(i) for i in sorted(exclusive_ids))}")
+        for r, old, new in exclusive[:5]:
+            print(f"     {str(old or '(blank)'):10} -> {new:14} "
+                  f"{str(r['source_text'] or '')[:56]}")
     unsourced = find_source_url_backfill(rows)
     print(f"\n17. rows naming no source document although the page they were read "
           f"from is known: {len(unsourced)}")
@@ -2267,6 +2499,8 @@ def main(apply_changes):
     # AFTER the sold words: both start from a blank status, and this one is compare-and-
     # set, so a row the line above just gave a status keeps it.
     status_written = apply_status_words_reread(conn, status_words)
+    # The same compare-and-set, and status_previous keeps what it was ('Settled' or blank).
+    exclusive_written = apply_status_words_reread(conn, exclusive)
     for r, url in unsourced:
         # Only a blank: a row that names a document already is never re-pointed.
         cur.execute("UPDATE buildings SET source_url=? WHERE id=? "
@@ -2336,6 +2570,7 @@ def main(apply_changes):
           f"{len(stale_pos)} unconfirmed row number(s) cleared, "
           f"{len(sold_words)} unstated sold/hold status(es) read off the row, "
           f"{status_written} status word(s) the old parser missed, "
+          f"{exclusive_written} Exclusive status cell(s) read as Available, "
           f"{len(unsourced)} source document(s) filled from the page read, "
           f"{len(prose)} email sentence(s) withdrawn, "
           f"{len(oversupply)} portal lot(s) the project says are gone marked Sold, "

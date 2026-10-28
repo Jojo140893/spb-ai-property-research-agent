@@ -50,12 +50,30 @@ _AVAILABLE_AT = next(i for i, (rx, label) in enumerate(_AVAILABILITY)
 # in a word this table did not know, so the row was stored with no status. Measured on the
 # 6 Oct database: "1102 Exchanged Prestige", "$683,450 CONTRACT ISSUED Brochure", "4402
 # DEPOSIT Detached ..." sat blank (so "needs confirming") although the line says the lot
-# is gone. The owner's decision: these three read as Not Available. EOI, RESALE and
-# "Exclusive" are deliberately NOT here -- whether those are for sale is Coleen's call.
+# is gone. The owner's decision: these three read as Not Available. EOI and RESALE are
+# deliberately NOT here -- whether those are for sale is still Coleen's call.
+#
+# "EXCLUSIVE" IS DECIDED PER DOCUMENT, NOT HERE (Ahsan, 28 Oct 2026: "fix the Exclusive
+# issue"). Exclusive in a status cell, on a list that states Available, is Available. A
+# line alone cannot say which: on APLACE's QLD lists "Aplace Exclusive" is a value of the
+# STATUS column, on its VIC lists the same words fill a RELEASE TYPE column beside
+# "General", and Silkwood's remark column opens "EXCLUSIVE - INVESTORS WELCOME". So the
+# parser still returns nothing for it, and repair_rows.find_exclusive_status writes
+# Available onto a stored row only when its own document states Available elsewhere.
+# EOI, RESALE, APLACE "General", "EOI Received" and "8% Leaseback" stay undecided.
 _GONE_WORDS = (
     (re.compile(r"\bcontracts?\s+issued\b", re.I), "Not Available"),
     (re.compile(r"\bexchanged\b", re.I), "Not Available"),
 )
+# Where a status cell can be: never the first word of the line (Silkwood's remark column
+# always leads with it), never followed by a dash, ":", OFFER, PACKAGE(S), LOT(S), RELEASE,
+# TO or OF ("EXCLUSIVE OFFER - PRICE NEGOTIABLE", "SMSF Ready Exclusive Packages",
+# "STOCKLIST - EXCLUSIVE LOTS", "exclusive of GST"). The word boundary keeps out "EXCLUSIVES"
+# and "exclusively". Measured on the 28 Oct database: every Aldrich, EVO and APLACE
+# occurrence, live and superseded, and none of the 42 Silkwood rows.
+_EXCLUSIVE_CELL = re.compile(
+    r"(?<=\S) exclusive\b(?!\s*[-:\u2013\u2014]|\s+(?:offer|packages?|lots?|release|to|of)\b)",
+    re.I)
 # DEPOSIT IS MOSTLY ABOUT MONEY, NOT STATUS: it is on 310 live rows, and nearly all of them
 # read "- 5% DEPOSIT", "$5k initial deposit and balance of 5%", "5% LAND DEPOSIT REQUIRED"
 # or "Interest on Deposit." Only an upper-case DEPOSIT standing in a status cell -- right
@@ -536,6 +554,15 @@ def parse_availability(text: str) -> Optional[str]:
         if rx.search(t):
             return label
     return None
+
+
+def exclusive_status_cell(text: str) -> bool:
+    """Whether the line has "Exclusive" where a status cell can be (see _EXCLUSIVE_CELL).
+
+    Not a status by itself: repair_rows.find_exclusive_status reads it as Available only
+    on a list that states Available, and only when no other status word is on the line.
+    """
+    return bool(_EXCLUSIVE_CELL.search(_clean(text)))
 
 
 def parse_availability_before_7oct(text: str) -> Optional[str]:
