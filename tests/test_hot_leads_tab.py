@@ -746,6 +746,13 @@ MUTANTS = {
     "the Kommo count stays while the list is read again": (
         "hlSwitchCount('kommo', '…');", "",
         "… while it is read"),
+    # 28 Oct 2026, review: the one unreachable branch on its own (the mutant above takes both
+    # records '' calls at once). Anchored on the line after it, so it matches that branch only.
+    "an unreachable App records read leaves its old count on the switch": (
+        "                hlSwitchCount('records', '');\n"
+        "                el.innerHTML = `<div class=\"hl-notice\"><strong>Could not reach the dashboard.</strong>",
+        "                el.innerHTML = `<div class=\"hl-notice\"><strong>Could not reach the dashboard.</strong>",
+        "the same when the dashboard could not be reached"),
     # 28 Oct 2026, review: the access bar is on App records, hidden while All Kommo leads is
     # shown, so the Kommo list carries its own access line.
     "the Kommo list has no access line": (

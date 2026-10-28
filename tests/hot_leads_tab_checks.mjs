@@ -4100,10 +4100,19 @@ console.log("\n--- the switch: each count follows its list ---");
     r.rec.textContent === "App records" && r.kom.textContent === "All Kommo leads" && calm()
     && r.hotBadge.textContent === "unavailable" && r.badge.textContent === "unavailable",
     JSON.stringify([r.rec.textContent, r.kom.textContent]));
+  // Both lists read first, so each button has a number to lose (28 Oct 2026, review): after the
+  // 502 both were already blank, and loadHotLeads puts no "…" up before it reads, so a records
+  // count left standing by an unreachable read could not be told from one that was cleared.
+  r.respond(swAnswer());
+  await Promise.all([r.api.loadHotLeads(true), r.api.loadKommoLeads(true)]);
+  check("the unreachable check's control: Refresh of both lists, and both buttons have their number",
+    r.rec.textContent === "App records (2)" && r.kom.textContent === "All Kommo leads (4)",
+    JSON.stringify([r.rec.textContent, r.kom.textContent]));
   r.respond(async () => { throw new TypeError("Failed to fetch"); });
   await Promise.all([r.api.loadHotLeads(true), r.api.loadKommoLeads(true)]);
-  check("... the same when the dashboard could not be reached",
-    r.rec.textContent === "App records" && r.kom.textContent === "All Kommo leads" && calm(),
+  check("... the same when the dashboard could not be reached: a number each list had is gone, not left standing",
+    r.rec.textContent === "App records" && r.kom.textContent === "All Kommo leads" && calm()
+    && r.hotBadge.textContent === "unavailable" && r.badge.textContent === "unavailable",
     JSON.stringify([r.rec.textContent, r.kom.textContent]));
   r.respond(swAnswer());
   await swOpen(r);
