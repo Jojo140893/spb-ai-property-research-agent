@@ -29,7 +29,10 @@ WHAT COMES BACK. The hook's JSON through hot_leads.view, UNCHANGED: a lead here 
 api/_contact.py already masks (customer, kommo, createdAt, callId; the hook writes it that
 way on purpose), so the masked view, the full view behind the spb_contact cookie, a lead cut
 down on its own (maskFailed) and a 502 for an answer of a shape the masking does not know
-are the Leads tab's own rules, not a second copy of them. Errors:
+are the Leads tab's own rules, not a second copy of them. One Kommo-only pass goes first in
+the masked view (names_without_numbers): a number in a card's or a contact's name is hidden
+whatever separates its digits, because a Kommo row may have no contact of its own to check
+it against. Errors:
   503  a setting is missing -- either project's SPB_SERVICE_KEY, the hook's KOMMO_DOMAIN or
        KOMMO_TOKEN -- or the hook has no /api/kommo-leads route yet. The message says which,
        and refreshing will not fix it.
@@ -54,9 +57,12 @@ import _contact  # noqa: E402
 import hot_leads as _hl  # noqa: E402  (the key, the error body, the view, the hook's message)
 
 DEFAULT_URL = "https://vapi-kommo-hook.vercel.app/api/kommo-leads"
-# One page is one Kommo leads read and up to five contact reads, in sequence, on the hook
-# (maxDuration 30 there): longer than the hot-leads list, so a little more than its 20 s,
-# and still inside this function's own 30.
+# The hook answers a page within about 20 s: one Kommo leads read and its contact reads, in
+# sequence, inside a budget it keeps (lib/kommo-leads.js), so a slow Kommo day is a page with
+# some contacts "not read", not a late page. 25 s is that and room for the hop; this
+# function's maxDuration 30 (build_web.py) leaves the masking the rest. Raise neither alone:
+# a hook answer later than this is a 502 "timed out after 25s", and the Refresh that follows
+# reads Kommo all over again.
 TIMEOUT = 25
 SCOPES = ("incoming", "all")
 # The hook's own cap (lib/kommo-leads.js MAX_PAGE): 40 pages of 250.
@@ -64,6 +70,19 @@ MAX_PAGE = 40
 HOOK_ROUTE = "/api/kommo-leads"
 # ASCII digits only, as api/hot_leads.py limit: \d would also accept Arabic-Indic digits.
 _PAGE = re.compile(r"[0-9]{1,3}")
+# A NUMBER IN A NAME, WHATEVER STANDS BETWEEN ITS DIGITS (28 Oct 2026, review). The masking's
+# rule for anyone's number takes only a space, a dash, a dot or a bracket between its groups,
+# because in free text "14/09/2026" is a date and "750,000" a price. On the hot-lead list it is
+# backed by a second look at the lead's OWN number, digits only, and every record there has
+# one. A Kommo row whose contact was not read ("unread": one throttled or late contacts batch
+# is 50 leads) or that has none ("none") has no number of its own to look for, so "SMS
+# 0400/111/678", "Jo 0400,111,678" or "0400_111_678" went out whole -- and RingCentral SMS and
+# WhatsApp cards are named by the number. So in the two fields that hold a NAME, the card's
+# own and the contact's, 8 or more digits with up to 3 of anything but a letter or a digit
+# between each two are hidden, in every row. A date or a price typed into a card's name goes
+# with them; a name is not where the team keeps either. Read on _contact.plain(), as the
+# masking's own rules are, so full-width digits or a zero-width space change nothing.
+_NUMBER_RUN = re.compile(r"\+?[0-9](?:[\W_]{0,3}[0-9]){7,}")
 
 
 def _upstream():
@@ -191,6 +210,75 @@ def fetch(scope="incoming", page=1):
     return 200, raw
 
 
+def _no_long_numbers(value):
+    """`value` with each run _NUMBER_RUN finds in its strings, keys too, as "[hidden]"."""
+    if isinstance(value, str):
+        return _contact._hide(value, (_NUMBER_RUN.finditer,))
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, (int, float)):
+        return _contact.HIDDEN if _NUMBER_RUN.search(str(value)) else value
+    if isinstance(value, list):
+        return [_no_long_numbers(v) for v in value]
+    if isinstance(value, dict):
+        return {(_no_long_numbers(k) if isinstance(k, str) else k): _no_long_numbers(v)
+                for k, v in value.items()}
+    return value
+
+
+def _name_field(value):
+    try:
+        return _no_long_numbers(value)
+    except Exception:                                                  # noqa: BLE001
+        return _contact.HIDDEN               # nested too deep to walk: none of it is shown
+
+
+def names_without_numbers(doc):
+    """The hook's answer with _NUMBER_RUN hidden in every lead's cardName and customer.name.
+    A copy; anything not of the answer's shape is left as it came, for hot_leads.view to
+    fail closed on."""
+    leads = doc.get("leads") if isinstance(doc, dict) else None
+    if not isinstance(leads, list):
+        return doc
+    out = []
+    for lead in leads:
+        if isinstance(lead, dict):
+            lead = dict(lead)
+            if "cardName" in lead:
+                lead["cardName"] = _name_field(lead["cardName"])
+            customer = lead.get("customer")
+            if isinstance(customer, dict) and "name" in customer:
+                lead["customer"] = dict(customer, name=_name_field(customer["name"]))
+        out.append(lead)
+    return dict(doc, leads=out)
+
+
+def view(raw, cookie_header):
+    """(http_status, body_bytes): hot_leads.view, with names_without_numbers first in the
+    masked view. The full view is the hook's answer as it came, as on the list above."""
+    if _contact.authorised(cookie_header):
+        code, body = _hl.view(raw, cookie_header)
+        # view looked at the cookie again, between this look and the next, microseconds
+        # apart. Good at both, it was good at view's (a signed cookie is good from when it
+        # was set until it runs out): the full view. Run out in between, view sent the masked
+        # one without the pass, so it is made again below.
+        if _contact.authorised(cookie_header):
+            return code, body
+    try:
+        doc = json.loads(raw.decode("utf-8"))
+    except Exception:                                                  # noqa: BLE001
+        return _hl.view(raw, "")              # unreadable there too: fails closed, its message
+    try:
+        prepared = _hl._body(names_without_numbers(doc))
+    except Exception as e:                                             # noqa: BLE001
+        # Read, but not written back (nested too deep to encode: RecursionError). Never the
+        # raw answer instead, which view would mask without the pass: nothing is shown.
+        return 502, _hl._error("the leads were not shown: their contact details could not be "
+                               f"hidden ({type(e).__name__})")
+    # "" is no cookie at all: this answer is the masked view whatever the clock says next.
+    return _hl.view(prepared, "")
+
+
 class handler(BaseHTTPRequestHandler):
     """Vercel Python runtime entrypoint. Behind the site login like every /api/* route."""
 
@@ -210,7 +298,7 @@ class handler(BaseHTTPRequestHandler):
         try:
             code, body = fetch(scope_from(self.path), page_from(self.path))
             if code == 200:
-                code, body = _hl.view(body, _hl._cookie_header(self.headers))
+                code, body = view(body, _hl._cookie_header(self.headers))
         except Exception as e:                                         # noqa: BLE001
             code, body = 500, _hl._error(f"api/kommo_leads failed ({type(e).__name__})")
         self._reply(code, body)

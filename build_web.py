@@ -1541,7 +1541,9 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
                                   "includeFiles": "{api/_contact.py,api/hot_leads.py}"},
             # Every lead in Kommo, one page per request (28 Oct 2026): the same proxy and the
             # same masking (hot_leads.view), so the same two files. The hook reads Kommo live,
-            # a page and its contacts in sequence, so its upstream timeout is 25 s, not 20.
+            # a page and its contacts in sequence, and answers within about 20 s; the upstream
+            # timeout is 25 s (api/kommo_leads.py TIMEOUT), and 30 here leaves the masking the
+            # rest. Raise one only with the other.
             "api/kommo_leads.py": {"memory": 256, "maxDuration": 30,
                                    "includeFiles": "{api/_contact.py,api/hot_leads.py}"},
             # Opens one entry of the Settings tab's "Price lists we could not read" by id

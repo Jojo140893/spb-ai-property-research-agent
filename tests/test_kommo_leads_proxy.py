@@ -123,7 +123,13 @@ WA_PHONE = "+61 400 999 321"
 WA_SPELLINGS = [WA_PHONE, "+61400999321", "61400999321", "0400999321", "400999321"]
 # Someone else's details inside a card's name: a partner, a second address.
 OTHER_PEOPLE = ["0411 222 333", "0411222333", "partner@elsewhere.net"]
-SMS_SPELLINGS = ["0400 555 444", "0400555444", "400555444"]
+# What the masking's rule for anyone's number does not take between a number's groups (28 Oct
+# 2026, review): with no contact of the row's own to look for, only names_without_numbers
+# stands between these and a masked viewer.
+ODD_SEPS = ["/", "_", ",", ";", ":", "|", " / ", "*"]
+SMS_SPELLINGS = (["0400 555 444", "0400555444", "400555444"]
+                 + [sep.join(("0400", "555", "444")) for sep in ODD_SEPS])
+PHONE_SPELLINGS += [sep.join(("0400", "111", "678")) for sep in ODD_SEPS]
 
 
 def _kommo(lead_id, status_id=101025935, source_id=None, contact_id=None):
@@ -372,8 +378,10 @@ def test_the_masked_view_keeps_the_ids_links_and_dates_the_card_works_from(monke
 
 def test_the_absence_check_sees_a_leak_when_the_masking_is_switched_off(monkeypatch):
     """A silent check reads as a pass: with the masking replaced by the identity, the same
-    search over the same bytes must find the numbers -- or the tests above prove nothing."""
+    search over the same bytes must find the numbers -- or the tests above prove nothing.
+    Both parts off: the masking, and the pass on names before it."""
     monkeypatch.setattr(K._contact, "mask_hot_leads", lambda doc: doc)
+    monkeypatch.setattr(K, "names_without_numbers", lambda doc: doc)
     status, _, body = _page(monkeypatch)
     assert status == 200
     found = _leaks(body)
@@ -388,6 +396,99 @@ def test_a_valid_cookie_gets_the_full_view(monkeypatch):
     assert json.loads(body) == {**PAGE, "contact": "full", "contactUnlock": "password"}
     assert "0400111678" in body.decode() and EMAIL in body.decode()
     assert headers["vary"] == "Cookie"
+
+
+# ------------------------------------------------------------------ a number in a name
+
+def _sms_named(number, state):
+    """The SMS row with the number in its card's and its contact's name, its contact `state`."""
+    lead = copy.deepcopy(SMS)
+    lead["contactState"] = state
+    lead["cardName"] = f"SMS {number}"
+    lead["customer"] = {"name": f"Jo {number}", "phone": "", "email": ""}
+    return dict(copy.deepcopy(PAGE), leads=[lead, copy.deepcopy(NO_CONTACT)])
+
+
+@pytest.mark.parametrize("state", ["unread", "none"])
+@pytest.mark.parametrize("sep", ODD_SEPS)
+def test_a_number_in_a_name_is_hidden_whatever_separates_its_groups(monkeypatch, state, sep):
+    """28 Oct 2026, review: "unread" (a contacts batch Kommo throttled, or one past the hook's
+    deadline: 50 leads at a time) and "none" have no number of their own for the second look
+    to find, and the rule for anyone's number takes only a space, dash, dot or bracket. A
+    RingCentral SMS card is named by the number."""
+    number = sep.join(("0400", "555", "444"))
+    status, _, body = _page(monkeypatch, _sms_named(number, state))
+    assert status == 200
+    lead = json.loads(body)["leads"][0]
+    assert (lead["cardName"], lead["customer"]["name"]) == ("SMS [hidden]", "Jo [hidden]")
+    assert lead["contactState"] == state and not lead.get("maskFailed")
+    assert number not in body.decode() and _leaks(body) == []
+
+
+def test_the_name_check_sees_a_number_when_the_pass_is_switched_off(monkeypatch):
+    """A silent check reads as a pass: without names_without_numbers, the same scan over the
+    same bytes must find every one of the spellings above."""
+    monkeypatch.setattr(K, "names_without_numbers", lambda doc: doc)
+    for sep in ODD_SEPS:
+        number = sep.join(("0400", "555", "444"))
+        status, _, body = _page(monkeypatch, _sms_named(number, "unread"))
+        assert status == 200 and number in _leaks(body), sep
+
+
+@pytest.mark.parametrize("name", ["Lot 12/345, stage 3", "Budget $750,000", "Unit 123/4567",
+                                  "Comment on the Tarneit post"])
+def test_a_name_with_fewer_than_8_digits_in_a_run_is_left_alone(monkeypatch, name):
+    lead = dict(copy.deepcopy(NO_CONTACT), cardName=name)
+    status, _, body = _page(monkeypatch, dict(copy.deepcopy(PAGE), leads=[lead]))
+    assert status == 200 and json.loads(body)["leads"][0]["cardName"] == name
+
+
+def test_a_name_nested_too_deep_to_walk_is_hidden_whole(monkeypatch):
+    def deep(value):
+        raise RecursionError("maximum recursion depth exceeded")
+    monkeypatch.setattr(K, "_no_long_numbers", deep)
+    status, _, body = _page(monkeypatch, _sms_named("0400/555/444", "unread"))
+    lead = json.loads(body)["leads"][0]
+    assert status == 200 and _leaks(body) == []
+    assert (lead["cardName"], lead["customer"]["name"]) == ("[hidden]", "[hidden]")
+
+
+def test_an_answer_the_pass_cannot_write_back_is_a_502_never_the_answer_without_it(monkeypatch):
+    """Read but not written back (nested too deep to encode): the raw answer would be masked
+    without the pass, so nothing is shown. Only the pass's write fails: hot_leads.view's own,
+    after the masking cut the deep lead down, would succeed."""
+    real, calls = K._hl._body, []
+
+    def deep_once(doc):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RecursionError("maximum recursion depth exceeded while encoding a JSON object")
+        return real(doc)
+    monkeypatch.setattr(K._hl, "_body", deep_once)
+    status, headers, body = _page(monkeypatch, _sms_named("0400/555/444", "unread"))
+    assert status == 502 and "could not be hidden (RecursionError)" in _message(body)
+    assert _leaks(body) == [] and headers["cache-control"] == "no-store"
+
+
+def test_the_full_view_keeps_a_number_in_a_name(monkeypatch):
+    """The pass is the masked view's: unlocked, the card's name is what Kommo has."""
+    monkeypatch.setenv("SPB_CONTACT_PASSWORD", CONTACT_PASSWORD)
+    status, _, body = _page(monkeypatch, _sms_named("0400/555/444", "unread"), cookie=_unlocked())
+    doc = json.loads(body)
+    assert status == 200 and doc["contact"] == "full"
+    assert doc["leads"][0]["cardName"] == "SMS 0400/555/444"
+
+
+def test_a_cookie_that_runs_out_during_the_view_gets_the_pass(monkeypatch):
+    """view() looks at the cookie, then hot_leads.view looks again: good the first time and
+    gone by the second is the masked view, and it must not skip the pass."""
+    monkeypatch.setenv("SPB_CONTACT_PASSWORD", CONTACT_PASSWORD)
+    looks = iter([True])                      # then False, for every look after the first
+    monkeypatch.setattr(K._contact, "authorised", lambda header, now=None: next(looks, False))
+    status, _, body = _page(monkeypatch, _sms_named("0400/555/444", "unread"), cookie=_unlocked())
+    doc = json.loads(body)
+    assert status == 200 and doc["contact"] == "masked"
+    assert doc["leads"][0]["cardName"] == "SMS [hidden]" and _leaks(body) == []
 
 
 def test_a_cookie_signed_with_another_password_gets_the_masked_view(monkeypatch):
@@ -574,13 +675,23 @@ def test_only_GET_is_served(monkeypatch, method):
 
 
 def test_the_log_is_the_request_line_only(monkeypatch, capsys):
+    """With the unlock cookie on the request: a log line that carried the headers would put
+    a cookie good for 4 hours of full contact details into the function log."""
     monkeypatch.setenv("SPB_SERVICE_KEY", KEY)
+    monkeypatch.setenv("SPB_CONTACT_PASSWORD", CONTACT_PASSWORD)
     _ok(monkeypatch)
-    _call("GET", "/api/kommo_leads?scope=all&page=2")
+    unlock = _unlocked()
+    status, _, body = _call("GET", "/api/kommo_leads?scope=all&page=2",
+                            cookie=f"spb_session=1.session-value-7d2e; {unlock}")
+    # The cookie was read (the full view), so it was there to be logged.
+    assert status == 200 and json.loads(body)["contact"] == "full"
     out = capsys.readouterr()
+    logged = out.err + out.out
     # Proves the capture saw the handler's log at all, so the absence below means something.
-    assert "[api/kommo_leads]" in out.err
-    assert KEY not in out.err + out.out and _leaks((out.err + out.out).encode()) == []
+    assert "[api/kommo_leads]" in out.err and "/api/kommo_leads?scope=all&page=2" in out.err
+    assert unlock.split("=", 1)[1] not in logged and "spb_contact" not in logged
+    assert "session-value-7d2e" not in logged and "Cookie" not in logged
+    assert KEY not in logged and _leaks(logged.encode()) == []
 
 
 # ------------------------------------------------------------------ the build ships it
