@@ -425,6 +425,28 @@ def test_a_number_in_a_name_is_hidden_whatever_separates_its_groups(monkeypatch,
     assert number not in body.decode() and _leaks(body) == []
 
 
+@pytest.mark.parametrize("state", ["unread", "none"])
+@pytest.mark.parametrize("number", ["(0400) / 555 / 444", "0400 // 555 // 444", "0400 - / 555 - / 444",
+                                    "0400 ... 555 ... 444", "0400  /  555  /  444",
+                                    "０４００/５５５/４４４", "٠٤٠٠,٥٥٥,٤٤٤", "9123/4567"])
+def test_a_number_with_wide_separators_or_other_digits_is_hidden_too(monkeypatch, state, number):
+    """28 Oct 2026, second review: at 3 characters between groups, "SMS (0400) / 111 / 678"
+    went out whole. Full-width and Arabic-Indic digits pin the reading on _contact.plain(), and
+    "9123/4567" the 8-digit floor."""
+    status, _, body = _page(monkeypatch, _sms_named(number, state))
+    assert status == 200
+    lead = json.loads(body)["leads"][0]
+    assert lead["cardName"].endswith("[hidden]") and lead["customer"]["name"].endswith("[hidden]"), lead
+    assert number not in body.decode("utf-8"), number
+
+
+def test_seven_digits_in_a_name_stay_whatever_separates_them(monkeypatch):
+    """The floor, from below: "912/4567" is 7 digits, as a lot or a unit number can be."""
+    lead = dict(copy.deepcopy(NO_CONTACT), cardName="Lot 912 // 4567")
+    status, _, body = _page(monkeypatch, dict(copy.deepcopy(PAGE), leads=[lead]))
+    assert status == 200 and json.loads(body)["leads"][0]["cardName"] == "Lot 912 // 4567"
+
+
 def test_the_name_check_sees_a_number_when_the_pass_is_switched_off(monkeypatch):
     """A silent check reads as a pass: without names_without_numbers, the same scan over the
     same bytes must find every one of the spellings above."""

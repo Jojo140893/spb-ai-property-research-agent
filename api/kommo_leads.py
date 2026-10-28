@@ -78,11 +78,13 @@ _PAGE = re.compile(r"[0-9]{1,3}")
 # is 50 leads) or that has none ("none") has no number of its own to look for, so "SMS
 # 0400/111/678", "Jo 0400,111,678" or "0400_111_678" went out whole -- and RingCentral SMS and
 # WhatsApp cards are named by the number. So in the two fields that hold a NAME, the card's
-# own and the contact's, 8 or more digits with up to 3 of anything but a letter or a digit
-# between each two are hidden, in every row. A date or a price typed into a card's name goes
-# with them; a name is not where the team keeps either. Read on _contact.plain(), as the
-# masking's own rules are, so full-width digits or a zero-width space change nothing.
-_NUMBER_RUN = re.compile(r"\+?[0-9](?:[\W_]{0,3}[0-9]){7,}")
+# own and the contact's, 8 or more digits with up to 10 of anything but a letter or a digit
+# between each two are hidden, in every row: 10, as _contact._OWN_SEP allows around a lead's
+# own number, because "SMS (0400) / 111 / 678" and "0400 // 111 // 678" got through at 3. A
+# date or a price typed into a card's name goes with them; a name is not where the team keeps
+# either. Read on _contact.plain(), as the masking's own rules are, so full-width digits or a
+# zero-width space change nothing.
+_NUMBER_RUN = re.compile(r"\+?[0-9](?:[\W_]{0,10}[0-9]){7,}")
 
 
 def _upstream():
