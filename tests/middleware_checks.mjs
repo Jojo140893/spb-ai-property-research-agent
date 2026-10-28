@@ -210,11 +210,17 @@ console.log("\n--- Agent 1's service key: POST /api/research, and nothing else -
   for (const p of ["/api/research/extra", "/api/researchX", "/api/research/",
                    "/api/research.py", "/API/research", "/api/Research", "/api//research",
                    "/stock.json", "/", "/api/hot_leads", "/api/refresh", "/api/narrative",
-                   "/api/contact_unlock", "/api/lead_notes",
+                   "/api/contact_unlock", "/api/lead_notes", "/api/kommo_leads",
                    "/reports/client-report.pdf"]) {
     const res = await quiet(keyed(p, "POST", KEY));
     check(`correct key + POST ${p} -> not bypassed`, refused(res),
           res ? "status " + res.status : "SERVED ON THE SERVICE KEY");
+  }
+  // 28 Oct 2026: the Kommo list is a GET, so the key is tried the way it would be used.
+  for (const p of ["/api/kommo_leads", "/api/kommo_leads?scope=all&page=2", "/api/hot_leads"]) {
+    const res = await quiet(keyed(p, "GET", KEY));
+    check(`correct key + GET ${p} -> not bypassed`, refused(res),
+          res ? "status " + res.status : "LEADS SERVED ON THE SERVICE KEY");
   }
   {
     const res = await quiet(keyed("/stock.json", "GET", KEY));
@@ -390,9 +396,11 @@ console.log("\n--- the contact-details routes are behind the login ---");
 {
   // api/contact_unlock.py sets spb_contact on a correct password, and api/lead_notes.py writes
   // to the hook. Neither may ever be reachable without a site session: the contact password
-  // is a second lock on the team's dashboard, not a way in.
+  // is a second lock on the team's dashboard, not a way in. api/kommo_leads.py (28 Oct 2026)
+  // reads every lead in Kommo: behind the login like the hot-leads list.
   for (const [p, m] of [["/api/contact_unlock", "POST"], ["/api/lead_notes", "POST"],
-                        ["/api/hot_leads", "GET"]]) {
+                        ["/api/hot_leads", "GET"], ["/api/kommo_leads", "GET"],
+                        ["/api/kommo_leads?scope=all&page=1", "GET"]]) {
     const res = await call(req(p, { method: m }));
     check(`${m} ${p} without a session -> 401`, res && res.status === 401,
           res ? "status " + res.status : "SERVED WITHOUT A LOGIN");
