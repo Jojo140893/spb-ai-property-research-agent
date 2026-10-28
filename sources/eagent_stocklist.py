@@ -367,8 +367,10 @@ def _title(value: Any) -> Optional[str]:
 # Status words. The vocabulary every other channel reads (feature_extract) first; then the
 # two additions the owner allowed on 7 Oct 2026: a one-letter misspelling of "available"
 # ('Avallable', Ceduna Hattan), and DEPOSIT / CONTRACT ISSUED / EXCHANGED, which say the
-# lot is gone. EOI, RESALE and 'Exclusive' are Coleen's call and read exactly as they do on
-# every other channel: as no stated availability. The raw word stays in source_text.
+# lot is gone. EOI and RESALE are still Coleen's call and read exactly as they do on every
+# other channel: as no stated availability. 'Exclusive' reads as nothing here too; since
+# 28 Oct 2026 (Ahsan: "fix the Exclusive issue") it is decided per document, by
+# repair_rows.find_exclusive_status, from the raw word, which stays in source_text.
 _GONE_WORDS = re.compile(r"\bdeposit(?:ed| paid| taken)?\b|\bcontracts?\s+issued\b|"
                          r"\bexchanged\b", re.I)
 
