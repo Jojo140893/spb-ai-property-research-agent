@@ -81,7 +81,10 @@ const EXPORTS = ["hlSafeUrl", "hlTelHref", "hlMailHref", "hlMoney", "hlWhen", "h
   "hlTogglePick", "hlShowMore", "hlPickAction", "hlSaveNote", "hlRemoveNote", "hlAddLink",
   "hlRemoveLink", "hlUnlock", "hlLock", "hlMaskedContact", "hlNotesListHtml",
   "hlLinksListHtml", "hlAccessBar", "hlLinkToKeep", "hlPicksFor",
-  "openGeneratedReport", "comparisonDocument", "unpackShare", "slim"];
+  "openGeneratedReport", "comparisonDocument", "unpackShare", "slim",
+  // 28 Oct: the "All Kommo leads" card, every lead in Kommo through /api/kommo_leads.
+  "loadKommoLeads", "klRender", "klSetScope", "klSetColumn", "klSetSource", "klSetRecord",
+  "klShowRecord", "klMore", "klLeadCard", "klSortNewest", "klMerge", "klLeadId", "klUrl"];
 
 // The tab's two reads -- every grade, and hot callers on their own -- each with and without
 // include_test=1, and the research. The bare "/api/hot_leads" the hot-only tab used is NOT
@@ -97,10 +100,15 @@ const EXPORTS = ["hlSafeUrl", "hlTelHref", "hlMailHref", "hlMoney", "hlWhen", "h
 // AI draft notes the report asks for (/api/narrative, exactly as the Research tab's report
 // does). All three are the dashboard's own endpoints: the hook's /api/lead-notes is reached
 // only through the dashboard, which holds the service key, so the tab never names it.
+//
+// 28 OCT: the Kommo card's own reads, every one a literal the page writes: Incoming leads,
+// and every column page by page (four at a time, then Load more for the fifth).
 const ALLOWED_FETCH = new Set([
   "/api/hot_leads?limit=200", "/api/hot_leads?limit=200&include_test=1",
   "/api/hot_leads?limit=200&grade=hot", "/api/hot_leads?limit=200&grade=hot&include_test=1",
-  "/api/research", "/api/contact_unlock", "/api/lead_notes", "/api/narrative"]);
+  "/api/research", "/api/contact_unlock", "/api/lead_notes", "/api/narrative",
+  "/api/kommo_leads?scope=incoming&page=1",
+  ...[1, 2, 3, 4, 5].map(p => "/api/kommo_leads?scope=all&page=" + p)]);
 
 // A localStorage that behaves like the browser's (strings in, strings out), or one that
 // throws on every call, as a private window or blocked storage does.
@@ -154,7 +162,10 @@ function sandbox(search, extra = {}) {
   const api = vm.runInContext(
     [escMatch[0], ...Object.values(OTHER), block].join("\n") + "\n;({" + EXPORTS.join(", ") +
     ", leads: () => HOT_LEADS, access: () => HL_ACCESS, notesMap: () => HL_NOTES," +
-    " picksMap: () => hlPicksLoad(), live: () => HL_LIVE })", ctx, { filename: "index.html#hot-leads" });
+    " picksMap: () => hlPicksLoad(), live: () => HL_LIVE," +
+    " kl: () => ({ leads: KL_LEADS, columns: KL_COLUMNS, state: KL_STATE, scope: KL_SCOPE, page: KL_PAGE," +
+    " hasMore: KL_HAS_MORE, errors: KL_ERRORS, recordsComplete: KL_RECORDS_COMPLETE, filter: KL_FILTER," +
+    " view: KL_VIEW }) })", ctx, { filename: "index.html#hot-leads" });
   const el = (id, props = {}) => {
     const o = { id, innerHTML: "", textContent: "", className: "", disabled: false, hidden: false,
                 attrs: {}, setAttribute(k, v) { this.attrs[k] = String(v); }, ...props };
@@ -192,7 +203,11 @@ const ONCLICK = new RegExp("^(rerunHotLead\\(\\d+\\)|loadHotLeads\\(true\\)|hlSe
   + "|hlSetSource\\('(all|vapi|whatsapp)'\\)"
   + "|hlOpenReport\\(\\d+\\)|hlClearPicks\\(\\d+\\)|hlShowMore\\(\\d+\\)|hlSaveNote\\(\\d+\\)|hlAddLink\\(\\d+\\)"
   + "|hlRemoveNote\\(\\d+, \\d+\\)|hlRemoveLink\\(\\d+, \\d+\\)|hlLock\\(\\)"
-  + "|hlPickAction\\(\\d+, '(package_sent|call_booked|follow_up|drive_link|property_saved)'\\))$");
+  + "|hlPickAction\\(\\d+, '(package_sent|call_booked|follow_up|drive_link|property_saved)'\\)"
+  // 28 Oct: the Kommo card's buttons, keys and numbers only.
+  + "|loadKommoLeads\\(true\\)|klSetScope\\('(incoming|all)'\\)|klSetColumn\\(-?\\d+\\)"
+  + "|klSetSource\\('(all|whatsapp|clare|ringcentral_sms|facebook|manual|other)'\\)"
+  + "|klSetRecord\\('(all|yes|no)'\\)|klShowRecord\\(\\d+\\)|klMore\\(\\))$");
 const INPUT_TYPES = new Set(["checkbox", "text", "url", "password"]);
 const decode = s => s.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">")
   .replace(/&#39;/g, "'").replace(/&amp;/g, "&");
@@ -3206,6 +3221,452 @@ console.log("\n--- a Refresh sent before Lock is not drawn after it ---");
   check("... and the Refresh button is usable again", btn.disabled === false);
 }
 
+// ------------------------------------------------------------------ All Kommo leads
+// 28 Oct 2026: the second card on the tab, every lead in Kommo through /api/kommo_leads. Its
+// own state, ids (klCard-<n>) and filters; the same escaping, links and masking rules as the
+// list above. Every string on it is Kommo's: a card's name, a column's name, a contact.
+const KL_COLS = [
+  { pipelineId: 13102035, pipelineName: "SPB", statusId: 101025935, statusName: "Incoming leads", sort: 10, closed: false },
+  { pipelineId: 13102035, pipelineName: "SPB", statusId: 101025939, statusName: "incoming leads - manual add", sort: 20, closed: false },
+  { pipelineId: 13102035, pipelineName: "SPB", statusId: 142, statusName: "Closed - won", sort: 10000, closed: true },
+  { pipelineId: 13102035, pipelineName: "SPB", statusId: 143, statusName: "Closed - lost", sort: 11000, closed: true },
+];
+const KL_STATUS = Object.fromEntries(KL_COLS.map(c => [c.statusId, c.statusName]));
+// One lead as the masked view sends it (api/_contact.py on the hook's row).
+const klLead = (id, over = {}, kommo = {}) => ({
+  hasRecord: false, createdAt: "2026-10-20T00:00:00.000Z", grade: null, source: "manual",
+  cardName: "Lead " + id, contactState: "ok",
+  customer: { name: "", email: "", phone: "", phoneLast3: "", hasEmail: false, hasPhone: false },
+  kommo: { leadId: id, leadUrl: "https://spb.kommo.com/leads/detail/" + id, contactId: 1, pipelineId: 13102035,
+           pipelineName: "SPB", statusId: kommo.statusId || 101025935,
+           statusName: KL_STATUS[kommo.statusId || 101025935], closed: false, sourceId: null,
+           updatedAt: "2026-10-28T00:00:00.000Z", closedAt: null, ...kommo },
+  ...over,
+});
+const klPage = (leads, over = {}) => ({
+  status: "success", scope: "incoming", page: 1, pageSize: 250, count: leads.length, hasMore: false,
+  fetchedAt: "2026-10-28T08:15:02.113Z", recordsComplete: true, errors: [], columns: KL_COLS, leads,
+  contact: "masked", contactUnlock: "password", ...over });
+// What a lead the masking could not make safe is cut down to (hard_masked).
+const klCut = (id, over = {}) => ({
+  createdAt: "2026-10-19T00:00:00.000Z", grade: "", kommo: { leadUrl: "https://spb.kommo.com/leads/detail/" + id },
+  customer: { name: "[hidden]", email: "", phone: "", phoneLast3: "678", hasEmail: true, hasPhone: true },
+  maskFailed: true, ...over });
+// A sandbox with both lists' elements, as the pane has them.
+function klRig(search, extra) {
+  const s = sandbox(search, extra);
+  return { ...s, hot: s.el("hotLeadsContent"), hotBadge: s.el("hotLeadsBadge"), hotBtn: s.el("hotLeadsRefresh"),
+           content: s.el("kommoLeadsContent"), badge: s.el("kommoLeadsBadge"), btn: s.el("kommoLeadsRefresh") };
+}
+const klCards = h => (h.match(/<div class="prop-card kl-card" id="klCard-\d+">/g) || []).length;
+const klUrls = s => s.calls.fetch.map(c => c.url).filter(u => u.startsWith("/api/kommo_leads"));
+
+console.log("\n--- the markup auditor knows the Kommo card's handlers ---");
+check("auditor flags a Kommo onclick outside its exact shapes",
+  ["klSetScope('pipeline')", "klSetSource('sms')", "klSetRecord('maybe')", "klShowRecord('x')", "klMore(1)",
+   "klSetColumn(1); alert(1)", "loadKommoLeads()"].every(o => markupProblems(`<button onclick="${o}">x</button>`).length > 0));
+check("auditor passes the Kommo handlers in their exact shapes",
+  ["klSetScope('all')", "klSetColumn(-1)", "klSetColumn(3)", "klSetSource('ringcentral_sms')", "klSetRecord('no')",
+   "klShowRecord(12)", "klMore()", "loadKommoLeads(true)"].every(o => markupProblems(`<button onclick="${o}">x</button>`).length === 0));
+
+console.log("\n--- All Kommo leads: the first read ---");
+{
+  const s = klRig();
+  let sawDisabled = null;
+  s.respond(async url => {
+    sawDisabled = s.btn.disabled;
+    if (url === "/api/kommo_leads?scope=incoming&page=1") return reply(200, klPage([
+      klLead(101, { createdAt: "2026-10-20T00:00:00.000Z", cardName: "Older lead" }),
+      klLead(102, { createdAt: "2026-10-27T00:00:00.000Z", cardName: "Same time, lower id" }),
+      klLead(103, { createdAt: "2026-10-27T00:00:00.000Z", cardName: "Newest lead", grade: "warm", source: "whatsapp" }),
+      klLead(104, { createdAt: undefined, cardName: "No date" }),
+      klLead(105, { createdAt: "2026-10-25T00:00:00.000Z", grade: null, source: "facebook", cardName: "Ungraded comment" }),
+    ]));
+    throw new Error("unexpected " + url);
+  });
+  await s.api.loadKommoLeads();
+  const first = s.calls.fetch[0];
+  check("the first Kommo fetch is scope=incoming&page=1, no-store",
+    first && first.url === "/api/kommo_leads?scope=incoming&page=1" && first.opts && first.opts.cache === "no-store",
+    first && first.url);
+  const h = s.content.innerHTML;
+  const at = t => h.indexOf(t);
+  check("every Kommo lead is listed newest first, ungraded ones too",
+    klCards(h) === 5 && at("Newest lead") >= 0 && at("Newest lead") < at("Same time, lower id")
+    && at("Same time, lower id") < at("Ungraded comment") && at("Ungraded comment") < at("Older lead")
+    && at("Older lead") < at("No date"), String(klCards(h)));
+  check("Refresh disabled while reading, usable after", sawDisabled === true && s.btn.disabled === false);
+  check("badge counts the leads", s.badge.textContent === "5 leads", s.badge.textContent);
+  check("a grade pill only for a known grade", (h.match(/class="pill pill-warm"/g) || []).length === 1
+    && !/pill-null|pill-undefined|pill-"/.test(h));
+  check("the source pill says where it came from", h.includes(">WhatsApp</span>") && h.includes(">Facebook comment</span>")
+    && h.includes(">No source (added by hand or an integration)</span>"));
+  check("the card says its column and when it was created", h.includes("Incoming leads &middot; Created "));
+  check("state: ok, scope incoming, page 1, nothing more", s.api.kl().state === "ok" && s.api.kl().scope === "incoming"
+    && s.api.kl().page === 1 && s.api.kl().hasMore === false);
+  check("no More note when the hook said there is no more", !h.includes('id="klMore"'));
+  auditMarkup("Kommo list markup", h);
+  await s.api.loadKommoLeads();
+  check("read once per page view", klUrls(s).length === 1);
+  await s.api.loadKommoLeads(true);
+  check("Refresh reads it again", klUrls(s).length === 2);
+  check("the hot-leads list is never asked for by this card", s.calls.fetch.every(c => c.url.startsWith("/api/kommo_leads")));
+  check("Kommo cards carry klCard- ids, never hlCard- (the list above hides hlCard-<i>)",
+    !h.includes('id="hlCard-') && /id="klCard-0"/.test(h));
+}
+
+console.log("\n--- All Kommo leads: contact details ---");
+{
+  const s = klRig();
+  let answer;
+  s.respond(async () => reply(200, answer));
+  answer = klPage([
+    klLead(201, { cardName: "Jo", customer: { name: "Jo Citizen", email: "", phone: "", phoneLast3: "678", hasEmail: true, hasPhone: true } }),
+    // A server that did not mask: the page is the second lock.
+    klLead(202, { cardName: "Sam", customer: { name: "Sam Unmasked", email: "sam@example.com", phone: "+61400111678" } }),
+    klLead(203, { cardName: "SMS 0400 [hidden]", contactState: "unread" }),
+    klLead(204, { cardName: "A comment", contactState: "none" }),
+  ]);
+  await s.api.loadKommoLeads();
+  let h = s.content.innerHTML;
+  check("masked Kommo view: last 3 digits only, no tel:, mailto: or full number",
+    h.includes("Mobile ending 678") && h.includes("Email on file") && !h.includes("tel:") && !h.includes("mailto:")
+    && !h.includes("400111678") && !h.includes("sam@example.com"), h.slice(0, 400));
+  check("an unread contact says to open Kommo", h.includes("Contact not read - open in Kommo"));
+  check("a lead with no contact says so", h.includes("No contact on this lead in Kommo"));
+  check("the card's own name is a second line when it is not the person's", h.includes("Card: Jo") && h.includes("Jo Citizen"));
+  answer = klPage([klLead(201, { customer: { name: "Jo Citizen", email: "jo.citizen@example.com", phone: "+61412345678" } })],
+                  { contact: "full" });
+  await s.api.loadKommoLeads(true);
+  h = s.content.innerHTML;
+  check("full Kommo view: tel: and mailto: links", h.includes('href="tel:+61412345678"')
+    && h.includes('href="mailto:jo.citizen@example.com"'), h.slice(0, 400));
+  auditMarkup("full Kommo view markup", h);
+  for (const odd of ["FULL", true, undefined, "yes"]) {
+    answer = klPage([klLead(201, { customer: { name: "Jo", email: "jo.citizen@example.com", phone: "+61412345678" } })],
+                    { contact: odd });
+    await s.api.loadKommoLeads(true);
+    check("a contact value other than exactly 'full' is masked on the Kommo card: " + JSON.stringify(odd),
+      !s.content.innerHTML.includes("tel:") && !s.content.innerHTML.includes("mailto:"));
+  }
+}
+{
+  // A list read over two pages is full only when both said so.
+  const s = klRig();
+  s.respond(async url => reply(200, url.endsWith("page=1")
+    ? klPage([klLead(301, { customer: { name: "A", phone: "+61412345678", email: "" } })], { contact: "full", hasMore: true })
+    : klPage([klLead(300, { customer: { name: "B", phone: "+61412345679", email: "" } })], { contact: "masked" })));
+  await s.api.klSetScope("all");
+  check("a list half masked is a masked list", klUrls(s).length === 2 && s.api.kl().view === "masked"
+    && !s.content.innerHTML.includes("tel:"), JSON.stringify(klUrls(s)));
+}
+
+console.log("\n--- All Kommo leads: hostile text ---");
+{
+  const s = klRig();
+  const IMG = '<img src=x onerror="alert(1)">';
+  s.respond(async () => reply(200, klPage([
+    klLead(401, { cardName: IMG, callId: "\"); alert(1); //", source: "<b>x</b>", grade: "<i>hot</i>" },
+           { statusName: IMG, leadUrl: "javascript:alert(3)" }),
+    klLead(402, { cardName: EVIL, customer: { name: IMG, email: 'x@y.com" onmouseover="alert(1)', phone: "+61 4<script>12" } },
+           { statusName: "", statusId: "<b>1</b>", leadUrl: "  JAVASCRIPT:alert(4)" }),
+    klLead(403, { createdAt: "<script>", cardName: "fine" }, { leadUrl: "data:text/html,<script>alert(5)</script>" }),
+    // A column of another pipeline, whose names someone typed.
+    klLead(404, { cardName: "in a hostile column" }, { pipelineId: 1, statusId: 9, statusName: IMG }),
+  ], { columns: [...KL_COLS, { pipelineId: 1, pipelineName: IMG, statusId: 9, statusName: IMG }],
+       errors: ["contacts: HTTP 429 " + IMG], recordsComplete: false })));
+  await s.api.loadKommoLeads();
+  const h = s.content.innerHTML;
+  auditMarkup("hostile Kommo lead: markup", h);
+  check("hostile Kommo lead: no raw tag, every text escaped", !/<img/i.test(h) && !/<script/i.test(h)
+    && h.includes("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;") && h.includes(EVIL_TEXT));
+  check("hostile Kommo lead: a javascript: or data: Kommo link is text, not a link",
+    (h.match(/Open in Kommo \(link unavailable\)/g) || []).length === 3 && !/href="(?!https?:)/i.test(h)
+    && h.includes('href="https://spb.kommo.com/leads/detail/404"'));
+  check("hostile Kommo lead: a column's and a pipeline's names are escaped on the button",
+    /id="klColumn-4" aria-pressed="false" onclick="klSetColumn\(4\)">&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt; &middot; &lt;img/.test(h),
+    (h.match(/<div class="hl-filters kl-columns">[\s\S]*?<\/div>/) || [""])[0].slice(0, 600));
+  check("hostile Kommo lead: the source and grade it claims are not drawn",
+    !h.includes("&lt;b&gt;x&lt;/b&gt;") && h.includes(">Other source</span>") && !h.includes("pill-hot"));
+  check("hostile Kommo lead: the hook's notes are escaped", h.includes("contacts: HTTP 429 &lt;img"));
+  check("hostile Kommo lead: a record button carries the lead's place, never its callId",
+    /onclick="klShowRecord\(\d+\)"/.test(h) && !h.includes("alert(1); //"));
+}
+
+console.log("\n--- All Kommo leads: a lead cut down by the masking ---");
+{
+  const s = klRig();
+  s.respond(async () => reply(200, klPage([klLead(501, { source: "facebook" }, { statusId: 142 }), klCut(777)])));
+  await s.api.loadKommoLeads();
+  const h = s.content.innerHTML;
+  check("a maskFailed lead shows details hidden, and Open in Kommo",
+    /details hidden/i.test(h) && h.includes('href="https://spb.kommo.com/leads/detail/777"') && h.includes(">Open in Kommo</a>"));
+  check("... no source pill, no column and no contact for it", (h.match(/kl-src/g) || []).length === 1
+    && h.includes("Contact details hidden"));
+  auditMarkup("cut-down Kommo lead markup", h);
+  s.api.klSetColumn(2); s.api.klSetSource("whatsapp"); s.api.klSetRecord("yes");
+  check("a maskFailed lead stays under every filter", klCards(s.content.innerHTML) === 1
+    && s.content.innerHTML.includes("leads/detail/777"));
+}
+
+console.log("\n--- All Kommo leads: column, source and record filters ---");
+{
+  const s = klRig();
+  s.respond(async () => reply(200, klPage([
+    klLead(601, { source: "whatsapp", callId: "wa-601", hasRecord: true, createdAt: "2026-10-27T06:00:00.000Z" }),
+    klLead(602, { source: "clare", createdAt: "2026-10-27T05:00:00.000Z" }),
+    klLead(603, { source: "manual", createdAt: "2026-10-27T04:00:00.000Z" }, { statusId: 101025939 }),
+    klLead(604, { source: "facebook", callId: "call-604", hasRecord: true, createdAt: "2026-10-27T03:00:00.000Z" }, { statusId: 142 }),
+    klLead(605, { source: "ringcentral_sms", createdAt: "2026-10-27T02:00:00.000Z" }, { statusId: 142 }),
+    klCut(606, { createdAt: "2026-10-27T01:00:00.000Z" }),
+  ])));
+  await s.api.loadKommoLeads();
+  let h = s.content.innerHTML;
+  const btn = t => h.includes(">" + t + "</button>");
+  check("column buttons only for columns with leads, each with its count",
+    ["All (6)", "Incoming leads (3)", "incoming leads - manual add (2)", "Closed - won (3)"].every(btn) && !h.includes("Closed - lost"),
+    (h.match(/<div class="hl-filters kl-columns">[\s\S]*?<\/div>/) || [""])[0]);
+  check("source buttons with their counts",
+    ["WhatsApp (2)", "Clare call (2)", "RingCentral SMS (2)", "Facebook comment (2)",
+     "No source (added by hand or an integration) (2)", "Other source (1)"].every(btn));
+  check("record buttons with their counts", ["App record (3)", "No app record (4)"].every(btn));
+  check("All is pressed in each row", (h.match(/aria-pressed="true"/g) || []).length === 4);
+  auditMarkup("Kommo filter bars markup", h);
+  const shownIds = () => [...s.content.innerHTML.matchAll(/leads\/detail\/(\d+)"/g)].map(m => m[1]).join(",");
+  s.api.klSetColumn(2);
+  h = s.content.innerHTML;
+  check("Column Closed - won: its two leads, and the cut-down one", shownIds() === "604,605,606", shownIds());
+  check("... and the source counts follow the column", btn("Facebook comment (2)") && btn("WhatsApp (1)") && btn("All (3)"));
+  s.api.klSetRecord("yes");
+  check("... with App record: the one with a record, and the cut-down one", shownIds() === "604,606", shownIds());
+  s.api.klSetSource("ringcentral_sms");
+  check("... with RingCentral SMS: only the cut-down one", shownIds() === "606", shownIds());
+  s.api.klSetSource("clare");
+  s.api.klSetColumn(-1); s.api.klSetRecord("no");
+  check("Clare call, no record, every column", shownIds() === "602,606", shownIds());
+  for (const [fn, bad] of [["klSetColumn", 99], ["klSetColumn", "1"], ["klSetSource", "x'); alert(1); //"],
+                           ["klSetRecord", "maybe"], ["klSetSource", undefined]]) {
+    s.api[fn](bad);
+  }
+  check("anything but a known filter is All", JSON.stringify(s.api.kl().filter) === '{"column":-1,"source":"all","record":"all"}'
+    && shownIds() === "601,602,603,604,605,606", JSON.stringify(s.api.kl().filter));
+  check("filters ask the server nothing", klUrls(s).length === 1);
+}
+
+console.log("\n--- All Kommo leads: every column, page by page ---");
+{
+  const s = klRig();
+  const pages = {
+    1: klPage([klLead(708), klLead(707), klLead(706)], { hasMore: true, scope: "all" }),
+    2: klPage([klLead(706), klLead(705), klLead(704)], { hasMore: true, scope: "all", page: 2 }),
+    3: klPage([klLead(703), klLead(702)], { hasMore: true, scope: "all", page: 3 }),
+    4: klPage([klLead(701)], { hasMore: true, scope: "all", page: 4 }),
+    5: klPage([klLead(700), klCut(701)], { hasMore: false, scope: "all", page: 5 }),
+  };
+  s.respond(async url => {
+    if (url === "/api/kommo_leads?scope=incoming&page=1") return reply(200, klPage([klLead(708)]));
+    const m = url.match(/^\/api\/kommo_leads\?scope=all&page=(\d)$/);
+    return reply(200, pages[m[1]]);
+  });
+  await s.api.loadKommoLeads();
+  await s.api.klSetScope("all");
+  check("All columns reads page after page, and stops at 4",
+    JSON.stringify(klUrls(s)) === JSON.stringify(["/api/kommo_leads?scope=incoming&page=1",
+      "/api/kommo_leads?scope=all&page=1", "/api/kommo_leads?scope=all&page=2",
+      "/api/kommo_leads?scope=all&page=3", "/api/kommo_leads?scope=all&page=4"]), JSON.stringify(klUrls(s)));
+  let h = s.content.innerHTML;
+  check("duplicates removed by lead id across pages", klCards(h) === 8 && (h.match(/leads\/detail\/706"/g) || []).length === 1,
+    String(klCards(h)));
+  check("4 pages and more to come: Load more, and the badge says so",
+    h.includes('onclick="klMore()">Load more</button>') && h.includes("More not loaded") && s.badge.textContent === "8+ leads",
+    s.badge.textContent);
+  check("the scope button is pressed", /id="klScope-all" aria-pressed="true"/.test(h));
+  await s.api.klMore();
+  h = s.content.innerHTML;
+  check("Load more reads page 5, and stops when the hook says there is no more",
+    klUrls(s).length === 6 && klUrls(s)[5] === "/api/kommo_leads?scope=all&page=5" && !h.includes("klMore()"));
+  check("a cut-down copy of a lead already listed is one card, by the id in its link",
+    klCards(h) === 9 && (h.match(/leads\/detail\/701"/g) || []).length === 1, String(klCards(h)));
+  await s.api.klMore();
+  check("nothing more is asked for after the last page", klUrls(s).length === 6);
+  check("every fetch went to a dashboard endpoint", s.calls.fetch.every(c => ALLOWED_FETCH.has(c.url)));
+}
+{
+  const s = klRig();
+  s.respond(async url => reply(200, url.endsWith("page=1") ? klPage([klLead(801)], { hasMore: true }) : klPage([klLead(800)])));
+  await s.api.klSetScope("all");
+  check("All columns stops as soon as a page says there is no more",
+    JSON.stringify(klUrls(s)) === JSON.stringify(["/api/kommo_leads?scope=all&page=1", "/api/kommo_leads?scope=all&page=2"])
+    && s.badge.textContent === "2 leads", JSON.stringify(klUrls(s)));
+}
+{
+  // A page after the first that fails keeps what loaded, and Retry asks for that page again.
+  const s = klRig();
+  let fail2 = true;
+  s.respond(async url => {
+    if (url.endsWith("page=1")) return reply(200, klPage([klLead(901)], { hasMore: true }));
+    if (url.endsWith("page=2") && fail2) return reply(502, { status: "error", message: "kommo-leads answered HTTP 502" });
+    return reply(200, klPage([klLead(900)]));
+  });
+  await s.api.klSetScope("all");
+  let h = s.content.innerHTML;
+  check("a failed page keeps the leads already loaded, says which page, and offers Retry",
+    klCards(h) === 1 && h.includes("Page 2 could not be read") && h.includes("kommo-leads answered HTTP 502")
+    && h.includes('onclick="klMore()">Retry</button>'), h.slice(-400));
+  fail2 = false;
+  await s.api.klMore();
+  h = s.content.innerHTML;
+  check("Retry reads page 2 and keeps page 1", klCards(h) === 2 && !h.includes("could not be read")
+    && klUrls(s).filter(u => u.endsWith("page=2")).length === 2);
+}
+
+console.log("\n--- All Kommo leads: App record ---");
+{
+  const s = klRig();
+  s.respond(async url => {
+    if (url.startsWith("/api/hot_leads")) return reply(200, { status: "success", leads: [
+      clean({ callId: "call-1", createdAt: "2026-09-15T00:10:00Z" }),
+      clean({ callId: "call-2", grade: "warm", createdAt: "2026-09-14T00:10:00Z" })] });
+    return reply(200, klPage([
+      klLead(1001, { callId: "call-2", hasRecord: true, cardName: "Found" }),
+      klLead(1002, { callId: "wa-gone", hasRecord: true, cardName: "Not in the list", createdAt: "2026-10-19T00:00:00.000Z" }),
+    ]));
+  });
+  await s.api.loadHotLeads();
+  await s.api.loadKommoLeads();
+  s.api.hlSetFilter("hot");
+  const scrolled = [];
+  const hot1 = s.el("hlCard-1", { className: "prop-card hl-card", hidden: true, scrollIntoView: o => scrolled.push(o) });
+  s.el("hlCard-0");
+  const found = s.api.kl().leads.findIndex(l => l.callId === "call-2");
+  const gone = s.api.kl().leads.findIndex(l => l.callId === "wa-gone");
+  const msgFound = s.el("klMsg-" + found), msgGone = s.el("klMsg-" + gone);
+  check("App record buttons for the two leads with a record",
+    (s.content.innerHTML.match(/onclick="klShowRecord\(\d+\)"/g) || []).length === 2);
+  const ok = s.api.klShowRecord(found);
+  check("klShowRecord scrolls to the record's card above, with both filters back on All",
+    ok === true && scrolled.length === 1 && hot1.hidden === false && /kl-flash/.test(hot1.className)
+    && msgFound.textContent === "", JSON.stringify([ok, scrolled.length, hot1.hidden, hot1.className]));
+  const no = s.api.klShowRecord(gone);
+  check("klShowRecord says so when the record is not in the list above",
+    no === false && msgGone.textContent.includes("not in the list above") && msgGone.textContent.includes("newest 200")
+    && scrolled.length === 1, msgGone.textContent);
+  check("klShowRecord of a lead with no record, or no lead, does nothing harmful",
+    s.api.klShowRecord(99) === false && s.api.klShowRecord("0") === false);
+}
+
+console.log("\n--- All Kommo leads: failures stay on the Kommo card ---");
+{
+  const s = klRig();
+  s.respond(async () => reply(401, { error: "auth_required" }));
+  await s.api.loadKommoLeads();
+  check("a 401 from /api/kommo_leads is the sign-in expiring", s.calls.expired === 1 && s.api.kl().state === "idle");
+  let kommo502 = true;
+  s.respond(async url => url.startsWith("/api/hot_leads")
+    ? reply(200, { status: "success", leads: [clean({ callId: "call-1" })] })
+    : (kommo502 ? reply(502, { status: "error", message: "kommo-leads answered HTTP 502: kommo leads read failed" })
+                : reply(200, klPage([klLead(1101)]))));
+  await s.api.loadHotLeads();
+  const before = s.hot.innerHTML, hotBadge = s.hotBadge.textContent;
+  await s.api.loadKommoLeads();
+  check("a 502 leaves the hot-leads list intact", s.hot.innerHTML === before && before.includes('id="hlCard-0"')
+    && s.hotBadge.textContent === hotBadge);
+  check("a 502 is said on the Kommo card, with the server's message",
+    s.content.innerHTML.includes("Leads can't be shown right now") && s.content.innerHTML.includes("kommo leads read failed")
+    && s.badge.textContent === "unavailable" && s.api.kl().state === "failed");
+  auditMarkup("Kommo failure notice markup", s.content.innerHTML);
+  await s.api.loadKommoLeads();
+  check("a failed answer is not asked again until Refresh", klUrls(s).length === 2);
+  s.respond(async () => { throw new TypeError("Failed to fetch"); });
+  await s.api.loadKommoLeads(true);
+  check("unreachable: a calm notice, tried again on the next open",
+    /Could not reach the dashboard/.test(s.content.innerHTML) && s.api.kl().state === "idle" && s.btn.disabled === false);
+  kommo502 = false;
+  s.respond(async () => reply(200, klPage([klLead(1101)])));
+  await s.api.loadKommoLeads();
+  check("... and it is", klCards(s.content.innerHTML) === 1);
+}
+
+console.log("\n--- the two lists keep to their own cards ---");
+{
+  const s = klRig();
+  s.respond(async url => url.startsWith("/api/hot_leads")
+    ? reply(200, { status: "success", leads: [clean({ callId: "h1" }), clean({ callId: "w1", grade: "warm" })] })
+    : reply(200, klPage([klLead(1201), klLead(1202)])));
+  await s.api.loadHotLeads();
+  await s.api.loadKommoLeads();
+  const kcards = [0, 1].map(n => s.el("klCard-" + n, { hidden: false }));
+  s.el("hlCard-0"); s.el("hlCard-1");
+  s.api.hlSetFilter("warm");
+  s.api.hlSetSource("whatsapp");
+  check("hlApplyFilters never touches klCard-*", kcards.every(c => c.hidden === false && c.className === ""));
+  check("the hot-leads list draws no Kommo card, and the Kommo card no hot-lead card",
+    !s.hot.innerHTML.includes("klCard-") && !s.content.innerHTML.includes("hlCard-"));
+}
+
+console.log("\n--- Unlock and Lock switch the Kommo list too, once it is open ---");
+{
+  // Never opened: Unlock reloads the list above and nothing else.
+  const s = klRig(undefined, { localStorage: memoryStorage() });
+  s.respond(async url => url === "/api/contact_unlock" ? reply(200, { status: "success", contact: "full" })
+    : reply(200, { status: "success", contact: "full", contactUnlock: "password", leads: [clean()] }));
+  await s.api.loadHotLeads();
+  s.el("hlUnlockPass", { value: "right one" }); s.el("hlUnlockBtn"); s.el("hlAccessMsg");
+  await s.api.hlUnlock();
+  check("Unlock with the Kommo list never opened asks for it nothing",
+    klUrls(s).length === 0 && s.calls.fetch.some(c => c.url === "/api/contact_unlock"), JSON.stringify(s.calls.fetch.map(c => c.url)));
+}
+{
+  const s = klRig(undefined, { localStorage: memoryStorage() });
+  let view = "masked";
+  s.respond(async url => {
+    if (url === "/api/contact_unlock") { view = view === "masked" ? "full" : "masked"; return reply(200, { status: "success", contact: view }); }
+    if (url.startsWith("/api/hot_leads")) return reply(200, { status: "success", contact: view, contactUnlock: "password", leads: [clean()] });
+    return reply(200, klPage([klLead(1301, { customer: view === "full"
+      ? { name: "Jo", email: "jo.citizen@example.com", phone: "+61412345678" }
+      : { name: "Jo", email: "", phone: "", phoneLast3: "678", hasEmail: true, hasPhone: true } })], { contact: view }));
+  });
+  await s.api.loadHotLeads();
+  await s.api.loadKommoLeads();
+  check("the race's control: locked, the Kommo card is masked", !s.content.innerHTML.includes("tel:"));
+  s.el("hlUnlockPass", { value: "right one" }); s.el("hlUnlockBtn"); s.el("hlAccessMsg");
+  const n = s.calls.fetch.length;
+  await s.api.hlUnlock();
+  const after = s.calls.fetch.slice(n).map(c => c.url);
+  check("Unlock reloads the Kommo list once it was loaded, after the list above",
+    JSON.stringify(after) === JSON.stringify(["/api/contact_unlock", "/api/hot_leads?limit=200",
+      "/api/kommo_leads?scope=incoming&page=1"]) && s.content.innerHTML.includes('href="tel:+61412345678"'), JSON.stringify(after));
+  s.el("hlLockBtn");
+  await s.api.hlLock();
+  check("Lock masks the Kommo list again", !s.content.innerHTML.includes("tel:") && s.content.innerHTML.includes("Mobile ending 678"));
+}
+{
+  // A Kommo Refresh sent unlocked and answered after Lock is not drawn.
+  const s = klRig(undefined, { localStorage: memoryStorage() });
+  let view = "full", hold = false;
+  const held = [];
+  s.respond(async url => {
+    if (url === "/api/contact_unlock") { view = "masked"; return reply(200, { status: "success", contact: "masked" }); }
+    if (url.startsWith("/api/hot_leads")) return reply(200, { status: "success", contact: view, contactUnlock: "password", leads: [clean()] });
+    const ans = reply(200, klPage([klLead(1401, { customer: view === "full"
+      ? { name: "Jo", email: "", phone: "+61412345678" } : { name: "Jo", email: "", phone: "", phoneLast3: "678", hasPhone: true } })],
+      { contact: view }));
+    return hold ? new Promise(r => held.push(() => r(ans))) : ans;
+  });
+  await s.api.loadHotLeads();
+  await s.api.loadKommoLeads();
+  hold = true;
+  const refresh = s.api.loadKommoLeads(true);
+  await new Promise(go => setImmediate(go));
+  hold = false;
+  s.el("hlLockBtn");
+  await s.api.hlLock();
+  held.shift()();
+  await refresh;
+  check("a Kommo Refresh sent before Lock and answered after it draws nothing: the card stays masked",
+    !s.content.innerHTML.includes("tel:") && s.content.innerHTML.includes("Mobile ending 678") && s.btn.disabled === false);
+}
+
 // ------------------------------------------------------------------ the page itself
 console.log("\n--- the tab is wired into the page ---");
 {
@@ -3215,8 +3676,9 @@ console.log("\n--- the tab is wired into the page ---");
   const hot = buttons.findIndex(o => o.includes("'hotLeadsTab'"));
   check("nav button directly after Research & Scoring", research >= 0 && hot === research + 1,
     JSON.stringify(buttons));
-  check("nav button calls showTab then loadHotLeads()",
-    hot >= 0 && /^showTab\('hotLeadsTab', this\); loadHotLeads\(\);$/.test(buttons[hot]), buttons[hot]);
+  // 28 Oct: and the Kommo card below it, which reads once per page view like the list.
+  check("nav button calls showTab, loadHotLeads() then loadKommoLeads()",
+    hot >= 0 && /^showTab\('hotLeadsTab', this\); loadHotLeads\(\); loadKommoLeads\(\);$/.test(buttons[hot]), buttons[hot]);
   check("nav label reads Clare's Leads (Agent 1)",
     /Clare's Leads<span class="nav-tab-label-full"> \(Agent 1\)<\/span><\/button>/.test(nav));
   check("the old Hot Leads label is gone from the nav", !nav.includes("Hot Leads"));
@@ -3237,6 +3699,19 @@ console.log("\n--- the tab is wired into the page ---");
   for (const id of ["hotLeadsBadge", "hotLeadsRefresh", "hotLeadsContent"])
     check("pane has #" + id, pane.includes('id="' + id + '"'));
   check("Refresh forces a reload", /id="hotLeadsRefresh"[^>]*onclick="loadHotLeads\(true\)"/.test(pane));
+  // 28 Oct: the list above is the app's records; every Kommo lead is in the card below it.
+  const words = s => new RegExp(s.split(" ").join("\\s+"));
+  check("pane says every lead in Kommo is under All Kommo leads below",
+    words("These are the leads the app has a record for; <strong>every</strong> lead in Kommo, researched or not, "
+          + "is under <strong>All Kommo leads</strong> below.").test(pane));
+  check("the Kommo card is headed All Kommo leads and sits below the list, inside the pane",
+    pane.includes('<div class="panel-card" id="kommoLeadsCard">') && pane.includes("<span>All Kommo leads</span>")
+    && pane.indexOf('id="kommoLeadsCard"') > pane.indexOf('id="hotLeadsContent"'));
+  check("the Kommo card says it opens on Incoming leads and how to see every column",
+    words("It opens on <strong>Incoming leads</strong>; press <strong>All columns</strong> for every column.").test(pane));
+  for (const id of ["kommoLeadsBadge", "kommoLeadsRefresh", "kommoLeadsContent"])
+    check("pane has #" + id, pane.includes('id="' + id + '"'));
+  check("the Kommo Refresh forces a reload", /id="kommoLeadsRefresh"[^>]*onclick="loadKommoLeads\(true\)"/.test(pane));
 }
 
 console.log("\n" + (fail === 0 ? "ALL " + pass + " CHECKS PASSED" : pass + " passed, " + fail + " FAILED"));

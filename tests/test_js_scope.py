@@ -90,6 +90,15 @@ SHARED = [
     "hlRemoveLink",
     "hlUnlock",
     "hlLock",
+    # 28 Oct 2026: the "All Kommo leads" card -- the nav button, its Refresh, and the inline
+    # handlers on its filter buttons, Load more and App record.
+    "loadKommoLeads",
+    "klSetScope",
+    "klSetColumn",
+    "klSetSource",
+    "klSetRecord",
+    "klShowRecord",
+    "klMore",
 ]
 
 
