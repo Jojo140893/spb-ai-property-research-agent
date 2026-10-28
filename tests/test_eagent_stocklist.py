@@ -385,7 +385,9 @@ def test_a_nested_land_price_is_never_read_as_the_package_price():
     ("Available", "Available"), ("Avallable", "Available"), ("AVAILBLE", "Available"),
     ("Sold", "Sold"), ("DEPOSIT", "Not Available"), ("Contract Issued", "Not Available"),
     ("EXCHANGED", "Not Available"), ("On Hold", "On Hold"),
-    # Coleen's call (7 Oct 2026): these read as no stated availability, as everywhere else.
+    # These read as no stated availability, as everywhere else: EOI and RESALE are Coleen's
+    # call (7 Oct 2026); Exclusive is decided per document by repair_rows.
+    # find_exclusive_status (28 Oct 2026), never from the word alone.
     ("EOI", None), ("RESALE", None), ("Exclusive", None)])
 def test_status_words(raw, want):
     assert es.normalise_status(raw) == want

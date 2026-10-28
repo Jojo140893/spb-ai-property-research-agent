@@ -822,6 +822,9 @@ def test_the_line_key_ignores_prices_dates_and_status_but_not_the_design():
     assert one == C.line_text_key("Available Lot 406 Westgarth F 4 2 2 180,000 424,776 604776")
     assert one != C.line_text_key("Available Lot 406 Westgarth E 4 2 2 $180,000 $408,950 $588,950")
     assert C.line_text_key("$588,950 Available") is None      # nothing left to compare
+    # "Exclusive" is not in _LINE_STATUS (28 Oct 2026), deliberately: repair_rows stores
+    # Available for it, and _LINE_STATUS changes only together with search_regressions'
+    # _STATUS_WORDS, its identical copy.
 
 
 def test_a_digest_that_happens_to_read_as_a_phone_number_never_blocks_the_publish(tmp_path):

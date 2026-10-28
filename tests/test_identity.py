@@ -42,6 +42,9 @@ def test_hash_matches_pinned_value():
 
 def test_hash_ignores_volatile_fields():
     """Price, availability, title and date must NOT affect identity — they update in place."""
+    # The availability COLUMN. A status word in the line is identity unless _STRIP_STATUS
+    # strips it, and "Exclusive" deliberately is not (28 Oct 2026): stripping it would
+    # re-identify 113 stored rows. repair_rows.find_exclusive_status writes the column only.
     base = building_content_hash(_ROW)
     for volatile in (
         {"price": 999_999}, {"advertised_package_price": 1_234_567},
