@@ -2011,14 +2011,14 @@ def test_every_public_function_is_bundled_and_configured():
 
 def test_the_contact_rules_travel_with_every_function_that_imports_them():
     """api/_contact.py is not a route, so nothing above notices it missing -- but hot_leads,
-    contact_unlock and lead_notes import it at module level, and without it all three 500.
-    It must be copied (_FUNCTION_ENTRY), shipped with each function (includeFiles) and
-    imported by the build's probe."""
+    contact_unlock, lead_notes and (28 Oct 2026) kommo_leads import it at module level, and
+    without it all four 500. It must be copied (_FUNCTION_ENTRY), shipped with each function
+    (includeFiles) and imported by the build's probe."""
     import build_web
 
     assert "_contact.py" in build_web._FUNCTION_ENTRY
     src = (APP / "build_web.py").read_text(encoding="utf-8")
-    for name in ("hot_leads.py", "contact_unlock.py", "lead_notes.py"):
+    for name in ("hot_leads.py", "contact_unlock.py", "lead_notes.py", "kommo_leads.py"):
         entry = src[src.index(f'"api/{name}":'):]
         entry = entry[:entry.index("}") + 1]
         assert "api/_contact.py" in entry, f"api/{name} is deployed without api/_contact.py"

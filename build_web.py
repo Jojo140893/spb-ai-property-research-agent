@@ -1539,6 +1539,13 @@ def build(out_dir: Path, with_assets: bool = True) -> dict:
             # key handling, so it carries that file as well as the masking rules.
             "api/lead_notes.py": {"memory": 256, "maxDuration": 30,
                                   "includeFiles": "{api/_contact.py,api/hot_leads.py}"},
+            # Every lead in Kommo, one page per request (28 Oct 2026): the same proxy and the
+            # same masking (hot_leads.view), so the same two files. The hook reads Kommo live,
+            # a page and its contacts in sequence, and answers within about 20 s; the upstream
+            # timeout is 25 s (api/kommo_leads.py TIMEOUT), and 30 here leaves the masking the
+            # rest. Raise one only with the other.
+            "api/kommo_leads.py": {"memory": 256, "maxDuration": 30,
+                                   "includeFiles": "{api/_contact.py,api/hot_leads.py}"},
             # Opens one entry of the Settings tab's "Price lists we could not read" by id
             # (24 Oct 2026). Stdlib only; the id -> link map travels with it and is never a
             # static file, because most of those links are Dropbox folder shares.
@@ -1611,10 +1618,10 @@ _FUNCTION_SOURCES = (
     "remote_stocklist.py", "scraper_base.py", "spreadsheet_extract.py",
     "realestate.py",
 )
-# refresh.py, narrative.py, hot_leads.py, contact_unlock.py and lead_notes.py are stdlib-only
-# and import nothing from the pipeline, so they cannot drag the harvest's modules into another
-# bundle; the last three carry api/_contact.py as includeFiles, and lead_notes.py hot_leads.py
-# as well. A public api/*.py missing from here is never copied, and its route 404s on a site
+# refresh.py, narrative.py, hot_leads.py, contact_unlock.py, lead_notes.py and kommo_leads.py
+# are stdlib-only and import nothing from the pipeline, so they cannot drag the harvest's modules
+# into another bundle; the last four carry api/_contact.py as includeFiles, and lead_notes.py and
+# kommo_leads.py hot_leads.py as well. A public api/*.py missing from here is never copied, and its route 404s on a site
 # that otherwise looks healthy -- tests/test_hot_leads_proxy.py asserts every one is listed.
 _FUNCTION_ENTRY = ("research.py", "_bootstrap.py", "_candidates.py", "_export_builders.py",
                    "refresh.py", "narrative.py", "hot_leads.py",
@@ -1623,6 +1630,10 @@ _FUNCTION_ENTRY = ("research.py", "_bootstrap.py", "_candidates.py", "_export_bu
                    # lead_notes.py all import it, so a bundle without it is three dead
                    # routes. Probed below.
                    "_contact.py", "contact_unlock.py", "lead_notes.py",
+                   # 28 Oct 2026: the Leads tab's "All Kommo leads" card. Stdlib only, built
+                   # on hot_leads.py (its key handling and its view) and so on _contact.py
+                   # too, like lead_notes.py. Probed below.
+                   "kommo_leads.py",
                    # 23 Oct 2026: forgot password. Three routes (POST /api/reset_code,
                    # /api/reset_password and, 25 Oct, /api/reset_check: the paths middleware.js
                    # lets through) and the module they share, which is not a route. Probed below.
@@ -3316,7 +3327,7 @@ finally:
     pathlib.Path.mkdir = _real_mkdir
 # The stdlib-only routes. They import nothing from the pipeline, so this proves only that
 # each was copied into the bundle at all -- and a missing one is a 404 on a green deploy.
-import refresh, narrative, hot_leads, contact_unlock, lead_notes, price_list
+import refresh, narrative, hot_leads, contact_unlock, lead_notes, price_list, kommo_leads
 # The map is a data file, so an import cannot miss it: without it every link 404s.
 assert os.path.isfile(price_list.LINKS), 'price_list_links.json missing from bundle'
 # Forgot password (23 Oct 2026): all three routes import the shared module at load, so a bundle
@@ -3325,8 +3336,9 @@ assert os.path.isfile(price_list.LINKS), 'price_list_links.json missing from bun
 import reset_code, reset_password, reset_check, _spb_auth
 for _route in (reset_code, reset_password, reset_check):
     assert issubclass(_route.handler, _spb_auth.AuthHandler), _route.__name__ + '.py has no handler'
-# hot_leads, contact_unlock and lead_notes import this at module level, so the line above
-# already fails without it; asserted by name so the failure says which file is missing.
+# hot_leads, contact_unlock, lead_notes and kommo_leads import this at module level, so the
+# line above already fails without it; asserted by name so the failure says which file is
+# missing.
 import _contact as _ct
 assert _ct.COOKIE == 'spb_contact' and callable(_ct.mask_hot_leads), 'api/_contact.py missing from bundle'
 assert (not %r) or client_report._logo_html(), 'logo missing from bundle'

@@ -570,6 +570,99 @@ MUTANTS = {
         "return `No ${f === 'all' ? '' : f + ' '}${HL_CHANNEL_NOUN[src]} in this list.`;",
         "return `No ${f} leads in this list.`;",
         "the note names the source"),
+    # --- All Kommo leads (28 Oct 2026) ---------------------------------------------------
+    # Every lead in Kommo, through /api/kommo_leads: a card's name is whatever someone typed
+    # on it in Kommo, and its link is Kommo's.
+    "the Kommo card's name is not escaped": (
+        '<span class="hl-name kl-name">${esc(name)}</span>', '<span class="hl-name kl-name">${name}</span>',
+        "hostile Kommo lead: markup"),
+    "the Kommo card's own name is not escaped on its second line": (
+        '<div class="kl-cardname">Card: ${esc(cardName)}</div>', '<div class="kl-cardname">Card: ${cardName}</div>',
+        "hostile Kommo lead: markup"),
+    "a masked Kommo card shows the contact details": (
+        "const full = KL_VIEW === 'full';", "const full = true;", "masked Kommo view"),
+    "the Kommo link skips hlSafeUrl": (
+        "const link = hlExtLink(k.leadUrl, 'Open in Kommo', 'Opens this lead in Kommo');",
+        'const link = `<a href="${esc(k.leadUrl)}" target="_blank" rel="noopener noreferrer">Open in Kommo</a>`;',
+        "hostile Kommo lead: markup"),
+    # hlApplyFilters hides hlCard-<i> for every HOT_LEADS index: under that prefix the list
+    # above's buttons would hide and show the Kommo cards.
+    "Kommo cards use the hot-leads card ids": (
+        '<div class="prop-card kl-card" id="klCard-${n}">', '<div class="prop-card kl-card" id="hlCard-${n}">',
+        "never hlCard-"),
+    "the Kommo card opens on every column": (
+        "let KL_SCOPE = 'incoming';", "let KL_SCOPE = 'all';", "scope=incoming&page=1"),
+    # Pages are ordered by lead id, so a lead that arrives mid-read is read twice.
+    "the Kommo pages are not de-duplicated": (
+        "if (ids.has(id)) return;", "if (false) return;", "duplicates removed by lead id"),
+    # hlSortNewest drops a record with no grade: most Kommo leads have none.
+    "the Kommo list is sorted by hlSortNewest": (
+        "KL_LEADS = klSortNewest(klMerge(KL_LEADS, a.leads));",
+        "KL_LEADS = hlSortNewest(klMerge(KL_LEADS, a.leads));",
+        "ungraded ones too"),
+    "Unlock leaves the Kommo list in the view it had": (
+        "const kommo = KL_STATE !== 'idle' ? loadKommoLeads(true, true) : null;", "const kommo = null;",
+        "Unlock reloads the Kommo list"),
+    "a Kommo list half masked is drawn full": (
+        "KL_VIEW = ((KL_PAGE === 0 || KL_VIEW === 'full') && a.contact === 'full') ? 'full' : 'masked';",
+        "KL_VIEW = a.contact === 'full' ? 'full' : KL_VIEW;",
+        "a list half masked is a masked list"),
+    # --- the Kommo card's review, 28 Oct 2026 --------------------------------------------
+    # Lock: no number on the Kommo card while the list above is read (up to 20 s, twice).
+    "Lock reads the list above before it clears the Kommo card": (
+        "const kommo = KL_STATE !== 'idle' ? loadKommoLeads(true, true) : null;\n"
+        "            await Promise.all([loadHotLeads(true), kommo]);",
+        "await loadHotLeads(true);\n"
+        "            const kommo = KL_STATE !== 'idle' ? loadKommoLeads(true, true) : null;\n"
+        "            await kommo;",
+        "Lock clears the Kommo card at once"),
+    "a forced Kommo load leaves the old list on screen while it reads": (
+        "el.innerHTML = '<p style=\"color:var(--text-muted);\">Reading '",
+        "const reading = '<p style=\"color:var(--text-muted);\">Reading '",
+        "Lock clears the Kommo card at once"),
+    # The generation guard: only the stale-FIRST order shows its loss (klMerge keeps the
+    # first copy of a lead, so a stale page landing second changes nothing drawn).
+    "a Kommo page from an older load is drawn": (
+        "if (gen !== KL_LOAD_GEN) return { kind: 'stale' };", "",
+        "a stale full Kommo page landing BEFORE"),
+    "Lock leaves the Kommo read still out running": (
+        "if (KL_ABORT) KL_ABORT.abort();", "", "Lock drops the Kommo read still out"),
+    # One Kommo read at a time: the account's ~7 requests a second are shared with the webhook.
+    "Refresh reads Kommo while a read is out": (
+        "if (KL_STATE === 'loading' && access !== true) return;", "",
+        "ask nothing while Load more is out"),
+    "a scope button reads Kommo while a read is out": (
+        "if (KL_STATE === 'loading') return Promise.resolve();", "",
+        "ask nothing while Load more is out"),
+    "Load more reads Kommo while a read is out": (
+        "if (KL_STATE !== 'ok' || !KL_HAS_MORE || KL_PAGE >= KL_MAX_PAGE) return;",
+        "if (!KL_HAS_MORE || KL_PAGE >= KL_MAX_PAGE) return;",
+        "ask nothing while Load more is out"),
+    "Load more leaves the Kommo Refresh usable": (
+        "if (refresh) refresh.disabled = true;", "", "Load more disables the Kommo Refresh"),
+    "App record buttons carry the card's place": (
+        'onclick="klShowRecord(${id})">App record</button>', 'onclick="klShowRecord(${n})">App record</button>',
+        "App record pressed while Load more re-sorts the list"),
+    "each page's columns replace the ones before": (
+        "KL_COLUMNS = klMergeColumns(KL_COLUMNS, a.columns);",
+        "if (a.columns.length) KL_COLUMNS = a.columns;",
+        "is merged, not swapped in"),
+    "a pressed column the new answer lacks stays pressed": (
+        "if (KL_FILTER.column !== null && !KL_COLUMNS.some(c => klColumnKey(c) === KL_FILTER.column)) "
+        "KL_FILTER = { ...KL_FILTER, column: null };", "",
+        "is All again"),
+    "a failed page's message is drawn as markup": (
+        "(${esc(KL_MORE_FAILED)})", "(${KL_MORE_FAILED})",
+        "a failed page's message from the server is text"),
+    # Past page 40 the proxy reads page 1: each press would read it again, for ever.
+    "the Kommo pages run past page 40": (
+        "n < KL_AUTO_PAGES && page <= KL_MAX_PAGE;", "n < KL_AUTO_PAGES;",
+        "All columns stops at page 40"),
+    "Load more ignores the 40-page cap": (
+        "|| KL_PAGE >= KL_MAX_PAGE) return;", ") return;", "Load more at page 40 asks nothing"),
+    "klUrl passes any scope through": (
+        "return `/api/kommo_leads?scope=${s}&page=${p}`;", "return `/api/kommo_leads?scope=${scope}&page=${p}`;",
+        "klUrl writes only"),
 }
 
 
@@ -614,6 +707,12 @@ PAGE_MUTANTS = {
         "const client = given ? String(given.client ?? '').trim() : _v('clientName');",
         "const client = String((given || {}).client ?? '').trim();",
         "the Research tab's call (no 4th argument) still reads its form"),
+    # 28 Oct 2026: opening the tab reads the Kommo card too; without it the card sits on
+    # "Loading Kommo leads…" until someone finds its Refresh.
+    "the nav button does not read the Kommo list": (
+        "onclick=\"showTab('hotLeadsTab', this); loadHotLeads(); loadKommoLeads();\"",
+        "onclick=\"showTab('hotLeadsTab', this); loadHotLeads();\"",
+        "loadKommoLeads()"),
 }
 
 

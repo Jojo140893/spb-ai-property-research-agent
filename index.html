@@ -810,6 +810,18 @@
         .hl-link-add { display: flex; flex-wrap: wrap; gap: 0.4rem; }
         .hl-link-add input[type=url] { flex: 2 1 240px; }
         .hl-link-add input[type=text] { flex: 1 1 150px; }
+        /* All Kommo leads (28 Oct 2026): the tab's second card, every lead in Kommo. Built on
+           the .hl-* rules above; these add only what a Kommo card has and a record's does not. */
+        #kommoLeadsCard { margin-top: 1.5rem; }
+        .kl-card { padding: 1rem 1.25rem; }
+        .kl-cardname { font-size: 0.82rem; color: var(--text-muted); margin-top: 0.15rem; overflow-wrap: anywhere; }
+        .kl-where { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.2rem; overflow-wrap: anywhere; }
+        .kl-src { font-weight: 600; }
+        .kl-links { align-items: center; }
+        .kl-record { font-size: 0.78rem; padding: 0.25rem 0.65rem; }
+        .kl-more { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; margin-top: 1rem; }
+        /* App record: the card in the list above it jumps to, lit for a moment. */
+        .hl-card.kl-flash { box-shadow: 0 0 0 3px var(--accent-blue); transition: box-shadow 0.3s ease; }
 
         .json-code {
             font-family: 'JetBrains Mono', monospace;
@@ -913,7 +925,7 @@
         <!-- Beside Research & Scoring because it is the same work arriving by phone: Clare
              qualifies the caller, the webhook runs the research, and this is where the
              result lands. The qualifier drops below 768px like Benchmarks'. -->
-        <button class="tab-btn" onclick="showTab('hotLeadsTab', this); loadHotLeads();">Clare's Leads<span class="nav-tab-label-full"> (Agent 1)</span></button>
+        <button class="tab-btn" onclick="showTab('hotLeadsTab', this); loadHotLeads(); loadKommoLeads();">Clare's Leads<span class="nav-tab-label-full"> (Agent 1)</span></button>
         <button class="tab-btn" onclick="showTab('buildersTab', this)">Approved Builder Directory</button>
         <button class="tab-btn" onclick="showTab('buildingsTab', this); loadBuildings();">Building Stock</button>
         <!-- Directly after Building Stock so the comparison sits beside the thing being
@@ -1198,6 +1210,8 @@
             above Clare's callers; they are answered in chat, so there is no call recording
             and no summary to read. To see one source on its own, press
             <strong>Clare calls (VAPI)</strong> or <strong>WhatsApp</strong> above the list.
+            These are the leads the app has a record for; <strong>every</strong> lead in Kommo,
+            researched or not, is under <strong>All Kommo leads</strong> below.
         </p>
         <!-- Coleen, 28 Sep 2026: the Research tab's selection and report on every lead, notes
              and links per lead, and contact details only for whoever holds the password. -->
@@ -1209,6 +1223,28 @@
             with the contact-details password.
         </p>
         <div id="hotLeadsContent" style="font-size:0.9rem;">Loading leads…</div>
+    </div>
+    <!-- 28 Oct 2026: every lead in Kommo, not only the ones the app has a record for, read
+         live through /api/kommo_leads (the hook reads Kommo, GET only) and masked by the same
+         rules as the list above. Its own ids (kommoLeads*, klCard-<n>), so the list above's
+         filters never touch it. -->
+    <div class="panel-card" id="kommoLeadsCard">
+        <div class="panel-header" style="flex-wrap:wrap; gap:0.5rem;">
+            <span>All Kommo leads</span>
+            <span style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+                <span id="kommoLeadsBadge" class="pill pill-muted">not loaded</span>
+                <button id="kommoLeadsRefresh" type="button" class="btn-ghost"
+                        onclick="loadKommoLeads(true)">Refresh</button>
+            </span>
+        </div>
+        <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">
+            Every lead in Kommo, read live: WhatsApp chats that stopped before the questions,
+            RingCentral SMS, Clare calls with no state or no answer, Facebook comments and leads
+            added by hand. They are not researched. It opens on <strong>Incoming leads</strong>;
+            press <strong>All columns</strong> for every column. A lead the app has a record for
+            has an <strong>App record</strong> button that jumps to its card above.
+        </p>
+        <div id="kommoLeadsContent" style="font-size:0.9rem;">Loading Kommo leads…</div>
     </div>
 </div>
 
@@ -5051,7 +5087,14 @@ python state_sync.py push</pre>
         let data = null;
         try { data = await res.json(); } catch (e) { data = null; }
         if (res.ok && data && data.status === 'success' && data.contact === (body.lock ? 'masked' : 'full')) {
-            await loadHotLeads(true);
+            // The Kommo list below carries contact details too, so Unlock and Lock switch it as
+            // well -- once it has been asked for -- and it goes FIRST (28 Oct 2026, review):
+            // loadKommoLeads clears the card before it reads, so after Lock no number stays on
+            // it while the list above is read (20 s at worst, twice for a list cut short), and
+            // a read of it still out in the old view is dropped. Both awaited, so Lock's
+            // promise ends with both lists masked.
+            const kommo = KL_STATE !== 'idle' ? loadKommoLeads(true, true) : null;
+            await Promise.all([loadHotLeads(true), kommo]);
             return true;
         }
         if (btn) btn.disabled = false;
@@ -5071,6 +5114,524 @@ python state_sync.py push</pre>
     }
     function hlLock() {
         return hlAccessPost({ lock: true }, document.getElementById('hlLockBtn'));
+    }
+
+    // ------------------------------------------------ All Kommo leads (28 Oct 2026)
+    /* EVERY LEAD IN KOMMO, NOT ONLY THE ONES THE APP HAS A RECORD FOR. The list above is the
+     * hook's records: hot callers, warm or nurture callers who gave a state, and WhatsApp
+     * chats that answered the questions. A WhatsApp chat that stopped before them, a
+     * RingCentral SMS, a Clare call with no state or no answer, a Facebook comment and a lead
+     * added by hand were in Kommo and on no screen of this dashboard. GET /api/kommo_leads
+     * reads them from Kommo live, one page of 250 at a time (the hook's read-only GET
+     * /api/kommo-leads), masked by the same rules as the list above.
+     *
+     * ITS OWN STATE, ITS OWN CARD IDS. hlApplyFilters walks hlCard-<i> for every HOT_LEADS
+     * index, so a Kommo card under that prefix would be hidden and shown by the other list's
+     * buttons; these are klCard-<n>, n being the lead's place in KL_LEADS. No notes block:
+     * the hook keeps notes beside a record, and most of these have none. A lead that has a
+     * record gets an "App record" button that jumps to its card above.
+     *
+     * Every string on these cards is Kommo's, typed by a person or a chat bot: the card's name,
+     * the column's name, the contact. So nothing goes into HTML without esc(), the Kommo link
+     * goes through hlExtLink (hlSafeUrl: http(s) only), and every onclick, id and class is
+     * built from a key or a number written here, never from a lead.
+     */
+    let KL_LEADS = [];                   // every page loaded, one per Kommo lead id, newest first
+    let KL_COLUMNS = [];                 // the hook's columns: {pipelineId, statusId, statusName, ...}
+    let KL_STATE = 'idle';               // 'idle' | 'loading' | 'ok' | 'failed'
+    let KL_SCOPE = 'incoming';           // 'incoming' | 'all': Incoming leads first, as Coleen works it
+    let KL_PAGE = 0;                     // the last page loaded; 0 is none
+    let KL_HAS_MORE = false;             // the hook's word that the page after KL_PAGE has leads
+    let KL_ERRORS = [];                  // the hook's own notes on what it could not read
+    let KL_RECORDS_COMPLETE = true;      // false: some leads may lack their App record button
+    // column: the pressed column's klColumnKey, or null for All -- a key, not a place in
+    // KL_COLUMNS, so columns a later page adds can never make it point at another column.
+    let KL_FILTER = { column: null, source: 'all', record: 'all' };
+    let KL_LOAD_GEN = 0;                 // the newest load; an older one draws nothing
+    // The newest load's AbortController: a load that takes over (Unlock or Lock) drops the
+    // browser's side of the read still out, so its answer is never waited for or drawn. The
+    // server side runs on (the proxy and the hook finish their Kommo read regardless).
+    let KL_ABORT = null;
+    const KL_AUTO_PAGES = 4;             // pages read per press, 1,000 leads
+    // 'full' only when every page on the list said so: the answer's own view, not HL_ACCESS --
+    // the two lists are asked for at the same moment, and either may land first.
+    let KL_VIEW = 'masked';
+    // Why the page after KL_PAGE could not be read, when the ones before it could: the list
+    // keeps what it has, and Retry (klMore) asks for that page again.
+    let KL_MORE_FAILED = '';
+    // api/kommo_leads.py reads any page past this as page 1, so the list never asks for one.
+    const KL_MAX_PAGE = 40;
+    const KL_SCOPES = ['incoming', 'all'];
+    const KL_SCOPE_LABEL = { incoming: 'Incoming leads', all: 'All columns' };
+    // The hook's sources (lib/kommo-leads.js SOURCES), in its order. A source it adds later,
+    // or anything else in the field, is drawn as 'other' -- never as its own text.
+    const KL_SOURCES = ['whatsapp', 'clare', 'ringcentral_sms', 'facebook', 'manual', 'other'];
+    const KL_SOURCE_LABEL = {
+        whatsapp: 'WhatsApp', clare: 'Clare call', ringcentral_sms: 'RingCentral SMS',
+        facebook: 'Facebook comment', manual: 'No source (added by hand or an integration)',
+        other: 'Other source'
+    };
+    const KL_RECORDS = ['all', 'yes', 'no'];
+    const KL_RECORD_LABEL = { all: 'All', yes: 'App record', no: 'No app record' };
+
+    // Every part a literal or a whole number in range, as api/kommo_leads.py forwards them.
+    function klUrl(scope, page) {
+        const s = KL_SCOPES.includes(scope) ? scope : 'incoming';
+        const p = (Number.isInteger(page) && page >= 1 && page <= KL_MAX_PAGE) ? page : 1;
+        return `/api/kommo_leads?scope=${s}&page=${p}`;
+    }
+
+    const klObj = v => (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
+
+    // The Kommo lead id: kommo.leadId, or -- for a lead the masking cut down to its link
+    // (api/_contact.py hard_masked) -- the id at the end of kommo.leadUrl. null when neither.
+    // A safe integer only: it is written into the App record button's onclick, where 1e+21
+    // would be neither a number the auditor allows nor the lead's id.
+    function klLeadId(lead) {
+        const k = klObj(klObj(lead).kommo);
+        if (Number.isSafeInteger(k.leadId) && k.leadId > 0) return k.leadId;
+        const m = typeof k.leadUrl === 'string' ? k.leadUrl.match(/\/leads\/detail\/(\d{1,15})$/) : null;
+        return m && Number(m[1]) > 0 ? Number(m[1]) : null;
+    }
+
+    // The pages as one list, one card per Kommo lead. Pages are ordered by lead id, so a lead
+    // that arrives while they are read pushes one onto the next page, where it is read again:
+    // the first copy is kept. A lead with no id at all is kept, never merged with another.
+    function klMerge(first, second) {
+        const ids = new Set();
+        const out = [];
+        [first, second].forEach(list => (Array.isArray(list) ? list : []).forEach(l => {
+            if (!l || typeof l !== 'object') return;
+            const id = klLeadId(l);
+            if (id !== null) {
+                if (ids.has(id)) return;
+                ids.add(id);
+            }
+            out.push(l);
+        }));
+        return out;
+    }
+
+    // Newest first, then the higher id. NOT hlSortNewest: that one drops a record with no
+    // grade, and most Kommo leads have none -- closed ones, SMS, comments -- yet every one of
+    // them belongs on this list. A lead with no date goes last.
+    function klSortNewest(leads) {
+        if (!Array.isArray(leads)) return [];
+        const at = l => { const t = Date.parse(l.createdAt); return Number.isFinite(t) ? t : -Infinity; };
+        return leads.filter(l => l && typeof l === 'object')
+            .sort((a, b) => (at(b) - at(a)) || ((klLeadId(b) || 0) - (klLeadId(a) || 0)));
+    }
+
+    const klSourceOf = lead => KL_SOURCES.includes(lead.source) ? lead.source : 'other';
+    const klHasRecord = lead => typeof lead.callId === 'string' && lead.callId !== '';
+
+    // The lead's place in KL_COLUMNS, or -1. Closed - won and Closed - lost (142, 143) are
+    // in every Kommo pipeline under the same ids, so the pipeline is matched too when both
+    // say which it is.
+    function klColumnOf(lead) {
+        const k = klObj(lead.kommo);
+        if (!Number.isInteger(k.statusId)) return -1;
+        return KL_COLUMNS.findIndex(c => c.statusId === k.statusId
+            && (!Number.isInteger(k.pipelineId) || !Number.isInteger(c.pipelineId) || c.pipelineId === k.pipelineId));
+    }
+    // A column by its pipeline and its status, as the filter keeps it (KL_FILTER.column).
+    const klColumnKey = c => `${Number.isInteger(c.pipelineId) ? c.pipelineId : ''}:${c.statusId}`;
+    const klColumnKeyOf = lead => { const i = klColumnOf(lead); return i >= 0 ? klColumnKey(KL_COLUMNS[i]) : null; };
+
+    // The columns of every page loaded, one per pipeline and status, in the order first seen
+    // (28 Oct 2026, review). A page whose pipelines read failed on the hook comes with its four
+    // KNOWN_COLUMNS: swapped in, they took the columns of every page before off the list, and
+    // a pressed column's place pointed at another one. Merged, every column stays, and a name
+    // one copy lacks is taken from the other.
+    function klMergeColumns(have, got) {
+        const named = v => typeof v === 'string' && v.trim() !== '';
+        const out = have.slice();
+        got.forEach(c => {
+            const i = out.findIndex(x => klColumnKey(x) === klColumnKey(c));
+            if (i < 0) {
+                out.push(c);
+                return;
+            }
+            out[i] = { ...out[i],
+                       statusName: named(out[i].statusName) ? out[i].statusName : c.statusName,
+                       pipelineName: named(out[i].pipelineName) ? out[i].pipelineName : c.pipelineName };
+        });
+        return out;
+    }
+
+    // Whether a lead is shown under filter `f`. A lead cut down by the masking has lost its
+    // column and source, so it is shown under every filter: hidden from all of them, it would
+    // be a lead nobody opens.
+    function klPasses(lead, f) {
+        if (lead.maskFailed === true) return true;
+        if (f.column !== null && klColumnKeyOf(lead) !== f.column) return false;
+        if (f.source !== 'all' && klSourceOf(lead) !== f.source) return false;
+        if (f.record === 'yes' && !klHasRecord(lead)) return false;
+        if (f.record === 'no' && klHasRecord(lead)) return false;
+        return true;
+    }
+    // How many leads one button would show: the filter as it stands with that one part changed.
+    const klCount = over => KL_LEADS.filter(l => klPasses(l, { ...KL_FILTER, ...over })).length;
+
+    // One row of buttons. keys and labels are written here; onclick is built from the key
+    // through `call`, which gives a quoted literal or a whole number, never a lead's text.
+    function klBar(label, cls, entries, call) {
+        return `<div class="hl-filters ${cls}"><span class="hl-filter-label">${label}</span>`
+             + entries.map(e => `<button type="button" class="btn-ghost hl-filter${e.on ? ' is-active' : ''}"`
+                 + ` id="${e.id}" aria-pressed="${e.on}" onclick="${call(e.key)}">${e.text}</button>`).join('')
+             + '</div>';
+    }
+
+    // ONE READ of /api/kommo_leads, described rather than thrown, as hlAsk describes one of
+    // /api/hot_leads: unreachable | expired | failed {status, message} | ok {...}. Anything but
+    // exactly contact "full" is masked.
+    async function klAsk(url, signal) {
+        let res;
+        try {
+            res = await fetch(url, { cache: 'no-store', signal });
+        } catch (e) {
+            return { kind: 'unreachable' };      // aborted too: klLoadPages finds it stale
+        }
+        if (res.status === 401) {
+            return { kind: 'expired' };
+        }
+        let data = null;
+        try { data = await res.json(); } catch (e) { data = null; }
+        if (!res.ok || !data || data.status !== 'success') {
+            return { kind: 'failed', status: res.status,
+                     message: (data && data.message) ? String(data.message) : '' };
+        }
+        return { kind: 'ok', leads: Array.isArray(data.leads) ? data.leads : [],
+                 columns: (Array.isArray(data.columns) ? data.columns : [])
+                     .filter(c => c && typeof c === 'object' && Number.isInteger(c.statusId)),
+                 hasMore: data.hasMore === true,
+                 recordsComplete: data.recordsComplete === true,
+                 errors: (Array.isArray(data.errors) ? data.errors : []).filter(x => typeof x === 'string' && x),
+                 contact: data.contact === 'full' ? 'full' : 'masked' };
+    }
+
+    // Pages from `from` on, one at a time, while the hook says there are more: at most
+    // KL_AUTO_PAGES of them, never past KL_MAX_PAGE. Kommo allows about 7 requests a second
+    // for the whole account, and the call webhook needs its share, so never in parallel.
+    // Returns how it stopped -- done | more | stale (a newer load took over) | expired |
+    // unreachable | failed -- and what loaded before a failure stays loaded.
+    async function klLoadPages(scope, from, gen) {
+        const signal = KL_ABORT ? KL_ABORT.signal : undefined;      // this load's: see KL_ABORT
+        let page = from;
+        for (let n = 0; n < KL_AUTO_PAGES && page <= KL_MAX_PAGE; n++, page++) {
+            const a = await klAsk(klUrl(scope, page), signal);
+            // Before anything of the answer is looked at: a page asked for in the other view
+            // (before Lock, say) must not reach this load's list, whichever lands first.
+            if (gen !== KL_LOAD_GEN) return { kind: 'stale' };
+            if (a.kind !== 'ok') return a;
+            KL_LEADS = klSortNewest(klMerge(KL_LEADS, a.leads));
+            KL_COLUMNS = klMergeColumns(KL_COLUMNS, a.columns);
+            a.errors.forEach(x => { if (!KL_ERRORS.includes(x)) KL_ERRORS.push(x); });
+            if (!a.recordsComplete) KL_RECORDS_COMPLETE = false;
+            KL_VIEW = ((KL_PAGE === 0 || KL_VIEW === 'full') && a.contact === 'full') ? 'full' : 'masked';
+            KL_PAGE = page;
+            KL_HAS_MORE = a.hasMore;
+            if (!a.hasMore) return { kind: 'done' };
+        }
+        return { kind: 'more' };
+    }
+
+    // After klLoadPages, for the first load and for Load more alike. A failure with nothing
+    // loaded is the whole card's notice; a failure after some pages keeps them and says which
+    // page is missing, with a Retry. Only #kommoLeadsContent and its badge are touched: the
+    // list above is drawn by loadHotLeads and nothing here.
+    function klSettle(r) {
+        const el = document.getElementById('kommoLeadsContent');
+        const badge = document.getElementById('kommoLeadsBadge');
+        if (!el) return;
+        if (r.kind === 'expired') {
+            sessionExpired();
+            if (!KL_PAGE) {
+                KL_STATE = 'idle';
+                el.innerHTML = '<p style="color:var(--text-muted);">Your sign-in has expired &mdash; opening the sign-in page…</p>';
+                return;
+            }
+        }
+        if (!KL_PAGE && r.kind === 'unreachable') {
+            // Not remembered, as on the list above: opening the tab again tries again.
+            KL_STATE = 'idle';
+            if (badge) badge.textContent = 'unavailable';
+            el.innerHTML = `<div class="hl-notice"><strong>Could not reach the dashboard.</strong>
+                Check the connection, then press Refresh.</div>`;
+            return;
+        }
+        if (!KL_PAGE && r.kind === 'failed') {
+            KL_STATE = 'failed';
+            if (badge) badge.textContent = 'unavailable';
+            el.innerHTML = hlUnavailable(r.status, r.message || `The server answered ${r.status}.`);
+            return;
+        }
+        KL_STATE = 'ok';
+        KL_MORE_FAILED = r.kind === 'expired' ? 'your sign-in has expired'
+            : r.kind === 'unreachable' ? 'the dashboard could not be reached'
+            : r.kind === 'failed' ? (r.message || `the server answered ${r.status}`) : '';
+        // A column pressed before a Refresh that the new answer no longer has is All again.
+        if (KL_FILTER.column !== null && !KL_COLUMNS.some(c => klColumnKey(c) === KL_FILTER.column)) KL_FILTER = { ...KL_FILTER, column: null };
+        const n = KL_LEADS.length, more = KL_HAS_MORE ? '+' : '';
+        if (badge) badge.textContent = `${n.toLocaleString('en-AU')}${more} lead${n === 1 && !more ? '' : 's'}`;
+        klRender();
+    }
+
+    // Page 1 of KL_SCOPE, and on while there are more (up to KL_AUTO_PAGES). Once per page
+    // view; Refresh, a change of scope, Unlock and Lock pass force. ONE KOMMO READ AT A TIME
+    // (28 Oct 2026, review): while one is out -- this or Load more -- a Refresh does nothing.
+    // Unlock and Lock pass `access` and go ahead: the read out was asked for in the other
+    // view, so it is aborted and the list read again. A forced load clears the list at once
+    // -- after Lock, a number must not stay on the screen while the masked list is read --
+    // and an older load still out, when it lands, draws nothing.
+    async function loadKommoLeads(force, access) {
+        if (!force && KL_STATE !== 'idle') return;
+        if (KL_STATE === 'loading' && access !== true) return;
+        const el = document.getElementById('kommoLeadsContent');
+        const badge = document.getElementById('kommoLeadsBadge');
+        const btn = document.getElementById('kommoLeadsRefresh');
+        if (!el) return;
+        const gen = ++KL_LOAD_GEN;
+        if (KL_ABORT) KL_ABORT.abort();
+        KL_ABORT = typeof AbortController === 'function' ? new AbortController() : null;
+        KL_STATE = 'loading';
+        KL_LEADS = [];
+        KL_COLUMNS = [];
+        KL_PAGE = 0;
+        KL_HAS_MORE = false;
+        KL_ERRORS = [];
+        KL_RECORDS_COMPLETE = true;
+        KL_VIEW = 'masked';
+        KL_MORE_FAILED = '';
+        if (btn) btn.disabled = true;
+        if (badge) badge.textContent = 'loading';
+        el.innerHTML = '<p style="color:var(--text-muted);">Reading '
+                     + `${KL_SCOPE === 'all' ? 'every column' : 'Incoming leads'} from Kommo…</p>`;
+        try {
+            const r = await klLoadPages(KL_SCOPE, 1, gen);
+            if (r.kind === 'stale') return;
+            klSettle(r);
+        } finally {
+            if (btn && gen === KL_LOAD_GEN) btn.disabled = false;
+        }
+    }
+
+    // Load more: the next KL_AUTO_PAGES pages after the last one loaded. Also the Retry after
+    // a page that failed, which is the page it asks for first; nothing loaded is dropped.
+    async function klMore() {
+        if (KL_STATE !== 'ok' || !KL_HAS_MORE || KL_PAGE >= KL_MAX_PAGE) return;
+        const gen = KL_LOAD_GEN;
+        const btn = document.getElementById('klMoreBtn');
+        const refresh = document.getElementById('kommoLeadsRefresh');
+        KL_STATE = 'loading';
+        KL_MORE_FAILED = '';
+        if (btn) { btn.disabled = true; btn.textContent = 'Reading the next pages…'; }
+        // Refresh waits for these pages, as it waits for the first ones (loadKommoLeads).
+        if (refresh) refresh.disabled = true;
+        try {
+            const r = await klLoadPages(KL_SCOPE, KL_PAGE + 1, gen);
+            if (r.kind === 'stale') return;
+            klSettle(r);
+        } finally {
+            if (refresh && gen === KL_LOAD_GEN) refresh.disabled = false;
+        }
+    }
+
+    // The two scope buttons. Another scope is another list: it is read again from page 1,
+    // and the column filter starts over (the columns may differ). Not while a read is out:
+    // one Kommo read at a time (loadKommoLeads).
+    function klSetScope(scope) {
+        if (KL_STATE === 'loading') return Promise.resolve();
+        const s = KL_SCOPES.includes(scope) ? scope : 'incoming';
+        if (s === KL_SCOPE && KL_STATE !== 'idle') {
+            if (KL_STATE === 'ok') klRender();
+            return Promise.resolve();
+        }
+        KL_SCOPE = s;
+        KL_FILTER = { ...KL_FILTER, column: null };
+        return loadKommoLeads(true);
+    }
+
+    // The filters work on the list already loaded and ask the server nothing. A column
+    // button carries its place in KL_COLUMNS (a whole number, for the onclick); the filter
+    // keeps that column's key.
+    function klSetColumn(i) {
+        const c = (Number.isInteger(i) && i >= 0 && i < KL_COLUMNS.length) ? KL_COLUMNS[i] : null;
+        KL_FILTER = { ...KL_FILTER, column: c ? klColumnKey(c) : null };
+        klRender();
+    }
+    function klSetSource(source) {
+        KL_FILTER = { ...KL_FILTER, source: (source === 'all' || KL_SOURCES.includes(source)) ? source : 'all' };
+        klRender();
+    }
+    function klSetRecord(record) {
+        KL_FILTER = { ...KL_FILTER, record: KL_RECORDS.includes(record) ? record : 'all' };
+        klRender();
+    }
+
+    // One Kommo lead. n is its place in KL_LEADS, for the card's id. The App record button and
+    // its message carry the Kommo lead id instead (klLeadId, a whole number): Load more
+    // re-sorts KL_LEADS before the cards are drawn again, and a place would then be another
+    // lead's (28 Oct 2026, review). Nothing of the lead's own text.
+    function klLeadCard(lead, n) {
+        const L = klObj(lead);
+        const c = klObj(L.customer), k = klObj(L.kommo);
+        const full = KL_VIEW === 'full';
+        const cut = L.maskFailed === true;
+        const muted = t => `<span style="color:var(--text-muted);">${t}</span>`;
+        // The person's name is the contact's; the card's own name is what someone typed on
+        // the card in Kommo -- often a phone number, sometimes a note -- so it is second.
+        const cardName = String(L.cardName ?? '').trim();
+        const name = String(c.name ?? '').trim() || cardName || 'No name in Kommo';
+        const g = HL_GRADES.includes(L.grade) ? L.grade : '';
+        const src = klSourceOf(L);
+        const when = hlWhen(L.createdAt);
+        const column = cut ? '' : (String(k.statusName ?? '').trim()
+            || (Number.isInteger(k.statusId) ? `Column ${k.statusId}` : ''));
+        let contact;
+        if (cut) {
+            contact = '<span class="hl-masked">Contact details hidden</span>';
+        } else if (L.contactState === 'unread') {
+            contact = muted('Contact not read - open in Kommo');
+        } else if (L.contactState === 'none') {
+            contact = muted('No contact on this lead in Kommo');
+        } else if (full) {
+            // Unlocked: links, each only for a value hlMailHref / hlTelHref accepts.
+            const email = String(c.email ?? '').trim(), phone = String(c.phone ?? '').trim();
+            const mail = hlMailHref(email), tel = hlTelHref(phone);
+            contact = (email ? (mail ? `<a href="${esc(mail)}">${esc(email)}</a>` : `<span>${esc(email)}</span>`)
+                             : muted('No email in Kommo'))
+                    + (phone ? (tel ? `<a href="${esc(tel)}">${esc(phone)}</a>` : `<span>${esc(phone)}</span>`)
+                             : muted('No phone in Kommo'));
+        } else {
+            // Masked, as the list above: the server sent phoneLast3 / hasEmail / hasPhone, and a
+            // lead that still carried a full value would not show it either.
+            contact = hlMaskedContact(c);
+        }
+        const link = hlExtLink(k.leadUrl, 'Open in Kommo', 'Opens this lead in Kommo');
+        const id = klLeadId(L);
+        const record = klHasRecord(L) && id !== null
+            ? `<button type="button" class="btn-ghost kl-record" id="klRecordBtn-${id}" onclick="klShowRecord(${id})">App record</button>`
+            : '';
+        return `<div class="prop-card kl-card" id="klCard-${n}">
+            <div class="hl-head">
+                <span class="hl-name kl-name">${esc(name)}</span>
+                ${cut ? '' : `<span class="pill pill-muted kl-src">${KL_SOURCE_LABEL[src]}</span>`}
+                ${g ? `<span class="pill pill-${g}">${HL_GRADE_LABEL[g]}</span>` : ''}
+            </div>
+            ${cardName && cardName !== name ? `<div class="kl-cardname">Card: ${esc(cardName)}</div>` : ''}
+            ${column || when ? `<div class="kl-where">${esc(column)}${column && when ? ' &middot; ' : ''}`
+                + `${when ? 'Created ' + esc(when) : ''}</div>` : ''}
+            <div class="hl-contact">${contact}</div>
+            ${cut ? '<div class="hl-notice hl-mask-failed kl-mask-failed">Details hidden: part of this lead '
+                + 'could not be shown with its contact details hidden, so only its Kommo link is here. '
+                + 'Open it in Kommo to see the rest.</div>' : ''}
+            ${link || record ? `<div class="hl-links kl-links">${link}${record}</div>` : ''}
+            ${record ? `<div class="hl-msg" id="klMsg-${id}" role="status" aria-live="polite"></div>` : ''}
+        </div>`;
+    }
+
+    // What sits under the scope buttons when the read was not whole: the hook's own notes
+    // (ids, counts and HTTP statuses, escaped all the same) and whether every record was matched.
+    function klWarnings() {
+        const said = [];
+        if (!KL_RECORDS_COMPLETE) {
+            said.push("The app's records could not all be matched just now, so a lead the app has a record "
+                      + 'for may be missing its <strong>App record</strong> button.');
+        }
+        if (KL_ERRORS.length) {
+            said.push('Kommo did not answer every part of this read ('
+                      + esc(KL_ERRORS.slice(0, 5).join('; ')) + (KL_ERRORS.length > 5 ? '; …' : '')
+                      + '), so some names or columns may be missing. Press Refresh to read it again.');
+        }
+        return said.length
+            ? `<div class="hl-notice hl-cover hl-cover-warn kl-warn" id="klWarn">${said.join(' ')}</div>` : '';
+    }
+
+    // The end of the list: more to load, a page that failed, or the end of what is read here.
+    function klMoreNote() {
+        const n = KL_LEADS.length.toLocaleString('en-AU');
+        if (KL_MORE_FAILED) {
+            return `<div class="hl-notice hl-cover-warn kl-more" id="klMore">Page ${KL_PAGE + 1} could not be read `
+                 + `(${esc(KL_MORE_FAILED)}), so only the leads above are listed. `
+                 + '<button type="button" class="btn-ghost" id="klMoreBtn" onclick="klMore()">Retry</button></div>';
+        }
+        if (KL_HAS_MORE && KL_PAGE < KL_MAX_PAGE) {
+            return `<div class="hl-notice kl-more" id="klMore">More not loaded: Kommo has more leads than the ${n} `
+                 + 'listed. <button type="button" class="btn-ghost" id="klMoreBtn" onclick="klMore()">Load more</button></div>';
+        }
+        if (KL_HAS_MORE) {
+            return `<div class="hl-notice kl-more" id="klMore">More not loaded: this list stops at ${KL_MAX_PAGE} `
+                 + 'pages. Older leads are in Kommo itself.</div>';
+        }
+        return '';
+    }
+
+    // The whole card from KL_* state, into #kommoLeadsContent; the markup is returned too.
+    function klRender() {
+        const el = document.getElementById('kommoLeadsContent');
+        const f = KL_FILTER;
+        const scopes = klBar('List', 'kl-scopes', KL_SCOPES.map(key => ({
+            key, id: 'klScope-' + key, on: key === KL_SCOPE, text: KL_SCOPE_LABEL[key] })),
+            key => `klSetScope('${key}')`);
+        let html;
+        if (!KL_LEADS.length) {
+            html = scopes + klWarnings() + `<div class="hl-notice">${KL_SCOPE === 'all'
+                ? 'No leads in Kommo.' : 'No leads in Incoming leads right now.'}</div>` + klMoreNote();
+        } else {
+            // A column button only for a column with leads on this list, and the one pressed.
+            const has = new Set(KL_LEADS.filter(l => l.maskFailed !== true).map(klColumnOf));
+            const pipelines = new Set(KL_COLUMNS.map(c => c.pipelineId));
+            const colText = c => esc(String(c.statusName ?? '').trim() || `Column ${c.statusId}`)
+                + (pipelines.size > 1 && c.pipelineName ? ' &middot; ' + esc(c.pipelineName) : '');
+            const columns = [{ key: -1, id: 'klColumn-all', on: f.column === null, text: `All (${klCount({ column: null })})` }]
+                .concat(KL_COLUMNS.map((c, i) => ({ key: i, id: 'klColumn-' + i, on: f.column === klColumnKey(c),
+                                                    text: `${colText(c)} (${klCount({ column: klColumnKey(c) })})` }))
+                    .filter(e => has.has(e.key) || e.on));
+            const sources = ['all'].concat(KL_SOURCES).map(key => ({
+                key, id: 'klSource-' + key, on: f.source === key,
+                text: `${key === 'all' ? 'All' : KL_SOURCE_LABEL[key]} (${klCount({ source: key })})` }));
+            const records = KL_RECORDS.map(key => ({
+                key, id: 'klRecords-' + key, on: f.record === key,
+                text: `${KL_RECORD_LABEL[key]} (${klCount({ record: key })})` }));
+            const shown = KL_LEADS.map((lead, n) => ({ lead, n })).filter(x => klPasses(x.lead, f));
+            html = scopes + klWarnings()
+                 + klBar('Column', 'kl-columns', columns, key => `klSetColumn(${key})`)
+                 + klBar('Source', 'kl-sources', sources, key => `klSetSource('${key}')`)
+                 + klBar('Record', 'kl-records', records, key => `klSetRecord('${key}')`)
+                 + (shown.length ? '' : '<div class="hl-notice" id="klFilterEmpty">No leads on this list match these filters.</div>')
+                 + `<div class="hl-list kl-list">${shown.map(x => klLeadCard(x.lead, x.n)).join('')}</div>`
+                 + klMoreNote();
+        }
+        if (el) el.innerHTML = html;
+        return html;
+    }
+
+    // App record: the lead's card in the list above, by callId. Both of that list's filters go
+    // back to All first, or the card could be hidden under one; then it is scrolled to and
+    // lit for a moment. Not found -- older than the newest HL_LIMIT, a test record, or that
+    // list not loaded -- says so on this card instead. `leadId` is the Kommo lead id the
+    // button was drawn with, looked up again here, so a list re-sorted under the drawn cards
+    // (Load more) still finds the lead whose button it is.
+    function klShowRecord(leadId) {
+        const lead = (Number.isSafeInteger(leadId) && leadId > 0) ? KL_LEADS.find(l => klLeadId(l) === leadId) : null;
+        const id = (lead && typeof lead === 'object' && typeof lead.callId === 'string') ? lead.callId : '';
+        const msg = lead ? document.getElementById('klMsg-' + leadId) : null;
+        const i = hlIndexOf(id);
+        const card = i >= 0 ? document.getElementById('hlCard-' + i) : null;
+        if (!card) {
+            if (msg) msg.textContent = `This lead's record is not in the list above (older than the newest ${HL_LIMIT}, `
+                                     + 'or a test record).';
+            return false;
+        }
+        if (msg) msg.textContent = '';
+        hlSetSource('all');
+        hlSetFilter('all');
+        if (typeof card.scrollIntoView === 'function') card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        const unlit = () => String(card.className || '').replace(/\s*\bkl-flash\b/g, '');
+        card.className = unlit() + ' kl-flash';
+        setTimeout(() => { card.className = unlit(); }, 1600);
+        return true;
     }
     // HOT-LEADS-END
 
