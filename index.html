@@ -5149,7 +5149,8 @@ python state_sync.py push</pre>
     let KL_FILTER = { column: null, source: 'all', record: 'all' };
     let KL_LOAD_GEN = 0;                 // the newest load; an older one draws nothing
     // The newest load's AbortController: a load that takes over (Unlock or Lock) drops the
-    // read still out, so the hook stops reading Kommo for a list nobody will see.
+    // browser's side of the read still out, so its answer is never waited for or drawn. The
+    // server side runs on (the proxy and the hook finish their Kommo read regardless).
     let KL_ABORT = null;
     const KL_AUTO_PAGES = 4;             // pages read per press, 1,000 leads
     // 'full' only when every page on the list said so: the answer's own view, not HL_ACCESS --
