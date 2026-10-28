@@ -595,6 +595,10 @@ MUTANTS = {
     "a card has no source pill": (
         '<span class="pill pill-muted hl-src">${HL_CHANNEL_PILL[ch]}</span>', "",
         "each card is labelled with its source"),
+    "a cut-down card has no source pill": (
+        '<span class="pill pill-muted hl-src">${HL_CHANNEL_PILL[ch]}</span>',
+        "${cut ? '' : `<span class=\"pill pill-muted hl-src\">${HL_CHANNEL_PILL[ch]}</span>`}",
+        "a cut-down card is labelled with its source"),
     "the source pills are the wrong way round": (
         "const HL_CHANNEL_PILL = { whatsapp: 'WhatsApp', vapi: 'Clare call' };",
         "const HL_CHANNEL_PILL = { whatsapp: 'Clare call', vapi: 'WhatsApp' };",

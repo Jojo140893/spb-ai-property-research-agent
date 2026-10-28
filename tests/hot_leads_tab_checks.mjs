@@ -2892,6 +2892,35 @@ console.log("\n--- a cut-down lead draws nothing it does not have ---");
   check("... under the access bar that says the same",
     h.includes("No contact-details password is set on this dashboard, so they cannot be unlocked here."));
 }
+{
+  // 28 Oct review: the one list mixes both sources, and a cut-down lead keeps its channel
+  // (api/_contact.py hard_masked), so its card is labelled like any other. One of each: a
+  // WhatsApp lead, and a Clare call with no channel key at all.
+  const s = sandbox(undefined, { localStorage: memoryStorage() });
+  const content = s.el("hotLeadsContent"); s.el("hotLeadsBadge"); s.el("hotLeadsRefresh");
+  const hidden = { name: "[hidden]", email: "", phone: "", phoneLast3: "678", hasEmail: true, hasPhone: true };
+  const cuts = [
+    { callId: "call-cut4", grade: "hot", createdAt: "2026-10-28T02:07:00.000Z",
+      kommo: { leadUrl: "https://spb.kommo.com/leads/detail/21345679" }, customer: hidden, maskFailed: true },
+    { callId: "wa-cut", channel: "whatsapp", grade: "warm", createdAt: "2026-10-27T23:33:00.000Z",
+      kommo: { leadUrl: "https://spb.kommo.com/leads/detail/21345680" }, customer: hidden, maskFailed: true },
+  ];
+  s.respond(async () => reply(200, { status: "success", contact: "masked", contactUnlock: "password",
+                                     leads: cuts, notesHidden: ["call-cut4", "wa-cut"] }));
+  await s.api.loadHotLeads();
+  const cards = drawn(content.innerHTML);
+  check("both cut-down cards are drawn, cut down",
+    cards.length === 2 && cards.every(c => c.body.includes(`id="hlCut-${c.i}"`)),
+    cards.map(c => c.i + ":" + c.body.includes("hlCut-")).join(","));
+  check("a cut-down card is labelled with its source, once: WhatsApp or Clare call",
+    cards.length === 2 && cards.every(c => c.src.length === 1 && c.src[0] === pillFor(cuts[c.i]))
+    && cards.map(c => c.src[0]).sort().join(",") === "Clare call,WhatsApp",
+    cards.map(c => c.i + ":" + c.src.join("+")).join(" | "));
+  check("... beside its grade pill, in the card's head",
+    cards.length === 2 && cards.every(c => new RegExp('<div class="hl-head">\\s*<span class="hl-name">[^<]*</span>\\s*'
+      + '<span class="pill pill-muted hl-src">[^<]*</span>\\s*<span class="pill pill-(hot|warm)">').test(c.body)),
+    (cards[0] || { body: "" }).body.slice(0, 300));
+}
 
 console.log("\n--- what is typed while a save is out stays ---");
 {
