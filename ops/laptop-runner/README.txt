@@ -56,9 +56,9 @@ LOGINS (Credential Manager, service SPB-PropertyAgent; laptop_logins.py)
   e_agent:*               REQUIRED. Without it the run stops before harvesting.
   portal_proxima:*        optional. Used only when the bucket's shared session has expired.
   hook:secret             optional, for the WhatsApp scan.
-  email_inbox:*           NOT SET, on purpose: sources/email_inbox.py does not check Google's
-                          certificate until PR #42 merges (then flip INBOX_ENABLED in
-                          laptop_logins.py). The inbox reads nothing on a laptop until then.
+  email_inbox:*           the digital@ Gmail APP password: laptop_logins.py inbox. Safe since
+                          PR #42 (Gmail's certificate is checked first). Without it the sweep
+                          falls back to the vendor CSV's login, which Gmail refuses.
 
 BY HAND (Windows PowerShell)
   Dry check:    powershell -NoProfile -ExecutionPolicy Bypass -File <Root>\nightly.ps1 -Check
