@@ -12,11 +12,39 @@
 # the same as not running. GitHub Actions has no such limit, and the nightly harvest already
 # runs from here, so this is a schedule the team already watches.
 #
-# EVERY 15 MINUTES IS A TARGET, NOT A GUARANTEE. GitHub's scheduler is best-effort and drops
-# or delays high-frequency runs under load, especially on the hour. That is survivable
-# because the scan is idempotent: it skips a lead whose record already exists and whose
-# fieldsFingerprint still matches, so a doubled run writes nothing twice and a skipped run
-# only means the lead is picked up 15 minutes later.
+# THE 15 MINUTES COME FROM A RELAY, NOT FROM THE SCHEDULE (29 Oct 2026). GitHub's scheduler
+# is best-effort: over 26-29 Oct it started this "*/15" cron 11 times in three days instead
+# of about 288, so a WhatsApp lead could wait hours. Now each run starts the next one itself
+# (the last step below, `gh workflow run`; GITHUB_TOKEN may start workflow_dispatch runs).
+# The new run's job waits in the `scan-timer` environment, whose 14-minute wait timer is a
+# repo setting: free on a public repo and no runner is held while it waits. So a scan lands
+# about every 15 minutes: 14 waiting, about one scanning and queueing the next.
+#   - The cron stays as the RESTARTER, and it is a slow one: over 26-29 Oct it fired 2 to 7
+#     hours apart. If a link fails to queue the next one (a GitHub outage that outlasts the
+#     retries), GitHub does no scans until a cron firing lands. Keep a scheduler outside
+#     GitHub calling the same endpoint as well (the laptop task today); doubled scans are
+#     harmless.
+#   - The concurrency group below keeps it to ONE relay. A group holds one running and one
+#     pending run, and a newer pending run cancels the older one. So a cron run that lands
+#     while the relay is going either is cancelled or takes the relay over; it never starts
+#     a second one. Cancelled runs in the list are this, not a fault.
+#   - To STOP the relay but keep the cron: set the repo variable SPB_SCAN_RELAY to "off".
+#     To stop all of it: `gh workflow disable whatsapp-scan.yml`.
+#   - Cancelling a run by hand also ends the relay, since its last step does not run on
+#     cancel. Start it again with Run workflow.
+#   - A by-hand Run workflow also waits the 14 minutes. While the relay is going it usually
+#     cancels, or is cancelled by, the relay's pending run. That is fine: there is still one
+#     scan every 15 minutes. For a scan this minute, POST the hook directly.
+#   - The relay always continues on the default branch. A run on any other branch (a test)
+#     queues the next one only while its test_hops input is above 0, counting down, so a
+#     test relay ends by itself.
+# A doubled or skipped scan is harmless: the scan skips a lead whose record already exists
+# and whose fieldsFingerprint still matches.
+#
+# THE LOG IS PUBLIC, SO IT CARRIES COUNTS ONLY. This repository is public, and so is every
+# run's log, 96 a day. The scan's answer lists leads, each with the lead id and Agent 2's
+# note, so the step prints only the counts. The error lines are cut before their bracketed
+# detail. The per-lead detail stays in the hook's store and in Kommo.
 #
 # THE SCAN IS READ-ONLY AGAINST KOMMO. It never PATCHes a lead, because a PATCH on a card in
 # Incoming leads EJECTS IT FROM THE COLUMN (see WORKLOG.md §5). This workflow can therefore
@@ -29,11 +57,15 @@ name: WhatsApp lead scan
 
 on:
   schedule:
-    # Every 15 minutes, UTC. Unlike the nightly harvest this has no local-time meaning, so
-    # there is no daylight-saving pair to gate: "every 15 minutes" is every 15 minutes in
-    # any timezone.
-    - cron: "*/15 * * * *"
-  workflow_dispatch:        # so a lead can be picked up now instead of at the next quarter
+    # The relay's restarter (see above). It runs every 15 minutes, UTC, when GitHub honours it. The
+    # minutes are off the hour because GitHub drops the most runs on the hour.
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:        # the relay's own trigger, and a by-hand start
+    inputs:
+      test_hops:
+        description: "Branch tests only: how many more runs the relay may queue (ignored on the default branch)"
+        required: false
+        default: "0"
 
 concurrency:
   # TWO SCANS MUST NEVER OVERLAP. A run that takes longer than 15 minutes (a slow Kommo, a
@@ -53,8 +85,17 @@ jobs:
     # one repository whose secrets can actually answer.
     if: github.repository == 'Jojo140893/spb-ai-property-research-agent'
     runs-on: ubuntu-latest
-    # The scan is one HTTP call. Ten minutes is a hang, not a slow Kommo.
-    timeout-minutes: 10
+    # The relay's pause: the job waits here on the environment's 14-minute wait timer
+    # before a runner is assigned. Waiting is not billed and holds no runner.
+    environment: scan-timer
+    # The job's budget is the scan's 10 minutes (a step limit below) plus room for the relay
+    # step's retries. A job timeout counts as a cancel, which would skip the relay step, so
+    # the scan has its own, smaller limit: a scan that times out fails, and the relay goes on.
+    # The environment wait comes before the job starts, so it does not count.
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: write        # to queue the next run of this workflow (the relay)
 
     env:
       HOOK_SECRET: ${{ secrets.HOOK_SECRET }}
@@ -82,6 +123,9 @@ jobs:
           echo "HOOK_SECRET is present."
 
       - name: Scan Kommo Incoming leads
+        # The scan's own limit (curl's worst case is about 8.5 minutes). A step that times out
+        # fails, and the relay step still runs; a job timeout would cancel it.
+        timeout-minutes: 10
         # The key travels in the QUERY STRING because that is how the hook authenticates
         # every one of its endpoints (api/webhook.js: req.query.key !== env.HOOK_SECRET).
         # It is built into a shell variable rather than written into the curl line so it is
@@ -102,9 +146,22 @@ jobs:
                    -o /tmp/scan.json -w '%{http_code}' \
                    "$url") || code="000"
           echo "POST ${HOOK_BASE}${SCAN_PATH} -> ${code}"
-          echo "--- what the scan answered ---"
-          head -c 2000 /tmp/scan.json 2>/dev/null || echo "(no body)"
-          echo ""
+          # COUNTS, NEVER THE LEADS (the log is public). A number or true/false prints as
+          # itself, a list as its length, anything else as "-"; status only when it is a
+          # short plain word.
+          echo "--- what the scan answered (counts only) ---"
+          jq -r '
+            def n(k): .[k] as $v
+              | if ($v | type) == "number" or ($v | type) == "boolean" then ($v | tostring)
+                elif ($v | type) == "array" then ($v | length | tostring)
+                else "-" end;
+            "status=" + ((.status // "-") | tostring
+                          | if test("^[A-Za-z0-9_ -]{1,40}$") then . else "?" end)
+            + " scanned=" + n("scanned") + " truncated=" + n("truncated")
+            + " whatsapp=" + n("whatsapp") + " ready=" + n("ready")
+            + " researched=" + n("researched") + " stored=" + n("stored")
+            + " leads=" + n("leads") + " errors=" + n("errors")
+          ' /tmp/scan.json 2>/dev/null || echo "(no JSON body)"
           case "$code" in
             2??)
               # A 200 IS NOT A SUCCESS ON ITS OWN. The scan answers 200 with a populated
@@ -113,14 +170,23 @@ jobs:
               # not stop the other nineteen. Reading only the status turned a steady per-lead
               # failure into 96 green runs a day, with nothing anywhere saying a lead was
               # dropped. jq is on every GitHub-hosted runner.
-              nerr=$(jq -r '(.errors // []) | length' /tmp/scan.json 2>/dev/null || echo "unreadable")
+              # Green needs the scan's real answer: an object with status "success" and an
+              # errors list. An empty, null or {} body (a proxy page, say) is not a scan.
+              nerr=$(jq -er 'if type == "object" and .status == "success" and (.errors | type) == "array"
+                             then (.errors | length) else error("not a scan answer") end' \
+                       /tmp/scan.json 2>/dev/null) || nerr="unreadable"
+              case "$nerr" in ''|*[!0-9]*) nerr="unreadable" ;; esac
               if [ "$nerr" = "unreadable" ]; then
                 echo "::error::The scan answered ${code} but its body is not the JSON it should be."
                 exit 1
               fi
               if [ "$nerr" -gt 0 ]; then
                 echo "::error::The scan ran but ${nerr} lead(s) failed. First errors:"
-                jq -r '.errors[:5][]' /tmp/scan.json 2>/dev/null | sed 's/^/  /'
+                # Cut at the first " (": the bracketed part is the underlying error text,
+                # which is not ours to vouch for in a public log. What is left is the lead id
+                # and what failed.
+                jq -r '.errors[:5][] | tostring | gsub("[\r\n]+"; " ") | sub(" \\(.*"; "") | .[0:200]' \
+                  /tmp/scan.json 2>/dev/null | sed 's/^/  /' || true
                 exit 1
               fi
               echo "Scan completed with no per-lead errors."
@@ -154,3 +220,66 @@ jobs:
               exit 1
               ;;
           esac
+
+      - name: Queue the next scan (the relay)
+        # It runs when the scan FAILED too: a failed scan is reported above and the relay goes
+        # on, so a hook outage costs red runs, never a stopped scan. It skips only on cancel
+        # (cancelling a run by hand ends the relay) and when the repo variable SPB_SCAN_RELAY
+        # is "off".
+        #
+        # On the default branch it always queues the next run. On any other branch it queues
+        # one only while test_hops is above 0, passing test_hops - 1, so a test relay stops
+        # by itself and never outlives its branch's file.
+        #
+        # Both GitHub calls retry with backoff (about 5 minutes in all), because one failed
+        # call ends the relay and the cron that restarts it fires hours apart.
+        #
+        # NO WAIT, NO RELAY. If the scan-timer environment is missing or loses its wait timer,
+        # GitHub runs this job at once, and an unguarded relay would scan back to back:
+        # hundreds of hook calls an hour, against Vercel's CPU limit and Kommo's API. So the
+        # step measures how long ago this run was created. The wait timer alone makes that
+        # 14 minutes or more; under 10 means there was no wait, and the relay stops.
+        if: ${{ !cancelled() && vars.SPB_SCAN_RELAY != 'off' }}
+        timeout-minutes: 8
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TEST_HOPS: ${{ inputs.test_hops || '0' }}
+        run: |
+          set -uo pipefail
+          extra=()
+          if [ "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]; then
+            case "$TEST_HOPS" in ''|*[!0-9]*) TEST_HOPS=0 ;; esac
+            if [ "$TEST_HOPS" -le 0 ]; then
+              echo "Branch ${GITHUB_REF_NAME} is not ${DEFAULT_BRANCH} and test_hops is 0: the test relay ends here."
+              exit 0
+            fi
+            extra=(-f "test_hops=$((TEST_HOPS - 1))")
+          fi
+          created=""
+          for t in 1 2 3 4 5; do
+            created=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" --jq .created_at) && [ -n "$created" ] && break
+            created=""; sleep $((t * 10))
+          done
+          if [ -z "$created" ]; then
+            echo "::error::Could not read when this run was created, so the relay has stopped (it fails closed)."
+            echo "Start it again with Run workflow; otherwise only a cron firing restarts it, hours apart."
+            exit 1
+          fi
+          waited=$(( $(date -u +%s) - $(date -u -d "$created" +%s) ))
+          if [ "$waited" -lt 600 ]; then
+            echo "::error::This run started ${waited}s after it was created, so the scan-timer wait did not happen."
+            echo "The relay has stopped rather than scan back to back. Check Settings -> Environments ->"
+            echo "scan-timer -> Wait timer (14 minutes). The cron still scans when GitHub fires it."
+            exit 1
+          fi
+          for try in 1 2 3 4 5; do
+            if gh workflow run whatsapp-scan.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" "${extra[@]}"; then
+              echo "Next scan queued on ${GITHUB_REF_NAME} ${extra[*]}; it waits in scan-timer, then scans."
+              exit 0
+            fi
+            sleep $((try * 20))
+          done
+          echo "::error::Could not queue the next scan, so the relay has stopped."
+          echo "Start it again with Run workflow; otherwise only a cron firing restarts it, hours apart."
+          exit 1
