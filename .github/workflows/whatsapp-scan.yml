@@ -83,7 +83,11 @@ jobs:
   scan:
     # A scheduled workflow keeps firing in a fork that never wanted it; this pins it to the
     # one repository whose secrets can actually answer.
-    if: github.repository == 'Jojo140893/spb-ai-property-research-agent'
+    #
+    # PAUSED 7 Nov 2026: Kommo is disconnected from the hook for now, so every scan would
+    # answer 500. A skipped job never reaches the relay step, so the chain stops; the cron
+    # only records skipped runs. To resume, delete "&& false" below.
+    if: github.repository == 'Jojo140893/spb-ai-property-research-agent' && false
     runs-on: ubuntu-latest
     # The relay's pause: the job waits here on the environment's 14-minute wait timer
     # before a runner is assigned. Waiting is not billed and holds no runner.
